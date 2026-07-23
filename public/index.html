@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Writer Room</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">W</span><div><strong>Writer Room</strong><small>Human × Multi-Agent</small></div></div>
+        <nav class="top-tabs" aria-label="Khu vực ứng dụng">
+          <button class="top-tab active" data-tab="room" type="button">Room</button>
+          <button class="top-tab" data-tab="library" type="button">Library</button>
+          <button class="top-tab" data-tab="agents" type="button">Agents</button>
+        </nav>
+        <div class="top-actions">
+          <button id="toggle-inspector" class="icon-button mobile-only" type="button" aria-label="Mở inspector">◎</button>
+          <span id="health" class="health"><i></i> Đang kiểm tra…</span>
+        </div>
+      </header>
+
+      <main class="workspace-shell">
+        <aside id="rail" class="rail">
+          <div class="rail-head">
+            <div><span class="kicker" id="rail-kicker">PROJECTS</span><h2 id="rail-title">Bài đang viết</h2></div>
+            <button id="new-run" class="new-button" type="button">＋</button>
+          </div>
+          <label class="search-box"><span>⌕</span><input id="rail-search" placeholder="Tìm bài…" /></label>
+          <div id="rail-list" class="rail-list" aria-live="polite"></div>
+          <div class="rail-footer"><span id="rail-count">0 mục</span><button id="refresh" class="text-button" type="button">Làm mới</button></div>
+        </aside>
+
+        <section class="canvas-area">
+          <div id="room-view" class="view-stack">
+            <div id="version-ribbon" class="version-ribbon" aria-label="Các phiên bản"></div>
+            <div id="document-toolbar" class="document-toolbar">
+              <div><span id="document-kicker" class="kicker">WRITER ROOM</span><h1 id="document-title">Chọn hoặc tạo một bài viết</h1></div>
+              <div class="toolbar-actions">
+                <select id="compare-version" class="compact-select hidden" aria-label="Phiên bản so sánh"></select>
+                <button id="compare-toggle" class="outline-button" type="button">So sánh</button>
+              </div>
+            </div>
+            <div id="document-scroll" class="document-scroll">
+              <div id="document-content" class="document-content empty-state">
+                <div class="empty-icon">✦</div><h2>Một title, một phòng biên tập</h2>
+                <p>Agent chuẩn bị evidence, angle và hook. Bạn khóa insight trước khi Writer và Editor bắt đầu vòng chấm.</p>
+                <button class="primary-button" data-open-new type="button">Tạo bài đầu tiên</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="library-view" class="view-stack hidden">
+            <div class="document-toolbar library-toolbar">
+              <div><span class="kicker">ARTICLE LIBRARY</span><h1 id="library-title">Bài đã hoàn tất</h1></div>
+              <div class="toolbar-actions"><button id="backup-library" class="outline-button" type="button">Backup DB</button><button id="open-source-run" class="outline-button hidden" type="button">Mở source run</button></div>
+            </div>
+            <div class="document-scroll"><div id="library-content" class="document-content empty-state"><div class="empty-icon">□</div><h2>Chưa chọn bài</h2><p>Library lưu bản final đã chấp nhận; mọi draft và review nằm trong source run.</p></div></div>
+          </div>
+
+          <div id="agents-view" class="view-stack hidden">
+            <div class="document-toolbar">
+              <div><span class="kicker">RUNTIME CONFIGURATION</span><h1>Agents 1 / 2 / 3</h1></div>
+              <div class="toolbar-actions"><button id="reset-agents" class="outline-button" type="button">Mặc định</button><button id="save-agents" class="primary-button" type="button">Lưu cấu hình</button></div>
+            </div>
+            <div class="document-scroll"><div id="agents-notice" class="notice hidden"></div><div id="agents-grid" class="agents-grid"></div></div>
+          </div>
+        </section>
+
+        <aside id="inspector" class="inspector">
+          <div class="inspector-head"><div><span class="kicker">INSPECTOR</span><h2>Trạng thái & quyết định</h2></div><button id="close-inspector" class="icon-button mobile-only" type="button">×</button></div>
+          <div id="inspector-content" class="inspector-content"><p class="muted">Chọn một run để xem tiến độ, score, evidence và hành động tiếp theo.</p></div>
+        </aside>
+      </main>
+
+      <section id="console-drawer" class="console-drawer" aria-label="Agent consoles">
+        <div class="console-bar">
+          <div class="console-tabs"><span class="console-label">CONSOLES</span><button class="console-tab active" data-console="writer" type="button">Agent 1</button><button class="console-tab" data-console="editor" type="button">Agent 2</button><button class="console-tab" data-console="seo" type="button">Agent 3</button><button class="console-tab" data-console="process" type="button">Process</button></div>
+          <button id="toggle-console" class="text-button" type="button">Mở console <span>⌃</span></button>
+        </div>
+        <pre id="console-output" class="console-output">Chưa có log.</pre>
+      </section>
+    </div>
+
+    <dialog id="new-run-dialog" class="new-dialog">
+      <form id="create-form" method="dialog">
+        <div class="dialog-head"><div><span class="kicker">NEW EDITORIAL RUN</span><h2>Tạo phòng viết</h2></div><button id="close-new" class="icon-button" type="button">×</button></div>
+        <label class="field field-large">Title video<input name="title" required autofocus placeholder="Một title đủ cụ thể để bắt đầu…" /></label>
+        <label class="field">Source pack / research<textarea name="sourcePack" rows="7" placeholder="Dán fact, transcript, quote, scene, timeline hoặc ghi chú. Nếu chưa có, Agent sẽ đánh dấu evidence gap."></textarea></label>
+        <div class="form-row three"><label class="field">Target score<input name="targetScore" type="number" min="0.1" max="10" step="0.1" value="9" /></label><label class="field">Số vòng tối đa<input name="maxRounds" type="number" min="1" max="12" value="6" /></label><label class="field">Human gate<select name="humanGate"><option value="init_only">Sau init</option><option value="every_round">Sau mỗi review</option></select></label></div>
+        <details class="advanced"><summary>Cấu hình nâng cao</summary><div class="advanced-fields"><label class="field">Timeout mỗi agent (phút)<input name="timeoutMinutes" type="number" min="1" max="120" value="20" /></label><label class="field">Writer guide<input name="guidePath" placeholder="Để trống = guide đóng gói cùng app" /></label><label class="field">Editor criteria<input name="criteriaPath" placeholder="Để trống = criteria đóng gói cùng app" /></label></div></details>
+        <div class="dialog-actions"><span id="create-error" class="error" role="alert"></span><button id="cancel-new" class="outline-button" type="button">Hủy</button><button class="primary-button" type="submit">Tạo init</button></div>
+      </form>
+    </dialog>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Writer Room",
+  "version": "0.1.0",
+  "identifier": "com.dacthao.writerroom",
+  "build": {
+    "beforeDevCommand": "bun run build:sidecars",
+    "beforeBuildCommand": "bun run build:sidecars",
+    "frontendDist": "../public"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Writer Room",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 980,
+        "minHeight": 680,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["../../src-tauri/icons/32x32.png", "../../src-tauri/icons/128x128.png"],
+    "externalBin": ["../binaries/writer-room-engine", "../binaries/writer-room-runner"],
+    "resources": {
+      "../prompt/": "default-prompts/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

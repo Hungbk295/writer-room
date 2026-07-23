@@ -1,0 +1,287 @@
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
+use serde_json::json;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
+
+#[cfg(target_os = "macos")]
+fn desktop_path() -> std::ffi::OsString {
+    let mut entries = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        entries.push(std::path::PathBuf::from(home).join(".local").join("bin"));
+    }
+    entries.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    entries.push(std::path::PathBuf::from("/usr/local/bin"));
+    if let Some(current) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&current));
+    }
+    std::env::join_paths(entries).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+#[derive(Clone)]
+pub struct TerminalManager {
+    jobs: Arc<Mutex<HashMap<String, ManagedJob>>>,
+}
+
+struct ManagedJob {
+    pid: u32,
+    killer: Box<dyn ChildKiller + Send + Sync>,
+}
+
+impl TerminalManager {
+    pub fn new() -> Self {
+        Self {
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn run(
+        &self,
+        app: AppHandle,
+        runner: &Path,
+        session: &str,
+        role: &str,
+        cwd: &str,
+        descriptor_path: &str,
+    ) -> Result<(), String> {
+        if !Path::new(cwd).is_dir() {
+            return Err(format!("terminal cwd does not exist: {cwd}"));
+        }
+        let key = format!("{session}:{role}");
+        if let Some(mut old) = self.jobs.lock().unwrap().remove(&key) {
+            kill_tree(old.pid);
+            let _ = old.killer.kill();
+        }
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 32,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| format!("open PTY/ConPTY: {error}"))?;
+        let mut command = CommandBuilder::new(runner);
+        command.arg(descriptor_path);
+        command.cwd(cwd);
+        command.env("TERM", "xterm-256color");
+        command.env("NO_COLOR", "1");
+        command.env("FORCE_COLOR", "0");
+        #[cfg(target_os = "macos")]
+        command.env("PATH", desktop_path());
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(|error| format!("spawn runner: {error}"))?;
+        drop(pair.slave);
+        let pid = child.process_id().ok_or("runner PID unavailable")?;
+        let killer = child.clone_killer();
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| format!("clone PTY reader: {error}"))?;
+        self.jobs
+            .lock()
+            .unwrap()
+            .insert(key.clone(), ManagedJob { pid, killer });
+
+        let (output_sender, output_receiver) = mpsc::channel::<Vec<u8>>();
+        let exit_session = session.to_owned();
+        let exit_role = role.to_owned();
+        let exit_descriptor = descriptor_path.to_owned();
+        std::thread::spawn(move || {
+            let mut bytes = [0_u8; 8192];
+            loop {
+                match reader.read(&mut bytes) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => {
+                        if output_sender.send(bytes[..count].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let read_app = app.clone();
+        let read_session = session.to_owned();
+        let read_role = role.to_owned();
+        std::thread::spawn(move || {
+            while let Ok(first) = output_receiver.recv() {
+                let mut batch = first;
+                let deadline = Instant::now() + Duration::from_millis(16);
+                while batch.len() < 32 * 1024 {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    match output_receiver.recv_timeout(deadline - now) {
+                        Ok(chunk) => batch.extend_from_slice(&chunk),
+                        Err(_) => break,
+                    }
+                }
+                let chunk = String::from_utf8_lossy(&batch).to_string();
+                let _ = read_app.emit(
+                    "writer-room://terminal-output",
+                    json!({
+                        "session": read_session,
+                        "role": read_role,
+                        "chunk": chunk,
+                    }),
+                );
+            }
+        });
+
+        let jobs = Arc::clone(&self.jobs);
+        std::thread::spawn(move || {
+            let exit_code = child.wait().ok().map(|status| status.exit_code());
+            settle_missing_result(&exit_descriptor, exit_code);
+            let mut values = jobs.lock().unwrap();
+            if values.get(&key).map(|job| job.pid) == Some(pid) {
+                values.remove(&key);
+            }
+            drop(values);
+            let _ = app.emit(
+                "writer-room://terminal-exit",
+                json!({
+                    "session": exit_session,
+                    "role": exit_role,
+                    "pid": pid,
+                    "exitCode": exit_code,
+                }),
+            );
+        });
+        Ok(())
+    }
+
+    pub fn kill_session(&self, session: &str) {
+        let prefix = format!("{session}:");
+        let keys: Vec<String> = self
+            .jobs
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(mut job) = self.jobs.lock().unwrap().remove(&key) {
+                kill_tree(job.pid);
+                let _ = job.killer.kill();
+            }
+        }
+    }
+
+    pub fn kill_all(&self) {
+        let keys: Vec<String> = self.jobs.lock().unwrap().keys().cloned().collect();
+        for key in keys {
+            if let Some(mut job) = self.jobs.lock().unwrap().remove(&key) {
+                kill_tree(job.pid);
+                let _ = job.killer.kill();
+            }
+        }
+    }
+}
+
+pub fn settle_missing_result(descriptor_path: &str, exit_code: Option<u32>) {
+    let Ok(content) = std::fs::read_to_string(descriptor_path) else {
+        return;
+    };
+    let Ok(descriptor) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(result_path) = descriptor
+        .get("resultPath")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    if Path::new(result_path).is_file() {
+        return;
+    }
+    let message = format!(
+        "native runner exited before producing a result envelope (exit={})",
+        exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned())
+    );
+    let timestamp = format!(
+        "unix:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default()
+    );
+    let envelope = json!({
+        "schemaVersion": descriptor.get("schemaVersion").cloned().unwrap_or_else(|| json!(2)),
+        "id": descriptor.get("id").cloned().unwrap_or_else(|| json!("native-runner")),
+        "adapter": descriptor.get("adapter").cloned().unwrap_or_else(|| json!("unknown")),
+        "startedAt": timestamp,
+        "finishedAt": timestamp,
+        "exitCode": exit_code.map(|value| value as i64).unwrap_or(-1),
+        "timedOut": false,
+        "stdout": "",
+        "stderr": message,
+        "error": message,
+    });
+    let temporary = format!("{result_path}.native.{}.tmp", std::process::id());
+    if std::fs::write(&temporary, format!("{envelope}\n")).is_ok() {
+        let _ = std::fs::rename(temporary, result_path);
+    }
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // portable-pty starts the child as a session/group leader.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(0x0800_0000)
+        .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_failure_is_settled_as_a_result_envelope() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("writer-room-terminal-{unique}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let result = directory.join("result.json");
+        let descriptor = directory.join("job.json");
+        std::fs::write(
+            &descriptor,
+            json!({
+                "schemaVersion": 2,
+                "id": "native-failure-test",
+                "adapter": "mock",
+                "resultPath": result,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        settle_missing_result(descriptor.to_str().unwrap(), Some(17));
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&result).unwrap()).unwrap();
+        assert_eq!(value["exitCode"], 17);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("before producing"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

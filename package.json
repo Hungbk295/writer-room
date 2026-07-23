@@ -1,0 +1,23 @@
+{
+  "name": "writer-room",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "bun build src/server.ts src/bridge.ts src/pane-runner.ts --target=bun --outdir dist",
+    "build:ui": "bun build public/app.js --target=browser --outdir dist/ui-check",
+    "build:sidecars": "bun scripts/build-sidecars.ts",
+    "desktop:dev": "tauri dev",
+    "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "desktop:bundle": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}

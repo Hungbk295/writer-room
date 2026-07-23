@@ -1,0 +1,10 @@
+node_modules/
+dist/
+runs/
+exports/
+*.sqlite*
+*.log
+config/agents.json
+src-tauri/target/
+binaries/
+dist/ui-check/
