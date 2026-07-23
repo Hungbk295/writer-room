@@ -37,6 +37,7 @@ const server = Bun.serve({
     try {
       if (request.method === 'GET' && path === '/api/health') return json(await orchestrator.health());
       if (request.method === 'GET' && path === '/api/models') return json(orchestrator.models());
+      if (request.method === 'GET' && path === '/api/prompts') return json(await orchestrator.promptDefaults());
       if (request.method === 'GET' && path === '/api/agents') return json(orchestrator.agents());
       if (request.method === 'PUT' && path === '/api/agents') return json(orchestrator.saveAgents((await body(request)).agents));
       if (request.method === 'GET' && path === '/api/runs') return json(await orchestrator.store.listStates());
@@ -57,7 +58,7 @@ const server = Bun.serve({
         }
       }
 
-      const match = path.match(/^\/api\/runs\/([a-z0-9-]+)(?:\/(human|continue|accept|retry|retry-snapshot|retry-current-agent|logs|export-draft))?$/);
+      const match = path.match(/^\/api\/runs\/([a-z0-9-]+)(?:\/(human|continue|accept|rerun|retry|retry-snapshot|retry-current-agent|logs|export-draft))?$/);
       if (match) {
         const id = match[1]!;
         const action = match[2];
@@ -72,6 +73,7 @@ const server = Bun.serve({
           const value = await body(request);
           return json(await orchestrator.acceptCurrent(id, value.reason));
         }
+        if (request.method === 'POST' && action === 'rerun') return json(await orchestrator.rerun(id));
         if (request.method === 'POST' && action === 'export-draft') {
           const value = await body(request);
           return json(await orchestrator.exportDraft(id, (value.round ?? 'init') as string | number));

@@ -38,6 +38,10 @@ export interface RunConfig {
   humanGate: HumanGate;
   guidePath: string;
   criteriaPath: string;
+  /** Optional per-run override; when present it is snapshotted instead of guidePath. */
+  guideText?: string;
+  /** Optional per-run override; when present it is snapshotted instead of criteriaPath. */
+  criteriaText?: string;
   sourcePack: string;
   timeoutMinutes: number;
   /** Immutable snapshot: changing the global Agent tab never mutates a run. */
@@ -406,11 +410,37 @@ function score10(value: unknown, label: string): number {
   return Math.round(parsed * 100) / 100;
 }
 
+function optionalInstruction(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') throw new Error(`${label} must be text`);
+  const normalized = value.replaceAll('\r\n', '\n').trim();
+  if (!normalized) return undefined;
+  if (Buffer.byteLength(normalized, 'utf8') > 1_000_000) throw new Error(`${label} must be at most 1 MB`);
+  if (normalized.includes('\0')) throw new Error(`${label} contains unsupported null bytes`);
+  return normalized;
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], label: string): T {
   if (typeof value !== 'string' || !allowed.includes(value as T)) {
     throw new Error(`${label} must be one of: ${allowed.join(', ')}`);
   }
   return value as T;
+}
+
+function oneOfWithAliases<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  aliases: Readonly<Record<string, T>>,
+  label: string,
+): T {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    const alias = aliases[normalized];
+    if (alias) return alias;
+    const canonical = allowed.find((item) => item === normalized);
+    if (canonical) return canonical;
+  }
+  throw new Error(`${label} must be one of: ${allowed.join(', ')}`);
 }
 
 function uniqueIds(rows: Array<{ id: string }>, label: string): void {
@@ -439,13 +469,20 @@ export function normalizeConfig(raw: unknown): RunConfig {
     ? value.criteriaPath.trim()
     : process.env.WRITER_ROOM_DEFAULT_CRITERIA || resolve(import.meta.dir, '../prompt/các tiêu chí kịch bản.txt');
   const sourcePack = typeof value.sourcePack === 'string' ? value.sourcePack.trim() : '';
+  const guideText = optionalInstruction(value.guideText, 'guideText');
+  const criteriaText = optionalInstruction(value.criteriaText, 'criteriaText');
   const timeoutMinutes = Math.round(Number(value.timeoutMinutes ?? 20));
   if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 120) {
     throw new Error('timeoutMinutes must be in [1,120]');
   }
   const agentProfiles = normalizeAgentProfiles(value.agentProfiles);
   if (agentProfiles.some((profile) => !profile.enabled)) throw new Error('all three agent profiles must be enabled for a run');
-  return { title, targetScore, maxRounds, humanGate, guidePath, criteriaPath, sourcePack, timeoutMinutes, agentProfiles };
+  return {
+    title, targetScore, maxRounds, humanGate, guidePath, criteriaPath,
+    ...(guideText ? { guideText } : {}),
+    ...(criteriaText ? { criteriaText } : {}),
+    sourcePack, timeoutMinutes, agentProfiles,
+  };
 }
 
 export function parseWriterInit(raw: unknown): WriterInitArtifact {
@@ -515,7 +552,12 @@ export function parseWriterInit(raw: unknown): WriterInitArtifact {
       rationale: text(item.rationale, `hookOptions[${index}].rationale`),
       angleId: text(item.angleId, `hookOptions[${index}].angleId`),
       text: text(item.text, `hookOptions[${index}].text`),
-      strategy: oneOf(item.strategy, ['scene', 'contradiction', 'consequence', 'question'] as const, `hookOptions[${index}].strategy`),
+      strategy: oneOfWithAliases(
+        item.strategy,
+        ['scene', 'contradiction', 'consequence', 'question'] as const,
+        { 'honest question': 'question' },
+        `hookOptions[${index}].strategy`,
+      ),
       promise: text(item.promise, `hookOptions[${index}].promise`),
       openLoop: text(item.openLoop, `hookOptions[${index}].openLoop`),
       payoffBeatId: text(item.payoffBeatId, `hookOptions[${index}].payoffBeatId`),
@@ -536,7 +578,12 @@ export function parseWriterInit(raw: unknown): WriterInitArtifact {
       id: text(item.id, `interviewQuestions[${index}].id`),
       question: text(item.question, `interviewQuestions[${index}].question`),
       why: text(item.why, `interviewQuestions[${index}].why`),
-      gapType: oneOf(item.gapType, ['audience', 'experience', 'voice', 'evidence'] as const, `interviewQuestions[${index}].gapType`),
+      gapType: oneOfWithAliases(
+        item.gapType,
+        ['audience', 'experience', 'voice', 'evidence'] as const,
+        { author: 'voice' },
+        `interviewQuestions[${index}].gapType`,
+      ),
       relatedOptionIds: texts(item.relatedOptionIds ?? [], `interviewQuestions[${index}].relatedOptionIds`),
     };
   }) : [];

@@ -19,9 +19,9 @@ export function writerInitPrompt(config: RunConfig, guide: string, sourcePack: s
     'First normalize the supplied material into an evidence ledger. Every fact, quote, scene, number or provisional claim needs a stable E# id and sourceRef. If only the title is available, create one low-confidence claim sourced to input:title and clearly expose the evidence gap.',
     'Cluster the evidence into 3-5 insight statements. An insight must connect what the audience already believes or wants with a supported contradiction, tension or new perspective.',
     'Create exactly 3 genuinely different story angles. Each angle is a provisional, falsifiable hypothesis with a central question, throughline, audience payoff, 3+ beats, evidence ids and risk flags.',
-    'Create exactly 6 hook options: exactly 2 per angle. Use scene, contradiction, consequence or honest question. Every hook must state its promise/open loop, cite evidence and name the beat that pays it off. Do not return a hook with high truth risk.',
+    'Create exactly 6 hook options: exactly 2 per angle. The strategy field must be exactly one of: scene, contradiction, consequence, question. Use question for an honest question. Every hook must state its promise/open loop, cite evidence and name the beat that pays it off. Do not return a hook with high truth risk.',
     'Mark at most one recommended angle and at most one recommended hook per angle. Recommendation is advice only; the human must choose.',
-    'Ask only 1-3 short, title-specific questions for gaps the material cannot answer: audience inner sentence, lived concrete moment, author voice/boundary, or missing evidence. Do not ask for facts already present.',
+    'Ask only 1-3 short, title-specific questions for gaps the material cannot answer: audience inner sentence, lived concrete moment, author voice/boundary, or missing evidence. The gapType field must be exactly one of: audience, experience, voice, evidence. Use voice for author voice/boundary. Do not ask for facts already present.',
     'Write a useful exploratory initial script after the synthesis. It is a conversation object, not the scored Draft 1.',
     'Schema:',
     JSON.stringify({

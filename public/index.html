@@ -88,8 +88,29 @@
         <div class="dialog-head"><div><span class="kicker">NEW EDITORIAL RUN</span><h2>Tạo phòng viết</h2></div><button id="close-new" class="icon-button" type="button">×</button></div>
         <label class="field field-large">Title video<input name="title" required autofocus placeholder="Một title đủ cụ thể để bắt đầu…" /></label>
         <label class="field">Source pack / research<textarea name="sourcePack" rows="7" placeholder="Dán fact, transcript, quote, scene, timeline hoặc ghi chú. Nếu chưa có, Agent sẽ đánh dấu evidence gap."></textarea></label>
+        <section class="instruction-section" aria-labelledby="instruction-title">
+          <div class="instruction-heading">
+            <div><span class="kicker">INSTRUCTION INPUTS</span><h3 id="instruction-title">Guide viết & tiêu chí chấm</h3></div>
+            <button id="reset-prompt-defaults" class="text-button" type="button">Khôi phục mặc định</button>
+          </div>
+          <p class="instruction-help">Nội dung mặc định được nạp từ app. Bạn có thể sửa trực tiếp hoặc thả một file .txt vào từng ô; run sẽ snapshot đúng nội dung đang hiển thị.</p>
+          <div class="instruction-grid">
+            <div class="prompt-dropzone" data-prompt-drop="guideText">
+              <div class="prompt-input-head"><label for="guide-text">Writer guide</label><span class="prompt-source" data-prompt-source="guideText">Đang nạp mặc định…</span></div>
+              <textarea id="guide-text" name="guideText" rows="10" spellcheck="false" placeholder="Nhập hướng dẫn viết bài…"></textarea>
+              <div class="prompt-input-foot"><span>Thả file .txt vào đây</span><button class="text-button" data-prompt-pick="guideText" type="button">Chọn file</button></div>
+              <input class="visually-hidden" data-prompt-file="guideText" type="file" accept=".txt,text/plain" />
+            </div>
+            <div class="prompt-dropzone" data-prompt-drop="criteriaText">
+              <div class="prompt-input-head"><label for="criteria-text">Editor criteria</label><span class="prompt-source" data-prompt-source="criteriaText">Đang nạp mặc định…</span></div>
+              <textarea id="criteria-text" name="criteriaText" rows="10" spellcheck="false" placeholder="Nhập tiêu chí chấm bài…"></textarea>
+              <div class="prompt-input-foot"><span>Thả file .txt vào đây</span><button class="text-button" data-prompt-pick="criteriaText" type="button">Chọn file</button></div>
+              <input class="visually-hidden" data-prompt-file="criteriaText" type="file" accept=".txt,text/plain" />
+            </div>
+          </div>
+        </section>
         <div class="form-row three"><label class="field">Target score<input name="targetScore" type="number" min="0.1" max="10" step="0.1" value="9" /></label><label class="field">Số vòng tối đa<input name="maxRounds" type="number" min="1" max="12" value="6" /></label><label class="field">Human gate<select name="humanGate"><option value="init_only">Sau init</option><option value="every_round">Sau mỗi review</option></select></label></div>
-        <details class="advanced"><summary>Cấu hình nâng cao</summary><div class="advanced-fields"><label class="field">Timeout mỗi agent (phút)<input name="timeoutMinutes" type="number" min="1" max="120" value="20" /></label><label class="field">Writer guide<input name="guidePath" placeholder="Để trống = guide đóng gói cùng app" /></label><label class="field">Editor criteria<input name="criteriaPath" placeholder="Để trống = criteria đóng gói cùng app" /></label></div></details>
+        <details class="advanced"><summary>Cấu hình nâng cao</summary><div class="advanced-fields"><label class="field">Timeout mỗi agent (phút)<input name="timeoutMinutes" type="number" min="1" max="120" value="20" /></label></div></details>
         <div class="dialog-actions"><span id="create-error" class="error" role="alert"></span><button id="cancel-new" class="outline-button" type="button">Hủy</button><button class="primary-button" type="submit">Tạo init</button></div>
       </form>
     </dialog>

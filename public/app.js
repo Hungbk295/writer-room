@@ -3,6 +3,7 @@ const state = {
   versions: [], selectedVersionId: null, compare: false, compareVersionId: null,
   articles: [], activeArticleId: null, articleDetails: null, includeArchived: false,
   agents: [], models: {}, customModelSlots: new Set(), health: null, consoleOpen: false, consoleRole: 'writer', logs: [],
+  promptDefaults: null,
   poller: null,
 };
 
@@ -18,6 +19,7 @@ async function webCall(method, params = {}) {
   const routes = {
     health: ['GET', '/api/health'],
     'models.list': ['GET', '/api/models'],
+    'prompts.defaults': ['GET', '/api/prompts'],
     'agents.list': ['GET', '/api/agents'],
     'agents.save': ['PUT', '/api/agents', { agents: params.agents }],
     'runs.list': ['GET', '/api/runs'],
@@ -25,6 +27,7 @@ async function webCall(method, params = {}) {
     'runs.get': ['GET', `/api/runs/${encodeURIComponent(params.id)}`],
     'runs.logs': ['GET', `/api/runs/${encodeURIComponent(params.id)}/logs`],
     'runs.cancel': ['DELETE', `/api/runs/${encodeURIComponent(params.id)}`],
+    'runs.rerun': ['POST', `/api/runs/${encodeURIComponent(params.id)}/rerun`, {}],
     'runs.retry': ['POST', `/api/runs/${encodeURIComponent(params.id)}/retry`, {}],
     'runs.retry-snapshot': ['POST', `/api/runs/${encodeURIComponent(params.id)}/retry-snapshot`, {}],
     'runs.retry-current-agent': ['POST', `/api/runs/${encodeURIComponent(params.id)}/retry-current-agent`, {}],
@@ -69,6 +72,46 @@ function toast(message, error = false) {
   el.textContent = message;
   document.body.append(el);
   setTimeout(() => el.remove(), 3600);
+}
+
+function showRunSettings(details) {
+  const run = details.state;
+  const config = run.config;
+  let dialog = $('#run-settings-dialog');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'run-settings-dialog';
+    dialog.className = 'new-dialog settings-dialog';
+    document.body.append(dialog);
+  }
+  dialog.innerHTML = `<form method="dialog">
+    <div class="dialog-head"><div><span class="kicker">RUN SNAPSHOT</span><h2>Setting của bài viết</h2></div><button class="icon-button" value="close" type="submit">×</button></div>
+    <div class="settings-scroll">
+      <section class="section-card"><h3>Workflow</h3>
+        <div class="status-line"><span>Title</span><strong>${esc(config.title)}</strong></div>
+        <div class="status-line"><span>Target score</span><strong>${esc(config.targetScore)}</strong></div>
+        <div class="status-line"><span>Số vòng tối đa</span><strong>${esc(config.maxRounds)}</strong></div>
+        <div class="status-line"><span>Human gate</span><strong>${config.humanGate === 'every_round' ? 'Sau mỗi review' : 'Sau init'}</strong></div>
+        <div class="status-line"><span>Timeout / agent</span><strong>${esc(config.timeoutMinutes)} phút</strong></div>
+        <div class="status-line"><span>Run ID</span><code>${esc(run.id)}</code></div>
+      </section>
+      <section class="section-card"><h3>Agent snapshot</h3><div class="settings-agent-list">${config.agentProfiles.map((profile, index) => `
+        <div class="settings-agent"><strong>Agent ${index + 1} · ${esc(profile.role)}</strong><span>${esc(profile.adapter)} · ${esc(profile.model || 'provider default')}</span><code>${esc(commandPreview(profile))}</code>${profile.systemPrompt ? `<details><summary>System instruction</summary><pre>${esc(profile.systemPrompt)}</pre></details>` : ''}</div>`).join('')}</div>
+      </section>
+      <section class="section-card"><h3>Source pack</h3><pre class="settings-text">${esc(config.sourcePack || 'Không có source pack.')}</pre></section>
+      <section class="section-card"><h3>Writer guide</h3><pre class="settings-text">${esc(config.guideText || `Mặc định: ${config.guidePath || 'bundled'}`)}</pre></section>
+      <section class="section-card"><h3>Editor criteria</h3><pre class="settings-text">${esc(config.criteriaText || `Mặc định: ${config.criteriaPath || 'bundled'}`)}</pre></section>
+    </div>
+    <div class="dialog-actions"><span></span><button class="primary-button" value="close" type="submit">Đóng</button></div>
+  </form>`;
+  dialog.showModal();
+}
+
+async function openRunSettings(runId) {
+  const details = state.details?.state.id === runId
+    ? state.details
+    : await call('runs.get', { id: runId });
+  showRunSettings(details);
 }
 
 const STAGES = {
@@ -397,9 +440,11 @@ function renderInspector() {
   ${run.error ? `<div class="inspector-block"><h3>Lỗi cần xử lý</h3><p class="error-block">${esc(run.error)}</p></div>` : ''}
   <div class="inspector-block"><h3>Hành động</h3><div class="inspector-actions">
     ${run.stage === 'failed' ? '<button class="primary-button" data-action="retry-current-agent" type="button">Dùng Agent hiện tại & Retry</button><button class="outline-button" data-action="retry-snapshot" type="button">Retry cùng cấu hình cũ</button>' : ''}
+    ${run.stage === 'cancelled' ? '<button class="primary-button" data-action="rerun" type="button">Chạy lại với setting cũ</button>' : ''}
     ${run.stage === 'awaiting_round_human' ? '<label class="field">Note cho vòng sửa<textarea id="round-note" rows="4" placeholder="Điểm nào Agent phải giữ hoặc sửa?"></textarea></label><button class="primary-button" data-action="continue" type="button">Tiếp tục vòng sửa</button><button class="outline-button" data-action="accept" type="button">Chấp nhận bản hiện tại</button>' : ''}
     ${run.stage === 'needs_human' ? '<label class="field">Lý do override<textarea id="accept-reason" rows="3" placeholder="Vì sao bản này đủ tốt dù chưa đạt target?"></textarea></label><button class="primary-button" data-action="accept" type="button">Chấp nhận & kiểm SEO</button>' : ''}
     ${active ? '<button class="danger-button" data-action="cancel" type="button">Dừng run</button>' : ''}
+    <button class="outline-button" data-action="settings" type="button">Xem setting bài viết</button>
     ${state.health?.transport === 'tmux' ? `<code class="attach-command">tmux attach -t ${esc(run.tmuxSession)}</code>` : ''}
   </div></div>
   ${selected?.kind === 'review' ? `<div class="inspector-block"><h3>Blockers</h3>${selected.value.blockingIssues.length ? `<ul class="bullet-list">${selected.value.blockingIssues.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : '<p class="muted">Không có blocking issue.</p>'}</div>` : ''}
@@ -413,6 +458,14 @@ async function runAction(action, button) {
     if (action === 'retry') await call('runs.retry', { id: state.activeId });
     if (action === 'retry-snapshot') await call('runs.retry-snapshot', { id: state.activeId });
     if (action === 'retry-current-agent') await call('runs.retry-current-agent', { id: state.activeId });
+    if (action === 'rerun') {
+      if (!window.confirm('Chạy lại bằng đúng setting đã snapshot? Run đã dừng vẫn được giữ làm evidence.')) return;
+      const rerun = await call('runs.rerun', { id: state.activeId });
+      state.activeId = rerun.id;
+      state.selectedVersionId = null;
+      toast('Đã tạo run mới từ setting cũ.');
+    }
+    if (action === 'settings') await openRunSettings(state.activeId);
     if (action === 'continue') await call('runs.continue', { id: state.activeId, note: $('#round-note')?.value || '' });
     if (action === 'accept') await call('runs.accept', { id: state.activeId, reason: $('#accept-reason')?.value || 'Human editorial override' });
     if (action === 'cancel') {
@@ -454,7 +507,8 @@ function renderLibrary() {
   $('#library-title').textContent = article.title;
   $('#open-source-run').classList.remove('hidden');
   root.className = 'document-content';
-  root.innerHTML = `<div class="article-paper"><div class="article-meta"><span class="pill">Final r${article.acceptedRound}</span><span class="pill">Score ${article.finalScore ?? '—'}</span><span class="pill orange">SEO ${esc(article.seoVerdict || '—')}</span><span class="pill ${article.status === 'archived' ? 'red' : ''}">${esc(article.status)}</span></div>${markdown(current?.markdown || '')}<section class="section-card"><h3>Version history</h3>${versions.map((version) => `<p><strong>Version ${version.versionNo}</strong> · round ${version.acceptedRound} · ${dateLabel(version.createdAt)}<br><small>SHA ${esc(version.markdownSha256.slice(0, 16))} · ${esc(version.draftArtifactRelpath)}</small></p>`).join('')}<div class="toolbar-actions"><button class="outline-button" id="export-article" type="button">Export Markdown</button><button class="outline-button" id="archive-article" type="button">${article.status === 'archived' ? 'Khôi phục' : 'Lưu trữ'}</button></div></section></div>`;
+  root.innerHTML = `<div class="article-paper"><div class="article-meta"><span class="pill">Final r${article.acceptedRound}</span><span class="pill">Score ${article.finalScore ?? '—'}</span><span class="pill orange">SEO ${esc(article.seoVerdict || '—')}</span><span class="pill ${article.status === 'archived' ? 'red' : ''}">${esc(article.status)}</span></div>${markdown(current?.markdown || '')}<section class="section-card"><h3>Version history</h3>${versions.map((version) => `<p><strong>Version ${version.versionNo}</strong> · round ${version.acceptedRound} · ${dateLabel(version.createdAt)}<br><small>SHA ${esc(version.markdownSha256.slice(0, 16))} · ${esc(version.draftArtifactRelpath)}</small></p>`).join('')}<div class="toolbar-actions"><button class="outline-button" id="view-article-settings" type="button">Xem setting</button><button class="outline-button" id="export-article" type="button">Export Markdown</button><button class="outline-button" id="archive-article" type="button">${article.status === 'archived' ? 'Khôi phục' : 'Lưu trữ'}</button></div></section></div>`;
+  $('#view-article-settings').addEventListener('click', () => openRunSettings(article.runId).catch((error) => toast(error.message, true)));
   $('#export-article').addEventListener('click', async () => {
     const receipt = await call('articles.export', { id: article.id });
     toast(`Đã export: ${receipt.path}`);
@@ -609,9 +663,48 @@ function selectTab(tab) {
   if (tab === 'agents') void loadModels().then(loadAgents).catch((error) => toast(error.message, true));
 }
 
+function promptField(name) {
+  return $(`[name="${name}"]`);
+}
+
+function setPromptSource(name, label) {
+  $(`[data-prompt-source="${name}"]`).textContent = label;
+}
+
+async function loadPromptDefaults(force = false) {
+  try {
+    state.promptDefaults ||= await call('prompts.defaults');
+    for (const name of ['guideText', 'criteriaText']) {
+      const input = promptField(name);
+      if (force || !input.value.trim()) {
+        input.value = state.promptDefaults[name] || '';
+        setPromptSource(name, 'Mặc định trong app');
+      }
+    }
+  } catch (error) {
+    for (const name of ['guideText', 'criteriaText']) {
+      if (!promptField(name).value.trim()) setPromptSource(name, 'Dùng mặc định khi tạo run');
+    }
+    toast(`Không đọc được prompt mặc định: ${error.message}`, true);
+  }
+}
+
+async function importPromptFile(name, file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.txt') && file.type !== 'text/plain') {
+    throw new Error('Chỉ nhận file văn bản .txt');
+  }
+  if (file.size > 1_000_000) throw new Error('File instruction phải nhỏ hơn hoặc bằng 1 MB');
+  const value = (await file.text()).replaceAll('\r\n', '\n');
+  if (!value.trim()) throw new Error('File instruction đang trống');
+  promptField(name).value = value;
+  setPromptSource(name, file.name);
+}
+
 function openNewDialog() {
   $('#create-error').textContent = '';
   $('#new-run-dialog').showModal();
+  void loadPromptDefaults();
 }
 
 function bindEvents() {
@@ -620,6 +713,40 @@ function bindEvents() {
   $('#new-run').addEventListener('click', openNewDialog);
   $('#close-new').addEventListener('click', () => $('#new-run-dialog').close());
   $('#cancel-new').addEventListener('click', () => $('#new-run-dialog').close());
+  $('#reset-prompt-defaults').addEventListener('click', () => loadPromptDefaults(true));
+  $$('[data-prompt-pick]').forEach((button) => button.addEventListener('click', () => {
+    $(`[data-prompt-file="${button.dataset.promptPick}"]`).click();
+  }));
+  $$('[data-prompt-file]').forEach((input) => input.addEventListener('change', async () => {
+    try { await importPromptFile(input.dataset.promptFile, input.files?.[0]); }
+    catch (error) { toast(error.message, true); }
+    finally { input.value = ''; }
+  }));
+  $$('[data-prompt-drop]').forEach((zone) => {
+    const name = zone.dataset.promptDrop;
+    for (const eventName of ['dragenter', 'dragover']) {
+      zone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        zone.classList.add('dragging');
+      });
+    }
+    for (const eventName of ['dragleave', 'drop']) {
+      zone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        zone.classList.remove('dragging');
+      });
+    }
+    zone.addEventListener('drop', async (event) => {
+      try { await importPromptFile(name, event.dataTransfer.files?.[0]); }
+      catch (error) { toast(error.message, true); }
+    });
+    promptField(name).addEventListener('input', () => {
+      const current = promptField(name).value.trim();
+      const original = String(state.promptDefaults?.[name] || '').trim();
+      setPromptSource(name, current && current === original ? 'Mặc định trong app' : 'Đã chỉnh trực tiếp');
+    });
+  });
   $('#refresh').addEventListener('click', () => state.activeTab === 'library' ? loadArticles() : loadRuns());
   $('#rail-search').addEventListener('input', () => {
     clearTimeout($('#rail-search')._timer);
@@ -686,11 +813,15 @@ function bindEvents() {
         title: data.get('title'), sourcePack: data.get('sourcePack'),
         targetScore: Number(data.get('targetScore')), maxRounds: Number(data.get('maxRounds')),
         humanGate: data.get('humanGate'), timeoutMinutes: Number(data.get('timeoutMinutes')),
-        guidePath: data.get('guidePath'), criteriaPath: data.get('criteriaPath'),
+        guideText: String(data.get('guideText') || '').trim() === String(state.promptDefaults?.guideText || '').trim()
+          ? '' : data.get('guideText'),
+        criteriaText: String(data.get('criteriaText') || '').trim() === String(state.promptDefaults?.criteriaText || '').trim()
+          ? '' : data.get('criteriaText'),
       });
       state.activeId = created.id;
       state.selectedVersionId = null;
       form.reset();
+      void loadPromptDefaults(true);
       $('#new-run-dialog').close();
       toast('Đã tạo run. Agent 1 đang chuẩn bị init.');
       selectTab('room');

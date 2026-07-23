@@ -234,10 +234,51 @@ pub fn settle_missing_result(descriptor_path: &str, exit_code: Option<u32>) {
 
 #[cfg(unix)]
 fn kill_tree(pid: u32) {
-    // portable-pty starts the child as a session/group leader.
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
+    let mut targets = descendant_pids(pid);
+    targets.push(pid);
+    for target in &targets {
+        unsafe {
+            libc::kill(*target as i32, libc::SIGTERM);
+        }
     }
+    std::thread::sleep(Duration::from_millis(150));
+    for target in &targets {
+        unsafe {
+            if libc::kill(*target as i32, 0) == 0 {
+                libc::kill(*target as i32, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+            continue;
+        };
+        children.entry(ppid).or_default().push(pid);
+    }
+    fn collect(parent: u32, children: &HashMap<u32, Vec<u32>>, result: &mut Vec<u32>) {
+        for child in children.get(&parent).into_iter().flatten() {
+            collect(*child, children, result);
+            result.push(*child);
+        }
+    }
+    let mut result = Vec::new();
+    collect(root, &children, &mut result);
+    result
 }
 
 #[cfg(windows)]
@@ -283,5 +324,23 @@ mod tests {
             .unwrap()
             .contains("before producing"));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_stops_runner_and_provider_descendants() {
+        let mut runner = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let descendants = descendant_pids(runner.id());
+        assert!(!descendants.is_empty());
+        kill_tree(runner.id());
+        let _ = runner.wait();
+        for pid in descendants {
+            let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+            assert!(!alive, "descendant {pid} survived cancellation");
+        }
     }
 }

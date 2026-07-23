@@ -46,8 +46,12 @@ export class RunStore {
       mkdir(join(dir, 'logs'), { recursive: true }),
     ]);
     await Promise.all([
-      copyFile(state.config.guidePath, join(dir, 'input', 'writer-guide.txt')),
-      copyFile(state.config.criteriaPath, join(dir, 'input', 'editor-criteria.txt')),
+      state.config.guideText
+        ? writeFile(join(dir, 'input', 'writer-guide.txt'), `${state.config.guideText}\n`)
+        : copyFile(state.config.guidePath, join(dir, 'input', 'writer-guide.txt')),
+      state.config.criteriaText
+        ? writeFile(join(dir, 'input', 'editor-criteria.txt'), `${state.config.criteriaText}\n`)
+        : copyFile(state.config.criteriaPath, join(dir, 'input', 'editor-criteria.txt')),
       writeFile(join(dir, 'input', 'source-pack.txt'), state.config.sourcePack || ''),
       writeFile(join(dir, 'input', 'request.json'), `${JSON.stringify(state.config, null, 2)}\n`, { flag: 'wx' }),
       writeFile(join(dir, 'logs', 'process.log'), `${JSON.stringify({
@@ -58,6 +62,10 @@ export class RunStore {
         stage: state.stage,
         targetScore: state.config.targetScore,
         maxRounds: state.config.maxRounds,
+        instructions: {
+          writerGuide: state.config.guideText ? 'inline_override' : 'file_default',
+          editorCriteria: state.config.criteriaText ? 'inline_override' : 'file_default',
+        },
         agents: state.config.agentProfiles.map((profile) => ({
           slot: profile.slot,
           role: profile.role,

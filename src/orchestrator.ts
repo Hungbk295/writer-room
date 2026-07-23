@@ -193,6 +193,20 @@ export class Orchestrator {
     return loadModelCatalog(this.agentSettings.list());
   }
 
+  async promptDefaults() {
+    const config = normalizeConfig({ title: 'Prompt defaults', agentProfiles: this.agentSettings.list() });
+    const [guideText, criteriaText] = await Promise.all([
+      readFile(config.guidePath, 'utf8'),
+      readFile(config.criteriaPath, 'utf8'),
+    ]);
+    return {
+      guideText,
+      criteriaText,
+      guideName: 'kich ban youtube.txt',
+      criteriaName: 'các tiêu chí kịch bản.txt',
+    };
+  }
+
   saveAgents(raw: unknown): AgentProfile[] {
     return this.agentSettings.save(raw);
   }
@@ -261,7 +275,11 @@ export class Orchestrator {
       ...(rawConfig as Record<string, unknown>),
       agentProfiles: this.agentSettings.list(),
     });
-    const health = await this.health();
+    return this.createConfigured(config);
+  }
+
+  private async createConfigured(config: RunConfig): Promise<RunState> {
+    const health = await this.terminal.health(config.agentProfiles);
     if (!health.ok) {
       const missing = Object.entries(health.tools).filter(([, path]) => !path).map(([name]) => name);
       throw new Error(`Missing required local tools: ${missing.join(', ')}`);
@@ -293,6 +311,35 @@ export class Orchestrator {
     await this.terminal.ensureSession(state.tmuxSession, this.store.runDir(id));
     this.launch(id, (signal) => this.runInitial(id, signal));
     return state;
+  }
+
+  async rerun(id: string): Promise<RunState> {
+    const state = await this.store.readState(id);
+    if (state.stage !== 'cancelled') throw new Error(`only a cancelled run can be rerun (stage=${state.stage})`);
+    const [guideText, criteriaText, sourcePack] = await Promise.all([
+      readFile(this.store.path(id, 'input', 'writer-guide.txt'), 'utf8'),
+      readFile(this.store.path(id, 'input', 'editor-criteria.txt'), 'utf8'),
+      readFile(this.store.path(id, 'input', 'source-pack.txt'), 'utf8'),
+    ]);
+    const config = normalizeConfig({
+      ...state.config,
+      guideText,
+      criteriaText,
+      sourcePack,
+      agentProfiles: state.config.agentProfiles.map((profile) => ({ ...profile, args: [...profile.args] })),
+    });
+    const next = await this.createConfigured(config);
+    await Promise.all([
+      this.store.appendProcessEvent(id, {
+        event: 'run.rerun.requested',
+        rerunId: next.id,
+      }),
+      this.store.appendProcessEvent(next.id, {
+        event: 'run.rerun.created',
+        sourceRunId: id,
+      }),
+    ]);
+    return next;
   }
 
   async submitHuman(id: string, raw: unknown): Promise<RunState> {
@@ -343,7 +390,18 @@ export class Orchestrator {
     this.active.get(id)?.abort();
     this.active.delete(id);
     const state = await this.store.readState(id);
-    await this.terminal.killSession(state.tmuxSession).catch(() => {});
+    await this.store.appendProcessEvent(id, {
+      event: 'run.cancel.requested',
+      stage: state.stage,
+      jobId: state.currentJob?.id ?? null,
+      role: state.currentJob?.role ?? null,
+      adapter: state.currentJob?.adapter ?? null,
+    });
+    await this.terminal.killSession(state.tmuxSession);
+    await this.store.appendProcessEvent(id, {
+      event: 'run.cancel.terminals_stopped',
+      session: state.tmuxSession,
+    });
     const next = { ...state, stage: 'cancelled' as const, currentJob: undefined, error: undefined };
     await this.store.writeState(next);
     return next;
@@ -360,14 +418,15 @@ export class Orchestrator {
 
   private async fail(id: string, error: unknown): Promise<void> {
     const current = await this.store.readState(id).catch(() => null);
-    if (!current || current.stage === 'cancelled' || (error as Error).name === 'AbortError') return;
+    const message = (error as Error).message || String(error);
+    if (!current || current.stage === 'cancelled' || (error as Error).name === 'AbortError' || message.includes('run cancelled')) return;
     await this.store.writeState({
       ...current,
       stage: 'failed',
       failedStage: ACTIVE_STAGES.has(current.stage) ? current.stage as RunState['failedStage'] : current.failedStage,
       currentJob: undefined,
       recoveryStatus: 'action_required',
-      error: (error as Error).message || String(error),
+      error: message,
     });
   }
 
@@ -678,8 +737,11 @@ export class Orchestrator {
         startedAt: new Date().toISOString(),
       });
       await this.store.writeJobRecord(id, record);
+      if (signal.aborted) throw abortError();
+      const currentState = await this.store.readState(id);
+      if (currentState.stage === 'cancelled') throw abortError();
       await this.store.writeState({
-        ...state,
+        ...currentState,
         manualRetryRequested: false,
         recoveryStatus: 'none',
         currentJob: {
@@ -794,6 +856,7 @@ export class Orchestrator {
       if (signal.aborted) throw abortError();
       try { return JSON.parse(await readFile(path, 'utf8')) as JobResultEnvelope; }
       catch {
+        if (signal.aborted) throw abortError();
         const heartbeat = await readHeartbeat(heartbeatPath);
         if (heartbeat) {
           const lastOutput = Date.parse(heartbeat.lastOutputAt);
@@ -801,7 +864,9 @@ export class Orchestrator {
             throw new Error(`job stalled with no output for ${Math.round(stallTimeoutMs / 1000)} seconds`);
           }
           if (Date.now() - lastStateUpdate > 2_000) {
+            if (signal.aborted) throw abortError();
             const state = await this.store.readState(id);
+            if (state.stage === 'cancelled') throw abortError();
             if (state.currentJob) {
               await this.store.writeState({
                 ...state,

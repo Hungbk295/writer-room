@@ -15,6 +15,7 @@ export async function handleRpc(orchestrator: Orchestrator, method: string, rawP
   const value = params(rawParams);
   if (method === 'health') return orchestrator.health();
   if (method === 'models.list') return orchestrator.models();
+  if (method === 'prompts.defaults') return orchestrator.promptDefaults();
   if (method === 'agents.list') return orchestrator.agents();
   if (method === 'agents.save') return orchestrator.saveAgents(value.agents);
   if (method === 'runs.list') return orchestrator.store.listStates();
@@ -22,6 +23,7 @@ export async function handleRpc(orchestrator: Orchestrator, method: string, rawP
   if (method === 'runs.get') return orchestrator.store.details(string(value.id, 'id'));
   if (method === 'runs.logs') return orchestrator.store.recentLogs(string(value.id, 'id'));
   if (method === 'runs.cancel') return orchestrator.cancel(string(value.id, 'id'));
+  if (method === 'runs.rerun') return orchestrator.rerun(string(value.id, 'id'));
   if (method === 'runs.retry') return orchestrator.retry(string(value.id, 'id'));
   if (method === 'runs.retry-snapshot') return orchestrator.retrySnapshot(string(value.id, 'id'));
   if (method === 'runs.retry-current-agent') return orchestrator.retryWithCurrentAgent(string(value.id, 'id'));

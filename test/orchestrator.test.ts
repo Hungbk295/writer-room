@@ -6,6 +6,7 @@ import { Orchestrator } from '../src/orchestrator.ts';
 import { RunStore } from '../src/store.ts';
 import { AgentSettingsStore } from '../src/agents.ts';
 import { normalizeConfig, SCHEMA_VERSION, type RunState } from '../src/domain.ts';
+import type { TerminalController } from '../src/terminal.ts';
 
 const dirs: string[] = [];
 
@@ -127,6 +128,27 @@ describe('mock Writer Room flow', () => {
     orchestrator.library.close();
   });
 
+  test('snapshots inline Writer guide and Editor criteria overrides', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'writer-room-instruction-overrides-'));
+    dirs.push(root);
+    const guide = join(root, 'guide.txt');
+    const criteria = join(root, 'criteria.txt');
+    await Promise.all([writeFile(guide, 'Default guide'), writeFile(criteria, 'Default criteria')]);
+    const orchestrator = new Orchestrator(new RunStore(join(root, 'runs')), true);
+    await orchestrator.init();
+    const created = await orchestrator.create({
+      title: 'Override instructions',
+      guidePath: guide,
+      criteriaPath: criteria,
+      guideText: 'Inline writer guide',
+      criteriaText: 'Inline editor criteria',
+    });
+    await waitFor(orchestrator, created.id, ['awaiting_human']);
+    expect(await orchestrator.store.readInput(created.id, 'writer-guide.txt')).toBe('Inline writer guide\n');
+    expect(await orchestrator.store.readInput(created.id, 'editor-criteria.txt')).toBe('Inline editor criteria\n');
+    orchestrator.library.close();
+  });
+
   test('replaces only the failed role with the current agent and audits recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'writer-room-agent-recovery-'));
     dirs.push(root);
@@ -189,6 +211,113 @@ describe('mock Writer Room flow', () => {
     expect(processLog).toContain('"event":"agent.profile.replaced"');
     expect(processLog).toContain('"adapter":"gemini"');
     expect(processLog).toContain('"adapter":"agy"');
+    orchestrator.library.close();
+  });
+
+  test('waits for terminal shutdown before marking a run cancelled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'writer-room-cancel-'));
+    dirs.push(root);
+    const guide = join(root, 'guide.txt');
+    const criteria = join(root, 'criteria.txt');
+    await Promise.all([writeFile(guide, 'Guide'), writeFile(criteria, 'Criteria')]);
+    const store = new RunStore(join(root, 'runs'));
+    const now = new Date().toISOString();
+    const state: RunState = {
+      schemaVersion: SCHEMA_VERSION,
+      id: 'r-cancel-123456',
+      tmuxSession: 'wr-cancel',
+      createdAt: now,
+      updatedAt: now,
+      stage: 'writer_init',
+      config: normalizeConfig({ title: 'Cancel me', guidePath: guide, criteriaPath: criteria }),
+      round: 0,
+      scores: [],
+      currentJob: {
+        id: 'cancel-job',
+        jobKey: 'writer-writer-init-cancel',
+        kind: 'writer-init',
+        role: 'writer',
+        adapter: 'claude',
+        attempt: 1,
+        startedAt: now,
+        logPath: join(root, 'job.log'),
+        heartbeatPath: join(root, 'heartbeat.json'),
+        status: 'running',
+      },
+    };
+    await store.init();
+    await store.create(state);
+    let terminalsStopped = false;
+    const terminal: TerminalController = {
+      async health() { return { ok: true, tools: {}, mock: true, transport: 'mock' }; },
+      async ensureSession() {},
+      async runJob() {},
+      async killSession() {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        terminalsStopped = true;
+      },
+    };
+    const orchestrator = new Orchestrator(
+      store,
+      true,
+      new AgentSettingsStore(join(root, 'agents.json')),
+      terminal,
+    );
+    const cancelled = await orchestrator.cancel(state.id);
+    expect(terminalsStopped).toBe(true);
+    expect(cancelled.stage).toBe('cancelled');
+    const rows = await readFile(store.path(state.id, 'logs', 'process.log'), 'utf8');
+    expect(rows).toContain('"event":"run.cancel.requested"');
+    expect(rows).toContain('"event":"run.cancel.terminals_stopped"');
+    orchestrator.library.close();
+  });
+
+  test('reruns a cancelled run as a new workspace with the exact input and agent snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'writer-room-rerun-'));
+    dirs.push(root);
+    const guide = join(root, 'guide.txt');
+    const criteria = join(root, 'criteria.txt');
+    await Promise.all([writeFile(guide, 'Original guide'), writeFile(criteria, 'Original criteria')]);
+    const store = new RunStore(join(root, 'runs'));
+    const settings = new AgentSettingsStore(join(root, 'agents.json'));
+    const originalProfiles = settings.list().map((profile) => profile.role === 'writer'
+      ? { ...profile, model: 'snapshot-model' }
+      : profile);
+    const now = new Date().toISOString();
+    const cancelled: RunState = {
+      schemaVersion: SCHEMA_VERSION,
+      id: 'r-rerun-123456',
+      tmuxSession: 'wr-rerun',
+      createdAt: now,
+      updatedAt: now,
+      stage: 'cancelled',
+      config: normalizeConfig({
+        title: 'Rerun exact settings',
+        sourcePack: 'Original research',
+        guideText: 'Original guide',
+        criteriaText: 'Original criteria',
+        agentProfiles: originalProfiles,
+      }),
+      round: 0,
+      scores: [],
+    };
+    await store.init();
+    await store.create(cancelled);
+    const orchestrator = new Orchestrator(store, true, settings);
+    await orchestrator.init();
+    const rerun = await orchestrator.rerun(cancelled.id);
+    expect(rerun.id).not.toBe(cancelled.id);
+    expect(rerun.config.sourcePack).toBe('Original research');
+    expect(rerun.config.guideText?.trim()).toBe('Original guide');
+    expect(rerun.config.criteriaText?.trim()).toBe('Original criteria');
+    expect(rerun.config.agentProfiles[0]?.model).toBe('snapshot-model');
+    expect((await store.readState(cancelled.id)).stage).toBe('cancelled');
+    const completedInit = await waitFor(orchestrator, rerun.id, ['awaiting_human']);
+    expect(completedInit.stage).toBe('awaiting_human');
+    const originalLog = await readFile(store.path(cancelled.id, 'logs', 'process.log'), 'utf8');
+    const rerunLog = await readFile(store.path(rerun.id, 'logs', 'process.log'), 'utf8');
+    expect(originalLog).toContain('"event":"run.rerun.requested"');
+    expect(rerunLog).toContain('"event":"run.rerun.created"');
     orchestrator.library.close();
   });
 

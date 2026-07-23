@@ -108,6 +108,20 @@ async function run(job: JobDescriptor): Promise<JobResultEnvelope> {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     childPid = child.pid;
+    const killChild = () => {
+      if (child && !child.killed) {
+        try { child.kill('SIGKILL'); } catch { /* process already exited */ }
+      }
+    };
+    const cleanSigTerm = () => { killChild(); process.exit(130); };
+    const cleanSigHup = () => { killChild(); process.exit(129); };
+    const cleanExit = () => { killChild(); };
+
+    process.on('SIGTERM', cleanSigTerm);
+    process.on('SIGINT', cleanSigTerm);
+    process.on('SIGHUP', cleanSigHup);
+    process.on('exit', cleanExit);
+
     const startedLine = `[writer-room] ${job.kind} started · ${job.adapter} · PID ${childPid ?? 'pending'} · waiting for first model output…\n`;
     process.stdout.write(startedLine);
     appendFileSync(job.logPath, `\n${startedLine}`);
@@ -135,12 +149,20 @@ async function run(job: JobDescriptor): Promise<JobResultEnvelope> {
       process.stderr.write(value);
     });
     child.on('error', (error) => {
+      process.off('SIGTERM', cleanSigTerm);
+      process.off('SIGINT', cleanSigTerm);
+      process.off('SIGHUP', cleanSigHup);
+      process.off('exit', cleanExit);
       spawnError = error.message;
       clearTimeout(timer);
       clearInterval(heartbeatTimer);
       resolve(-1);
     });
     child.on('close', (code) => {
+      process.off('SIGTERM', cleanSigTerm);
+      process.off('SIGINT', cleanSigTerm);
+      process.off('SIGHUP', cleanSigHup);
+      process.off('exit', cleanExit);
       clearTimeout(timer);
       clearInterval(heartbeatTimer);
       resolve(code ?? -1);

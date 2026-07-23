@@ -37,6 +37,44 @@ async function which(executable: string): Promise<string | null> {
   } catch { return null; }
 }
 
+async function descendantPids(rootPid: number): Promise<number[]> {
+  try {
+    const result = await command('ps', ['-axo', 'pid=,ppid=']);
+    const childrenMap = new Map<number, number[]>();
+    for (const line of result.stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        const pid = parseInt(parts[0]!, 10);
+        const ppid = parseInt(parts[1]!, 10);
+        if (!isNaN(pid) && !isNaN(ppid)) {
+          if (!childrenMap.has(ppid)) childrenMap.set(ppid, []);
+          childrenMap.get(ppid)!.push(pid);
+        }
+      }
+    }
+    const resultPids: number[] = [];
+    function collect(parent: number) {
+      const list = childrenMap.get(parent) || [];
+      for (const child of list) {
+        collect(child);
+        resultPids.push(child);
+      }
+    }
+    collect(rootPid);
+    return resultPids;
+  } catch {
+    return [];
+  }
+}
+
+async function killProcessTree(rootPid: number): Promise<void> {
+  const pids = await descendantPids(rootPid);
+  pids.push(rootPid);
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* process already exited */ }
+  }
+}
+
 export class TmuxController implements TerminalController {
   constructor(private readonly mock = process.env.WRITER_ROOM_MOCK === '1') {}
 
@@ -100,6 +138,15 @@ export class TmuxController implements TerminalController {
   async killSession(session: string): Promise<void> {
     if (this.mock) return;
     const tmux = process.env.WRITER_ROOM_TMUX_BIN || 'tmux';
+    try {
+      const panesResult = await command(tmux, ['list-panes', '-s', '-t', session, '-F', '#{pane_pid}'], [0, 1]);
+      if (panesResult.code === 0 && panesResult.stdout.trim()) {
+        const panePids = panesResult.stdout.trim().split('\n').map((line) => parseInt(line.trim(), 10)).filter((pid) => !isNaN(pid));
+        for (const pid of panePids) {
+          await killProcessTree(pid);
+        }
+      }
+    } catch { /* session may already be dead */ }
     await command(tmux, ['kill-session', '-t', session], [0, 1]);
   }
 

@@ -29,11 +29,17 @@ describe('domain gates', () => {
   });
 
   test('validates config and safe run ids', () => {
-    const config = normalizeConfig({ title: 'Video', guidePath: '/tmp/a', criteriaPath: '/tmp/b' });
+    const config = normalizeConfig({
+      title: 'Video', guidePath: '/tmp/a', criteriaPath: '/tmp/b',
+      guideText: 'Custom writer guide', criteriaText: 'Custom editor criteria',
+    });
     expect(config.targetScore).toBe(9);
     expect(config.maxRounds).toBe(6);
+    expect(config.guideText).toBe('Custom writer guide');
+    expect(config.criteriaText).toBe('Custom editor criteria');
     expect(safeRunId('r-mock-123456')).toBe(true);
     expect(safeRunId('../escape')).toBe(false);
+    expect(() => normalizeConfig({ title: 'Video', guideText: 'x'.repeat(1_000_001) })).toThrow('guideText must be at most 1 MB');
   });
 
   test('writer init requires exactly three routes and useful questions', () => {
@@ -44,9 +50,20 @@ describe('domain gates', () => {
     const evidenceLedger = [{ id: 'E1', kind: 'fact', text: 'Supported fact', sourceRef: 'source:1', confidence: 'high', corroborationIds: [], contradictionIds: [] }];
     const insightStatements = [1, 2, 3].map((id) => ({ id: `I${id}`, statement: `Insight ${id}`, audiencePriorBelief: 'Old belief', audienceDesireOrFear: 'A real desire', tension: 'Evidence creates tension', evidenceIds: ['E1'], counterEvidenceIds: [] }));
     const outlineOptions = ['a', 'b', 'c'].map((id, index) => ({ id: `angle-${id}`, label: `Angle ${id}`, rationale: 'Distinct route', angle: 'Angle', beats: ['beat-1', 'beat-2', 'beat-3'], centralQuestion: 'What is true?', hypothesis: 'A falsifiable claim', throughline: 'One line', audiencePayoff: 'Truthful payoff', evidenceIds: ['E1'], riskFlags: [], recommended: index === 0 }));
-    const hookOptions = outlineOptions.flatMap((angle) => [1, 2].map((number) => ({ id: `hook-${angle.id}-${number}`, angleId: angle.id, label: `Hook ${number}`, rationale: 'Supported opening', text: 'A concrete opening', strategy: number === 1 ? 'scene' : 'question', promise: 'A truthful promise', openLoop: 'What happens?', payoffBeatId: 'beat-3', evidenceIds: ['E1'], truthRisk: 'low', clickbaitRisk: 'low', recommended: number === 1 })));
-    const initial = parseWriterInit({ draftMarkdown: 'Exploratory draft', evidenceLedger, insightStatements, outlineOptions, hookOptions, interviewQuestions: [{ id: 'voice', question: 'What sounds like you?', why: 'Lock voice', gapType: 'voice', relatedOptionIds: ['angle-a'] }], selfNotes: [] });
+    const hookOptions = outlineOptions.flatMap((angle) => [1, 2].map((number) => ({ id: `hook-${angle.id}-${number}`, angleId: angle.id, label: `Hook ${number}`, rationale: 'Supported opening', text: 'A concrete opening', strategy: number === 1 ? 'scene' : 'honest question', promise: 'A truthful promise', openLoop: 'What happens?', payoffBeatId: 'beat-3', evidenceIds: ['E1'], truthRisk: 'low', clickbaitRisk: 'low', recommended: number === 1 })));
+    const initial = parseWriterInit({ draftMarkdown: 'Exploratory draft', evidenceLedger, insightStatements, outlineOptions, hookOptions, interviewQuestions: [{ id: 'voice', question: 'What sounds like you?', why: 'Lock voice', gapType: 'author', relatedOptionIds: ['angle-a'] }], selfNotes: [] });
     expect(initial.hookOptions).toHaveLength(6);
+    expect(initial.hookOptions[1]?.strategy).toBe('question');
+    expect(initial.interviewQuestions[0]?.gapType).toBe('voice');
+    expect(() => parseWriterInit({
+      draftMarkdown: 'Exploratory draft',
+      evidenceLedger,
+      insightStatements,
+      outlineOptions,
+      hookOptions: hookOptions.map((hook, index) => index === 0 ? { ...hook, strategy: 'surprise' } : hook),
+      interviewQuestions: [],
+      selfNotes: [],
+    })).toThrow('hookOptions[0].strategy must be one of');
     const brief = normalizeHumanBrief({ selectedAngleId: 'angle-a', selectedHookId: 'custom', customHook: 'Mở bằng câu của chính tôi.', answers: {} }, initial);
     expect(brief.customHook).toContain('chính tôi');
   });
