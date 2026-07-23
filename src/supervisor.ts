@@ -27,6 +27,7 @@ export function classifyFailure(errorValue: unknown): RetryClass {
   if (/unauthori[sz]ed|authentication|not logged in|login required|invalid api key|forbidden|permission denied|executable.+not found|enoent/.test(message)) {
     return 'permanent';
   }
+  if (/3221225794|0xc0000142|status_dll_init_failed|dll initialization failed/.test(message)) return 'permanent';
   if (/valid json|schema|must provide|must be|references missing|truth risk|artifact conflict/.test(message)) return 'repairable';
   return 'transient';
 }

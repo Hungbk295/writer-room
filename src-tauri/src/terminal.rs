@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -28,6 +29,7 @@ pub struct TerminalManager {
 
 struct ManagedJob {
     pid: u32,
+    #[cfg(not(windows))]
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
@@ -53,9 +55,28 @@ impl TerminalManager {
         let key = format!("{session}:{role}");
         if let Some(mut old) = self.jobs.lock().unwrap().remove(&key) {
             kill_tree(old.pid);
+            #[cfg(not(windows))]
             let _ = old.killer.kill();
         }
 
+        #[cfg(windows)]
+        return self.run_piped_windows(app, runner, session, role, cwd, descriptor_path, key);
+
+        #[cfg(not(windows))]
+        self.run_pty(app, runner, session, role, cwd, descriptor_path, key)
+    }
+
+    #[cfg(not(windows))]
+    fn run_pty(
+        &self,
+        app: AppHandle,
+        runner: &Path,
+        session: &str,
+        role: &str,
+        cwd: &str,
+        descriptor_path: &str,
+        key: String,
+    ) -> Result<(), String> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 32,
@@ -156,6 +177,121 @@ impl TerminalManager {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn run_piped_windows(
+        &self,
+        app: AppHandle,
+        runner: &Path,
+        session: &str,
+        role: &str,
+        cwd: &str,
+        descriptor_path: &str,
+        key: String,
+    ) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        // Writer Room agents are print-mode processes. Launching the Bun runner
+        // through ConPTY can fail before main() with STATUS_DLL_INIT_FAILED
+        // (0xC0000142), leaving no result envelope. Direct pipes preserve all
+        // output and process-tree cancellation without requiring an interactive
+        // console host.
+        let mut child = Command::new(runner)
+            .arg(descriptor_path)
+            .current_dir(cwd)
+            .env("NO_COLOR", "1")
+            .env("FORCE_COLOR", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|error| format!("spawn Windows runner without ConPTY: {error}"))?;
+        let pid = child.id();
+        let stdout = child.stdout.take().ok_or("runner stdout unavailable")?;
+        let stderr = child.stderr.take().ok_or("runner stderr unavailable")?;
+        self.jobs
+            .lock()
+            .unwrap()
+            .insert(key.clone(), ManagedJob { pid });
+
+        let (output_sender, output_receiver) = mpsc::channel::<Vec<u8>>();
+        for mut reader in [Box::new(stdout) as Box<dyn Read + Send>, Box::new(stderr)] {
+            let sender = output_sender.clone();
+            std::thread::spawn(move || {
+                let mut bytes = [0_u8; 8192];
+                loop {
+                    match reader.read(&mut bytes) {
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => {
+                            if sender.send(bytes[..count].to_vec()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        drop(output_sender);
+
+        let read_app = app.clone();
+        let read_session = session.to_owned();
+        let read_role = role.to_owned();
+        std::thread::spawn(move || {
+            while let Ok(first) = output_receiver.recv() {
+                let mut batch = first;
+                let deadline = Instant::now() + Duration::from_millis(16);
+                while batch.len() < 32 * 1024 {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    match output_receiver.recv_timeout(deadline - now) {
+                        Ok(chunk) => batch.extend_from_slice(&chunk),
+                        Err(_) => break,
+                    }
+                }
+                let chunk = String::from_utf8_lossy(&batch).to_string();
+                let _ = read_app.emit(
+                    "writer-room://terminal-output",
+                    json!({
+                        "session": read_session,
+                        "role": read_role,
+                        "chunk": chunk,
+                    }),
+                );
+            }
+        });
+
+        let jobs = Arc::clone(&self.jobs);
+        let exit_session = session.to_owned();
+        let exit_role = role.to_owned();
+        let exit_descriptor = descriptor_path.to_owned();
+        std::thread::spawn(move || {
+            let exit_code = child
+                .wait()
+                .ok()
+                .and_then(|status| status.code())
+                .map(|code| code as u32);
+            settle_missing_result(&exit_descriptor, exit_code);
+            let mut values = jobs.lock().unwrap();
+            if values.get(&key).map(|job| job.pid) == Some(pid) {
+                values.remove(&key);
+            }
+            drop(values);
+            let _ = app.emit(
+                "writer-room://terminal-exit",
+                json!({
+                    "session": exit_session,
+                    "role": exit_role,
+                    "pid": pid,
+                    "exitCode": exit_code,
+                }),
+            );
+        });
+        Ok(())
+    }
+
     pub fn kill_session(&self, session: &str) {
         let prefix = format!("{session}:");
         let keys: Vec<String> = self
@@ -169,6 +305,7 @@ impl TerminalManager {
         for key in keys {
             if let Some(mut job) = self.jobs.lock().unwrap().remove(&key) {
                 kill_tree(job.pid);
+                #[cfg(not(windows))]
                 let _ = job.killer.kill();
             }
         }
@@ -179,6 +316,7 @@ impl TerminalManager {
         for key in keys {
             if let Some(mut job) = self.jobs.lock().unwrap().remove(&key) {
                 kill_tree(job.pid);
+                #[cfg(not(windows))]
                 let _ = job.killer.kill();
             }
         }
@@ -201,12 +339,7 @@ pub fn settle_missing_result(descriptor_path: &str, exit_code: Option<u32>) {
     if Path::new(result_path).is_file() {
         return;
     }
-    let message = format!(
-        "native runner exited before producing a result envelope (exit={})",
-        exit_code
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unknown".to_owned())
-    );
+    let message = runner_exit_message(exit_code);
     let timestamp = format!(
         "unix:{}",
         std::time::SystemTime::now()
@@ -230,6 +363,18 @@ pub fn settle_missing_result(descriptor_path: &str, exit_code: Option<u32>) {
     if std::fs::write(&temporary, format!("{envelope}\n")).is_ok() {
         let _ = std::fs::rename(temporary, result_path);
     }
+}
+
+fn runner_exit_message(exit_code: Option<u32>) -> String {
+    if exit_code == Some(0xC000_0142) {
+        return "Windows native runner failed to initialize (exit=3221225794, 0xC0000142 STATUS_DLL_INIT_FAILED). Install the updated Writer Room build that launches print-mode agents without ConPTY; if it persists, repair the Windows runtime and reboot.".to_owned();
+    }
+    format!(
+        "native runner exited before producing a result envelope (exit={})",
+        exit_code
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_owned())
+    )
 }
 
 #[cfg(unix)]
@@ -324,6 +469,13 @@ mod tests {
             .unwrap()
             .contains("before producing"));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn windows_dll_init_failure_has_actionable_diagnostic() {
+        let message = runner_exit_message(Some(0xC000_0142));
+        assert!(message.contains("STATUS_DLL_INIT_FAILED"));
+        assert!(message.contains("without ConPTY"));
     }
 
     #[cfg(unix)]

@@ -10,8 +10,8 @@ describe('durable job supervision', () => {
 
   test('does not automatically retry permanent auth failures', () => {
     expect(classifyFailure(new Error('Unauthorized: login required'))).toBe('permanent');
+    expect(classifyFailure(new Error('runner exit=3221225794 0xC0000142 STATUS_DLL_INIT_FAILED'))).toBe('permanent');
     expect(classifyFailure(new Error('output does not contain valid JSON'))).toBe('repairable');
     expect(classifyFailure(new Error('process exited 1 after timeout'))).toBe('transient');
   });
 });
-
