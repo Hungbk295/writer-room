@@ -89,10 +89,10 @@ function showRunSettings(details) {
     <div class="settings-scroll">
       <section class="section-card"><h3>Workflow</h3>
         <div class="status-line"><span>Title</span><strong>${esc(config.title)}</strong></div>
-        <div class="status-line"><span>Target score</span><strong>${esc(config.targetScore)}</strong></div>
-        <div class="status-line"><span>Số vòng tối đa</span><strong>${esc(config.maxRounds)}</strong></div>
-        <div class="status-line"><span>Human gate</span><strong>${config.humanGate === 'every_round' ? 'Sau mỗi review' : 'Sau init'}</strong></div>
+        <div class="status-line"><span>Auto-repair Hard Gate</span><strong>${esc(config.maxAutoRepairRounds)} vòng</strong></div>
+        <div class="status-line"><span>Level 2</span><strong>Luôn chờ user</strong></div>
         <div class="status-line"><span>Timeout / agent</span><strong>${esc(config.timeoutMinutes)} phút</strong></div>
+        <div class="status-line"><span>Độ dài kịch bản</span><strong>${esc(config.scriptLengthTarget)} ${config.scriptLengthUnit === 'sentences' ? 'câu' : 'phút'}</strong></div>
         <div class="status-line"><span>Run ID</span><code>${esc(run.id)}</code></div>
       </section>
       <section class="section-card"><h3>Agent snapshot</h3><div class="settings-agent-list">${config.agentProfiles.map((profile, index) => `
@@ -100,7 +100,7 @@ function showRunSettings(details) {
       </section>
       <section class="section-card"><h3>Source pack</h3><pre class="settings-text">${esc(config.sourcePack || 'Không có source pack.')}</pre></section>
       <section class="section-card"><h3>Writer guide</h3><pre class="settings-text">${esc(config.guideText || `Mặc định: ${config.guidePath || 'bundled'}`)}</pre></section>
-      <section class="section-card"><h3>Editor criteria</h3><pre class="settings-text">${esc(config.criteriaText || `Mặc định: ${config.criteriaPath || 'bundled'}`)}</pre></section>
+      <section class="section-card"><h3>Codex review criteria</h3><pre class="settings-text">${esc(config.criteriaText || `Mặc định: ${config.criteriaPath || 'bundled'}`)}</pre></section>
     </div>
     <div class="dialog-actions"><span></span><button class="primary-button" value="close" type="submit">Đóng</button></div>
   </form>`;
@@ -115,17 +115,20 @@ async function openRunSettings(runId) {
 }
 
 const STAGES = {
-  writer_init: 'Agent 1 đang chuẩn bị evidence', awaiting_human: 'Chờ bạn khóa angle & hook',
-  writer_human: 'Agent 1 đang viết bản chấm điểm', editor: 'Agent 2 đang biên tập',
-  writer_revision: 'Agent 1 đang sửa', awaiting_round_human: 'Chờ note biên tập',
-  needs_human: 'Cần quyết định của bạn', seo: 'Agent 3 đang kiểm SEO',
+  claude_backbone: 'Claude đang xây Backbone',
+  awaiting_backbone_approval: 'Chờ bạn duyệt định hướng',
+  claude_draft: 'Claude đang viết Draft',
+  codex_review: 'Codex đang kiểm Hard Gate',
+  claude_revision: 'Claude đang chọn phương án và sửa',
+  awaiting_user: 'Hard Gate đạt · chờ bạn quyết định',
+  needs_human: 'Cần quyết định của bạn',
   complete: 'Hoàn tất', failed: 'Cần xử lý lỗi', cancelled: 'Đã dừng',
 };
 
-const ACTIVE_STAGES = new Set(['writer_init', 'writer_human', 'editor', 'writer_revision', 'seo']);
-const WAITING_STAGES = new Set(['awaiting_human', 'awaiting_round_human', 'needs_human']);
+const ACTIVE_STAGES = new Set(['claude_backbone', 'claude_draft', 'codex_review', 'claude_revision']);
+const WAITING_STAGES = new Set(['awaiting_backbone_approval', 'awaiting_user', 'needs_human']);
 const stageLabel = (value) => STAGES[value] || value;
-const latestScore = (run) => run?.scores?.at(-1)?.score ?? null;
+const latestGateLabel = (run) => run?.reviews?.at(-1)?.allHardGatesPass ? 'PASS' : run?.reviews?.length ? 'REPAIR' : '—';
 const dateLabel = (value) => value ? new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—';
 
 function markdown(value, compact = false) {
@@ -165,7 +168,7 @@ async function loadHealth() {
     state.health = await call('health');
     const missing = Object.entries(state.health.tools || {}).filter(([, ready]) => !ready).map(([name]) => name);
     el.className = `health ${state.health.ok ? 'ok' : 'bad'}`;
-    el.innerHTML = `<i></i>${esc(state.health.mock ? 'Mock mode · sẵn sàng' : state.health.ok ? `${state.health.transport || 'runtime'} · 3 agents sẵn sàng` : `Thiếu: ${missing.join(', ')}`)}`;
+    el.innerHTML = `<i></i>${esc(state.health.mock ? 'Mock mode · sẵn sàng' : state.health.ok ? `${state.health.transport || 'runtime'} · Claude + Codex sẵn sàng` : `Thiếu: ${missing.join(', ')}`)}`;
   } catch (error) {
     el.className = 'health bad';
     el.innerHTML = `<i></i>${esc(error.message)}`;
@@ -200,16 +203,18 @@ async function loadDetails() {
 
 function buildVersions() {
   const details = state.details;
+  const previousLatestId = state.versions.at(-1)?.id || null;
   const rows = [];
-  if (details?.initial) rows.push({ id: 'init', label: 'Init', kind: 'init', title: 'Evidence, insight & exploratory draft', value: details.initial });
+  if (details?.initial) rows.push({ id: 'init', label: 'Backbone', kind: 'init', title: 'Backbone đã chuẩn bị cho Human Gate', value: details.initial });
   if (details?.humanBrief) rows.push({ id: 'human', label: 'Human brief', kind: 'human', title: 'Quyết định của người viết', value: details.humanBrief });
   for (const round of details?.rounds || []) {
-    if (round.draft) rows.push({ id: `draft-${round.round}`, label: `Draft ${round.round}`, kind: 'draft', title: `Bản viết · vòng ${round.round}`, value: round.draft, round: round.round, score: round.score });
-    if (round.review) rows.push({ id: `review-${round.round}`, label: `Review ${round.round}`, kind: 'review', title: `Nhận xét · vòng ${round.round}`, value: round.review, round: round.round, score: round.score });
+    if (round.decision) rows.push({ id: `decision-${round.round}`, label: `Claude quyết định ${round.round}`, kind: 'decision', title: `Quyết định gợi ý · vòng ${round.round}`, value: round.decision, round: round.round });
+    if (round.draft) rows.push({ id: `draft-${round.round}`, label: `Draft ${round.round}`, kind: 'draft', title: `Bản viết · vòng ${round.round}`, value: round.draft, round: round.round });
+    if (round.review) rows.push({ id: `review-${round.round}`, label: `Codex ${round.round}`, kind: 'review', title: `Hard Gate & phương án · vòng ${round.round}`, value: round.review, round: round.round });
   }
-  if (details?.seo) rows.push({ id: 'seo', label: 'SEO', kind: 'seo', title: 'SEO review', value: details.seo });
+  if (details?.seo) rows.push({ id: 'seo', label: 'Legacy SEO', kind: 'seo', title: 'SEO review cũ', value: details.seo });
   state.versions = rows;
-  if (!rows.some((row) => row.id === state.selectedVersionId)) {
+  if (!rows.some((row) => row.id === state.selectedVersionId) || state.selectedVersionId === previousLatestId) {
     state.selectedVersionId = rows.at(-1)?.id || null;
   }
   if (!rows.some((row) => row.id === state.compareVersionId) || state.compareVersionId === state.selectedVersionId) {
@@ -230,7 +235,7 @@ function renderRail() {
       <button class="rail-item ${item.id === state.activeArticleId ? 'active' : ''}" data-article="${esc(item.id)}" type="button">
         <i class="rail-dot ${item.status === 'archived' ? 'failed' : ''}"></i>
         <span class="rail-copy"><strong>${esc(item.title)}</strong><small>Final r${item.acceptedRound} · ${dateLabel(item.updatedAt)}</small></span>
-        <span class="rail-score">${item.finalScore ?? '—'}</span>
+        <span class="rail-score">${item.finalGateStatus === 'pass' ? 'GATE ✓' : item.finalScore ?? '—'}</span>
       </button>`).join('') : '<p class="rail-empty">Chưa có bài final phù hợp.</p>';
     $$('[data-article]').forEach((button) => button.addEventListener('click', () => selectArticle(button.dataset.article)));
     return;
@@ -239,7 +244,7 @@ function renderRail() {
     $('#rail-kicker').textContent = 'AGENT SLOTS';
     $('#rail-title').textContent = 'Runtime profiles';
     $('#new-run').classList.add('hidden');
-    $('#rail-count').textContent = '3 slots cố định';
+    $('#rail-count').textContent = '2 slots cố định';
     list.innerHTML = state.agents.map((agent, index) => `<div class="rail-item static"><i class="rail-dot running"></i><span class="rail-copy"><strong>Agent ${index + 1}</strong><small>${esc(agent.adapter)} · ${esc(agent.model || 'provider default')}</small></span></div>`).join('');
     return;
   }
@@ -252,7 +257,7 @@ function renderRail() {
     <button class="rail-item ${run.id === state.activeId ? 'active' : ''}" data-run="${esc(run.id)}" type="button">
       <i class="rail-dot ${statusDot(run.stage)}"></i>
       <span class="rail-copy"><strong>${esc(run.config.title)}</strong><small>${esc(stageLabel(run.stage))} · ${dateLabel(run.updatedAt)}</small></span>
-      <span class="rail-score">${latestScore(run) ?? '—'}</span>
+      <span class="rail-score">${latestGateLabel(run)}</span>
     </button>`).join('') : '<p class="rail-empty">Chưa có run. Nhấn ＋ để bắt đầu.</p>';
   $$('[data-run]').forEach((button) => button.addEventListener('click', async () => {
     state.activeId = button.dataset.run;
@@ -284,10 +289,14 @@ function renderVersionRibbon() {
 }
 
 function renderInit(init) {
+  const isBackbone = Boolean(init.titlePromise);
   return `<div class="article-paper">
-    <div class="article-meta"><span class="pill">${init.evidenceLedger.length} evidence</span><span class="pill">${init.insightStatements.length} insight</span><span class="pill orange">3 angle · 6 hook</span><button class="outline-button compact-button" data-export-draft="init" type="button">✦ Xuất TXT</button></div>
+    <div class="article-meta"><span class="pill">${init.evidenceLedger.length} evidence</span><span class="pill">${init.insightStatements.length} insight</span><span class="pill orange">${init.outlineOptions.length} angle · ${init.hookOptions.length} hook</span></div>
+    ${isBackbone ? `<section class="section-card"><h3>Title Promise</h3><p><strong>${esc(init.titlePromise)}</strong></p><p>${esc(init.centralQuestion)}</p><small>${esc(init.contentMode)} · ${esc(init.viewerBefore)} → ${esc(init.viewerAfter)}</small></section>
+    <div class="quality-grid"><section class="section-card"><h3>Ý đồ cảm xúc</h3><p>${esc(init.emotionalIntent)}</p></section><section class="section-card"><h3>Ý đồ thông tin</h3><p>${esc(init.informationIntent)}</p></section></div>
+    ${init.protectedElements?.length ? `<section class="section-card"><h3>Protected elements</h3><ul class="bullet-list">${init.protectedElements.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}` : ''}
     <section class="section-card"><h3>Insight statements</h3>${init.insightStatements.map((item) => `<p><strong>${esc(item.statement)}</strong><br><small>${esc(item.tension)} · evidence ${esc(item.evidenceIds.join(', '))}</small></p>`).join('')}</section>
-    ${markdown(init.draftMarkdown)}
+    ${!isBackbone && init.draftMarkdown ? markdown(init.draftMarkdown) : ''}
   </div>`;
 }
 
@@ -299,16 +308,39 @@ function renderHumanBrief(brief) {
 }
 
 function renderDraft(row) {
-  return `<div class="article-paper"><div class="article-meta"><span class="pill">Draft ${row.round}</span>${row.score == null ? '' : `<span class="pill orange">Score ${row.score}</span>`}<button class="outline-button compact-button" data-export-draft="${row.round}" type="button">✦ Xuất TXT</button></div>${markdown(row.value.draftMarkdown)}${row.value.changeLog?.length ? `<section class="section-card"><h3>Change log</h3><ul class="bullet-list">${row.value.changeLog.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}</div>`;
+  const passing = state.details?.state?.lastPassingRound === row.round;
+  return `<div class="article-paper"><div class="article-meta"><span class="pill">Draft ${row.round}</span>${passing ? '<span class="pill">Passing baseline</span>' : ''}<button class="outline-button compact-button" data-export-draft="${row.round}" type="button">✦ Xuất TXT</button></div>${markdown(row.value.draftMarkdown)}${row.value.changeLog?.length ? `<section class="section-card"><h3>Change log</h3><ul class="bullet-list">${row.value.changeLog.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}</div>`;
 }
+
+const GATE_LABELS = {
+  title_promise_completed: 'Hoàn thành lời hứa title',
+  no_major_factual_error: 'Không sai dữ kiện trọng yếu',
+  no_major_logical_contradiction: 'Không mâu thuẫn logic lớn',
+  no_unsupported_core_conclusion: 'Kết luận cốt lõi có cơ sở',
+  no_unresolved_primary_open_loop: 'Open loop chính đã đóng',
+  no_serious_audience_misleading: 'Không gây hiểu nhầm nghiêm trọng',
+};
 
 function renderReview(row) {
   const review = row.value;
-  return `<div class="article-paper"><div class="article-meta"><span class="score-big ${review.verdict === 'pass' ? '' : 'fail'}">${row.score ?? review.modelOverall ?? '—'}</span><span class="pill ${review.verdict === 'pass' ? '' : 'orange'}">${esc(review.verdict)}</span></div>
-    <section class="section-card review-card"><h3>Editor summary</h3><p>${esc(review.summary)}</p></section>
-    <div class="score-grid">${review.criteriaScores.map((item) => `<div class="score-row"><strong>${esc(item.criterion)}</strong><b>${item.score} × ${item.weight}</b><p>${esc(item.evidence)}${item.fix ? `<br><strong>Fix:</strong> ${esc(item.fix)}` : ''}</p></div>`).join('')}</div>
-    ${review.blockingIssues.length ? `<section class="section-card review-card"><h3>Blocking issues</h3><ul class="bullet-list">${review.blockingIssues.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}
-    ${review.revisionPlan.length ? `<section class="section-card"><h3>Revision plan</h3><ol class="bullet-list">${review.revisionPlan.map((item) => `<li>${esc(item)}</li>`).join('')}</ol></section>` : ''}</div>`;
+  if (!review.hardGates) {
+    return `<div class="article-paper"><div class="article-meta"><span class="pill orange">Legacy review</span><span class="pill">${esc(review.verdict)}</span></div>
+      <section class="section-card review-card"><h3>Editor summary</h3><p>${esc(review.summary)}</p></section>
+      <div class="score-grid">${review.criteriaScores.map((item) => `<div class="score-row"><strong>${esc(item.criterion)}</strong><b>${item.score} × ${item.weight}</b><p>${esc(item.evidence)}${item.fix ? `<br><strong>Fix:</strong> ${esc(item.fix)}` : ''}</p></div>`).join('')}</div></div>`;
+  }
+  const passed = review.hardGates.every((gate) => gate.status === 'pass');
+  const level = passed ? 2 : 1;
+  return `<div class="article-paper"><div class="article-meta"><span class="pill ${passed ? '' : 'red'}">${passed ? 'Hard Gate đạt' : 'Cần sửa Hard Gate'}</span><span class="pill orange">Level ${level}</span><span class="pill">${review.suggestions.length} phương án</span></div>
+    <section class="section-card review-card"><h3>Codex summary</h3><p>${esc(review.summary)}</p></section>
+    <div class="gate-grid">${review.hardGates.map((gate) => `<section class="gate-card ${esc(gate.status)}"><div><strong>${esc(GATE_LABELS[gate.id] || gate.id)}</strong><span class="pill ${gate.status === 'pass' ? '' : gate.status === 'fail' ? 'red' : 'orange'}">${esc(gate.status)}</span></div><p>${esc(gate.evidence)}</p><small>${esc(gate.reason)}${gate.passCondition ? `<br><b>Điều kiện qua:</b> ${esc(gate.passCondition)}` : ''}</small></section>`).join('')}</div>
+    <div class="quality-grid"><section class="section-card"><h3>Cảm xúc · ${esc(review.qualityFloors.emotion.status)}</h3><p>${esc(review.qualityFloors.emotion.evidence)}</p><small>${esc(review.qualityFloors.emotion.opportunity)}</small></section><section class="section-card"><h3>Thông tin · ${esc(review.qualityFloors.information.status)}</h3><p>${esc(review.qualityFloors.information.evidence)}</p><small>${esc(review.qualityFloors.information.opportunity)}</small></section></div>
+    ${review.suggestions.length ? `<section class="suggestion-stack"><h3>${level === 1 ? 'Level 1 · Phương án để qua Gate' : 'Level 2 · Cơ hội nâng trải nghiệm'}</h3>${review.suggestions.map((suggestion) => `<article class="suggestion-card"><header><span class="pill ${level === 1 ? 'red' : 'orange'}">L${level}</span><strong>${esc(suggestion.observation)}</strong></header><p>${esc(suggestion.evidence)}</p><small><b>Mục tiêu:</b> ${esc(suggestion.intendedGain)}</small><div class="option-list">${suggestion.options.map((option) => `<div><strong>${esc(option.label)}</strong><p>${esc(option.approach)}</p><small>Trade-off: ${esc(option.tradeoff)}</small></div>`).join('')}</div>${suggestion.protect?.length ? `<small><b>Bảo vệ:</b> ${esc(suggestion.protect.join(' · '))}</small>` : ''}</article>`).join('')}</section>` : '<section class="section-card"><p>Codex không thấy cải thiện vật chất nào cần đề xuất.</p></section>'}
+    ${review.regressions?.length ? `<section class="section-card"><h3>Regression</h3><ul class="bullet-list">${review.regressions.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}</div>`;
+}
+
+function renderDecision(row) {
+  const decisions = row.value.suggestionDecisions || [];
+  return `<div class="article-paper"><div class="article-meta"><span class="pill">Claude decisions</span><span class="pill orange">${decisions.length} gợi ý đã xử lý</span></div><section class="section-card"><h3>Claude chọn cách xử lý</h3>${decisions.map((item) => `<div class="decision-row"><strong>${esc(item.suggestionId)} · ${esc(item.decision)}</strong><p>${esc(item.reason)}</p>${item.selectedOptionId ? `<small>Option: ${esc(item.selectedOptionId)}</small>` : ''}</div>`).join('') || '<p>Không có gợi ý.</p>'}</section>${row.value.changeLog?.length ? `<section class="section-card"><h3>Change log</h3><ul class="bullet-list">${row.value.changeLog.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}</div>`;
 }
 
 function renderSeo(seo) {
@@ -324,6 +356,7 @@ function renderVersion(row) {
   if (row.kind === 'human') return renderHumanBrief(row.value);
   if (row.kind === 'draft') return renderDraft(row);
   if (row.kind === 'review') return renderReview(row);
+  if (row.kind === 'decision') return renderDecision(row);
   return renderSeo(row.value);
 }
 
@@ -334,17 +367,16 @@ function riskFlags(option) {
 
 function renderAuthorRoom(init) {
   return `<form id="human-form" class="author-room">
-    <section class="author-intro"><span class="kicker">AUTHOR ROOM · HUMAN GATE</span><h2>Agent đã chuẩn bị dữ liệu. Bạn khóa góc nhìn.</h2><p>Không có lựa chọn mặc định. Hãy chọn angle đúng với insight khán giả của bạn; sau đó UI mới mở đúng hai hook thuộc angle đó.</p></section>
+    <section class="author-intro"><span class="kicker">BACKBONE · HUMAN GATE</span><h2>Claude đã xây xương sống. Bạn duyệt định hướng.</h2><p>Chọn angle và hook đúng với ý đồ cảm xúc/thông tin của bạn. Claude chưa viết full Draft trước khi bạn duyệt.</p></section>
     <section class="author-step"><h3>1 · Chọn angle / throughline</h3><p>Mỗi angle là một giả thuyết biên tập khác nhau, có evidence và payoff riêng.</p><div class="option-grid">
       ${init.outlineOptions.map((option) => `<label class="option-card"><input type="radio" name="angle" value="${esc(option.id)}"><strong>${esc(option.label)}${option.recommended ? ' · Agent đề xuất' : ''}</strong><span>${esc(option.angle)}</span><small>${esc(option.centralQuestion)}<br><b>Payoff:</b> ${esc(option.audiencePayoff)}</small><small class="evidence-line">${esc(option.evidenceIds.join(' · '))}</small><span class="option-risk">${riskFlags(option)}</span></label>`).join('')}
     </div></section>
-    <section id="hook-step" class="author-step muted-step"><h3>2 · Chọn hook</h3><p id="hook-help">Chọn angle trước để xem đúng hai hook liên quan.</p><div class="hook-grid">
+    <section id="hook-step" class="author-step muted-step"><h3>2 · Chọn hook</h3><p id="hook-help">Chọn angle trước để xem các hook liên quan.</p><div class="hook-grid">
       ${init.hookOptions.map((hook) => `<label class="option-card hook-card" data-angle="${esc(hook.angleId)}" hidden><input type="radio" name="hook" value="${esc(hook.id)}"><strong>${esc(hook.label)} · ${esc(hook.strategy)}</strong><span>${esc(hook.text)}</span><small><b>Promise:</b> ${esc(hook.promise)}<br><b>Open loop:</b> ${esc(hook.openLoop)}</small><small class="evidence-line">${esc(hook.evidenceIds.join(' · '))}</small><span class="option-risk">${riskFlags(hook)}</span></label>`).join('')}
       <label class="option-card hook-card custom-hook" data-angle="custom" hidden><input type="radio" name="hook" value="custom"><strong>Hook của bạn</strong><span>Tôi muốn tự viết câu mở.</span><textarea id="custom-hook" rows="4" placeholder="Nhập hook riêng; Agent sẽ giữ lời hứa này xuyên suốt bài."></textarea></label>
     </div></section>
     <section class="author-step"><h3>3 · Bổ sung insight của bạn</h3><p>Đây là các evidence gap Agent không thể tự suy ra từ dữ liệu.</p><div class="question-list">${init.interviewQuestions.map((item) => `<label class="field">${esc(item.question)}<span class="question-why">${esc(item.why)} · ${esc(item.gapType)}</span><textarea name="question-${esc(item.id)}" rows="3" placeholder="Có thể bỏ trống nếu dữ liệu hiện tại đã đủ."></textarea></label>`).join('')}</div></section>
-    <div class="author-actions"><span id="human-error" class="error"></span><button class="primary-button" type="submit">Khóa brief & cho Agent 1 viết</button></div>
-    <details class="initial-preview"><summary>Xem exploratory draft Agent đã tạo</summary><div style="margin: 8px 0;"><button class="outline-button compact-button" data-export-draft="init" type="button">✦ Xuất TXT</button></div>${markdown(init.draftMarkdown, true)}</details>
+    <div class="author-actions"><span id="human-error" class="error"></span><button class="primary-button" type="submit">Duyệt Backbone & cho Claude viết Draft</button></div>
   </form>`;
 }
 
@@ -355,7 +387,7 @@ function bindAuthorRoom() {
     $$('[data-angle]').forEach((card) => { card.hidden = card.dataset.angle !== input.value && card.dataset.angle !== 'custom'; });
     $$('input[name="hook"]').forEach((hook) => { hook.checked = false; });
     $('#hook-step').classList.remove('muted-step');
-    $('#hook-help').textContent = 'Chọn một trong đúng hai hook của angle này, hoặc nhập hook riêng.';
+    $('#hook-help').textContent = 'Chọn một hook của angle này, hoặc nhập hook riêng.';
   }));
   $('#custom-hook')?.addEventListener('focus', () => {
     const input = $('input[name="hook"][value="custom"]');
@@ -374,7 +406,7 @@ function bindAuthorRoom() {
     button.disabled = true;
     try {
       await call('runs.human', { id: state.activeId, brief: { selectedAngleId: angle, selectedHookId: hook, customHook, answers } });
-      toast('Đã khóa human brief. Agent 1 đang viết bản đầu tiên.');
+      toast('Đã duyệt Backbone. Claude đang viết Draft đầu tiên.');
       await loadRuns();
     } catch (error) { errorEl.textContent = error.message; button.disabled = false; }
   });
@@ -387,7 +419,7 @@ function renderRoom() {
   $('#document-kicker').textContent = stageLabel(run.stage);
   renderVersionRibbon();
   const content = $('#document-content');
-  if (run.stage === 'awaiting_human' && state.details.initial && !state.details.humanBrief) {
+  if (run.stage === 'awaiting_backbone_approval' && state.details.initial && !state.details.humanBrief) {
     content.className = 'document-content wide';
     content.innerHTML = renderAuthorRoom(state.details.initial);
     bindAuthorRoom();
@@ -426,28 +458,30 @@ function renderInspector() {
   const details = state.details;
   if (!details) { root.innerHTML = '<p class="muted">Chọn một run để xem tiến độ.</p>'; return; }
   const run = details.state;
-  const score = latestScore(run);
+  const latestReview = [...(details.rounds || [])].reverse().find((round) => round.review)?.review;
+  const unresolved = latestReview?.hardGates?.filter((gate) => gate.status !== 'pass') || [];
   const job = run.currentJob;
   const selected = state.versions.find((row) => row.id === state.selectedVersionId);
   const active = ACTIVE_STAGES.has(run.stage);
   root.innerHTML = `<div class="inspector-block">
     <div class="status-line"><span>Stage</span><strong>${esc(stageLabel(run.stage))}</strong></div>
-    <div class="status-line"><span>Round</span><strong>${run.round} / ${run.config.maxRounds}</strong></div>
-    <div class="status-line"><span>Score</span><strong>${score ?? '—'} / ${run.config.targetScore}</strong></div>
-    <div class="status-line"><span>Human gate</span><strong>${run.config.humanGate === 'every_round' ? 'Mỗi vòng' : 'Sau init'}</strong></div>
+    <div class="status-line"><span>Round</span><strong>${run.round}</strong></div>
+    <div class="status-line"><span>Hard Gate</span><strong>${latestGateLabel(run)}</strong></div>
+    <div class="status-line"><span>Auto repair</span><strong>${run.autoRepairCount || 0} / ${run.config.maxAutoRepairRounds}</strong></div>
+    <div class="status-line"><span>Passing baseline</span><strong>${run.lastPassingRound ? `Draft ${run.lastPassingRound}` : 'Chưa có'}</strong></div>
   </div>
   ${job ? `<div class="inspector-block"><h3>Durable job</h3><div class="job-health"><strong>${esc(job.kind)} · attempt ${job.attempt}</strong><small>${esc(job.adapter)} · heartbeat ${dateLabel(job.lastHeartbeatAt || job.startedAt)}<br>${esc(job.status)}</small><div class="progress-track"></div></div></div>` : ''}
   ${run.error ? `<div class="inspector-block"><h3>Lỗi cần xử lý</h3><p class="error-block">${esc(run.error)}</p></div>` : ''}
   <div class="inspector-block"><h3>Hành động</h3><div class="inspector-actions">
     ${run.stage === 'failed' ? '<button class="primary-button" data-action="retry-current-agent" type="button">Dùng Agent hiện tại & Retry</button><button class="outline-button" data-action="retry-snapshot" type="button">Retry cùng cấu hình cũ</button>' : ''}
     ${run.stage === 'cancelled' ? '<button class="primary-button" data-action="rerun" type="button">Chạy lại với setting cũ</button>' : ''}
-    ${run.stage === 'awaiting_round_human' ? '<label class="field">Note cho vòng sửa<textarea id="round-note" rows="4" placeholder="Điểm nào Agent phải giữ hoặc sửa?"></textarea></label><button class="primary-button" data-action="continue" type="button">Tiếp tục vòng sửa</button><button class="outline-button" data-action="accept" type="button">Chấp nhận bản hiện tại</button>' : ''}
-    ${run.stage === 'needs_human' ? '<label class="field">Lý do override<textarea id="accept-reason" rows="3" placeholder="Vì sao bản này đủ tốt dù chưa đạt target?"></textarea></label><button class="primary-button" data-action="accept" type="button">Chấp nhận & kiểm SEO</button>' : ''}
+    ${run.stage === 'awaiting_user' ? '<label class="field">Trọng tâm vòng nâng trải nghiệm (tùy chọn)<textarea id="round-note" rows="4" placeholder="Ví dụ: ưu tiên cảm xúc, giữ nguyên hook; Claude vẫn tự quyết định từng gợi ý."></textarea></label><button class="primary-button" data-action="continue" type="button">Tiếp tục thêm 1 vòng</button><button class="outline-button" data-action="accept" type="button">Dừng & khóa bản đạt Gate</button>' : ''}
+    ${run.stage === 'needs_human' && run.lastPassingRound ? '<p class="muted">Candidate chưa sửa xong; bản đạt Gate gần nhất vẫn được giữ.</p><button class="primary-button" data-action="accept" type="button">Khóa passing baseline</button>' : ''}
     ${active ? '<button class="danger-button" data-action="cancel" type="button">Dừng run</button>' : ''}
     <button class="outline-button" data-action="settings" type="button">Xem setting bài viết</button>
     ${state.health?.transport === 'tmux' ? `<code class="attach-command">tmux attach -t ${esc(run.tmuxSession)}</code>` : ''}
   </div></div>
-  ${selected?.kind === 'review' ? `<div class="inspector-block"><h3>Blockers</h3>${selected.value.blockingIssues.length ? `<ul class="bullet-list">${selected.value.blockingIssues.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : '<p class="muted">Không có blocking issue.</p>'}</div>` : ''}
+  ${latestReview?.hardGates ? `<div class="inspector-block"><h3>${unresolved.length ? 'Hard Gate chưa đạt' : 'Hard Gate'}</h3>${unresolved.length ? `<ul class="bullet-list">${unresolved.map((gate) => `<li>${esc(GATE_LABELS[gate.id] || gate.id)} · ${esc(gate.status)}</li>`).join('')}</ul>` : `<p class="muted">Tất cả Hard Gate đã đạt.${run.stage === 'awaiting_user' ? ' Level 2 đang chờ quyết định của bạn.' : ''}</p>`}</div>` : ''}
   ${evidenceInspector(details.initial, selected)}`;
   $$('[data-action]').forEach((button) => button.addEventListener('click', () => runAction(button.dataset.action, button)));
 }
@@ -467,7 +501,7 @@ async function runAction(action, button) {
     }
     if (action === 'settings') await openRunSettings(state.activeId);
     if (action === 'continue') await call('runs.continue', { id: state.activeId, note: $('#round-note')?.value || '' });
-    if (action === 'accept') await call('runs.accept', { id: state.activeId, reason: $('#accept-reason')?.value || 'Human editorial override' });
+    if (action === 'accept') await call('runs.accept', { id: state.activeId, reason: 'User chose to stop and lock the passing version' });
     if (action === 'cancel') {
       if (!window.confirm('Dừng run đang chạy? Artifacts đã hoàn tất vẫn được giữ.')) return;
       await call('runs.cancel', { id: state.activeId });
@@ -507,7 +541,7 @@ function renderLibrary() {
   $('#library-title').textContent = article.title;
   $('#open-source-run').classList.remove('hidden');
   root.className = 'document-content';
-  root.innerHTML = `<div class="article-paper"><div class="article-meta"><span class="pill">Final r${article.acceptedRound}</span><span class="pill">Score ${article.finalScore ?? '—'}</span><span class="pill orange">SEO ${esc(article.seoVerdict || '—')}</span><span class="pill ${article.status === 'archived' ? 'red' : ''}">${esc(article.status)}</span></div>${markdown(current?.markdown || '')}<section class="section-card"><h3>Version history</h3>${versions.map((version) => `<p><strong>Version ${version.versionNo}</strong> · round ${version.acceptedRound} · ${dateLabel(version.createdAt)}<br><small>SHA ${esc(version.markdownSha256.slice(0, 16))} · ${esc(version.draftArtifactRelpath)}</small></p>`).join('')}<div class="toolbar-actions"><button class="outline-button" id="view-article-settings" type="button">Xem setting</button><button class="outline-button" id="export-article" type="button">Export Markdown</button><button class="outline-button" id="archive-article" type="button">${article.status === 'archived' ? 'Khôi phục' : 'Lưu trữ'}</button></div></section></div>`;
+  root.innerHTML = `<div class="article-paper"><div class="article-meta"><span class="pill">Final r${article.acceptedRound}</span>${article.finalGateStatus ? '<span class="pill">Hard Gate đạt</span>' : `<span class="pill">Legacy score ${article.finalScore ?? '—'}</span>`}<span class="pill ${article.status === 'archived' ? 'red' : ''}">${esc(article.status)}</span></div>${markdown(current?.markdown || '')}<section class="section-card"><h3>Version history</h3>${versions.map((version) => `<p><strong>Version ${version.versionNo}</strong> · round ${version.acceptedRound} · ${dateLabel(version.createdAt)}<br><small>SHA ${esc(version.markdownSha256.slice(0, 16))} · ${esc(version.draftArtifactRelpath)}</small></p>`).join('')}<div class="toolbar-actions"><button class="outline-button" id="view-article-settings" type="button">Xem setting</button><button class="outline-button" id="export-article" type="button">Export Markdown</button><button class="outline-button" id="archive-article" type="button">${article.status === 'archived' ? 'Khôi phục' : 'Lưu trữ'}</button></div></section></div>`;
   $('#view-article-settings').addEventListener('click', () => openRunSettings(article.runId).catch((error) => toast(error.message, true)));
   $('#export-article').addEventListener('click', async () => {
     const receipt = await call('articles.export', { id: article.id });
@@ -524,9 +558,8 @@ function renderLibrary() {
 }
 
 const AGENT_META = [
-  { slot: 'agent-1', role: 'Writer · evidence, init, revision' },
-  { slot: 'agent-2', role: 'Editor · weighted score & blockers' },
-  { slot: 'agent-3', role: 'SEO · final metadata review' },
+  { slot: 'agent-1', name: 'Claude', role: 'Tác giả · Backbone, Draft, quyết định và revision' },
+  { slot: 'agent-2', name: 'Codex', role: 'Reviewer · Hard Gate và phương án cải thiện' },
 ];
 const ADAPTERS = {
   claude: { label: 'Claude Code', executable: 'claude' },
@@ -572,7 +605,7 @@ function renderAgents() {
     const knownModel = options.some((option) => option.id === profile.model);
     const customModel = state.customModelSlots.has(profile.slot) || Boolean(profile.model && !knownModel);
     const selectedModel = customModel ? '__custom__' : profile.model;
-    return `<article class="agent-card"><div class="agent-head"><div><span class="kicker">SLOT ${index + 1}</span><h2>Agent ${index + 1}</h2><small>${esc(AGENT_META[index].role)}</small></div><span class="pill">${profile.enabled ? 'ON' : 'OFF'}</span></div><div class="agent-fields">
+    return `<article class="agent-card"><div class="agent-head"><div><span class="kicker">SLOT ${index + 1}</span><h2>${esc(AGENT_META[index].name)}</h2><small>${esc(AGENT_META[index].role)}</small></div><span class="pill">${profile.enabled ? 'ON' : 'OFF'}</span></div><div class="agent-fields">
       <label class="field">Provider<select data-agent="adapter" data-slot="${profile.slot}">${Object.entries(ADAPTERS).map(([key, item]) => `<option value="${key}" ${key === profile.adapter ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
       <label class="field">Model<select data-agent="modelChoice" data-slot="${profile.slot}">
         <option value="" ${selectedModel === '' ? 'selected' : ''}>Provider default</option>
@@ -616,11 +649,11 @@ function updateAgent(input) {
 function defaultProfiles() {
   return AGENT_META.map((meta, index) => ({
     slot: meta.slot,
-    name: `Agent ${index + 1}`,
-    role: index === 0 ? 'writer' : index === 1 ? 'editor' : 'seo',
-    adapter: index === 0 ? 'claude' : index === 1 ? 'codex' : 'agy',
-    executable: index === 0 ? 'claude' : index === 1 ? 'codex' : 'agy',
-    model: index === 2 ? 'Gemini 3.5 Flash (High)' : '',
+    name: meta.name,
+    role: index === 0 ? 'writer' : 'editor',
+    adapter: index === 0 ? 'claude' : 'codex',
+    executable: index === 0 ? 'claude' : 'codex',
+    model: '',
     args: [],
     systemPrompt: '',
     enabled: true,
@@ -644,7 +677,7 @@ async function saveAgents(profiles = state.agents) {
 async function loadLogs() {
   if (!state.activeId) { $('#console-output').textContent = 'Chưa chọn run.'; return; }
   state.logs = await call('runs.logs', { id: state.activeId });
-  const patterns = { writer: /writer/i, editor: /editor/i, seo: /seo/i };
+  const patterns = { writer: /writer|claude/i, editor: /editor|codex/i };
   const rows = state.logs.filter((item) => state.consoleRole === 'process'
     ? item.name === 'process.log'
     : patterns[state.consoleRole].test(item.name));
@@ -811,8 +844,9 @@ function bindEvents() {
     try {
       const created = await call('runs.create', {
         title: data.get('title'), sourcePack: data.get('sourcePack'),
-        targetScore: Number(data.get('targetScore')), maxRounds: Number(data.get('maxRounds')),
-        humanGate: data.get('humanGate'), timeoutMinutes: Number(data.get('timeoutMinutes')),
+        maxAutoRepairRounds: Number(data.get('maxAutoRepairRounds')),
+        timeoutMinutes: Number(data.get('timeoutMinutes')),
+        scriptLengthUnit: data.get('scriptLengthUnit'), scriptLengthTarget: Number(data.get('scriptLengthTarget')),
         guideText: String(data.get('guideText') || '').trim() === String(state.promptDefaults?.guideText || '').trim()
           ? '' : data.get('guideText'),
         criteriaText: String(data.get('criteriaText') || '').trim() === String(state.promptDefaults?.criteriaText || '').trim()
@@ -823,7 +857,7 @@ function bindEvents() {
       form.reset();
       void loadPromptDefaults(true);
       $('#new-run-dialog').close();
-      toast('Đã tạo run. Agent 1 đang chuẩn bị init.');
+      toast('Đã tạo run. Claude đang xây Backbone.');
       selectTab('room');
       await loadRuns();
     } catch (error) { $('#create-error').textContent = error.message; }

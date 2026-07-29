@@ -34,7 +34,7 @@ export class NativeTerminalController implements TerminalController {
   }
 
   async ensureSession(session: string, cwd: string): Promise<void> {
-    this.emit('terminal.ensure', { session, cwd, roles: ['agent-1', 'agent-2', 'agent-3'] });
+    this.emit('terminal.ensure', { session, cwd, roles: ['agent-1', 'agent-2'] });
   }
 
   async runJob(session: string, role: AgentRole, cwd: string, descriptorPath: string): Promise<void> {

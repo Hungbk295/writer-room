@@ -120,7 +120,6 @@ export class TmuxController implements TerminalController {
     if (present.code === 0) return;
     await command(tmux, ['new-session', '-d', '-s', session, '-n', 'agent-1', '-c', cwd]);
     await command(tmux, ['new-window', '-d', '-t', session, '-n', 'agent-2', '-c', cwd]);
-    await command(tmux, ['new-window', '-d', '-t', session, '-n', 'agent-3', '-c', cwd]);
     await command(tmux, ['set-option', '-t', session, 'remain-on-exit', 'on']);
   }
 
@@ -130,7 +129,7 @@ export class TmuxController implements TerminalController {
     const bun = process.env.WRITER_ROOM_BUN_BIN || process.execPath || 'bun';
     const runner = join(APP_ROOT, 'src', 'pane-runner.ts');
     const shellCommand = `${shellQuote(bun)} ${shellQuote(runner)} ${shellQuote(descriptorPath)}`;
-    const slot = role === 'writer' ? 'agent-1' : role === 'editor' ? 'agent-2' : 'agent-3';
+    const slot = role === 'writer' ? 'agent-1' : 'agent-2';
     await command(tmux, ['respawn-pane', '-k', '-t', `${session}:${slot}`, '-c', cwd, shellCommand]);
     await command(tmux, ['select-window', '-t', `${session}:${slot}`]);
   }
@@ -153,7 +152,7 @@ export class TmuxController implements TerminalController {
   async isRoleRunning(session: string, role: AgentRole): Promise<boolean> {
     if (this.mock) return false;
     const tmux = process.env.WRITER_ROOM_TMUX_BIN || 'tmux';
-    const slot = role === 'writer' ? 'agent-1' : role === 'editor' ? 'agent-2' : 'agent-3';
+    const slot = role === 'writer' ? 'agent-1' : 'agent-2';
     try {
       const result = await command(tmux, ['display-message', '-p', '-t', `${session}:${slot}`, '#{pane_dead}']);
       return result.stdout.trim() === '0';

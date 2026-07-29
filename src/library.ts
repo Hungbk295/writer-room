@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { RunState, SeoArtifact, WriterDraftArtifact } from './domain.ts';
+import type { CodexReviewArtifact, RunState, SeoArtifact, WriterDraftArtifact } from './domain.ts';
+import { allHardGatesPass } from './domain.ts';
 import { APP_DATA_ROOT, type RunStore } from './store.ts';
 import { sha256 } from './supervisor.ts';
 
@@ -14,6 +15,7 @@ export interface ArticleSummary {
   acceptedBy: 'target' | 'human';
   finalScore: number | null;
   seoVerdict: string | null;
+  finalGateStatus: string | null;
   createdAt: string;
   updatedAt: string;
   excerpt: string;
@@ -29,6 +31,7 @@ export interface ArticleVersion {
   markdownSha256: string;
   draftArtifactRelpath: string;
   seoArtifactRelpath: string;
+  reviewArtifactRelpath: string;
   createdAt: string;
 }
 
@@ -70,6 +73,7 @@ export class ArticleLibrary {
         accepted_by TEXT NOT NULL CHECK (accepted_by IN ('target','human')),
         final_score REAL,
         seo_verdict TEXT,
+        final_gate_status TEXT,
         source_run_relpath TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -85,6 +89,7 @@ export class ArticleLibrary {
         markdown_sha256 TEXT NOT NULL,
         draft_artifact_relpath TEXT NOT NULL,
         seo_artifact_relpath TEXT NOT NULL,
+        review_artifact_relpath TEXT,
         created_at TEXT NOT NULL,
         UNIQUE(article_id, version_no),
         UNIQUE(run_id, accepted_round)
@@ -92,6 +97,12 @@ export class ArticleLibrary {
       INSERT OR IGNORE INTO schema_migrations(version, applied_at, checksum)
       VALUES (1, datetime('now'), 'writer-room-library-v1');
     `);
+    const articleColumns = new Set((db.query('PRAGMA table_info(articles)').all() as Array<{ name: string }>).map((row) => row.name));
+    if (!articleColumns.has('final_gate_status')) db.exec('ALTER TABLE articles ADD COLUMN final_gate_status TEXT');
+    const versionColumns = new Set((db.query('PRAGMA table_info(article_versions)').all() as Array<{ name: string }>).map((row) => row.name));
+    if (!versionColumns.has('review_artifact_relpath')) db.exec('ALTER TABLE article_versions ADD COLUMN review_artifact_relpath TEXT');
+    db.exec(`INSERT OR IGNORE INTO schema_migrations(version, applied_at, checksum)
+      VALUES (2, datetime('now'), 'writer-room-library-two-agent-gates-v2');`);
     try {
       db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS article_fts USING fts5(article_id UNINDEXED, title, markdown, tokenize='unicode61 remove_diacritics 2');`);
     } catch {
@@ -110,8 +121,14 @@ export class ArticleLibrary {
     return this.db!;
   }
 
-  publish(state: RunState, draft: WriterDraftArtifact, seo: SeoArtifact): { articleId: string; versionId: string; markdownSha256: string } {
+  publish(
+    state: RunState,
+    draft: WriterDraftArtifact,
+    review: CodexReviewArtifact | SeoArtifact,
+  ): { articleId: string; versionId: string; markdownSha256: string } {
     if (state.stage !== 'complete' || !state.acceptedRound || !state.acceptedBy) throw new Error('only a complete accepted run can be published');
+    const isCodexReview = 'hardGates' in review;
+    if (isCodexReview && !allHardGatesPass(review)) throw new Error('cannot publish a version with unresolved Hard Gates');
     const db = this.database();
     const markdownSha256 = sha256(draft.draftMarkdown);
     const existing = db.query(`SELECT a.id article_id, a.current_version_id version_id, v.markdown_sha256 hash
@@ -124,11 +141,15 @@ export class ArticleLibrary {
     const versionId = `version-${sha256(`${state.id}:${state.acceptedRound}:${markdownSha256}`).slice(0, 20)}`;
     const now = new Date().toISOString();
     const score = state.scores.find((item) => item.round === state.acceptedRound)?.score ?? null;
+    const seoVerdict = isCodexReview ? null : review.verdict;
+    const finalGateStatus = isCodexReview ? 'pass' : null;
+    const seoArtifactRelpath = isCodexReview ? '' : 'artifacts/seo.json';
+    const reviewArtifactRelpath = isCodexReview ? `artifacts/codex-review-r${state.acceptedRound}.json` : '';
     const publish = db.transaction(() => {
-      db.query(`INSERT INTO articles(id,run_id,title,status,current_version_id,accepted_round,accepted_by,final_score,seo_verdict,source_run_relpath,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(articleId, state.id, state.config.title, 'active', versionId, state.acceptedRound!, state.acceptedBy!, score, seo.verdict, `runs/${state.id}`, now, now);
-      db.query(`INSERT INTO article_versions(id,article_id,version_no,run_id,accepted_round,markdown,markdown_sha256,draft_artifact_relpath,seo_artifact_relpath,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(versionId, articleId, 1, state.id, state.acceptedRound!, draft.draftMarkdown, markdownSha256, `artifacts/draft-r${state.acceptedRound}.json`, 'artifacts/seo.json', now);
+      db.query(`INSERT INTO articles(id,run_id,title,status,current_version_id,accepted_round,accepted_by,final_score,seo_verdict,final_gate_status,source_run_relpath,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(articleId, state.id, state.config.title, 'active', versionId, state.acceptedRound!, state.acceptedBy!, score, seoVerdict, finalGateStatus, `runs/${state.id}`, now, now);
+      db.query(`INSERT INTO article_versions(id,article_id,version_no,run_id,accepted_round,markdown,markdown_sha256,draft_artifact_relpath,seo_artifact_relpath,review_artifact_relpath,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(versionId, articleId, 1, state.id, state.acceptedRound!, draft.draftMarkdown, markdownSha256, `artifacts/draft-r${state.acceptedRound}.json`, seoArtifactRelpath, reviewArtifactRelpath, now);
       if (this.fts) db.query('INSERT INTO article_fts(article_id,title,markdown) VALUES (?,?,?)').run(articleId, searchText(state.config.title), searchText(draft.draftMarkdown));
     });
     publish();
@@ -158,6 +179,7 @@ export class ArticleLibrary {
       id: String(row.id), runId: String(row.run_id), title: String(row.title), status: row.status as 'active' | 'archived',
       acceptedRound: Number(row.accepted_round), acceptedBy: row.accepted_by as 'target' | 'human',
       finalScore: row.final_score === null ? null : Number(row.final_score), seoVerdict: row.seo_verdict === null ? null : String(row.seo_verdict),
+      finalGateStatus: row.final_gate_status === null ? null : String(row.final_gate_status),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at), excerpt: String(row.excerpt ?? ''),
     }));
   }
@@ -172,7 +194,10 @@ export class ArticleLibrary {
       versions: rows.map((row) => ({
         id: String(row.id), articleId: String(row.article_id), versionNo: Number(row.version_no), runId: String(row.run_id),
         acceptedRound: Number(row.accepted_round), markdown: String(row.markdown), markdownSha256: String(row.markdown_sha256),
-        draftArtifactRelpath: String(row.draft_artifact_relpath), seoArtifactRelpath: String(row.seo_artifact_relpath), createdAt: String(row.created_at),
+        draftArtifactRelpath: String(row.draft_artifact_relpath),
+        seoArtifactRelpath: String(row.seo_artifact_relpath),
+        reviewArtifactRelpath: String(row.review_artifact_relpath ?? ''),
+        createdAt: String(row.created_at),
       })),
     };
   }
@@ -212,12 +237,13 @@ export class ArticleLibrary {
     let count = 0;
     for (const state of await store.listStates()) {
       if (state.stage !== 'complete' || !state.acceptedRound) continue;
-      const [draft, seo] = await Promise.all([
+      const [draft, codexReview, seo] = await Promise.all([
         store.readArtifact<WriterDraftArtifact>(state.id, `draft-r${state.acceptedRound}.json`),
+        store.readArtifact<CodexReviewArtifact>(state.id, `codex-review-r${state.acceptedRound}.json`),
         store.readArtifact<SeoArtifact>(state.id, 'seo.json'),
       ]);
-      if (!draft || !seo) continue;
-      const receipt = this.publish(state, draft, seo);
+      if (!draft || (!codexReview && !seo)) continue;
+      const receipt = this.publish(state, draft, codexReview ?? seo!);
       const existing = await store.readArtifact<Record<string, unknown>>(state.id, 'library-published.json');
       if (existing) {
         if (existing.articleId !== receipt.articleId || existing.versionId !== receipt.versionId || existing.markdownSha256 !== receipt.markdownSha256) {

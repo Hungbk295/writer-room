@@ -120,6 +120,22 @@ button:disabled { cursor: wait; opacity: .55; }
 .score-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 16px; padding: 11px 0; border-top: 1px solid var(--line); }
 .score-row strong { font-size: 12px; }
 .score-row p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.gate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.gate-card { padding: 13px; border: 1px solid var(--line); border-left: 4px solid var(--green); border-radius: 10px; background: var(--paper); }
+.gate-card.fail { border-left-color: var(--red); background: #fff8f7; }
+.gate-card.unclear { border-left-color: var(--orange); background: #fffaf5; }
+.gate-card > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.gate-card p { margin: 10px 0 4px; font-size: 12px; line-height: 1.5; }
+.gate-card small { color: var(--muted); line-height: 1.5; }
+.quality-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.suggestion-stack { display: grid; gap: 10px; margin-top: 18px; }
+.suggestion-card { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.suggestion-card header { display: flex; align-items: center; gap: 9px; }
+.suggestion-card > p { color: var(--muted); }
+.option-list { display: grid; gap: 8px; margin: 12px 0; }
+.option-list > div { padding: 10px; border-radius: 9px; background: var(--surface); }
+.option-list p, .decision-row p { margin: 5px 0; font-size: 12px; line-height: 1.5; }
+.decision-row { padding: 11px 0; border-top: 1px solid var(--line); }
 .bullet-list { margin: 8px 0; padding-left: 20px; color: #50544d; font-size: 12px; line-height: 1.6; }
 
 .author-room { display: grid; gap: 22px; }
@@ -263,6 +279,7 @@ button:disabled { cursor: wait; opacity: .55; }
 }
 
 @media (max-width: 900px) {
+  .gate-grid, .quality-grid { grid-template-columns: 1fr; }
   .topbar { grid-template-columns: 1fr auto; }
   .top-tabs { position: fixed; left: 50%; bottom: 6px; height: 42px; transform: translateX(-50%); border: 1px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--shadow); z-index: 50; }
   .top-tab { padding: 0 14px; }

@@ -16,6 +16,43 @@ function events(value: string): Array<Record<string, unknown>> {
 }
 
 describe('per-run process log', () => {
+  test('keeps a completed three-agent run readable after the two-agent migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'writer-room-legacy-read-'));
+    dirs.push(root);
+    const guide = join(root, 'guide.txt');
+    const criteria = join(root, 'criteria.txt');
+    await Promise.all([writeFile(guide, 'Guide'), writeFile(criteria, 'Criteria')]);
+    const config = normalizeConfig({ title: 'Legacy completed script', guidePath: guide, criteriaPath: criteria });
+    const now = new Date().toISOString();
+    const state: RunState = {
+      schemaVersion: SCHEMA_VERSION, id: 'r-legacy-read-123456', tmuxSession: 'wr-legacy-read',
+      createdAt: now, updatedAt: now, stage: 'complete', config, round: 1,
+      reviews: [], scores: [], autoRepairCount: 0, acceptedRound: 1, acceptedBy: 'human',
+    };
+    const store = new RunStore(join(root, 'runs'));
+    await store.create(state);
+    await writeFile(store.path(state.id, 'state.json'), JSON.stringify({
+      ...state,
+      schemaVersion: 2,
+      config: {
+        ...config,
+        maxAutoRepairRounds: undefined,
+        maxRounds: 6,
+        targetScore: 9,
+        humanGate: 'init_only',
+        agentProfiles: [
+          ...config.agentProfiles,
+          { slot: 'agent-3', name: 'SEO', role: 'seo', adapter: 'agy', executable: 'agy', model: 'legacy', args: [], systemPrompt: '', enabled: true },
+        ],
+      },
+      acceptedBy: 'target',
+    }));
+    const migrated = await store.readState(state.id);
+    expect(migrated.stage).toBe('complete');
+    expect(migrated.config.maxAutoRepairRounds).toBe(6);
+    expect(migrated.config.agentProfiles.map((profile) => profile.slot)).toEqual(['agent-1', 'agent-2']);
+  });
+
   test('records run identity, configured models and meaningful stage changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'writer-room-process-'));
     dirs.push(root);
@@ -27,17 +64,17 @@ describe('per-run process log', () => {
     const now = new Date().toISOString();
     const state: RunState = {
       schemaVersion: SCHEMA_VERSION, id: 'r-process-123456', tmuxSession: 'wr-process',
-      createdAt: now, updatedAt: now, stage: 'writer_init', config, round: 0, scores: [],
+      createdAt: now, updatedAt: now, stage: 'claude_backbone', config, round: 0, reviews: [], scores: [], autoRepairCount: 0,
     };
     const store = new RunStore(join(root, 'runs'));
     await store.create(state);
-    await store.writeState({ ...await store.readState(state.id), stage: 'awaiting_human' });
-    await store.writeState({ ...await store.readState(state.id), stage: 'awaiting_human', error: 'same-stage update' });
+    await store.writeState({ ...await store.readState(state.id), stage: 'awaiting_backbone_approval' });
+    await store.writeState({ ...await store.readState(state.id), stage: 'awaiting_backbone_approval', error: 'same-stage update' });
     const rows = events(await readFile(store.path(state.id, 'logs', 'process.log'), 'utf8'));
     expect(rows[0]).toMatchObject({ event: 'run.created', runId: state.id, title: 'Trace this script' });
     expect((rows[0]?.agents as Array<Record<string, unknown>>)[0]).toMatchObject({ adapter: 'claude', model: 'sonnet' });
     expect(rows.filter((row) => row.event === 'stage.changed')).toEqual([
-      expect.objectContaining({ from: 'writer_init', to: 'awaiting_human' }),
+      expect.objectContaining({ from: 'claude_backbone', to: 'awaiting_backbone_approval' }),
     ]);
   });
 
@@ -52,7 +89,7 @@ describe('per-run process log', () => {
     const now = new Date().toISOString();
     const state: RunState = {
       schemaVersion: SCHEMA_VERSION, id: 'r-legacy-123456', tmuxSession: 'wr-legacy',
-      createdAt: now, updatedAt: now, stage: 'awaiting_human', config, round: 0, scores: [],
+      createdAt: now, updatedAt: now, stage: 'awaiting_backbone_approval', config, round: 0, reviews: [], scores: [], autoRepairCount: 0,
     };
     const store = new RunStore(join(root, 'runs'));
     await store.create(state);

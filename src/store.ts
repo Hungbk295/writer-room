@@ -1,7 +1,11 @@
 import { appendFile, mkdir, readFile, readdir, rename, writeFile, access, copyFile } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
-import type { RunDetails, RunState, WriterInitArtifact, HumanBrief, WriterDraftArtifact, EditorArtifact, HumanRoundNote, SeoArtifact, JobDescriptor, DurableJobRecord } from './domain.ts';
-import { safeRunId } from './domain.ts';
+import type {
+  BackboneArtifact, ClaudeRevisionArtifact, CodexReviewArtifact, DurableJobRecord,
+  EditorArtifact, HumanBrief, HumanRoundNote, JobDescriptor, RunDetails, RunState,
+  SeoArtifact, WriterDraftArtifact, WriterInitArtifact,
+} from './domain.ts';
+import { normalizeConfig, safeRunId } from './domain.ts';
 
 export const APP_ROOT = resolve(import.meta.dir, '..');
 export const APP_DATA_ROOT = resolve(process.env.WRITER_ROOM_DATA_DIR || APP_ROOT);
@@ -60,8 +64,9 @@ export class RunStore {
         runId: state.id,
         title: state.config.title,
         stage: state.stage,
-        targetScore: state.config.targetScore,
-        maxRounds: state.config.maxRounds,
+        maxAutoRepairRounds: state.config.maxAutoRepairRounds,
+        scriptLengthUnit: state.config.scriptLengthUnit,
+        scriptLengthTarget: state.config.scriptLengthTarget,
         instructions: {
           writerGuide: state.config.guideText ? 'inline_override' : 'file_default',
           editorCriteria: state.config.criteriaText ? 'inline_override' : 'file_default',
@@ -93,7 +98,8 @@ export class RunStore {
         from: previous.stage,
         to: next.stage,
         round: next.round,
-        score: next.scores.at(-1)?.score ?? null,
+        reviewLevel: next.reviews.at(-1)?.level ?? null,
+        allHardGatesPass: next.reviews.at(-1)?.allHardGatesPass ?? null,
         ...(next.error ? { error: next.error } : {}),
       }).catch(() => {});
     }
@@ -122,7 +128,7 @@ export class RunStore {
       event: 'run.created',
       runId: state.id,
       title: state.config.title,
-      stage: 'writer_init',
+      stage: state.stage,
       backfilled: true,
       agents: state.config.agentProfiles.map((profile) => ({
         slot: profile.slot,
@@ -185,7 +191,8 @@ export class RunStore {
       runId: state.id,
       stage: state.stage,
       round: state.round,
-      score: state.scores.at(-1)?.score ?? null,
+      reviewLevel: state.reviews.at(-1)?.level ?? null,
+      allHardGatesPass: state.reviews.at(-1)?.allHardGatesPass ?? null,
       backfilled: true,
     });
     events.sort((left, right) => left.at.localeCompare(right.at));
@@ -195,7 +202,20 @@ export class RunStore {
   }
 
   async readState(id: string): Promise<RunState> {
-    return JSON.parse(await readFile(this.path(id, 'state.json'), 'utf8')) as RunState;
+    const raw = JSON.parse(await readFile(this.path(id, 'state.json'), 'utf8')) as Partial<RunState> & {
+      scores?: RunState['scores'];
+      reviews?: RunState['reviews'];
+      autoRepairCount?: number;
+    };
+    // Legacy runs predate script length settings; normalize in memory so their
+    // prompts/UI receive stable defaults without rewriting historical evidence.
+    return {
+      ...raw,
+      config: normalizeConfig(raw.config),
+      reviews: raw.reviews ?? [],
+      scores: raw.scores ?? [],
+      autoRepairCount: raw.autoRepairCount ?? 0,
+    } as RunState;
   }
 
   async listStates(): Promise<RunState[]> {
@@ -274,15 +294,20 @@ export class RunStore {
 
   async details(id: string): Promise<RunDetails> {
     const state = await this.readState(id);
-    const initial = await this.readArtifact<WriterInitArtifact>(id, 'writer-init.json');
+    const initial = await this.readArtifact<BackboneArtifact>(id, 'backbone.json')
+      ?? await this.readArtifact<WriterInitArtifact>(id, 'writer-init.json');
     const humanBrief = await this.readArtifact<HumanBrief>(id, 'human-brief.json');
     const rounds = [];
-    for (let round = 1; round <= Math.max(state.round, state.config.maxRounds); round++) {
+    for (let round = 1; round <= state.round; round++) {
       const draft = await this.readArtifact<WriterDraftArtifact>(id, `draft-r${round}.json`);
-      const review = await this.readArtifact<EditorArtifact>(id, `review-r${round}.json`);
+      const review = await this.readArtifact<CodexReviewArtifact>(id, `codex-review-r${round}.json`)
+        ?? await this.readArtifact<EditorArtifact>(id, `review-r${round}.json`);
+      const decision = await this.readArtifact<ClaudeRevisionArtifact>(id, `claude-decision-r${round}.json`);
       const humanNote = await this.readArtifact<HumanRoundNote>(id, `human-note-r${round}.json`);
       const score = state.scores.find((item) => item.round === round)?.score ?? null;
-      if (draft || review || humanNote || score !== null) rounds.push({ round, draft, review, score, humanNote });
+      if (draft || review || decision || humanNote || score !== null) {
+        rounds.push({ round, draft, review, decision, score, humanNote });
+      }
     }
     const seo = await this.readArtifact<SeoArtifact>(id, 'seo.json');
     return { state, initial, humanBrief, rounds, seo };

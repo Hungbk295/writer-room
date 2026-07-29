@@ -2,15 +2,45 @@ import { exec } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
-  AgentAdapter, AgentProfile, AgentRole, EditorArtifact, HumanBrief, HumanRoundNote, JobDescriptor,
-  JobResultEnvelope, RunConfig, RunState, SeoArtifact, WriterDraftArtifact, WriterInitArtifact,
+  AgentAdapter, AgentProfile, AgentRole, BackboneArtifact, ClaudeRevisionArtifact,
+  CodexReviewArtifact, HumanBrief, HumanRoundNote, JobDescriptor, JobResultEnvelope,
+  RunConfig, RunState, WriterDraftArtifact,
+  WriterInitArtifact,
 } from './domain.ts';
 import {
-  SCHEMA_VERSION, calculateEditorScore, extractJson, normalizeConfig, normalizeHumanBrief,
-  parseEditor, parseSeo, parseWriterDraft, parseWriterInit, passesTarget,
+  SCHEMA_VERSION, allHardGatesPass, extractJson, normalizeConfig, normalizeHumanBrief,
+  parseBackbone, parseClaudeRevision, parseCodexReview, parseWriterDraft, validateReviewBranch,
 } from './domain.ts';
-import { editorPrompt, seoPrompt, writerHumanPrompt, writerInitPrompt, writerRevisionPrompt } from './prompts.ts';
+import {
+  backbonePrompt, claudeDraftPrompt, claudeRevisionPrompt, codexReviewPrompt,
+} from './prompts.ts';
 import { APP_DATA_ROOT, RunStore } from './store.ts';
+
+function draftLengthStats(markdown: string): { sentences: number; words: number } {
+  const words = markdown.trim().split(/\s+/).filter(Boolean).length;
+  const sentenceMatches = markdown.match(/[^.!?…]+[.!?…]+(?=\s|$)/g);
+  const sentences = sentenceMatches?.length || (markdown.trim() ? markdown.split(/\n+/).filter((line) => line.trim()).length : 0);
+  return { sentences, words };
+}
+
+function parseDraftForConfig(config: RunConfig, enforce = true) {
+  return (raw: unknown): WriterDraftArtifact => {
+    const draft = parseWriterDraft(raw);
+    if (!enforce) return draft;
+    const stats = draftLengthStats(draft.draftMarkdown);
+    const target = config.scriptLengthUnit === 'sentences'
+      ? config.scriptLengthTarget
+      : config.scriptLengthTarget * 150;
+    const actual = config.scriptLengthUnit === 'sentences' ? stats.sentences : stats.words;
+    const low = Math.floor(target * 0.8);
+    const high = Math.ceil(target * 1.2);
+    if (actual < low || actual > high) {
+      const unit = config.scriptLengthUnit === 'sentences' ? 'sentences' : 'words';
+      throw new Error(`script length ${actual} ${unit} is outside target range ${low}-${high} (${config.scriptLengthTarget} ${config.scriptLengthUnit})`);
+    }
+    return draft;
+  };
+}
 
 function openFolder(folderPath: string, filePath?: string): void {
   const platform = process.platform;
@@ -45,15 +75,14 @@ import { ArticleLibrary } from './library.ts';
 import { loadModelCatalog } from './model-catalog.ts';
 
 const ACTIVE_STAGES = new Set([
-  'writer_init', 'writer_human', 'editor', 'writer_revision', 'seo',
+  'claude_backbone', 'claude_draft', 'codex_review', 'claude_revision',
 ]);
 
 const ROLE_BY_STAGE: Partial<Record<NonNullable<RunState['failedStage']>, AgentRole>> = {
-  writer_init: 'writer',
-  writer_human: 'writer',
-  editor: 'editor',
-  writer_revision: 'writer',
-  seo: 'seo',
+  claude_backbone: 'writer',
+  claude_draft: 'writer',
+  codex_review: 'editor',
+  claude_revision: 'writer',
 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -71,9 +100,17 @@ function createId(): string {
 }
 
 function mockArtifact(kind: string): unknown {
-  if (kind === 'writer-init') {
+  if (kind === 'claude-backbone') {
     return {
-      draftMarkdown: '# Bản init\n\nĐây là bản nháp đầu tiên để mở cuộc trò chuyện với tác giả.',
+      titlePromise: 'Người xem hiểu một niềm tin phổ biến có thể che khuất vấn đề thật.',
+      centralQuestion: 'Điều gì thật sự đang xảy ra phía sau niềm tin quen thuộc?',
+      viewerBefore: 'Tin rằng fact tự tạo ra sức hút.',
+      viewerAfter: 'Nhìn được tension và biết điều cần làm tiếp.',
+      mainTakeaway: 'Thông tin chỉ có giá trị khi thay đổi được cách nhìn.',
+      contentMode: 'hybrid',
+      emotionalIntent: 'Tạo cảm giác được nhìn thấy mà không kịch tính hóa.',
+      informationIntent: 'Giải thích rõ cơ chế và giới hạn của kết luận.',
+      protectedElements: ['Giọng nói tự nhiên', 'Lời hứa trung tâm'],
       evidenceLedger: [
         { id: 'E1', kind: 'claim', text: 'Khán giả thường bắt đầu từ một niềm tin phổ biến.', sourceRef: 'input:title', confidence: 'low', corroborationIds: [], contradictionIds: ['E2'] },
         { id: 'E2', kind: 'scene', text: 'Một khoảnh khắc nhỏ có thể làm thay đổi cách nhìn.', sourceRef: 'mock:source-pack', confidence: 'medium', corroborationIds: [], contradictionIds: ['E1'] },
@@ -102,41 +139,63 @@ function mockArtifact(kind: string): unknown {
         { id: 'scene', question: 'Khoảnh khắc cụ thể nào khiến bạn đổi cách nhìn?', why: 'Tìm cảnh và chi tiết.', gapType: 'experience', relatedOptionIds: ['outline-b'] },
         { id: 'voice', question: 'Câu nào bạn sẽ nói tự nhiên, và kiểu câu nào bạn tuyệt đối không nói?', why: 'Khóa giọng.', gapType: 'voice', relatedOptionIds: ['outline-a', 'outline-b', 'outline-c'] },
       ],
-      selfNotes: ['Mock artifact for local proof'],
+      selfNotes: ['Mock backbone for local proof'],
     };
   }
-  if (kind.startsWith('writer-')) {
+  if (kind === 'claude-draft') {
     return {
-      draftMarkdown: `# Bản ${kind}\n\nĐiều ai cũng tin có thể chính là thứ làm ta nhìn sai.\n\nĐây là bản đầy đủ giữ lại insight và giọng của người viết, đồng thời giải quyết phản biện theo từng vòng.`,
+      draftMarkdown: '# Draft 1\n\nĐiều ai cũng tin có thể chính là thứ làm ta nhìn sai.\n\nĐây là bản đầy đủ giữ lại insight và giọng của người viết.',
       changeLog: ['Giữ hook đã chọn', 'Làm rõ mâu thuẫn và payoff'],
       appliedHumanInsights: ['Audience tension', 'Lived moment'],
       preservedHumanSignals: ['Natural phrase'],
     };
   }
-  if (kind.startsWith('editor-r')) {
-    const round = Number(kind.match(/r(\d+)/)?.[1] ?? 1);
-    const passed = round >= 2;
+  if (kind.startsWith('claude-r')) {
+    const reviewLevel = kind.includes('-level2') ? 2 : 1;
     return {
-      summary: passed ? 'Bài đã rõ, có giọng và trả đúng lời hứa.' : 'Bài có hướng nhưng payoff còn mỏng.',
-      criteriaScores: [
-        { criterion: 'Hook', score: passed ? 9.3 : 8, weight: 1, evidence: 'Mở bài nêu mâu thuẫn.', fix: passed ? '' : 'Làm lời hứa cụ thể hơn.' },
-        { criterion: 'Insight', score: passed ? 9.2 : 8, weight: 1, evidence: 'Có tension và cách nhìn mới.', fix: passed ? '' : 'Thêm cảnh chứng minh.' },
-      ],
-      blockingIssues: [],
-      revisionPlan: passed ? [] : ['Tăng độ cụ thể của payoff và cảnh trung tâm.'],
-      verdict: passed ? 'pass' : 'revise',
-      modelOverall: passed ? 9.25 : 8,
+      draftMarkdown: `# Candidate ${kind}\n\nĐiều ai cũng tin có thể chính là thứ làm ta nhìn sai.\n\nBản này làm rõ lời hứa và vẫn giữ giọng tự nhiên.`,
+      changeLog: ['Claude đã quyết định từng phương án của Codex.'],
+      appliedHumanInsights: ['Audience tension'],
+      preservedHumanSignals: ['Natural phrase'],
+      suggestionDecisions: [{
+        suggestionId: 'S1',
+        decision: reviewLevel === 1 ? 'accepted' : 'adapted',
+        selectedOptionId: 'S1-A',
+        reason: 'Cải thiện rõ ràng mà không làm bài gượng.',
+      }],
     };
   }
-  if (kind === 'seo') {
+  if (kind.startsWith('codex-r')) {
+    const round = Number(kind.match(/r(\d+)/)?.[1] ?? 1);
+    const passed = round >= 2;
+    const status = passed ? 'pass' : 'fail';
     return {
-      score: 8.8,
-      verdict: 'strong',
-      checks: [{ criterion: 'search intent', score: 8.8, evidence: 'Title and opening align.', recommendation: 'Keep wording natural.' }],
-      titleSuggestions: [],
-      descriptionOutline: ['Promise', 'Value and chapters', 'CTA'],
-      keywords: ['youtube topic'],
-      notes: ['Mock SEO review'],
+      summary: passed ? 'Tất cả Hard Gate đạt; còn một cơ hội nâng trải nghiệm.' : 'Lời hứa title chưa được trả đủ.',
+      hardGates: [
+        { id: 'title_promise_completed', status, evidence: 'Đoạn kết', reason: passed ? 'Đã trả lời.' : 'Payoff còn mơ hồ.', passCondition: passed ? '' : 'Nói rõ điều người xem hiểu sau video.' },
+        { id: 'no_major_factual_error', status: 'pass', evidence: 'Không có claim trọng yếu sai.', reason: 'Claim giữ đúng nguồn.', passCondition: '' },
+        { id: 'no_major_logical_contradiction', status: 'pass', evidence: 'Chuỗi lập luận nhất quán.', reason: 'Không mâu thuẫn.', passCondition: '' },
+        { id: 'no_unsupported_core_conclusion', status: 'pass', evidence: 'Kết luận bám evidence.', reason: 'Không suy diễn.', passCondition: '' },
+        { id: 'no_unresolved_primary_open_loop', status: 'pass', evidence: 'Câu hỏi chính được đóng.', reason: 'Open loop đã trả.', passCondition: '' },
+        { id: 'no_serious_audience_misleading', status: 'pass', evidence: 'Có giới hạn.', reason: 'Không hứa quá.', passCondition: '' },
+      ],
+      qualityFloors: {
+        emotion: { status: 'meets_floor', evidence: 'Có tension tự nhiên.', opportunity: 'Có thể tăng một chi tiết đời.' },
+        information: { status: 'meets_floor', evidence: 'Luận điểm rõ.', opportunity: 'Có thể rút gọn một đoạn.' },
+      },
+      suggestions: [{
+        id: 'S1',
+        level: passed ? 2 : 1,
+        ...(passed ? {} : { targetGate: 'title_promise_completed' }),
+        area: passed ? 'emotion' : 'title',
+        observation: passed ? 'Cảnh trung tâm có thể cụ thể hơn.' : 'Payoff chưa hoàn tất lời hứa.',
+        evidence: passed ? 'Phần giữa.' : 'Đoạn kết.',
+        intendedGain: passed ? 'Tăng cộng hưởng cảm xúc.' : 'Qua Hard Gate title.',
+        options: [{ id: 'S1-A', label: 'Sửa tối thiểu', approach: 'Làm rõ bằng một câu hoặc chi tiết hiện có.', tradeoff: 'Không mở thêm luận điểm.' }],
+        protect: ['Giọng tự nhiên'],
+        riskIfUnchanged: passed ? 'Thấp.' : 'Người xem chưa nhận payoff.',
+      }],
+      regressions: [],
     };
   }
   throw new Error(`no mock artifact for ${kind}`);
@@ -292,10 +351,12 @@ export class Orchestrator {
       tmuxSession: `wr-${id}`,
       createdAt: now,
       updatedAt: now,
-      stage: 'writer_init',
+      stage: 'claude_backbone',
       config,
       round: 0,
+      reviews: [],
       scores: [],
+      autoRepairCount: 0,
       revision: 0,
       recoveryStatus: 'none',
     };
@@ -344,11 +405,11 @@ export class Orchestrator {
 
   async submitHuman(id: string, raw: unknown): Promise<RunState> {
     const state = await this.store.readState(id);
-    if (state.stage !== 'awaiting_human') throw new Error(`run is not awaiting initial human input (stage=${state.stage})`);
-    const initial = await this.requireArtifact<WriterInitArtifact>(id, 'writer-init.json');
-    const brief = normalizeHumanBrief(raw, initial);
+    if (state.stage !== 'awaiting_backbone_approval') throw new Error(`run is not awaiting backbone approval (stage=${state.stage})`);
+    const backbone = await this.requireArtifact<BackboneArtifact>(id, 'backbone.json');
+    const brief = normalizeHumanBrief(raw, backbone);
     await this.store.writeArtifact(id, 'human-brief.json', brief);
-    const next = { ...state, stage: 'writer_human' as const, error: undefined };
+    const next = { ...state, stage: 'claude_draft' as const, error: undefined };
     await this.store.writeState(next);
     this.launch(id, (signal) => this.runAfterHuman(id, signal));
     return next;
@@ -356,11 +417,11 @@ export class Orchestrator {
 
   async continueRound(id: string, noteValue: unknown): Promise<RunState> {
     const state = await this.store.readState(id);
-    if (state.stage !== 'awaiting_round_human') throw new Error(`run is not at a round human gate (stage=${state.stage})`);
+    if (state.stage !== 'awaiting_user') throw new Error(`run is not awaiting the user enhancement decision (stage=${state.stage})`);
     const note = typeof noteValue === 'string' ? noteValue.trim() : '';
     const artifact: HumanRoundNote = { afterRound: state.round, note, submittedAt: new Date().toISOString() };
     await this.store.writeArtifact(id, `human-note-r${state.round}.json`, artifact);
-    const next = { ...state, stage: 'writer_revision' as const, error: undefined };
+    const next = { ...state, stage: 'claude_revision' as const, autoRepairCount: 0, error: undefined };
     await this.store.writeState(next);
     this.launch(id, (signal) => this.runRevisionFrom(id, state.round, signal));
     return next;
@@ -368,22 +429,20 @@ export class Orchestrator {
 
   async acceptCurrent(id: string, reasonValue: unknown): Promise<RunState> {
     const state = await this.store.readState(id);
-    if (state.stage !== 'awaiting_round_human' && state.stage !== 'needs_human') {
-      throw new Error(`current round cannot be accepted from stage=${state.stage}`);
-    }
-    if (state.round < 1) throw new Error('no scored round to accept');
-    const reason = typeof reasonValue === 'string' && reasonValue.trim() ? reasonValue.trim() : 'Human editorial override';
+    if (state.stage !== 'awaiting_user' && state.stage !== 'needs_human') throw new Error(`current passing version cannot be locked from stage=${state.stage}`);
+    if (!state.lastPassingRound) throw new Error('no Hard-Gate-passing version is available to lock');
+    const reason = typeof reasonValue === 'string' && reasonValue.trim() ? reasonValue.trim() : 'User locked the current passing version';
     const next: RunState = {
       ...state,
-      stage: 'seo',
-      acceptedRound: state.round,
+      stage: 'complete',
+      acceptedRound: state.lastPassingRound,
       acceptedBy: 'human',
-      humanOverrideReason: reason,
+      userDecisionReason: reason,
       error: undefined,
     };
     await this.store.writeState(next);
-    this.launch(id, (signal) => this.runSeo(id, signal));
-    return next;
+    await this.publishComplete(id);
+    return this.store.readState(id);
   }
 
   async cancel(id: string): Promise<RunState> {
@@ -493,21 +552,20 @@ export class Orchestrator {
     let state = await this.store.readState(id);
     await this.store.writeState({ ...state, recoveryStatus: 'resuming', error: undefined });
     state = await this.store.readState(id);
-    if (state.stage === 'writer_init') return this.runInitial(id, signal);
-    if (state.stage === 'writer_human') {
+    if (state.stage === 'claude_backbone') return this.runInitial(id, signal);
+    if (state.stage === 'claude_draft') {
       const brief = await this.store.readArtifact<HumanBrief>(id, 'human-brief.json');
       if (!brief) {
-        await this.store.writeState({ ...state, stage: 'awaiting_human', recoveryStatus: 'none', currentJob: undefined });
+        await this.store.writeState({ ...state, stage: 'awaiting_backbone_approval', recoveryStatus: 'none', currentJob: undefined });
         return;
       }
       return this.runAfterHuman(id, signal);
     }
-    if (state.stage === 'editor') {
+    if (state.stage === 'codex_review') {
       const draft = await this.requireArtifact<WriterDraftArtifact>(id, `draft-r${state.round}.json`);
       return this.reviewLoop(id, state.round, draft, signal);
     }
-    if (state.stage === 'writer_revision') return this.runRevisionFrom(id, state.round, signal);
-    if (state.stage === 'seo') return this.runSeo(id, signal);
+    if (state.stage === 'claude_revision') return this.runRevisionFrom(id, state.round, signal);
   }
 
   private async runInitial(id: string, signal: AbortSignal): Promise<void> {
@@ -516,48 +574,85 @@ export class Orchestrator {
       this.store.readInput(id, 'writer-guide.txt'),
       this.store.readInput(id, 'source-pack.txt'),
     ]);
-    const artifact = await this.runRole(id, state, 'writer', 'writer-init', writerInitPrompt(state.config, guide, sourcePack), parseWriterInit, signal);
-    await this.store.writeArtifact(id, 'writer-init.json', artifact);
+    const existing = await this.store.readArtifact<BackboneArtifact>(id, 'backbone.json');
+    const artifact = existing ?? await this.runRole(
+      id, state, 'writer', 'claude-backbone',
+      backbonePrompt(state.config, guide, sourcePack), parseBackbone, signal,
+    );
+    if (!existing) await this.store.writeArtifact(id, 'backbone.json', artifact);
     const latest = await this.store.readState(id);
-    await this.store.writeState({ ...latest, stage: 'awaiting_human', currentJob: undefined, recoveryStatus: 'none', interrupted: false, error: undefined });
+    await this.store.writeState({
+      ...latest,
+      stage: 'awaiting_backbone_approval',
+      currentJob: undefined,
+      recoveryStatus: 'none',
+      interrupted: false,
+      error: undefined,
+    });
   }
 
   private async runAfterHuman(id: string, signal: AbortSignal): Promise<void> {
     const state = await this.store.readState(id);
-    const [guide, sourcePack, initial, human] = await Promise.all([
+    const [guide, sourcePack, backbone, human] = await Promise.all([
       this.store.readInput(id, 'writer-guide.txt'),
       this.store.readInput(id, 'source-pack.txt'),
-      this.requireArtifact<WriterInitArtifact>(id, 'writer-init.json'),
+      this.requireArtifact<BackboneArtifact>(id, 'backbone.json'),
       this.requireArtifact<HumanBrief>(id, 'human-brief.json'),
     ]);
     const existing = await this.store.readArtifact<WriterDraftArtifact>(id, 'draft-r1.json');
-    const draft = existing ?? await this.runRole(id, state, 'writer', 'writer-human', writerHumanPrompt(state.config, guide, sourcePack, initial, human), parseWriterDraft, signal);
+    const draft = existing ?? await this.runRole(
+      id, state, 'writer', 'claude-draft',
+      claudeDraftPrompt(state.config, guide, sourcePack, backbone, human),
+      parseDraftForConfig(state.config, !this.mock), signal,
+    );
     if (!existing) await this.store.writeArtifact(id, 'draft-r1.json', draft);
     const latest = await this.store.readState(id);
-    await this.store.writeState({ ...latest, round: 1, stage: 'editor', currentJob: undefined, recoveryStatus: 'none', interrupted: false });
+    await this.store.writeState({
+      ...latest,
+      round: 1,
+      stage: 'codex_review',
+      currentJob: undefined,
+      recoveryStatus: 'none',
+      interrupted: false,
+    });
     await this.reviewLoop(id, 1, draft, signal);
   }
 
   private async runRevisionFrom(id: string, previousRound: number, signal: AbortSignal): Promise<void> {
     const state = await this.store.readState(id);
-    const [guide, sourcePack, previous, review, human, humanNote] = await Promise.all([
+    const [guide, sourcePack, backbone, previous, review, human, humanNote] = await Promise.all([
       this.store.readInput(id, 'writer-guide.txt'),
       this.store.readInput(id, 'source-pack.txt'),
+      this.requireArtifact<BackboneArtifact>(id, 'backbone.json'),
       this.requireArtifact<WriterDraftArtifact>(id, `draft-r${previousRound}.json`),
-      this.requireArtifact<EditorArtifact>(id, `review-r${previousRound}.json`),
+      this.requireArtifact<CodexReviewArtifact>(id, `codex-review-r${previousRound}.json`),
       this.requireArtifact<HumanBrief>(id, 'human-brief.json'),
       this.store.readArtifact<HumanRoundNote>(id, `human-note-r${previousRound}.json`),
     ]);
     const nextRound = previousRound + 1;
-    const existing = await this.store.readArtifact<WriterDraftArtifact>(id, `draft-r${nextRound}.json`);
-    const draft = existing ?? await this.runRole(
-      id, state, 'writer', `writer-r${nextRound}`,
-      writerRevisionPrompt(state.config, guide, sourcePack, previous, review, nextRound, human, humanNote),
-      parseWriterDraft, signal,
+    const existing = await this.store.readArtifact<ClaudeRevisionArtifact>(id, `claude-decision-r${nextRound}.json`);
+    const parser = (raw: unknown): ClaudeRevisionArtifact => {
+      const revision = parseClaudeRevision(raw, review);
+      parseDraftForConfig(state.config, !this.mock)(revision);
+      return revision;
+    };
+    const level = allHardGatesPass(review) ? 2 : 1;
+    const revision = existing ?? await this.runRole(
+      id, state, 'writer', `claude-r${nextRound}-level${level}`,
+      claudeRevisionPrompt(state.config, guide, sourcePack, backbone, human, previous, review, nextRound, humanNote),
+      parser, signal,
     );
-    if (!existing) await this.store.writeArtifact(id, `draft-r${nextRound}.json`, draft);
+    if (!existing) await this.store.writeArtifact(id, `claude-decision-r${nextRound}.json`, revision);
+    const draft: WriterDraftArtifact = {
+      draftMarkdown: revision.draftMarkdown,
+      changeLog: revision.changeLog,
+      appliedHumanInsights: revision.appliedHumanInsights,
+      preservedHumanSignals: revision.preservedHumanSignals,
+    };
+    const existingDraft = await this.store.readArtifact<WriterDraftArtifact>(id, `draft-r${nextRound}.json`);
+    if (!existingDraft) await this.store.writeArtifact(id, `draft-r${nextRound}.json`, draft);
     const latest = await this.store.readState(id);
-    await this.store.writeState({ ...latest, round: nextRound, stage: 'editor', currentJob: undefined });
+    await this.store.writeState({ ...latest, round: nextRound, stage: 'codex_review', currentJob: undefined });
     await this.reviewLoop(id, nextRound, draft, signal);
   }
 
@@ -567,74 +662,108 @@ export class Orchestrator {
     while (true) {
       if (signal.aborted) throw abortError();
       let state = await this.store.readState(id);
-      const criteria = await this.store.readInput(id, 'editor-criteria.txt');
-      const existingReview = await this.store.readArtifact<EditorArtifact>(id, `review-r${round}.json`);
+      const [criteria, sourcePack, backbone, human, lastPassingDraft] = await Promise.all([
+        this.store.readInput(id, 'editor-criteria.txt'),
+        this.store.readInput(id, 'source-pack.txt'),
+        this.requireArtifact<BackboneArtifact>(id, 'backbone.json'),
+        this.requireArtifact<HumanBrief>(id, 'human-brief.json'),
+        state.lastPassingRound
+          ? this.store.readArtifact<WriterDraftArtifact>(id, `draft-r${state.lastPassingRound}.json`)
+          : Promise.resolve(null),
+      ]);
+      const existingReview = await this.store.readArtifact<CodexReviewArtifact>(id, `codex-review-r${round}.json`);
       const review = existingReview ?? await this.runRole(
-        id, state, 'editor', `editor-r${round}`,
-        editorPrompt(state.config, criteria, draft, round), parseEditor, signal,
+        id, state, 'editor', `codex-r${round}`,
+        codexReviewPrompt(state.config, criteria, sourcePack, backbone, human, draft, round, lastPassingDraft),
+        (raw) => validateReviewBranch(parseCodexReview(raw)), signal,
       );
       const reviewArtifact = existingReview
-        ? `artifacts/review-r${round}.json`
-        : await this.store.writeArtifact(id, `review-r${round}.json`, review);
-      const score = calculateEditorScore(review);
-      const passed = passesTarget(review, state.config.targetScore);
-      const scores = [...state.scores.filter((item) => item.round !== round), {
+        ? `artifacts/codex-review-r${round}.json`
+        : await this.store.writeArtifact(id, `codex-review-r${round}.json`, review);
+      const passed = allHardGatesPass(review);
+      const level: 1 | 2 = passed ? 2 : 1;
+      const reviews = [...state.reviews.filter((item) => item.round !== round), {
         round,
-        score,
-        passed,
+        level,
+        allHardGatesPass: passed,
         reviewArtifact,
         draftArtifact: `artifacts/draft-r${round}.json`,
       }].sort((a, b) => a.round - b.round);
-      state = { ...state, round, scores, currentJob: undefined };
+      state = { ...state, round, reviews, currentJob: undefined };
+      await this.store.appendProcessEvent(id, {
+        event: 'codex.review.completed',
+        round,
+        level,
+        allHardGatesPass: passed,
+        unresolvedGates: review.hardGates.filter((gate) => gate.status !== 'pass').map((gate) => gate.id),
+        emotionFloor: review.qualityFloors.emotion.status,
+        informationFloor: review.qualityFloors.information.status,
+        suggestionCount: review.suggestions.length,
+      });
       if (passed) {
-        await this.store.writeState({ ...state, stage: 'seo', acceptedRound: round, acceptedBy: 'target' });
-        await this.runSeo(id, signal);
+        await this.store.writeState({
+          ...state,
+          stage: 'awaiting_user',
+          lastPassingRound: round,
+          lastPassingReviewArtifact: reviewArtifact,
+          autoRepairCount: 0,
+          error: undefined,
+        });
         return;
       }
-      if (round >= state.config.maxRounds) {
-        await this.store.writeState({ ...state, stage: 'needs_human' });
+      const autoRepairCount = state.autoRepairCount + 1;
+      if (autoRepairCount > state.config.maxAutoRepairRounds) {
+        await this.store.writeState({
+          ...state,
+          stage: 'needs_human',
+          autoRepairCount,
+          error: state.lastPassingRound
+            ? `Candidate vẫn chưa qua Hard Gate sau ${state.config.maxAutoRepairRounds} vòng tự sửa. Bản đạt gần nhất r${state.lastPassingRound} vẫn an toàn.`
+            : `Chưa có bản nào qua Hard Gate sau ${state.config.maxAutoRepairRounds} vòng tự sửa.`,
+        });
         return;
       }
-      if (state.config.humanGate === 'every_round') {
-        await this.store.writeState({ ...state, stage: 'awaiting_round_human' });
-        return;
-      }
-
-      const [guide, sourcePack, human] = await Promise.all([
+      const [guide] = await Promise.all([
         this.store.readInput(id, 'writer-guide.txt'),
-        this.store.readInput(id, 'source-pack.txt'),
-        this.requireArtifact<HumanBrief>(id, 'human-brief.json'),
       ]);
       const nextRound = round + 1;
-      await this.store.writeState({ ...state, stage: 'writer_revision' });
-      draft = await this.runRole(
-        id, state, 'writer', `writer-r${nextRound}`,
-        writerRevisionPrompt(state.config, guide, sourcePack, draft, review, nextRound, human, null),
-        parseWriterDraft, signal,
+      await this.store.writeState({ ...state, stage: 'claude_revision', autoRepairCount });
+      const parser = (raw: unknown): ClaudeRevisionArtifact => {
+        const revision = parseClaudeRevision(raw, review);
+        parseDraftForConfig(state.config, !this.mock)(revision);
+        return revision;
+      };
+      const revision = await this.runRole(
+        id, state, 'writer', `claude-r${nextRound}-level1`,
+        claudeRevisionPrompt(state.config, guide, sourcePack, backbone, human, draft, review, nextRound, null),
+        parser, signal,
       );
+      await this.store.writeArtifact(id, `claude-decision-r${nextRound}.json`, revision);
+      draft = {
+        draftMarkdown: revision.draftMarkdown,
+        changeLog: revision.changeLog,
+        appliedHumanInsights: revision.appliedHumanInsights,
+        preservedHumanSignals: revision.preservedHumanSignals,
+      };
       await this.store.writeArtifact(id, `draft-r${nextRound}.json`, draft);
       round = nextRound;
       const latest = await this.store.readState(id);
-      await this.store.writeState({ ...latest, round, stage: 'editor', currentJob: undefined });
+      await this.store.writeState({ ...latest, round, stage: 'codex_review', currentJob: undefined });
     }
   }
 
-  private async runSeo(id: string, signal: AbortSignal): Promise<void> {
+  private async publishComplete(id: string): Promise<void> {
     const state = await this.store.readState(id);
-    if (!state.acceptedRound) throw new Error('SEO requires an accepted round');
+    if (state.stage !== 'complete' || !state.acceptedRound) throw new Error('publication requires a complete accepted round');
     const draft = await this.requireArtifact<WriterDraftArtifact>(id, `draft-r${state.acceptedRound}.json`);
-    const existing = await this.store.readArtifact<SeoArtifact>(id, 'seo.json');
-    const seo = existing ?? await this.runRole<SeoArtifact>(id, state, 'seo', 'seo', seoPrompt(state.config, draft), parseSeo, signal);
-    if (!existing) await this.store.writeArtifact(id, 'seo.json', seo);
-    const latest = await this.store.readState(id);
-    await this.store.writeState({ ...latest, stage: 'complete', currentJob: undefined, recoveryStatus: 'none', interrupted: false, error: undefined });
-    const complete = await this.store.readState(id);
+    const review = await this.requireArtifact<CodexReviewArtifact>(id, `codex-review-r${state.acceptedRound}.json`);
+    if (!allHardGatesPass(review)) throw new Error('publication requires all Hard Gates to pass');
     try {
-      const receipt = this.library.publish(complete, draft, seo);
+      const receipt = this.library.publish(state, draft, review);
       await this.store.writeArtifact(id, 'library-published.json', { ...receipt, schemaVersion: 1, publishedAt: new Date().toISOString() });
     } catch (error) {
       await this.store.writeState({
-        ...complete,
+        ...state,
         error: `Bài đã hoàn tất nhưng Library cần đồng bộ lại: ${(error as Error).message}`,
       });
     }

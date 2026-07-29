@@ -9,7 +9,7 @@
   <body>
     <div class="app-frame">
       <header class="topbar">
-        <div class="brand"><span class="brand-mark">W</span><div><strong>Writer Room</strong><small>Human × Multi-Agent</small></div></div>
+        <div class="brand"><span class="brand-mark">W</span><div><strong>Writer Room</strong><small>Human × Claude × Codex</small></div></div>
         <nav class="top-tabs" aria-label="Khu vực ứng dụng">
           <button class="top-tab active" data-tab="room" type="button">Room</button>
           <button class="top-tab" data-tab="library" type="button">Library</button>
@@ -45,7 +45,7 @@
             <div id="document-scroll" class="document-scroll">
               <div id="document-content" class="document-content empty-state">
                 <div class="empty-icon">✦</div><h2>Một title, một phòng biên tập</h2>
-                <p>Agent chuẩn bị evidence, angle và hook. Bạn khóa insight trước khi Writer và Editor bắt đầu vòng chấm.</p>
+                <p>Claude xây backbone để bạn duyệt. Codex kiểm Hard Gate và đưa phương án; bạn quyết định có chạy thêm vòng nâng trải nghiệm hay không.</p>
                 <button class="primary-button" data-open-new type="button">Tạo bài đầu tiên</button>
               </div>
             </div>
@@ -61,7 +61,7 @@
 
           <div id="agents-view" class="view-stack hidden">
             <div class="document-toolbar">
-              <div><span class="kicker">RUNTIME CONFIGURATION</span><h1>Agents 1 / 2 / 3</h1></div>
+              <div><span class="kicker">RUNTIME CONFIGURATION</span><h1>Claude / Codex</h1></div>
               <div class="toolbar-actions"><button id="reset-agents" class="outline-button" type="button">Mặc định</button><button id="save-agents" class="primary-button" type="button">Lưu cấu hình</button></div>
             </div>
             <div class="document-scroll"><div id="agents-notice" class="notice hidden"></div><div id="agents-grid" class="agents-grid"></div></div>
@@ -70,13 +70,13 @@
 
         <aside id="inspector" class="inspector">
           <div class="inspector-head"><div><span class="kicker">INSPECTOR</span><h2>Trạng thái & quyết định</h2></div><button id="close-inspector" class="icon-button mobile-only" type="button">×</button></div>
-          <div id="inspector-content" class="inspector-content"><p class="muted">Chọn một run để xem tiến độ, score, evidence và hành động tiếp theo.</p></div>
+          <div id="inspector-content" class="inspector-content"><p class="muted">Chọn một run để xem Backbone, Hard Gate, gợi ý và hành động tiếp theo.</p></div>
         </aside>
       </main>
 
       <section id="console-drawer" class="console-drawer" aria-label="Agent consoles">
         <div class="console-bar">
-          <div class="console-tabs"><span class="console-label">CONSOLES</span><button class="console-tab active" data-console="writer" type="button">Agent 1</button><button class="console-tab" data-console="editor" type="button">Agent 2</button><button class="console-tab" data-console="seo" type="button">Agent 3</button><button class="console-tab" data-console="process" type="button">Process</button></div>
+          <div class="console-tabs"><span class="console-label">CONSOLES</span><button class="console-tab active" data-console="writer" type="button">Claude</button><button class="console-tab" data-console="editor" type="button">Codex</button><button class="console-tab" data-console="process" type="button">Process</button></div>
           <button id="toggle-console" class="text-button" type="button">Mở console <span>⌃</span></button>
         </div>
         <pre id="console-output" class="console-output">Chưa có log.</pre>
@@ -102,18 +102,18 @@
               <input class="visually-hidden" data-prompt-file="guideText" type="file" accept=".txt,text/plain" />
             </div>
             <div class="prompt-dropzone" data-prompt-drop="criteriaText">
-              <div class="prompt-input-head"><label for="criteria-text">Editor criteria</label><span class="prompt-source" data-prompt-source="criteriaText">Đang nạp mặc định…</span></div>
+              <div class="prompt-input-head"><label for="criteria-text">Codex review criteria</label><span class="prompt-source" data-prompt-source="criteriaText">Đang nạp mặc định…</span></div>
               <textarea id="criteria-text" name="criteriaText" rows="10" spellcheck="false" placeholder="Nhập tiêu chí chấm bài…"></textarea>
               <div class="prompt-input-foot"><span>Thả file .txt vào đây</span><button class="text-button" data-prompt-pick="criteriaText" type="button">Chọn file</button></div>
               <input class="visually-hidden" data-prompt-file="criteriaText" type="file" accept=".txt,text/plain" />
             </div>
           </div>
         </section>
-        <div class="form-row three"><label class="field">Target score<input name="targetScore" type="number" min="0.1" max="10" step="0.1" value="9" /></label><label class="field">Số vòng tối đa<input name="maxRounds" type="number" min="1" max="12" value="6" /></label><label class="field">Human gate<select name="humanGate"><option value="init_only">Sau init</option><option value="every_round">Sau mỗi review</option></select></label></div>
-        <details class="advanced"><summary>Cấu hình nâng cao</summary><div class="advanced-fields"><label class="field">Timeout mỗi agent (phút)<input name="timeoutMinutes" type="number" min="1" max="120" value="20" /></label></div></details>
-        <div class="dialog-actions"><span id="create-error" class="error" role="alert"></span><button id="cancel-new" class="outline-button" type="button">Hủy</button><button class="primary-button" type="submit">Tạo init</button></div>
+        <div class="form-row"><label class="field">Số vòng tự sửa Hard Gate tối đa<input name="maxAutoRepairRounds" type="number" min="1" max="6" value="3" /></label><div class="field"><span>Triết lý dừng</span><strong>Qua Hard Gate → chờ bạn quyết định</strong><small>Không target score, không tự chạy Level 2.</small></div></div>
+        <details class="advanced" open><summary>Cấu hình nâng cao</summary><div class="advanced-fields"><div class="form-row"><label class="field">Đơn vị độ dài<select name="scriptLengthUnit"><option value="minutes">Phút kể chuyện</option><option value="sentences">Số câu</option></select></label><label class="field">Mục tiêu độ dài<input name="scriptLengthTarget" type="number" min="1" max="60" value="8" /></label><label class="field">Timeout mỗi agent (phút)<input name="timeoutMinutes" type="number" min="1" max="120" value="20" /></label></div><p class="instruction-help">Draft được giữ trong biên độ dài ±20%; không kéo chữ hoặc ép cấu trúc chỉ để lấp dung lượng. Một phút tương đương khoảng 150 từ đọc thoại.</p></div></details>
+        <div class="dialog-actions"><span id="create-error" class="error" role="alert"></span><button id="cancel-new" class="outline-button" type="button">Hủy</button><button class="primary-button" type="submit">Tạo Backbone</button></div>
       </form>
     </dialog>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=4"></script>
   </body>
 </html>

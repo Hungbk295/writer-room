@@ -4,8 +4,8 @@ import { APP_DATA_ROOT } from './store.ts';
 import { defaultAgentProfiles, normalizeAgentProfiles, type AgentProfile } from './domain.ts';
 
 interface AgentConfigFile {
-  version: 1;
-  agents: AgentProfile[];
+  version: 1 | 2;
+  agents: unknown;
 }
 
 /** Global editable profile set. Runs copy this into RunConfig at creation. */
@@ -21,8 +21,12 @@ export class AgentSettingsStore {
   private load(): AgentProfile[] {
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8')) as AgentConfigFile;
-      if (raw.version !== 1) throw new Error('unsupported agent config version');
-      return normalizeAgentProfiles(raw.agents);
+      if (raw.version !== 1 && raw.version !== 2) throw new Error('unsupported agent config version');
+      const agents = raw.version === 1 && Array.isArray(raw.agents)
+        ? raw.agents.filter((item) => item && typeof item === 'object'
+          && ((item as Record<string, unknown>).slot === 'agent-1' || (item as Record<string, unknown>).slot === 'agent-2'))
+        : raw.agents;
+      return normalizeAgentProfiles(agents);
     } catch {
       return defaultAgentProfiles();
     }
@@ -34,8 +38,8 @@ export class AgentSettingsStore {
 
   save(raw: unknown): AgentProfile[] {
     const profiles = normalizeAgentProfiles(raw);
-    if (profiles.some((profile) => !profile.enabled)) throw new Error('all three agents must be enabled for the Writer Room loop');
-    const next: AgentConfigFile = { version: 1, agents: profiles };
+    if (profiles.some((profile) => !profile.enabled)) throw new Error('both agents must be enabled for the Writer Room loop');
+    const next: AgentConfigFile = { version: 2, agents: profiles };
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { flag: 'wx' });

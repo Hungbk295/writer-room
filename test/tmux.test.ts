@@ -6,7 +6,7 @@ import type { JobDescriptor, JobResultEnvelope } from '../src/domain.ts';
 import { SCHEMA_VERSION } from '../src/domain.ts';
 import { TmuxController } from '../src/tmux.ts';
 
-test('tmux keeps three named panes and settles a pane-runner result', async () => {
+test('tmux keeps two named agent panes and settles a pane-runner result', async () => {
   const tmux = new TmuxController(false);
   const health = await tmux.health();
   if (!health.tools.tmux) return;
