@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Writer Room main window capabilities",
+  "description": "The shell only opens a window onto the local daemon; it exposes no IPC to the page.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

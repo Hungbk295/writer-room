@@ -1,0 +1,68 @@
+# Plan board — multi-agent sync
+
+Nhạc trưởng (sync agent) theo dõi kế hoạch và tiến độ từng agent.
+
+## Product truth
+
+Canonical product hiện tại: **Spy-only** — xem root [`README.md`](../README.md).
+
+| Layer | Path | Vai trò |
+|-------|------|---------|
+| Runtime / how-to | `README.md` | Product đang chạy được gì |
+| Agent work | `plan/<agent>/` | Plan + progress sprint |
+| Design memory | `docs/` | SDD / BA (dài hạn; **không** sửa trong pass sync plan này) |
+
+## Board
+
+| Agent | Folder | Status | Active plan |
+|-------|--------|--------|-------------|
+| Codex | [`codex/`](./codex/) | idle | — |
+| Claude | [`claude/`](./claude/) | idle | — |
+| Grok | [`grok/`](./grok/) | done → idle after ship | [`spy-only-tauri`](./grok/spy-only-tauri.md) |
+
+Log check gần nhất: [`SYNC.md`](./SYNC.md).
+
+## Quy ước
+
+1. Mỗi agent giữ plan/progress trong `plan/<agent>/`.
+2. Plan shared (cross-agent) có thể nằm ở root `plan/` nếu cần.
+3. Sau mỗi nhóm feature: commit → bảo sync agent **check**.
+4. Sync agent:
+   - Đọc STATUS + plan active
+   - So khớp code vs plan
+   - Báo **CONFLICT** / **DRIFT** (kể cả docs latent)
+   - Ghi `SYNC.md`; cập nhật STATUS khi cần
+
+### `STATUS.md` vocabulary
+
+| Status | Nghĩa |
+|--------|--------|
+| `idle` | Không active plan |
+| `active` | Đang implement |
+| `blocked` | Chờ user / agent khác / conflict |
+| `done` | Feature xong, chờ assign mới |
+
+### Plan file header (bắt buộc)
+
+```markdown
+> **Agent:** grok
+> **Status:** planned | in_progress | done | cancelled | superseded
+> **Owns:** packages/spy, ...
+> **Does not touch:** ...
+> **Depends on:** none | plan/...
+```
+
+### Ranh giới
+
+- **Không** nhét SDD full vào folder agent.
+- **Không** dùng `docs/specs/` làm todo sprint.
+- STATUS = `done` thì plan file không được mô tả state "build vỡ" như hiện tại.
+
+## Workflow
+
+```
+assign → agent plan trong plan/<agent>/
+      → implement + commit
+      → user: "check"
+      → sync: conflict matrix + SYNC.md
+```

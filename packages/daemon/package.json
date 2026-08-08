@@ -1,0 +1,17 @@
+{
+  "name": "@writer-room/daemon",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@writer-room/spy": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "bun src/index.ts"
+  }
+}

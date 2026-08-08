@@ -1,0 +1,1744 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>BA Plan — Greenfield Training &amp; Writer Room</title>
+  <style>
+    :root {
+      --navy: #0f1f3d;
+      --navy-2: #162a4d;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --teal: #0f8f78;
+      --teal-soft: #e8f8f4;
+      --amber: #b56508;
+      --amber-soft: #fff5df;
+      --red: #c13b4a;
+      --red-soft: #fff0f2;
+      --purple: #7450c7;
+      --purple-soft: #f3efff;
+      --ink: #172033;
+      --muted: #637083;
+      --line: #d9e0ea;
+      --paper: #ffffff;
+      --canvas: #eef2f7;
+      --shadow: 0 16px 45px rgba(15, 31, 61, 0.09);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    a { color: var(--blue); }
+    a:hover { color: #1749b5; }
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      z-index: 100;
+      background: #fff;
+      color: #111;
+      padding: 10px 14px;
+    }
+    .skip-link:focus { left: 12px; top: 12px; }
+
+    .hero {
+      background:
+        radial-gradient(circle at 82% 8%, rgba(49, 143, 255, 0.34), transparent 28%),
+        radial-gradient(circle at 70% 115%, rgba(26, 190, 154, 0.22), transparent 34%),
+        linear-gradient(135deg, #0c1931 0%, #183665 100%);
+      color: #fff;
+      padding: 52px 24px 46px;
+    }
+    .hero-inner { max-width: 1220px; margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: #9bc5ff;
+      font-weight: 800;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.08;
+      letter-spacing: -0.035em;
+    }
+    .hero-lead {
+      max-width: 880px;
+      margin: 18px 0 0;
+      color: #dbe8fb;
+      font-size: 19px;
+    }
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 24px;
+    }
+    .meta-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      color: #eff6ff;
+      padding: 5px 11px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 24px;
+      max-width: 1220px;
+      margin: 24px auto 72px;
+      padding: 0 20px;
+      align-items: start;
+    }
+    .toc {
+      position: sticky;
+      top: 16px;
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+    .toc-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .toc ol { margin: 0; padding-left: 20px; }
+    .toc li { margin: 6px 0; color: #7b8798; }
+    .toc a {
+      color: #344155;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .toc a:hover { color: var(--blue); }
+    .print-button {
+      width: 100%;
+      border: 0;
+      border-radius: 11px;
+      margin-top: 15px;
+      padding: 10px 12px;
+      background: var(--navy);
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    main { min-width: 0; }
+    .section {
+      scroll-margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    .section-number {
+      display: inline-block;
+      margin-bottom: 7px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    h2 {
+      margin: 0 0 10px;
+      color: var(--navy);
+      font-size: 29px;
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+    }
+    h3 {
+      margin: 28px 0 10px;
+      color: var(--navy-2);
+      font-size: 20px;
+      line-height: 1.3;
+    }
+    h4 {
+      margin: 18px 0 7px;
+      color: #33425a;
+      font-size: 16px;
+    }
+    p { margin: 8px 0 13px; }
+    ul, ol { padding-left: 23px; }
+    li { margin: 5px 0; }
+    .lead { color: #46546a; font-size: 17px; }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+
+    .grid-2, .grid-3, .grid-4 {
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfe;
+      padding: 17px;
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .metric {
+      border-top: 4px solid var(--blue);
+      background: #fff;
+    }
+    .metric.teal { border-top-color: var(--teal); }
+    .metric.amber { border-top-color: #d88a1f; }
+    .metric.purple { border-top-color: var(--purple); }
+    .metric-value {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--navy);
+      font-size: 26px;
+      font-weight: 900;
+      line-height: 1.1;
+    }
+    .metric-label { color: var(--muted); font-size: 13px; font-weight: 700; }
+
+    .callout {
+      border-left: 5px solid var(--blue);
+      border-radius: 12px;
+      background: var(--blue-soft);
+      padding: 16px 18px;
+      margin: 16px 0;
+    }
+    .callout.teal { border-color: var(--teal); background: var(--teal-soft); }
+    .callout.amber { border-color: var(--amber); background: var(--amber-soft); }
+    .callout.red { border-color: var(--red); background: var(--red-soft); }
+    .callout.purple { border-color: var(--purple); background: var(--purple-soft); }
+    .callout strong { color: var(--navy); }
+
+    .tag {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+    .tag.in { color: #075f51; background: #d8f5ed; }
+    .tag.out { color: #9f2432; background: #ffe1e5; }
+    .tag.manual { color: #77440b; background: #ffe9bd; }
+    .tag.system { color: #244f9d; background: #deebff; }
+    .tag.pending { color: #6542a7; background: #ebe3ff; }
+    .tag.p0 { color: #31506d; background: #e6edf4; }
+    .tag.p1 { color: #174caa; background: #dce9ff; }
+    .tag.p2 { color: #096b59; background: #d9f4ed; }
+    .tag.p3 { color: #7e4c08; background: #ffeabc; }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      align-items: stretch;
+      margin: 18px 0;
+    }
+    .step {
+      position: relative;
+      flex: 1 1 130px;
+      min-width: 120px;
+      border: 1px solid #cfd8e6;
+      border-radius: 13px;
+      background: #fff;
+      padding: 13px;
+      text-align: center;
+      font-weight: 850;
+      color: var(--navy);
+    }
+    .step small {
+      display: block;
+      color: var(--muted);
+      font-weight: 550;
+      line-height: 1.35;
+      margin-top: 5px;
+    }
+    .arrow {
+      align-self: center;
+      color: #90a0b5;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .lane {
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      overflow: hidden;
+      margin: 14px 0;
+    }
+    .lane-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      background: var(--navy);
+      color: #fff;
+      font-weight: 850;
+    }
+    .lane-body { padding: 4px 16px 14px; background: #fbfcfe; }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      margin: 14px 0 18px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f4f7fb;
+      color: #45536a;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.055em;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { color: var(--navy); font-weight: 750; }
+
+    .req {
+      display: inline-block;
+      min-width: 76px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .priority {
+      display: inline-block;
+      min-width: 36px;
+      border-radius: 6px;
+      padding: 2px 6px;
+      text-align: center;
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .must { background: #dce9ff; color: #174da9; }
+    .should { background: #dff5ef; color: #0b6f5d; }
+    .could { background: #f2eaff; color: #7045b0; }
+
+    .story {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      padding: 17px;
+      margin: 12px 0;
+    }
+    .story-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .story-id { color: var(--blue); font-size: 12px; font-weight: 900; }
+    .gherkin {
+      border-radius: 10px;
+      background: #f5f7fa;
+      color: #3d4b60;
+      padding: 11px 13px;
+      font-size: 13px;
+    }
+    .gherkin b { color: var(--navy); }
+
+    .decision {
+      border-left: 4px solid var(--purple);
+      background: #faf8ff;
+    }
+    .footer-note {
+      max-width: 1220px;
+      margin: -46px auto 48px;
+      padding: 0 20px;
+      color: #758195;
+      font-size: 12px;
+    }
+
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; max-height: none; }
+      .toc ol { columns: 2; }
+      .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .hero { padding: 38px 18px 34px; }
+      .layout { padding: 0 12px; }
+      .section { padding: 22px 17px; }
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .toc ol { columns: 1; }
+      .arrow { display: none; }
+      h2 { font-size: 25px; }
+    }
+    @media print {
+      @page { size: A4; margin: 14mm; }
+      body { background: #fff; color: #111; font-size: 10.5pt; }
+      .hero { background: #fff !important; color: #111; padding: 0 0 18px; }
+      .hero-lead, .eyebrow { color: #333; }
+      .meta-chip { border-color: #999; color: #222; background: #fff; }
+      .layout { display: block; max-width: none; margin: 0; padding: 0; }
+      .toc, .print-button, .skip-link { display: none !important; }
+      .section { box-shadow: none; border: 0; border-top: 1px solid #bbb; border-radius: 0; padding: 18px 0; margin: 0; }
+      .card, .callout, .lane, .story, .table-wrap { break-inside: avoid; }
+      a { color: #111; text-decoration: none; }
+      .footer-note { margin: 20px 0 0; padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Bỏ qua mục lục</a>
+
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Business Analysis Plan · Greenfield Rebuild</p>
+      <h1>Offline Formula Training &amp; Writer Room</h1>
+      <p class="hero-lead">
+        Kế hoạch tái thiết dưới góc nhìn BA: xác định giá trị kinh doanh, phạm vi,
+        hành trình người dùng, quy tắc nghiệp vụ, yêu cầu chức năng, tiêu chí nghiệm
+        thu và lộ trình phát hành. Spy được giữ lại; Training và Writer Room được xây mới.
+      </p>
+      <div class="meta-row">
+        <span class="meta-chip">Phiên bản 1.0</span>
+        <span class="meta-chip">Ngày 09/08/2026</span>
+        <span class="meta-chip">Trạng thái: Draft chờ chốt quyết định</span>
+        <span class="meta-chip">Data platform: 1 MySQL cho hệ mới</span>
+        <span class="meta-chip">Góc nhìn: Business Analyst</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc" aria-label="Mục lục">
+      <p class="toc-title">Mục lục</p>
+      <ol>
+        <li><a href="#executive">Tóm tắt điều hành</a></li>
+        <li><a href="#context">Bối cảnh &amp; bài toán</a></li>
+        <li><a href="#objectives">Mục tiêu &amp; KPI</a></li>
+        <li><a href="#stakeholders">Stakeholder &amp; vai trò</a></li>
+        <li><a href="#scope">Phạm vi MVP</a></li>
+        <li><a href="#capability">Capability map</a></li>
+        <li><a href="#journeys">Business journeys</a></li>
+        <li><a href="#data">Góc nhìn dữ liệu</a></li>
+        <li><a href="#requirements">Functional requirements</a></li>
+        <li><a href="#rules">Business rules</a></li>
+        <li><a href="#stories">User stories &amp; acceptance</a></li>
+        <li><a href="#screens">Màn hình &amp; human gates</a></li>
+        <li><a href="#roadmap">Roadmap phát hành</a></li>
+        <li><a href="#traceability">Traceability</a></li>
+        <li><a href="#risks">Rủi ro &amp; phụ thuộc</a></li>
+        <li><a href="#decisions">Quyết định cần chốt</a></li>
+        <li><a href="#done">Definition of Done</a></li>
+      </ol>
+      <button class="print-button" type="button" onclick="window.print()">In / Lưu PDF</button>
+    </aside>
+
+    <main id="main">
+      <section class="section" id="executive">
+        <span class="section-number">01 · Executive Summary</span>
+        <h2>Tóm tắt điều hành</h2>
+        <p class="lead">
+          Project sẽ được làm lại từ đầu. Chỉ subsystem Spy được giữ lại; các thành
+          phần Training và Writer Room cũ không được xem là nền tảng để port hay tương thích ngược.
+        </p>
+
+        <div class="callout teal">
+          <strong>Đề xuất BA:</strong> xây một sản phẩm có hai capability tách biệt nhưng nối với
+          nhau bằng duy nhất một Formula Version. Training học “viết như thế nào”;
+          Writer Room quyết định “bài này nói điều gì” rồi mới áp dụng Formula để kể.
+        </div>
+
+        <div class="grid-3">
+          <article class="card">
+            <h3>Training</h3>
+            <p>Học writing policy có khả năng dùng lại từ nhiều video đa topic của cùng style/kênh.</p>
+            <p><strong>Output kinh doanh:</strong> Formula được kiểm chứng và có version.</p>
+          </article>
+          <article class="card">
+            <h3>Writer Room</h3>
+            <p>Biến một title thành research map, thesis riêng, story brief và script có provenance.</p>
+            <p><strong>Output kinh doanh:</strong> Script được duyệt và export.</p>
+          </article>
+          <article class="card">
+            <h3>Shared foundation</h3>
+            <p>Một MySQL quản lý run, version, source snapshot, claim/evidence, evaluation và audit.</p>
+            <p><strong>Không thêm ở MVP:</strong> Redis, vector DB, microservice hoặc object storage.</p>
+          </article>
+        </div>
+
+        <h3>Business outcome kỳ vọng</h3>
+        <ul>
+          <li>Giảm phụ thuộc vào việc đọc lại transcript gốc mỗi lần viết.</li>
+          <li>Giữ style nhất quán nhưng không làm script thành bản sao của source.</li>
+          <li>Tạo thesis riêng thay vì “gom ý” từ nhiều video thành Frankenstein Script.</li>
+          <li>Mọi factual claim trong bản duyệt có thể truy ngược về evidence.</li>
+          <li>Có thể retry/regenerate từng stage mà không mất lịch sử hoặc phá kết quả đã duyệt.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="context">
+        <span class="section-number">02 · Business Context</span>
+        <h2>Bối cảnh và bài toán cần giải quyết</h2>
+
+        <div class="grid-2">
+          <article class="card">
+            <h3>Vấn đề 1 — Style chưa trở thành tài sản</h3>
+            <p>
+              Transcript chứa cả nội dung chủ đề lẫn cách viết. Nếu Writer đọc trực tiếp,
+              hệ thống khó phân biệt đâu là style có thể transfer và đâu là topic knowledge.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Vấn đề 2 — Research dễ khóa cứng outline</h3>
+            <p>
+              Khi nhiều transcript được đưa thẳng cho Writer, draft dễ trở thành tổng hợp tuần tự,
+              thiếu central thesis và phụ thuộc cấu trúc của một source.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Vấn đề 3 — Chưa chứng minh Formula tạo gain</h3>
+            <p>
+              Training score cao chưa đủ. Formula phải thắng baseline trên holdout khác topic và
+              không làm giảm factuality, originality hoặc provenance.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Vấn đề 4 — Regenerate thiếu kiểm soát</h3>
+            <p>
+              Nếu thay research hoặc angle nhưng không invalidate đúng downstream artifact,
+              người dùng có thể vô tình duyệt một draft xây trên input đã cũ.
+            </p>
+          </article>
+        </div>
+
+        <h3>Ba câu hỏi nghiệp vụ độc lập</h3>
+        <div class="flow">
+          <div class="step">Research<small>Có gì đáng nói?</small></div>
+          <div class="arrow">→</div>
+          <div class="step">Editorial Thesis<small>Bài này muốn chứng minh điều gì?</small></div>
+          <div class="arrow">→</div>
+          <div class="step">Formula<small>Nói điều đó như thế nào?</small></div>
+        </div>
+
+        <div class="callout amber">
+          <strong>Nguyên tắc BA:</strong> không được gộp ba câu hỏi trên vào một model prompt duy nhất.
+          Sản phẩm phải cho phép người dùng nhìn thấy, duyệt và regenerate từng lớp riêng.
+        </div>
+      </section>
+
+      <section class="section" id="objectives">
+        <span class="section-number">03 · Objectives &amp; KPIs</span>
+        <h2>Mục tiêu kinh doanh và chỉ số thành công</h2>
+
+        <div class="grid-4">
+          <article class="card metric">
+            <span class="metric-value">100%</span>
+            <span class="metric-label">Factual claims trong script approved có provenance hợp lệ</span>
+          </article>
+          <article class="card metric teal">
+            <span class="metric-value">≥ 60%</span>
+            <span class="metric-label">Pairwise win rate của Formula so với baseline trên H2</span>
+          </article>
+          <article class="card metric amber">
+            <span class="metric-value">0</span>
+            <span class="metric-label">Topic claim/entity bị publish nhầm thành writing rule</span>
+          </article>
+          <article class="card metric purple">
+            <span class="metric-value">100%</span>
+            <span class="metric-label">Run có source, prompt, model, Formula và artifact version traceable</span>
+          </article>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Mục tiêu</th>
+                <th>KPI đề xuất</th>
+                <th>Cách đo</th>
+                <th>Giai đoạn</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Formula có khả năng transfer</td>
+                <td>C vượt A ≥ 0.5/10 và thắng ≥ 60% trên H2</td>
+                <td>Blind ablation, tối thiểu 3 repeats</td>
+                <td>P2</td>
+              </tr>
+              <tr>
+                <td>Không overfit/leak</td>
+                <td>Leak gate pass; không có rule mang entity/topic claim</td>
+                <td>Phrase, entity và semantic scan + audit</td>
+                <td>P2</td>
+              </tr>
+              <tr>
+                <td>Script có thesis rõ</td>
+                <td>Editorial score E vượt Research-only B</td>
+                <td>Ablation Writer Room A–F</td>
+                <td>P3–P4</td>
+              </tr>
+              <tr>
+                <td>Script có bằng chứng</td>
+                <td>100% factual claim approved có evidence</td>
+                <td>Claim–Evidence coverage report</td>
+                <td>P3</td>
+              </tr>
+              <tr>
+                <td>Workflow phục hồi được</td>
+                <td>100% failed jobs có retry/recovery path; không sửa DB tay</td>
+                <td>Operation audit và restart test</td>
+                <td>P1–P4</td>
+              </tr>
+              <tr>
+                <td>Kiểm soát chi phí</td>
+                <td>Cost/run và token/stage được ghi nhận</td>
+                <td>Model execution report</td>
+                <td>P1</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small muted">Các ngưỡng Formula là baseline BA đề xuất và cần được hiệu chỉnh sau pilot có human rating.</p>
+      </section>
+
+      <section class="section" id="stakeholders">
+        <span class="section-number">04 · Stakeholders</span>
+        <h2>Stakeholder và vai trò</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stakeholder / Actor</th>
+                <th>Mục tiêu</th>
+                <th>Quyền quyết định</th>
+                <th>Điểm tương tác chính</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Product Owner</td>
+                <td>Chốt scope, quality bar và thứ tự phát hành</td>
+                <td>Approve business decisions, MVP và release</td>
+                <td>Decision gates, KPI, roadmap</td>
+              </tr>
+              <tr>
+                <td>Formula Trainer</td>
+                <td>Tạo bộ source đa topic và Formula đáng tin cậy</td>
+                <td>Freeze split, review decision rules</td>
+                <td>Training run, evidence, evaluation</td>
+              </tr>
+              <tr>
+                <td>Content Editor</td>
+                <td>Tạo angle/thesis khác biệt và đúng title promise</td>
+                <td>Chọn angle, chỉnh Story Brief</td>
+                <td>Research Map, Angles, Brief</td>
+              </tr>
+              <tr>
+                <td>Script Writer</td>
+                <td>Tạo architecture và prose theo Formula</td>
+                <td>Đề xuất draft/revision, không tự publish Formula</td>
+                <td>Architecture, Draft, Revision</td>
+              </tr>
+              <tr>
+                <td>Reviewer / Auditor</td>
+                <td>Kiểm coherence, originality, evidence và leakage</td>
+                <td>Pass/fail quality gate, nêu issue</td>
+                <td>Critique, evaluation, provenance</td>
+              </tr>
+              <tr>
+                <td>System Operator</td>
+                <td>Đảm bảo job chạy, retry và backup được</td>
+                <td>Cancel/retry operation, không sửa content decision</td>
+                <td>Operations, logs, cost, backup</td>
+              </tr>
+              <tr>
+                <td>Spy subsystem</td>
+                <td>Cung cấp video, transcript, metadata và evidence refs</td>
+                <td>Không quyết định Training/Writer state</td>
+                <td>Source import contract</td>
+              </tr>
+              <tr>
+                <td>AI logical roles</td>
+                <td>Coach, Writer, Distiller, Compiler, Judge, Editor, Critics</td>
+                <td>Đề xuất output; business gates thuộc operator/policy</td>
+                <td>Background stage jobs</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout purple">
+          <strong>MVP user model:</strong> một trusted operator có thể đảm nhiệm nhiều vai trò.
+          Multi-user, workspace ownership và RBAC là ngoài phạm vi cho đến khi có nhu cầu cộng tác thật.
+        </div>
+      </section>
+
+      <section class="section" id="scope">
+        <span class="section-number">05 · Scope</span>
+        <h2>Phạm vi MVP</h2>
+
+        <div class="grid-2">
+          <article class="card">
+            <h3><span class="tag in">IN SCOPE</span> Training</h3>
+            <ul>
+              <li>Style Profile và source import từ Spy.</li>
+              <li>Source quality, dedup và split Train/H1/H2.</li>
+              <li>Coach analysis, outline loop, draft loop.</li>
+              <li>Decision Log, Training Evidence Corpus và Writing Policy.</li>
+              <li>Compile Formula, avoid list và version.</li>
+              <li>Blind ablation, leakage audit và publish/retire.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3><span class="tag in">IN SCOPE</span> Writer Room</h3>
+            <ul>
+              <li>Project từ title, audience và target length.</li>
+              <li>Chọn/import 5–10 source liên quan.</li>
+              <li>Claim/Evidence, Research Map, 3–5 Angles.</li>
+              <li>Manual angle selection và Story Brief.</li>
+              <li>Story Architecture, Draft, three Critics, Revision.</li>
+              <li>Approval và export Markdown/JSON/SKILL khi phù hợp.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3><span class="tag in">IN SCOPE</span> Shared foundation</h3>
+            <ul>
+              <li>Một MySQL cho dữ liệu hệ mới.</li>
+              <li>Immutable artifact versions và lineage.</li>
+              <li>Durable jobs, retry, cancel, resume, idempotency.</li>
+              <li>Prompt/model/formula/source snapshot và cost audit.</li>
+              <li>Current/stale state khi regenerate.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3><span class="tag out">OUT OF SCOPE</span> MVP</h3>
+            <ul>
+              <li>Viết lại hoặc migrate storage nội bộ của Spy.</li>
+              <li>Port code/data/API/ID legacy của Training và Writer.</li>
+              <li>Video editing, rendering, thumbnail production, publishing YouTube.</li>
+              <li>Multi-user, RBAC, realtime collaboration.</li>
+              <li>Redis/Kafka, vector DB, microservices, object storage.</li>
+              <li>Fully autonomous publish không qua human gate.</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>Business boundary với Spy</h3>
+        <div class="callout">
+          Spy chịu trách nhiệm acquire và phân tích source. Training/Writer chỉ import
+          một snapshot có version/hash. Không domain nào trong hệ mới được viết crawler
+          hoặc đọc trực tiếp bảng SQLite của Spy.
+        </div>
+      </section>
+
+      <section class="section" id="capability">
+        <span class="section-number">06 · Capability Map</span>
+        <h2>Bản đồ năng lực sản phẩm</h2>
+
+        <div class="lane">
+          <div class="lane-title">
+            <span>Lane A — Offline Formula Training</span>
+            <span class="tag system">Học “cách viết”</span>
+          </div>
+          <div class="lane-body">
+            <div class="flow">
+              <div class="step">Source Cohort<small>Đa topic, cùng style</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Train / H1 / H2<small>Freeze holdout</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Coach ↔ Writer<small>Outline rồi draft</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Distill<small>Policy, không topic</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Evaluate &amp; Publish<small>Formula Version</small></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">
+            <span>Lane B — Runtime Writer Room</span>
+            <span class="tag manual">Quyết định “bài này nói gì”</span>
+          </div>
+          <div class="lane-body">
+            <div class="flow">
+              <div class="step">Title &amp; Sources<small>5–10 góc nhìn</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Research Map<small>Claims, conflicts, gaps</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Thesis &amp; Angle<small>3–5 candidates</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Brief &amp; Architecture<small>Belief shift, progression</small></div>
+              <div class="arrow">→</div>
+              <div class="step">Draft &amp; Critique<small>Approve / Export</small></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title">
+            <span>Shared Business Capabilities</span>
+            <span class="tag pending">One MySQL</span>
+          </div>
+          <div class="lane-body">
+            <div class="grid-4">
+              <div class="card"><strong>Source snapshots</strong><br><span class="small muted">Exact version + hash</span></div>
+              <div class="card"><strong>Artifact history</strong><br><span class="small muted">Current / superseded / stale</span></div>
+              <div class="card"><strong>Workflow operations</strong><br><span class="small muted">Retry / cancel / resume</span></div>
+              <div class="card"><strong>Audit &amp; reporting</strong><br><span class="small muted">Quality / cost / provenance</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="journeys">
+        <span class="section-number">07 · Business Journeys</span>
+        <h2>Hành trình nghiệp vụ end-to-end</h2>
+
+        <h3>Journey A — Tạo và phát hành Formula</h3>
+        <div class="flow">
+          <div class="step">1. Tạo Style Profile<small>Channel/style/language</small></div>
+          <div class="arrow">→</div>
+          <div class="step">2. Import ≥8 source<small>Clean + đa topic</small></div>
+          <div class="arrow">→</div>
+          <div class="step">3. Review &amp; freeze split<small>Train/H1/H2</small></div>
+          <div class="arrow">→</div>
+          <div class="step">4. Train từng source<small>Coach ↔ Writer</small></div>
+          <div class="arrow">→</div>
+          <div class="step">5. Distill &amp; compile<small>Policy → Formula</small></div>
+          <div class="arrow">→</div>
+          <div class="step">6. Evaluate &amp; publish<small>Human gate</small></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Input</th>
+                <th>Output nhìn thấy bởi user</th>
+                <th>Business gate</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Source readiness</td>
+                <td>Spy refs, transcript quality, topic labels</td>
+                <td>Source cohort và warnings</td>
+                <td>Đủ số lượng, đa topic, không duplicate</td>
+              </tr>
+              <tr>
+                <td>Split</td>
+                <td>Source cohort</td>
+                <td>Train/H1/H2 proposal</td>
+                <td><span class="tag manual">Manual freeze</span></td>
+              </tr>
+              <tr>
+                <td>Per-video training</td>
+                <td>Coach analysis; Writer không thấy transcript</td>
+                <td>Outline/draft versions, critique, decisions</td>
+                <td>Loop cap và review-required</td>
+              </tr>
+              <tr>
+                <td>Distillation</td>
+                <td>Decision events xuyên video</td>
+                <td>Writing Policy, evidence, candidate rules</td>
+                <td>Rule lặp lại và không topic-specific</td>
+              </tr>
+              <tr>
+                <td>Evaluation</td>
+                <td>Formula candidate + frozen holdout</td>
+                <td>Ablation scorecard, leak report</td>
+                <td>Quality policy pass</td>
+              </tr>
+              <tr>
+                <td>Publish</td>
+                <td>Review-ready Formula</td>
+                <td>Immutable Formula Version</td>
+                <td><span class="tag manual">Manual publish</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Journey B — Tạo script mới</h3>
+        <div class="flow">
+          <div class="step">1. Tạo project<small>Title, audience, Formula</small></div>
+          <div class="arrow">→</div>
+          <div class="step">2. Chọn 5–10 source<small>Đa góc nhìn</small></div>
+          <div class="arrow">→</div>
+          <div class="step">3. Research Map<small>Claim, conflict, gap</small></div>
+          <div class="arrow">→</div>
+          <div class="step">4. Chọn Angle<small>3–5 candidates</small></div>
+          <div class="arrow">→</div>
+          <div class="step">5. Brief &amp; Architecture<small>Thesis, belief shift</small></div>
+          <div class="arrow">→</div>
+          <div class="step">6. Draft, Critique, Approve<small>Export</small></div>
+        </div>
+
+        <div class="callout red">
+          <strong>Failure mode phải chặn:</strong> Research Agent không được tạo outline hoàn chỉnh;
+          Writer không được nhận toàn bộ transcript; Formula không được chứa topic knowledge;
+          Critic không được rewrite cả bài khi chỉ có lỗi cục bộ.
+        </div>
+
+        <h3>Regenerate và invalidation</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Khi thay đổi</th>
+                <th>Giữ nguyên</th>
+                <th>Đánh dấu stale</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Source set / Research Map</td>
+                <td>Project identity, selected Formula</td>
+                <td>Angles, selection, Brief, Architecture, Draft, Critique, Approval</td>
+              </tr>
+              <tr>
+                <td>Selected Angle</td>
+                <td>Sources, claims, Research Map, angle candidates</td>
+                <td>Brief, Architecture, Draft, Critique, Approval</td>
+              </tr>
+              <tr>
+                <td>Story Brief</td>
+                <td>Sources, Research Map, selected Angle</td>
+                <td>Architecture, Draft, Critique, Approval</td>
+              </tr>
+              <tr>
+                <td>Draft section</td>
+                <td>Sources, Research, Angle, Brief, Architecture</td>
+                <td>Critique và Approval của draft cũ</td>
+              </tr>
+              <tr>
+                <td>Formula Version</td>
+                <td>Run cũ vẫn pin Formula cũ</td>
+                <td>Chỉ draft mới khi user chủ động upgrade Formula</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="data">
+        <span class="section-number">08 · Business Data View</span>
+        <h2>Góc nhìn dữ liệu nghiệp vụ</h2>
+        <p class="lead">
+          BA không thiết kế DDL chi tiết trong tài liệu này. Mục tiêu là chốt “thông tin
+          nào là tài sản nghiệp vụ”, vòng đời của nó và mức truy vết cần có.
+        </p>
+
+        <div class="callout">
+          <strong>Nguyên tắc lưu trữ:</strong> một MySQL là source of truth cho Training +
+          Writer Room mới. File Markdown/JSON/SKILL là định dạng export, không phải database.
+          Spy vẫn sở hữu storage riêng và chỉ cung cấp snapshot qua contract.
+        </div>
+
+        <div class="grid-3">
+          <article class="card">
+            <h3>Identity &amp; source</h3>
+            <ul>
+              <li>Style Profile</li>
+              <li>Source Video</li>
+              <li>Transcript Version</li>
+              <li>Source Snapshot</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Workflow &amp; artifacts</h3>
+            <ul>
+              <li>Training/Writer Run</li>
+              <li>Stage Operation</li>
+              <li>Artifact Version</li>
+              <li>Current / Superseded / Stale</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Knowledge &amp; quality</h3>
+            <ul>
+              <li>Training Decision</li>
+              <li>Formula Version</li>
+              <li>Research Claim &amp; Evidence</li>
+              <li>Evaluation &amp; Audit Event</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>Business entity ownership</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Entity</th>
+                <th>Owner</th>
+                <th>Lifecycle</th>
+                <th>Business rule trọng yếu</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Source Snapshot</td>
+                <td>Shared Source Catalog</td>
+                <td>Immutable sau khi pin vào run</td>
+                <td>Phải có version/hash; không drift theo Spy</td>
+              </tr>
+              <tr>
+                <td>Training Decision</td>
+                <td>Training</td>
+                <td>Append-only</td>
+                <td>Link before/after, evidence và score delta</td>
+              </tr>
+              <tr>
+                <td>Formula Version</td>
+                <td>Formula Registry</td>
+                <td>Draft → Review Ready → Published → Retired</td>
+                <td>Published là immutable</td>
+              </tr>
+              <tr>
+                <td>Research Claim</td>
+                <td>Writer Room</td>
+                <td>Extracted → Corroborated/Authoritative/Disputed/Rejected</td>
+                <td>Claim approved phải có evidence hợp lệ</td>
+              </tr>
+              <tr>
+                <td>Artifact Version</td>
+                <td>Run tương ứng</td>
+                <td>Current → Superseded/Stale</td>
+                <td>Không overwrite/xóa lịch sử</td>
+              </tr>
+              <tr>
+                <td>Evaluation</td>
+                <td>Quality policy</td>
+                <td>Immutable score record</td>
+                <td>Blind label, repeat và input version traceable</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Bộ dữ liệu tối giản trong MySQL</h3>
+        <p>
+          Nhóm dữ liệu dự kiến gồm 14 bảng nghiệp vụ: style profiles, source videos,
+          transcript versions, workflow runs, run sources, stage jobs, model executions,
+          artifacts, training decisions, formula versions, research claims, claim evidence,
+          evaluations và workflow events.
+        </p>
+      </section>
+
+      <section class="section" id="requirements">
+        <span class="section-number">09 · Functional Requirements</span>
+        <h2>Yêu cầu chức năng</h2>
+
+        <h3>A. Training requirements</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Yêu cầu</th>
+                <th>Ưu tiên</th>
+                <th>Kết quả mong đợi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="req">FR-TR-01</span></td><td>Tạo Style Profile theo style/channel, language và use mode.</td><td><span class="priority must">M</span></td><td>Formula có business identity rõ.</td></tr>
+              <tr><td><span class="req">FR-TR-02</span></td><td>Import source/transcript snapshot từ Spy, giữ exact version và hash.</td><td><span class="priority must">M</span></td><td>Run tái kiểm toán được.</td></tr>
+              <tr><td><span class="req">FR-TR-03</span></td><td>Đánh giá source quality, duplicate, topic/series distribution.</td><td><span class="priority must">M</span></td><td>Không split trên cohort lỗi.</td></tr>
+              <tr><td><span class="req">FR-TR-04</span></td><td>Đề xuất và cho phép review split Train/H1/H2 trước khi freeze.</td><td><span class="priority must">M</span></td><td>Holdout có chủ đích.</td></tr>
+              <tr><td><span class="req">FR-TR-05</span></td><td>Coach tạo analysis từ transcript; Writer nhận projection không chứa transcript.</td><td><span class="priority must">M</span></td><td>Enforce isolation bằng system boundary.</td></tr>
+              <tr><td><span class="req">FR-TR-06</span></td><td>Chạy outline loop trước full draft loop, có max iterations/budget.</td><td><span class="priority must">M</span></td><td>Tách lỗi structure khỏi prose.</td></tr>
+              <tr><td><span class="req">FR-TR-07</span></td><td>Lưu mọi meaningful revision thành Training Decision có before/after/evidence/score.</td><td><span class="priority must">M</span></td><td>Distillation có dữ liệu truy vấn được.</td></tr>
+              <tr><td><span class="req">FR-TR-08</span></td><td>Distill Writing Policy và Training Evidence Corpus thành hai output riêng.</td><td><span class="priority must">M</span></td><td>Research không trộn vào policy.</td></tr>
+              <tr><td><span class="req">FR-TR-09</span></td><td>Compile Formula có stable rule IDs, avoid list, version và evidence links.</td><td><span class="priority must">M</span></td><td>Runtime dùng package canonical.</td></tr>
+              <tr><td><span class="req">FR-TR-10</span></td><td>Chạy blind ablation và leakage audit trên H1/H2.</td><td><span class="priority must">M</span></td><td>Đo transfer và overfit.</td></tr>
+              <tr><td><span class="req">FR-TR-11</span></td><td>Block publish khi bất kỳ release gate nào fail.</td><td><span class="priority must">M</span></td><td>Không publish Formula chưa chứng minh.</td></tr>
+              <tr><td><span class="req">FR-TR-12</span></td><td>Publish/retire Formula; project cũ vẫn pin đúng version.</td><td><span class="priority must">M</span></td><td>Không silent upgrade.</td></tr>
+              <tr><td><span class="req">FR-TR-13</span></td><td>Export Formula Package, evidence, scorecard và optional SKILL render.</td><td><span class="priority should">S</span></td><td>Dùng và audit ngoài UI.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>B. Writer Room requirements</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Yêu cầu</th>
+                <th>Ưu tiên</th>
+                <th>Kết quả mong đợi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="req">FR-WR-01</span></td><td>Tạo Writer Project từ title, audience, target words và exact Formula Version.</td><td><span class="priority must">M</span></td><td>Input production rõ ràng.</td></tr>
+              <tr><td><span class="req">FR-WR-02</span></td><td>Chọn/import 5–10 source liên quan và đa góc nhìn.</td><td><span class="priority must">M</span></td><td>Knowledge space đủ rộng.</td></tr>
+              <tr><td><span class="req">FR-WR-03</span></td><td>Extract claim/evidence độc lập theo source, có timestamp và verification state.</td><td><span class="priority must">M</span></td><td>Provenance cấp claim.</td></tr>
+              <tr><td><span class="req">FR-WR-04</span></td><td>Tạo Research Map gồm common/interesting claims, contradictions, mechanisms, gaps và overused angles.</td><td><span class="priority must">M</span></td><td>Research không biến thành outline.</td></tr>
+              <tr><td><span class="req">FR-WR-05</span></td><td>Tạo 3–5 thesis candidates có supporting claims, counterpoints, novelty và risk.</td><td><span class="priority must">M</span></td><td>Có nhiều cách hiểu cạnh tranh.</td></tr>
+              <tr><td><span class="req">FR-WR-06</span></td><td>Cho operator chọn/reselect Angle và ghi lý do.</td><td><span class="priority must">M</span></td><td>Editorial decision minh bạch.</td></tr>
+              <tr><td><span class="req">FR-WR-07</span></td><td>Tạo/edit Story Brief với thesis, belief shift, tension, question và claim IDs.</td><td><span class="priority must">M</span></td><td>Contract giữa Editor và Writer.</td></tr>
+              <tr><td><span class="req">FR-WR-08</span></td><td>Writer pass 1 tạo Story Architecture, không prose dài.</td><td><span class="priority must">M</span></td><td>Review progression trước wording.</td></tr>
+              <tr><td><span class="req">FR-WR-09</span></td><td>Writer pass 2 tạo full draft từ Brief + evidence + Formula.</td><td><span class="priority must">M</span></td><td>Script đúng thesis/style.</td></tr>
+              <tr><td><span class="req">FR-WR-10</span></td><td>Structure, Originality và Evidence Critics trả issue theo section.</td><td><span class="priority must">M</span></td><td>Feedback có phạm vi rõ.</td></tr>
+              <tr><td><span class="req">FR-WR-11</span></td><td>Targeted revision theo issue/section, không overwrite draft cũ.</td><td><span class="priority must">M</span></td><td>Lịch sử version đầy đủ.</td></tr>
+              <tr><td><span class="req">FR-WR-12</span></td><td>Regenerate từ stage được chọn và stale đúng descendants.</td><td><span class="priority must">M</span></td><td>Không duyệt artifact dựa trên input cũ.</td></tr>
+              <tr><td><span class="req">FR-WR-13</span></td><td>Block approval khi có unsupported/rejected claim hoặc stale artifact.</td><td><span class="priority must">M</span></td><td>Quality gate có hiệu lực.</td></tr>
+              <tr><td><span class="req">FR-WR-14</span></td><td>Cho phép override gate có reason và audit event nếu policy cho phép.</td><td><span class="priority should">S</span></td><td>Human control không mất accountability.</td></tr>
+              <tr><td><span class="req">FR-WR-15</span></td><td>Approve và export current script dưới Markdown/JSON.</td><td><span class="priority must">M</span></td><td>Deliverable sử dụng được.</td></tr>
+              <tr><td><span class="req">FR-WR-16</span></td><td>Chạy optional A–F evaluation để đo Research/Editorial/Formula gain.</td><td><span class="priority could">C</span></td><td>Đo đúng layer tạo giá trị.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>C. Shared requirements</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Yêu cầu</th>
+                <th>Ưu tiên</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="req">FR-SH-01</span></td><td>Một MySQL lưu business state, version, jobs, provenance, evaluation và audit của hệ mới.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-02</span></td><td>Mọi long-running command trả operation có status, progress, retry và cancel.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-03</span></td><td>Command idempotent; retry không tạo duplicate logical artifact.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-04</span></td><td>Artifact append-only, có version, input lineage, producer và content hash.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-05</span></td><td>Ghi model, prompt version, parameters, usage, cost và response hash mỗi execution.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-06</span></td><td>Refresh/restart không làm mất operation hoặc current stage.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-07</span></td><td>Timeline hiển thị human decision, state transition, override và error.</td><td><span class="priority should">S</span></td></tr>
+              <tr><td><span class="req">FR-SH-08</span></td><td>Không log secret, full transcript hoặc raw provider error ra client.</td><td><span class="priority must">M</span></td></tr>
+              <tr><td><span class="req">FR-SH-09</span></td><td>Archive thay vì physical delete mặc định.</td><td><span class="priority should">S</span></td></tr>
+              <tr><td><span class="req">FR-SH-10</span></td><td>Dashboard theo dõi queue, cost, quality, leakage và provenance coverage.</td><td><span class="priority could">C</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="rules">
+        <span class="section-number">10 · Business Rules</span>
+        <h2>Quy tắc nghiệp vụ</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Rule</th>
+                <th>Enforcement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>BR-01</td><td>Training run muốn publish phải có tối thiểu 8 source sạch và đa topic.</td><td>Freeze/publish validation</td></tr>
+              <tr><td>BR-02</td><td>Publish cohort đề xuất: Train 5–8, H1 ≥1, H2 ≥2 thuộc các held-out topic clusters khác nhau.</td><td>Split policy</td></tr>
+              <tr><td>BR-03</td><td>Near-duplicate/series variants không được nằm ở cả Train và Holdout.</td><td>Dedup/group validation</td></tr>
+              <tr><td>BR-04</td><td>H2 bị freeze và không dùng feedback để tune lại cùng Formula candidate.</td><td>Evaluation policy</td></tr>
+              <tr><td>BR-05</td><td>Training Writer không được nhận transcript hoặc raw source wording.</td><td>Role-scoped input projection</td></tr>
+              <tr><td>BR-06</td><td>Formula Compiler mặc định không đọc transcript; thiếu decision evidence phải fail/review.</td><td>Role permissions</td></tr>
+              <tr><td>BR-07</td><td>Rule chỉ được promote khi lặp lại qua ít nhất 2 independent source/runs và có evidence.</td><td>Distillation gate</td></tr>
+              <tr><td>BR-08</td><td>Formula không chứa factual claim, named entity hoặc topic-specific instruction.</td><td>Compile + leakage gate</td></tr>
+              <tr><td>BR-09</td><td>Formula target tối đa 1.200 tokens và 20 active rules, trừ khi có policy override.</td><td>Compile gate</td></tr>
+              <tr><td>BR-10</td><td>Published Formula là immutable; thay đổi phải tạo version mới.</td><td>Formula Registry</td></tr>
+              <tr><td>BR-11</td><td>Writer Project pin exact Formula Version, không tự dùng “latest”.</td><td>Project creation/upgrade</td></tr>
+              <tr><td>BR-12</td><td>Runtime source set có 5–10 source liên quan và ưu tiên đa góc nhìn.</td><td>Source readiness</td></tr>
+              <tr><td>BR-13</td><td>Research Agent không output complete outline.</td><td>Artifact schema/output validation</td></tr>
+              <tr><td>BR-14</td><td>Writer chỉ nhận curated claim/evidence; không nhận full source transcripts.</td><td>Writer projection</td></tr>
+              <tr><td>BR-15</td><td>Mỗi factual claim trong approved script phải resolve tới evidence không bị rejected.</td><td>Approval gate</td></tr>
+              <tr><td>BR-16</td><td>Disputed claim phải được qualify rõ hoặc loại khỏi draft.</td><td>Evidence Critic</td></tr>
+              <tr><td>BR-17</td><td>Critic trả issue + direction theo section, không mặc định rewrite toàn bài.</td><td>Critic contract</td></tr>
+              <tr><td>BR-18</td><td>Regenerate tạo version mới; không overwrite old artifact.</td><td>Artifact lifecycle</td></tr>
+              <tr><td>BR-19</td><td>Stale artifact được xem để audit nhưng không được approve.</td><td>UI + approval gate</td></tr>
+              <tr><td>BR-20</td><td>Manual override phải có actor, reason, timestamp và affected gate.</td><td>Workflow event</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="stories">
+        <span class="section-number">11 · User Stories</span>
+        <h2>User stories và acceptance scenarios</h2>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-TR-01 · Freeze training cohort</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Formula Trainer</strong>, tôi muốn review và freeze Train/H1/H2 để kết quả evaluation không bị thay đổi ngầm.</p>
+          <div class="gherkin">
+            <b>Given</b> source cohort có ít nhất 8 transcript sạch và đã deduplicate<br>
+            <b>When</b> tôi xác nhận split hợp lệ<br>
+            <b>Then</b> hệ thống pin transcript versions, khóa H2 và cho phép bắt đầu Training.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-TR-02 · Writer blind transcript</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Reviewer</strong>, tôi muốn chứng minh Training Writer không thấy transcript để Formula không học bằng cách chép source.</p>
+          <div class="gherkin">
+            <b>Given</b> Coach đã tạo normalized analysis<br>
+            <b>When</b> Writer execution được tạo<br>
+            <b>Then</b> input manifest chỉ gồm analysis, feedback và current Formula; không có transcript/raw quote.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-TR-03 · Publish Formula</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Product Owner</strong>, tôi chỉ muốn publish Formula đã chứng minh gain và qua leakage gate.</p>
+          <div class="gherkin">
+            <b>Given</b> Formula candidate đã chạy blind H2 evaluation<br>
+            <b>When</b> score hoặc leakage/factuality gate fail<br>
+            <b>Then</b> nút Publish bị chặn và UI chỉ rõ gate nào chưa đạt.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-WR-01 · Select editorial angle</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Content Editor</strong>, tôi muốn so sánh 3–5 thesis candidates trước khi chọn hướng kể.</p>
+          <div class="gherkin">
+            <b>Given</b> Research Map đã sẵn sàng<br>
+            <b>When</b> hệ thống sinh candidates<br>
+            <b>Then</b> mỗi candidate hiển thị title alignment, novelty, evidence support, counterpoints, risk và source independence.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-WR-02 · Trace factual claims</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Evidence Reviewer</strong>, tôi muốn click từ claim trong draft về source/timestamp để kiểm chứng nhanh.</p>
+          <div class="gherkin">
+            <b>Given</b> draft có factual claims<br>
+            <b>When</b> tôi mở provenance view<br>
+            <b>Then</b> hệ thống hiển thị claim status, supporting/contradicting evidence, source version và timestamp.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-WR-03 · Targeted revision</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Script Writer</strong>, tôi muốn revise đúng section có issue mà không mất bản draft trước.</p>
+          <div class="gherkin">
+            <b>Given</b> critique chỉ ra hook và transition_02_03<br>
+            <b>When</b> tôi chạy revision cho hai issue đó<br>
+            <b>Then</b> hệ thống tạo draft version mới, giữ version cũ và critique lại affected sections.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-WR-04 · Regenerate safely</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là Content Editor</strong>, tôi muốn đổi Angle mà không nhầm lẫn draft cũ với current plan.</p>
+          <div class="gherkin">
+            <b>Given</b> project đã có Brief và Draft<br>
+            <b>When</b> tôi chọn Angle khác<br>
+            <b>Then</b> Research vẫn current, còn Brief/Draft/Critique cũ chuyển stale và không thể approve.
+          </div>
+        </article>
+
+        <article class="story">
+          <div class="story-head">
+            <span class="story-id">US-SH-01 · Recover operations</span>
+            <span class="priority must">MUST</span>
+          </div>
+          <p><strong>Là System Operator</strong>, tôi muốn mọi job dài có thể retry sau restart mà không tạo duplicate.</p>
+          <div class="gherkin">
+            <b>Given</b> worker dừng khi một stage đang chạy<br>
+            <b>When</b> worker khởi động lại và lease hết hạn<br>
+            <b>Then</b> operation được reconcile, retry đúng policy và chỉ một current artifact được commit.
+          </div>
+        </article>
+      </section>
+
+      <section class="section" id="screens">
+        <span class="section-number">12 · Product Experience</span>
+        <h2>Màn hình MVP và human gates</h2>
+
+        <div class="grid-3">
+          <article class="card">
+            <h3>Dashboard</h3>
+            <ul>
+              <li>Training runs</li>
+              <li>Writer projects</li>
+              <li>Active/failed operations</li>
+              <li>Cost và quality summary</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Training Detail</h3>
+            <ul>
+              <li>Sources &amp; Split</li>
+              <li>Per-video loops</li>
+              <li>Decision Log</li>
+              <li>Formula &amp; Evaluation</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Formula Registry</h3>
+            <ul>
+              <li>Versions/status</li>
+              <li>Rules/avoid list</li>
+              <li>Evidence/scorecard</li>
+              <li>Publish/retire/export</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Writer Project</h3>
+            <ul>
+              <li>Sources → Research → Angles</li>
+              <li>Brief → Architecture → Draft</li>
+              <li>Critique → Revision → Approval</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Provenance View</h3>
+            <ul>
+              <li>Claim status</li>
+              <li>Evidence relations</li>
+              <li>Source/timestamp</li>
+              <li>Conflicts/uncertainty</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Operations</h3>
+            <ul>
+              <li>Queued/running/failed</li>
+              <li>Progress, attempts, cost</li>
+              <li>Retry/cancel</li>
+              <li>Safe error detail</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>Bốn human gates bắt buộc trong MVP</h3>
+        <div class="grid-4">
+          <article class="card">
+            <span class="tag manual">GATE 1</span>
+            <h4>Freeze Split</h4>
+            <p class="small">Xác nhận cohort Train/H1/H2 trước khi Training.</p>
+          </article>
+          <article class="card">
+            <span class="tag manual">GATE 2</span>
+            <h4>Select Angle</h4>
+            <p class="small">Chọn thesis làm trung tâm cho Story Brief.</p>
+          </article>
+          <article class="card">
+            <span class="tag manual">GATE 3</span>
+            <h4>Publish Formula</h4>
+            <p class="small">Chỉ sau quality/leakage/evidence gates.</p>
+          </article>
+          <article class="card">
+            <span class="tag manual">GATE 4</span>
+            <h4>Approve Script</h4>
+            <p class="small">Chỉ current, non-stale draft đủ provenance.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="roadmap">
+        <span class="section-number">13 · Delivery Roadmap</span>
+        <h2>Roadmap phát hành</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Phase</th>
+                <th>Business scope</th>
+                <th>Deliverable</th>
+                <th>Exit criteria</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="tag p0">P0</span> Decisions &amp; Contracts</td>
+                <td>Chốt decision log, terminology, business rules, KPI, artifact contract và state transition.</td>
+                <td>Approved BA plan + solution design baseline</td>
+                <td>Không còn decision blocking implementation.</td>
+              </tr>
+              <tr>
+                <td><span class="tag p1">P1</span> Foundation</td>
+                <td>MySQL, source snapshot, versioned artifacts, operations, model audit, fake deterministic flow.</td>
+                <td>Restart-safe workflow skeleton</td>
+                <td>Job retry không duplicate; lineage/audit pass.</td>
+              </tr>
+              <tr>
+                <td><span class="tag p2">P2</span> Training MVP</td>
+                <td>Style Profile → split → Coach/Writer → decisions → distill → Formula → evaluate → publish.</td>
+                <td>Một Formula thật được publish</td>
+                <td>Isolation, H2, ablation và leakage gates pass.</td>
+              </tr>
+              <tr>
+                <td><span class="tag p3">P3</span> Writer MVP</td>
+                <td>Title → sources → research → angle → brief → architecture → draft → critics → approve/export.</td>
+                <td>Một script thật hoàn tất end-to-end</td>
+                <td>100% factual provenance; regenerate/stale pass.</td>
+              </tr>
+              <tr>
+                <td><span class="tag p3">P4</span> Hardening</td>
+                <td>Progress UX, optional discovery, dashboards, security, backup/restore, load and cost controls.</td>
+                <td>Release candidate</td>
+                <td>Operational/security acceptance pass.</td>
+              </tr>
+              <tr>
+                <td><span class="tag pending">P5</span> Scale by evidence</td>
+                <td>Object storage, search/vector DB, service extraction hoặc multi-user chỉ khi metrics chứng minh cần.</td>
+                <td>Separate scale proposal</td>
+                <td>Có volume/latency/collaboration data thật.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Recommended delivery sequence</h3>
+        <div class="callout teal">
+          Training nên được hoàn thành trước Writer MVP vì Formula là input chính thức của
+          runtime. Tuy nhiên P3 có thể dùng một manually seeded Draft Formula trong môi trường
+          development để UI/flow Writer không phải chờ toàn bộ evaluation automation.
+        </div>
+      </section>
+
+      <section class="section" id="traceability">
+        <span class="section-number">14 · Traceability</span>
+        <h2>Business traceability matrix</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Business goal</th>
+                <th>Capabilities</th>
+                <th>Requirements</th>
+                <th>Acceptance evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Style trở thành reusable asset</td>
+                <td>Training, Distill, Formula Registry</td>
+                <td>FR-TR-01…13</td>
+                <td>Published Formula + evidence + scorecard</td>
+              </tr>
+              <tr>
+                <td>Không copy/overfit source</td>
+                <td>Writer isolation, Holdout, Leak Audit</td>
+                <td>FR-TR-03, 05, 08, 10, 11</td>
+                <td>Input manifest + H2 + leak report</td>
+              </tr>
+              <tr>
+                <td>Script có thesis riêng</td>
+                <td>Research Map, Thesis Candidates, Story Brief</td>
+                <td>FR-WR-04…08</td>
+                <td>Selected angle + Brief + E vs B evaluation</td>
+              </tr>
+              <tr>
+                <td>Script đáng tin cậy</td>
+                <td>Claims, Evidence Critic, Approval Gate</td>
+                <td>FR-WR-03, 10, 13, 15</td>
+                <td>100% factual provenance report</td>
+              </tr>
+              <tr>
+                <td>Regenerate an toàn</td>
+                <td>Artifact Versioning, Invalidation, Audit</td>
+                <td>FR-WR-11, 12; FR-SH-03, 04, 07</td>
+                <td>Version/stale/invalidation tests</td>
+              </tr>
+              <tr>
+                <td>Vận hành bền vững</td>
+                <td>Durable Jobs, Retry, Cost &amp; Error Tracking</td>
+                <td>FR-SH-01…10</td>
+                <td>Restart/restore/security reports</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Nguồn yêu cầu</h3>
+        <ul>
+          <li>Architecture Document 01 — Offline Formula Training từ Video của một Kênh YouTube.</li>
+          <li>Architecture Document 02 — Runtime Script Generation: Title → Research → Thesis → Formula → Script.</li>
+          <li>Greenfield constraint — giữ Spy, xây mới Training/Writer và dùng MySQL cho project mới.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="risks">
+        <span class="section-number">15 · Risks &amp; Dependencies</span>
+        <h2>Rủi ro, giả định và phụ thuộc</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Rủi ro</th>
+                <th>Tác động</th>
+                <th>Khả năng</th>
+                <th>Mitigation / BA control</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Formula pass Train nhưng overfit</td>
+                <td>Cao</td>
+                <td>Cao</td>
+                <td>Topic-aware split, H2 freeze, multi-repeat blind ablation.</td>
+              </tr>
+              <tr>
+                <td>Transcript/source chứa prompt injection</td>
+                <td>Cao</td>
+                <td>Trung bình</td>
+                <td>Untrusted-content boundary, output schema, no source instructions.</td>
+              </tr>
+              <tr>
+                <td>Claim được nhiều video lặp lại nhưng vẫn sai</td>
+                <td>Cao</td>
+                <td>Trung bình</td>
+                <td>Phân biệt Corroborated và Authoritative; manual evidence input khi cần.</td>
+              </tr>
+              <tr>
+                <td>LLM output không ổn định</td>
+                <td>Trung bình</td>
+                <td>Cao</td>
+                <td>Multiple repeats, prompt/model versioning, schema repair, human gates.</td>
+              </tr>
+              <tr>
+                <td>MySQL phình vì transcript/artifact</td>
+                <td>Trung bình</td>
+                <td>Trung bình</td>
+                <td>Retention/reporting; chỉ đề xuất object storage sau measurement.</td>
+              </tr>
+              <tr>
+                <td>Regenerate tạo state mâu thuẫn</td>
+                <td>Cao</td>
+                <td>Trung bình</td>
+                <td>Versioned artifacts, stale rules, optimistic concurrency.</td>
+              </tr>
+              <tr>
+                <td>Provider quota/cost vượt dự kiến</td>
+                <td>Trung bình</td>
+                <td>Trung bình</td>
+                <td>Stage budgets, concurrency cap, cost dashboard, manual retry.</td>
+              </tr>
+              <tr>
+                <td>Legacy cleanup chưa ổn định</td>
+                <td>Cao</td>
+                <td>Cao</td>
+                <td>Chốt greenfield baseline trước P1; không restore code cũ ngoài Spy.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Giả định</h3>
+        <ul>
+          <li>Spy tiếp tục cung cấp được video snapshot, transcript và metadata cần thiết.</li>
+          <li>MVP chạy cho một trusted operator; chưa expose internet công khai.</li>
+          <li>Training source có quyền sử dụng phù hợp và retention policy được Product Owner chốt.</li>
+          <li>LLM provider cho phép structured output và cung cấp usage information đủ để audit chi phí.</li>
+          <li>Formula quality được hiệu chỉnh bằng một tập human-rated examples sau pilot.</li>
+        </ul>
+      </section>
+
+      <section class="section" id="decisions">
+        <span class="section-number">16 · Decision Log</span>
+        <h2>Quyết định nghiệp vụ cần chốt</h2>
+        <p class="lead">
+          Các mục dưới đây có recommendation mặc định. Chỉ cần Product Owner xác nhận
+          “chốt theo đề xuất” hoặc sửa những mục không đồng ý trước khi bắt đầu P1.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Quyết định</th>
+                <th>Recommendation</th>
+                <th>Ảnh hưởng nếu đổi</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="decision">
+                <td>BD-01</td>
+                <td>“Một MySQL” có bao gồm storage nội bộ Spy không?</td>
+                <td>Không. MySQL áp dụng cho Training + Writer mới; Spy giữ storage riêng.</td>
+                <td>Nếu bao gồm Spy, scope thành migration project khác.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-02</td>
+                <td>Training/Writer có được tự crawl source không?</td>
+                <td>Không. Mọi acquisition đi qua Spy; hệ mới chỉ import snapshot.</td>
+                <td>Nếu có, sẽ trùng capability và tăng rủi ro vận hành.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-03</td>
+                <td>Human gates nào bắt buộc?</td>
+                <td>Freeze Split, Select Angle, Publish Formula, Approve Script.</td>
+                <td>Giảm gate sẽ tăng automation nhưng tăng quality risk.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-04</td>
+                <td>Formula được định danh thế nào?</td>
+                <td>Theo Style Profile + language + recommended modes; version immutable.</td>
+                <td>Ảnh hưởng registry, lựa chọn Formula và reporting.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-05</td>
+                <td>Giới hạn Formula?</td>
+                <td>≤1.200 tokens và ≤20 active rules; không dùng hard 4KB.</td>
+                <td>Ảnh hưởng compile gate và runtime context.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-06</td>
+                <td>Quality threshold ban đầu?</td>
+                <td>H2 ≥2 topic clusters, ≥3 repeats, C>A ≥0.5/10, win ≥60%.</td>
+                <td>Cần calibrate lại sau pilot, nhưng phải version policy.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-07</td>
+                <td>Cross-source corroboration có được coi là factual verification?</td>
+                <td>Chỉ là CORROBORATED; claim quan trọng cần AUTHORITATIVE reference.</td>
+                <td>Có thể cần manual evidence hoặc adapter research sau MVP.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-08</td>
+                <td>MVP single-user hay multi-user?</td>
+                <td>Single trusted operator, loopback/private network.</td>
+                <td>Multi-user kéo theo auth, ownership, RBAC và collaboration.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-09</td>
+                <td>Lưu transcript/artifact ở đâu?</td>
+                <td>MySQL trong MVP; object storage chỉ khi có dữ liệu volume thật.</td>
+                <td>Ảnh hưởng backup, retention và deployment.</td>
+              </tr>
+              <tr class="decision">
+                <td>BD-10</td>
+                <td>Có port legacy Training/Writer hoặc migrate legacy IDs không?</td>
+                <td>Không. Greenfield hoàn toàn; chỉ giữ Spy contract.</td>
+                <td>Nếu có, roadmap và acceptance phải viết lại.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="done">
+        <span class="section-number">17 · Definition of Done</span>
+        <h2>Definition of Done cho MVP</h2>
+
+        <div class="grid-2">
+          <article class="card">
+            <h3>Training MVP hoàn thành khi</h3>
+            <ul>
+              <li>Một Style Profile dùng source thật hoàn tất end-to-end.</li>
+              <li>Writer transcript isolation được chứng minh bằng test/audit.</li>
+              <li>Decision Log, Policy, Formula, Evidence và Scorecard truy vết được.</li>
+              <li>Formula qua frozen H2, blind ablation và leakage gate.</li>
+              <li>Formula publish/retire/version pin hoạt động đúng.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Writer MVP hoàn thành khi</h3>
+            <ul>
+              <li>Một title thật hoàn tất Sources → Research → Angle → Brief → Draft.</li>
+              <li>Ba Critics trả issue theo section và revision tạo version mới.</li>
+              <li>Regenerate làm stale đúng descendants.</li>
+              <li>100% factual claims trong approved draft có provenance.</li>
+              <li>Approved script export Markdown/JSON thành công.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Shared platform hoàn thành khi</h3>
+            <ul>
+              <li>Worker restart không mất job hoặc duplicate current artifact.</li>
+              <li>Mọi model call có input/version/cost audit.</li>
+              <li>Retry/cancel/resume dùng được từ UI.</li>
+              <li>Backup/restore drill thành công.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>Business acceptance hoàn thành khi</h3>
+            <ul>
+              <li>Tất cả MUST requirements pass.</li>
+              <li>Bốn human gates được Product Owner nghiệm thu.</li>
+              <li>KPI dashboard hoặc report chứng minh các quality gates.</li>
+              <li>Không còn blocking decision trong BD-01…BD-10.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout teal">
+          <strong>Recommendation để bắt đầu:</strong> chốt BD-01…BD-10 theo mặc định,
+          sau đó thực hiện P0 bằng cách đóng băng artifact contracts, state transition matrix,
+          quality policy v1 và một bộ fixture source dùng chung cho acceptance test.
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="footer-note">
+    BA Plan — Greenfield Offline Formula Training &amp; Writer Room · Version 1.0 · 09/08/2026.
+    Tài liệu này mô tả “why/what/who/when”; chi tiết “how” nằm trong Solution Design Document.
+  </footer>
+</body>
+</html>

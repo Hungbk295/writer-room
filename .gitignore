@@ -1,10 +1,22 @@
+.DS_Store
 node_modules/
 dist/
+build/
+scratch/
+
+# Run data — evidence gốc, không commit
+writer-room-data/
 runs/
 exports/
 *.sqlite*
 *.log
-config/agents.json
+
+# Config chứa token
+config/
+
+# Tauri
 src-tauri/target/
+packages/shell/target/
 binaries/
-dist/ui-check/
+.gstack/
+.playwright-mcp/
