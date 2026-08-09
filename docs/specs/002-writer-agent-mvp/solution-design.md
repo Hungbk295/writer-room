@@ -1,7 +1,7 @@
 ---
 title: Writer Agent MVP
 status: draft
-version: 0.1
+version: 0.2
 date: 2026-08-09
 owners: [Product Owner, Writer Room Engineering]
 ---
@@ -41,6 +41,7 @@ owners: [Product Owner, Writer Room Engineering]
 | CON-6 | MVP is local-first and single-user. Versioned files are the Writer source of truth. |
 | CON-7 | Persistent Evidence KB, FormulaLoop automation, vector retrieval, multi-channel support, and retention analysis are out of scope. |
 | CON-8 | Transcript, source, Formula, and agent output are untrusted content and must never be interpreted as system instructions. |
+| CON-9 | The initial test roster contains only `claude` as Author and `codex` as Critic. Agy/Grok are not automatic fallbacks in this MVP. |
 
 This SDD supersedes the Writer MVP execution and storage choices in `001-greenfield-training-writer-room`. It does not supersede that document's long-term Training/Formula objectives.
 
@@ -61,6 +62,8 @@ This SDD supersedes the Writer MVP execution and storage choices in `001-greenfi
 | Source | Relevance | Purpose |
 |---|---:|---|
 | `packages/daemon/src/harness.ts` | CRITICAL | Existing Agent Harness adapter boundary |
+| `packages/daemon/src/agents/defaults.ts` | HIGH | Existing `claude` Author and `codex` Editor/Critic profiles |
+| `packages/daemon/src/agents/adapters.ts` | HIGH | Claude Code and Codex interactive/headless launch contracts |
 | `packages/daemon/src/team/workflow.ts` | HIGH | Turn dispatch, fresh context, budget, and settlement semantics |
 | `packages/shared/src/terminal.ts` | HIGH | Shared agent/team contracts and events |
 | `packages/spy/src/source-pack.ts` | MEDIUM | Existing source segment and locator shape |
@@ -99,7 +102,7 @@ flowchart LR
     ORCH --> CORE[Writer Core]
     ORCH --> HARNESS[Stable Agent Harness]
     ORCH --> FS[Versioned Writer Workspace]
-    HARNESS --> AGENTS[Author / Critic]
+    HARNESS --> AGENTS[Claude Author / Codex Critic]
     PACK[Manual Formula + Curated Pack] --> FS
 ```
 
@@ -117,7 +120,7 @@ flowchart LR
 
 | Interface | Contract |
 |---|---|
-| Agent Harness | Submit bounded Author/Critic turns; receive settled turn results and events |
+| Agent Harness | Submit bounded turns to agent IDs `claude` and `codex`; receive settled results and events |
 | Filesystem | Atomic write to versioned artifact, then hash and manifest commit |
 
 ### Cross-Component Boundaries
@@ -125,6 +128,7 @@ flowchart LR
 - `writer-core` contains no filesystem, HTTP, UI, or Agent Harness code.
 - Daemon owns persistence, orchestration, validation execution, and event emission.
 - Agent Harness owns process/session execution only; it does not decide Writer state.
+- The initial role binding is `claude → Author` and `codex → Critic`; changing this binding creates a new run configuration and audit record.
 - Web UI sends commands and renders server state; it does not infer completion locally.
 - Public shared contracts are additive during MVP; breaking changes require an ADR update.
 
@@ -145,7 +149,7 @@ Writer tests must be added to the root `test` and `typecheck` scripts when the n
 ## Solution Strategy
 
 - **Architecture pattern:** artifact-driven state machine with human approval gates.
-- **Integration:** Writer Orchestrator dispatches bounded turns through the existing Agent Harness and validates every returned artifact before advancing state.
+- **Integration:** Writer Orchestrator dispatches Author turns to Claude and Critic turns to Codex through the existing Agent Harness, then validates every returned artifact before advancing state.
 - **Persistence:** immutable, hash-addressed files plus a run manifest; no new Writer database in MVP.
 - **Quality control:** structural citation validation is a hard gate; semantic evidence review is advisory and human approval remains final.
 - **Delivery order:** build deterministic core and workspace first, then test orchestration while integrating real agents, add UI, and pilot on real titles.
@@ -172,7 +176,7 @@ flowchart TD
 | Writer Core | Schemas, transition rules, validation results, limits |
 | Workspace Store | Atomic artifact write, hash, manifest, resume scan |
 | Writer Orchestrator | Resolve next action, dispatch turn, validate, commit, pause |
-| Harness Adapter | Translate Writer turn requests/results without changing Harness internals |
+| Harness Adapter | Bind Claude to Author and Codex to Critic; translate Writer turns without changing Harness internals |
 | Writer API/SSE | Idempotent commands and observable run state |
 | Writer UI | Inputs, thesis selection, brief lock, approval, export |
 
@@ -243,7 +247,7 @@ Mutating requests include `command_id`; human decisions also include `expected_a
 ```text
 WriterRun
   status, stage, input hashes, accepted artifact hashes
-  authorAgentId, criticAgentId
+  authorAgentId = "claude", criticAgentId = "codex"
   reviewCount <= 2, repairCount <= 1, turnCount <= 8
 
 EvidenceClaim
@@ -268,13 +272,13 @@ ValidationResult
 
 #### Primary Flow: Produce and approve one script
 
-1. Editor creates a run from title, audience, target length, Formula v0, and Curated Pack.
-2. Author proposes Thesis candidates; Editor selects one.
-3. Author creates Story Brief; Editor locks it.
-4. Author creates Architecture and Draft with `[c:CLAIM_ID]` markers.
+1. Editor creates a run from title, audience, target length, Formula v0, and Curated Pack; the run binds Claude as Author and Codex as Critic.
+2. Claude proposes Thesis candidates; Editor selects one.
+3. Claude creates Story Brief; Editor locks it.
+4. Claude creates Architecture and Draft with `[c:CLAIM_ID]` markers.
 5. Application runs structural citation validation.
-6. Critic reviews with fresh context. If required, Author repairs once.
-7. Application revalidates and optionally runs Critic review two; no third review is allowed.
+6. Codex reviews with fresh context. If required, Claude repairs once.
+7. Application revalidates and optionally runs Codex review two; no third review is allowed.
 8. Editor approves the publish-ready draft.
 9. System exports Markdown, structured JSON, and Citation Ledger.
 
@@ -282,8 +286,8 @@ ValidationResult
 sequenceDiagram
     actor E as Editor
     participant W as Writer Orchestrator
-    participant A as Author
-    participant C as Critic
+    participant A as Claude / Author
+    participant C as Codex / Critic
     participant V as Validators
 
     E->>W: Create and start run
@@ -312,6 +316,7 @@ sequenceDiagram
 | Failure | System behavior | Recovery |
 |---|---|---|
 | Agent Harness unavailable | Run enters `BLOCKED_DEPENDENCY`; no state advance | Retry after Harness is healthy |
+| Claude or Codex unavailable | Run pauses and identifies the missing agent; no silent provider fallback | Restore that agent or explicitly create a new run configuration |
 | Agent turn timeout/crash | Preserve last committed artifact and pending turn record | Retry same idempotency key |
 | Invalid artifact schema | Reject artifact and show validation issues | One bounded regeneration or human stop |
 | Missing/unknown citation | Block publish-ready transition | Repair draft or Curated Pack |
@@ -347,7 +352,7 @@ RESOLVE_NEXT_ACTION(run):
 |---:|---|---|
 | M0 | Writer Core | Contracts, reducer, citation gate, limits, and fixtures pass without agents |
 | M1 | Workspace + fake dispatcher | Full flow resumes after daemon restart and never overwrites artifacts |
-| M2 | Orchestration integration | Test turn settlement, fresh context, stop/retry, crash recovery, and one real Author/Critic Thesis-to-Draft run |
+| M2 | Claude/Codex orchestration | Run Claude Author → Codex Critic end-to-end; test both adapters, turn settlement, fresh context, stop/retry, and crash recovery |
 | M3 | API + UI | Human selection, brief lock, approval, errors, and export work end-to-end |
 | M4 | Pilot | Run 5–10 real titles; record edit time, failures, unsupported claims, and cost |
 
@@ -393,7 +398,7 @@ Each milestone is independently reversible. An orchestration defect found in M2 
 - **Audit:** log command ID, turn key, input/output hashes, validator result, and human decision.
 - **Reliability:** atomic file writes, immutable versions, idempotent commands, deterministic resume.
 - **Observability:** correlate UI, Writer run, Harness job, and artifact IDs.
-- **Cost:** count agent turns and expose the per-run limit; no unbounded critic loop.
+- **Cost:** count turns, duration, and available usage metadata separately for Claude and Codex; no unbounded critic loop.
 
 ### Multi-Component Patterns (if applicable)
 
@@ -403,10 +408,10 @@ Each milestone is independently reversible. An orchestration defect found in M2 
 
 ## Architecture Decisions
 
-- [x] **ADR-1 — Use the existing Agent Harness as the only agent executor.**
-  - Rationale: the user explicitly wants to validate and then reuse the implemented Agent/Terminal layer.
-  - Trade-off: orchestration defects may surface during M2 and require adapter or Harness fixes before UI integration.
-  - User confirmed: 2026-08-09; Agent runtime stable, orchestration testing deferred to M2.
+- [x] **ADR-1 — Use the existing Agent Harness with Claude as Author and Codex as Critic.**
+  - Rationale: both agents are ready for the initial tests and their current default profiles already match these roles.
+  - Trade-off: orchestration defects may surface during M2; absence of either agent pauses the run because MVP has no silent fallback.
+  - User confirmed: 2026-08-09; Agent layer complete, Claude and Codex selected for testing.
 
 - [ ] **ADR-2 — Use versioned filesystem artifacts as the Writer MVP source of truth.**
   - Rationale: shortest path to observable, restartable local MVP without introducing a second job database.
@@ -450,7 +455,9 @@ Each milestone is independently reversible. An orchestration defect found in M2 
 **Agent integration**
 
 - [ ] WHEN a Writer turn is dispatched, THE SYSTEM SHALL use the existing Agent Harness and a deterministic turn key.
-- [ ] WHEN M2 orchestration tests run, THE SYSTEM SHALL verify turn settlement, fresh-context review, stop/retry, and daemon-restart recovery before enabling Writer UI integration.
+- [ ] WHEN a run is created without an explicit roster override, THE SYSTEM SHALL bind `claude` as Author and `codex` as Critic.
+- [ ] WHEN M2 orchestration tests run, THE SYSTEM SHALL verify Claude Author output, Codex fresh-context review, turn settlement, stop/retry, and daemon-restart recovery before enabling Writer UI integration.
+- [ ] IF Claude or Codex is unavailable, THEN THE SYSTEM SHALL pause and SHALL NOT silently route the turn to another configured agent.
 - [ ] WHEN a Critic turn starts, THE SYSTEM SHALL use fresh context containing only the approved input artifacts required for review.
 - [ ] WHEN an agent reports completion, THE SYSTEM SHALL validate its artifact before changing Writer state.
 
@@ -465,7 +472,7 @@ Each milestone is independently reversible. An orchestration defect found in M2 
 
 ### Known Technical Issues
 
-- Agent runtime is stable, but orchestration behavior is untested; M2 may reveal lifecycle or adapter-contract changes.
+- Agent runtime is complete, but Claude/Codex orchestration behavior is untested; M2 may reveal lifecycle or adapter-contract changes.
 - Semantic claim-to-evidence validation is not calibrated enough to be a hard automatic gate.
 - Existing SDD 001 describes different runtime/storage choices; this scoped SDD must be treated as authoritative for Writer MVP.
 
@@ -480,6 +487,7 @@ Each milestone is independently reversible. An orchestration defect found in M2 
 - Do not treat `team_workflow_done` as `writer_stage_done`; Writer validation must still pass.
 - Commit artifact content before updating the manifest pointer.
 - Retry the same turn key after crash; do not create a new logical attempt unless the prior result is settled as failed.
+- Codex headless turns currently receive assignment/message context through the prompt rather than automatically wired Team MCP; M2 must verify context completeness explicitly.
 - A citation marker proves linkage syntax, not semantic support; the UI must preserve this distinction.
 - Never let an agent edit protected inputs, the manifest, approval records, or exported final files directly.
 

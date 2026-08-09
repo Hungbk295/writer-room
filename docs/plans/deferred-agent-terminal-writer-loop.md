@@ -1,9 +1,10 @@
 # Deferred process — 3 phần còn lại (nối khi làm chức năng)
 
-> **Status:** deferred / parked  
+> **Status:** deferred / parked (partial — 1a shipped)  
 > **Parent plan:** [`copy-dna-spy-agent-terminal-architecture.md`](./copy-dna-spy-agent-terminal-architecture.md)  
-> **Harness baseline (đã ship):** 4 agents + TeamWorkflow + MCP + HTTP/SSE + Rust PTY module + Agents page  
-> **Quy ước:** Không implement 3 phần này cho đến khi user assign feature cần chúng. Khi làm, **nối vào harness đã có**, không viết orchestrator/terminal thứ hai.
+> **Portable architecture (canonical):** [`agent-harness-architecture.md`](./agent-harness-architecture.md)  
+> **Harness baseline (đã ship):** 4 agents + TeamWorkflow + MCP + HTTP/SSE + Rust PTY + Agents CRUD + Launch + terminal drawer  
+> **Quy ước:** Phần còn lại nối vào harness đã có; không viết orchestrator/terminal thứ hai. Chi tiết bug/fix agents: **agent-harness-architecture.md §5**.
 
 ---
 
@@ -33,7 +34,7 @@
 | Delete | card Delete | `DELETE /api/agents/:id` |
 | Detect CLI | Detect | `POST /api/agents/detect` |
 
-**Vẫn deferred:** Launch vào real PTY tab (cần P-DEF-1 turnBridge).
+**Shipped (P-DEF-1a):** Launch → PTY drawer. **Vẫn deferred (P-DEF-1b):** auto inject on `spawnTurn` (turnBridge).
 
 ---
 

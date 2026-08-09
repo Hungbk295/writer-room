@@ -4,24 +4,27 @@
 > **Does not touch:** packages/spy (unless feature says so)  
 > **Depends on:** harness baseline already in tree (agents/team/MCP/PTY)
 
-# Deferred — 3 phần còn lại (nối khi làm chức năng)
+# Deferred — phần còn lại (nối khi làm chức năng)
 
-Canonical detail: [`docs/plans/deferred-agent-terminal-writer-loop.md`](../docs/plans/deferred-agent-terminal-writer-loop.md)
+Canonical architecture (port guide + bugbook):  
+[`docs/plans/agent-harness-architecture.md`](../docs/plans/agent-harness-architecture.md)
+
+Deferred detail: [`docs/plans/deferred-agent-terminal-writer-loop.md`](../docs/plans/deferred-agent-terminal-writer-loop.md)
 
 | ID | Phần | Trigger (khi nào làm) | Depends |
 |----|------|------------------------|---------|
-| **P-DEF-1** | Terminal drawer + turnBridge | Feature cần CLI pane trong app / Assign thật | Harness ✅ |
-| **P-DEF-2** | WriterLoop (artifact resume) | Feature Writer multi-step pipeline | P-DEF-1 (khuyến nghị) |
-| **P-DEF-3** | E2E wire Assign/Start → inject → settle | Ship P-DEF-1 và/hoặc P-DEF-2 | P-DEF-1 (+2 nếu loop) |
+| **P-DEF-1a** | Terminal drawer + Launch | — | **shipped** |
+| **P-DEF-1b** | turnBridge inject/heartbeat | Assign/loop auto-wake | Harness ✅ |
+| **P-DEF-2** | WriterLoop (artifact resume) | Writer multi-step pipeline | P-DEF-1a (+1b) |
+| **P-DEF-3** | E2E Assign/Start → inject → settle | Ship automation | P-DEF-1b (+2) |
 
 ## Đã ship (không làm lại)
 
-- 4 agents: `claude`, `codex`, `agy`, `grok`
-- TeamWorkflow + MCP + SSE `/api/team/events`
-- HTTP `/api/agents/*`, `/api/team/*`
-- Rust PTY commands
-- Agents page (chưa inject pane)
+- 4 agents + model defaults (claude sonnet, codex 5.6 terra high, agy board, grok Build binary)
+- TeamWorkflow + MCP + SSE
+- Agents CRUD + Launch → PTY drawer + nav toggle
+- Fixes: wrong grok, TERM=dumb, Agy args, etc. (see architecture §5)
 
 ## Rule
 
-Khi assign feature chạm agent loop: **nối vào harness**, không viết orchestrator/MCP/terminal stack thứ hai. Tick checkbox trong doc canonical khi xong.
+Khi assign feature chạm agent loop: **nối vào harness**, không viết orchestrator/MCP/terminal stack thứ hai. Khi port project khác: đọc **agent-harness-architecture.md** trước.

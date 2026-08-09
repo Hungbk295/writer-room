@@ -20,11 +20,18 @@ Canonical product hiện tại: **Spy-only** — xem root [`README.md`](../READM
 | Claude | [`claude/`](./claude/) | idle | — |
 | Grok | [`grok/`](./grok/) | done → idle after ship | [`spy-only-tauri`](./grok/spy-only-tauri.md) |
 
+## Agent harness (portable)
+
+| Doc | Role |
+|-----|------|
+| [`agent-harness.md`](./agent-harness.md) | Pointer |
+| [`docs/plans/agent-harness-architecture.md`](../docs/plans/agent-harness-architecture.md) | **Canonical** — architecture, bugbook, port checklist |
+
 ## Deferred (feature-driven — không active)
 
 | ID | Plan | Khi nào kéo |
 |----|------|-------------|
-| P-DEF-1…3 | [`deferred-agent-terminal-process.md`](./deferred-agent-terminal-process.md) · detail [`docs/plans/deferred-agent-terminal-writer-loop.md`](../docs/plans/deferred-agent-terminal-writer-loop.md) | Terminal UI / WriterLoop / E2E agent turn — **nối harness**, không stack thứ hai |
+| P-DEF-1b…3 | [`deferred-agent-terminal-process.md`](./deferred-agent-terminal-process.md) · detail [`docs/plans/deferred-agent-terminal-writer-loop.md`](../docs/plans/deferred-agent-terminal-writer-loop.md) | turnBridge inject / WriterLoop / E2E assign — **nối harness** |
 
 Log check gần nhất: [`SYNC.md`](./SYNC.md).
 

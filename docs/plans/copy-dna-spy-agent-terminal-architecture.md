@@ -570,6 +570,16 @@ Mỗi phase shippable độc lập; P3 là lúc “Cook → Board → Director f
 - [x] Rust PTY module ported under `src-tauri/src/terminal/` + commands registered
 - [x] Tests: `packages/daemon/test/agents-defaults.test.ts`
 - [x] Persist path: `writer-room-data/agents/team.json`
+- [x] Terminal drawer + nav show/hide + `--term-height` layout
+- [x] Agent launch fixes (detail **agent-harness-architecture.md §5**): wrong grok binary vs vibe-kit; TERM=dumb blank TUI; Agy board args; Grok no `--mcp-config`; Claude `--model sonnet`; Codex `--model gpt-5.6-terra high`
+
+### Portable architecture (canonical)
+
+**Đọc khi port sang project khác:**  
+[`agent-harness-architecture.md`](./agent-harness-architecture.md)  
+— module map, default agents, MCP recipes, **bugbook đã fix**, porting checklist, debug cheatsheet.
+
+Board pointer: [`plan/agent-harness.md`](../../plan/agent-harness.md)
 
 ### Deferred (parked — nối khi làm chức năng)
 
@@ -578,8 +588,9 @@ Board pointer: [`plan/deferred-agent-terminal-process.md`](../../plan/deferred-a
 
 | ID | Phần | Status |
 |----|------|--------|
-| P-DEF-1 | Terminal drawer + turnBridge (auto-open, inject, heartbeat) | deferred |
+| P-DEF-1a | Terminal drawer + Launch from Agents | **shipped** |
+| P-DEF-1b | turnBridge (SSE spawnTurn → inject + heartbeat) | deferred |
 | P-DEF-2 | WriterLoop + pure resume + prepare workspace | deferred |
 | P-DEF-3 | E2E wire: Assign/Start → pane → MCP settle → (loop advance) | deferred |
 
-Harness baseline **không** block Spy-only. Chỉ kéo 3 phần trên khi feature Writer/agent UI cần chúng.
+Harness baseline **không** block Spy-only. Chỉ kéo phần deferred khi feature Writer/agent automation cần chúng.

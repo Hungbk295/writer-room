@@ -72,7 +72,7 @@ describe('default agents', () => {
       mcp: { url: 'http://127.0.0.1:9/mcp', token: 't' },
       pathEnv: process.env.PATH,
     });
-    expect(interactive.executable).toBe('agy');
+    expect(interactive.executable === 'agy' || interactive.executable.endsWith('/agy')).toBe(true);
     expect(interactive.args).not.toContain('--print');
     expect(interactive.args).not.toContain('--mcp-config');
     expect(interactive.args).toContain('--model');

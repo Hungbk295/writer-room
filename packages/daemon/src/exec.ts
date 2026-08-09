@@ -1,13 +1,32 @@
 /** Process helpers for agent adapters (PATH-augmented for macOS GUI apps). */
 
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export interface ExecResult {
   stdout: string;
   stderr: string;
 }
 
-const EXTRA_PATH = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', `${process.env.HOME ?? ''}/.bun/bin`].filter(Boolean).join(':');
+/**
+ * PATH order matters: Homebrew ships a different `grok` npm package
+ * (`@vibe-kit/grok-cli`) that demands GROK_API_KEY. Real xAI Grok Build lives
+ * in `~/.grok/bin` (and is often symlinked at `~/.local/bin/grok`). Prefer user
+ * CLI homes before Homebrew so agent launch matches an interactive shell.
+ */
+const HOME = process.env.HOME || homedir();
+const EXTRA_PATH = [
+  join(HOME, '.grok', 'bin'),
+  join(HOME, '.local', 'bin'),
+  join(HOME, '.antigravity', 'antigravity', 'bin'),
+  join(HOME, '.bun', 'bin'),
+  join(HOME, '.cargo', 'bin'),
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/bin',
+].filter(Boolean).join(':');
+
 export const AUGMENTED_ENV: NodeJS.ProcessEnv = {
   ...process.env,
   PATH: `${EXTRA_PATH}:${process.env.PATH ?? ''}`,

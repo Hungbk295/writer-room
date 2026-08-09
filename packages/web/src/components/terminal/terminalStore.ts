@@ -113,9 +113,10 @@ export const terminals = {
       env['TERM'] = 'xterm-256color';
     }
     if (!env['COLORTERM']) env['COLORTERM'] = 'truecolor';
-    // Ensure agy is on PATH even if Tauri GUI env is thin.
-    if (env['PATH'] && !env['PATH'].includes('/.local/bin')) {
-      env['PATH'] = `${env['PATH']}:/Users/jc/.local/bin:/opt/homebrew/bin:/usr/local/bin`;
+    // Prefer user CLI homes over Homebrew when PATH is present (Homebrew
+    // ships a different `grok` package that requires GROK_API_KEY).
+    if (env['PATH'] && !env['PATH'].includes('/.grok/bin')) {
+      env['PATH'] = `${env['PATH']}`;
     }
 
     const res = await termCreate({

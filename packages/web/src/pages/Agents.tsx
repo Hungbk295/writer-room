@@ -11,7 +11,7 @@ import {
 import { isTauri } from '../components/terminal/terminalApi.ts';
 import { terminals } from '../components/terminal/terminalStore.ts';
 import { TerminalToggleButton } from '../components/terminal/TerminalDrawer.tsx';
-import { CustomSelect, Field } from '../components/ui/Forms.tsx';
+import { CustomSelect, Field, Input, Textarea } from '../components/ui/Forms.tsx';
 
 const ADAPTER_DEFAULTS: Record<string, string> = {
   'claude-code': 'claude',
@@ -249,37 +249,43 @@ export function AgentsPage() {
             )}
           </p>
         </div>
-        <div class="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+        <div class="row" style={{ gap: '0.6rem', alignItems: 'center' }}>
           <TerminalToggleButton />
           <button type="button" class="btn secondary" onClick={() => void seedDefaults()} disabled={busy === 'seed'}>
             Seed 4 defaults
           </button>
-          <button type="button" class="btn" onClick={openNew}>＋ Agent mới</button>
+          <button type="button" class="btn teal" onClick={openNew}>＋ Agent mới</button>
           <button type="button" class="btn secondary" onClick={() => void refresh()}>Refresh</button>
         </div>
       </header>
 
       {error && (
         <div class="banner error">
-          {error}
-          <button type="button" class="btn secondary" style={{ marginLeft: '0.5rem' }} onClick={() => setError('')}>✕</button>
+          <span>{error}</span>
+          <button type="button" class="banner-close" onClick={() => setError('')}>✕</button>
         </div>
       )}
       {notice && (
         <div class="banner ok">
-          {notice}
-          <button type="button" class="btn secondary" style={{ marginLeft: '0.5rem' }} onClick={() => setNotice('')}>✕</button>
+          <span>{notice}</span>
+          <button type="button" class="banner-close" onClick={() => setNotice('')}>✕</button>
         </div>
       )}
 
-      <div class="card" style={{ marginBottom: '1rem' }}>
-        <div class="eyebrow">Team MCP</div>
-        <code style={{ wordBreak: 'break-all' }}>{mcpUrl || '…'}</code>
+      <div class="team-mcp-card">
+        <div class="team-mcp-info">
+          <span class="eyebrow">Team MCP</span>
+          <code>{mcpUrl || '…'}</code>
+        </div>
         {status && (
-          <p class="muted" style={{ marginTop: '0.5rem' }}>
-            workflow {status.workflow.stopped ? 'stopped' : 'active'} ·
-            turns {status.workflow.totalTurns} · queue {status.workflow.queued} · running {status.workflow.running}
-          </p>
+          <div class="team-mcp-stats">
+            <span class={`chip ${status.workflow.stopped ? 'warn' : 'ok'}`}>
+              workflow: {status.workflow.stopped ? 'stopped' : 'active'}
+            </span>
+            <span class="chip">turns: {status.workflow.totalTurns}</span>
+            <span class="chip">queue: {status.workflow.queued}</span>
+            <span class="chip">running: {status.workflow.running}</span>
+          </div>
         )}
       </div>
 
@@ -303,37 +309,91 @@ export function AgentsPage() {
           return (
             <article
               key={agent.id}
-              class="card agent-card"
-              style={{ borderLeft: `4px solid ${agent.color}`, borderTop: 'none' }}
+              class="agent-card"
             >
-              <header>
-                <strong>{agent.name}</strong>
-                <span class="chip">{agent.adapter}{agent.enabled ? '' : ' · off'}</span>
-              </header>
-              <p class="muted small">
-                id <code>{agent.id}</code>
-                {st ? ` · ${st.status}` : ''}
-              </p>
-              <p class="muted small">{agent.role || 'no role'} · {agent.workingDirectoryMode}</p>
-              <p class="muted small" style={{ wordBreak: 'break-all' }}>{agent.projectRoot}</p>
-              <p class="muted small"><code>{agent.executable}</code> {(agent.args ?? []).join(' ')}</p>
-              {dt && (
-                <p class="muted small">{dt.found ? `✓ ${dt.version ?? 'found'}` : `✗ ${dt.error?.slice(0, 100)}`}</p>
+              <div class="agent-card-header">
+                <div class="agent-card-title-wrap">
+                  <span class="agent-color-dot" style={{ background: agent.color }} />
+                  <h3>{agent.name}</h3>
+                </div>
+                <div class="agent-card-badges">
+                  <span class="chip">{agent.adapter}</span>
+                  <span
+                    class={`status-dot ${agent.enabled !== false ? 'live' : ''}`}
+                    title={agent.enabled !== false ? 'Enabled' : 'Disabled'}
+                  />
+                </div>
+              </div>
+
+              <div class="agent-card-meta">
+                <div class="meta-row">
+                  <span class="meta-label">ID:</span> <code>{agent.id}</code>
+                  {st && <span class="chip">{st.status}</span>}
+                </div>
+                <div class="meta-row">
+                  <span class="meta-label">Role:</span>
+                  <span class="chip">{agent.role || 'no role'}</span>
+                  <span class="muted small">{agent.workingDirectoryMode}</span>
+                </div>
+                <div class="meta-row path-row" title={agent.projectRoot}>
+                  <span class="meta-label">Root:</span>
+                  <span class="path-text">{agent.projectRoot}</span>
+                </div>
+                <div class="meta-row cmd-row">
+                  <code>{agent.executable} {(agent.args ?? []).join(' ')}</code>
+                </div>
+                {dt && (
+                  <div class="meta-row">
+                    <span class={`chip ${dt.found ? 'ok' : 'bad'}`}>
+                      {dt.found ? `✓ ${dt.version ?? 'CLI ready'}` : `✗ ${dt.error?.slice(0, 60)}`}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {agent.prompt && (
+                <div class="agent-card-prompt" title={agent.prompt}>
+                  "{agent.prompt.length > 90 ? agent.prompt.slice(0, 90) + '…' : agent.prompt}"
+                </div>
               )}
-              <p class="muted small">{(agent.prompt || '').slice(0, 100)}{(agent.prompt || '').length > 100 ? '…' : ''}</p>
-              <div class="row agent-actions">
-                <button type="button" class="btn" disabled={busy.startsWith('prev') || busy === 'launch'} onClick={() => void openPreview(agent)}>
+
+              <div class="agent-card-actions">
+                <button
+                  type="button"
+                  class="btn teal agent-launch-btn"
+                  disabled={busy.startsWith('prev') || busy === 'launch'}
+                  onClick={() => void openPreview(agent)}
+                >
                   ▶ Launch
                 </button>
-                <button type="button" class="btn secondary" disabled={busy === `detect-${agent.id}`} onClick={() => void runDetect(agent)}>
-                  🔍 Detect
-                </button>
-                <button type="button" class="btn secondary" onClick={() => openEdit(agent)}>
-                  ✎ Edit
-                </button>
-                <button type="button" class="btn secondary" disabled={busy === `del-${agent.id}`} onClick={() => void handleDelete(agent)}>
-                  🗑
-                </button>
+                <div class="agent-sub-actions">
+                  <button
+                    type="button"
+                    class="btn secondary icon-btn"
+                    title="Detect CLI binary"
+                    disabled={busy === `detect-${agent.id}`}
+                    onClick={() => void runDetect(agent)}
+                  >
+                    🔍
+                  </button>
+                  <button
+                    type="button"
+                    class="btn secondary icon-btn"
+                    title="Sửa cấu hình agent"
+                    onClick={() => openEdit(agent)}
+                  >
+                    ✎ Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="btn secondary icon-btn danger"
+                    title="Xóa agent"
+                    disabled={busy === `del-${agent.id}`}
+                    onClick={() => void handleDelete(agent)}
+                  >
+                    🗑
+                  </button>
+                </div>
               </div>
             </article>
           );
@@ -362,132 +422,140 @@ export function AgentsPage() {
           onKeyDown={(e) => { if (e.key === 'Escape') setEditing(null); }}
         >
           <div class="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-            <h3>{editing.id ? `Sửa ${editing.name || editing.id}` : 'Agent mới'}</h3>
-
-            <label class="field">
-              Tên
-              <input
-                autoFocus
-                value={editing.name}
-                onInput={(e) => setEditing({ ...editing, name: (e.target as HTMLInputElement).value })}
-              />
-            </label>
-
-            <label class="field">
-              Id (kebab-case)
-              <input
-                value={editing.id}
-                placeholder={slugify(editing.name) || 'my-agent'}
-                disabled={Boolean(editing.id) && agents.some((a) => a.id === editing.id)}
-                onInput={(e) => setEditing({ ...editing, id: (e.target as HTMLInputElement).value })}
-              />
-              <span class="muted small">Id cố định sau khi đã lưu; agent mới để trống = tự sinh từ tên.</span>
-            </label>
-
-            <label class="field">
-              Role
-              <input
-                value={editing.role}
-                placeholder="author / editor / analyst / polish"
-                onInput={(e) => setEditing({ ...editing, role: (e.target as HTMLInputElement).value })}
-              />
-            </label>
-
-            <label class="field">
-              Prompt
-              <textarea
-                rows={5}
-                value={editing.prompt}
-                onInput={(e) => setEditing({ ...editing, prompt: (e.target as HTMLTextAreaElement).value })}
-              />
-            </label>
-
-            <div class="modal-row">
-              <Field label="Adapter">
-                <CustomSelect
-                  value={editing.adapter}
-                  onChange={(adapter) => {
-                    setEditing({
-                      ...editing,
-                      adapter,
-                      executable: ADAPTER_DEFAULTS[adapter] ?? editing.executable,
-                      args: [],
-                    });
-                  }}
-                  options={[
-                    { value: 'claude-code', label: 'Claude Code' },
-                    { value: 'codex', label: 'Codex' },
-                    { value: 'agy', label: 'Antigravity (agy)' },
-                    { value: 'grok', label: 'Grok' },
-                    { value: 'gemini', label: 'Gemini' },
-                  ]}
-                />
-              </Field>
-              <label class="field">
-                Executable
-                <input
-                  value={editing.executable}
-                  onInput={(e) => setEditing({ ...editing, executable: (e.target as HTMLInputElement).value })}
-                />
-              </label>
-              <label class="field">
-                Màu
-                <input
-                  type="color"
-                  value={editing.color}
-                  onInput={(e) => setEditing({ ...editing, color: (e.target as HTMLInputElement).value })}
-                />
-              </label>
+            <div class="modal-header">
+              <h3>{editing.id ? `Sửa Agent: ${editing.name || editing.id}` : 'Tạo Agent mới'}</h3>
+              <button type="button" class="banner-close" onClick={() => setEditing(null)}>✕</button>
             </div>
 
-            <label class="field">
-              Args thêm
-              <input
-                value={formatAgentArgs(editing.args ?? [])}
-                placeholder='vd: --model "claude-opus-4"'
-                onInput={(e) => setEditing({ ...editing, args: parseAgentArgs((e.target as HTMLInputElement).value) })}
-              />
-            </label>
+            <div class="modal-section">
+              <div class="modal-section-title">Thông tin chung</div>
+              <div class="modal-row-2">
+                <Field label="Tên Agent">
+                  <Input
+                    autoFocus
+                    placeholder="vd: Claude Code"
+                    value={editing.name}
+                    onInput={(e) => setEditing({ ...editing, name: (e.target as HTMLInputElement).value })}
+                  />
+                </Field>
+                <Field label="ID (kebab-case)">
+                  <Input
+                    value={editing.id}
+                    placeholder={slugify(editing.name) || 'claude-agent'}
+                    disabled={Boolean(editing.id) && agents.some((a) => a.id === editing.id)}
+                    onInput={(e) => setEditing({ ...editing, id: (e.target as HTMLInputElement).value })}
+                  />
+                </Field>
+              </div>
 
-            <label class="field">
-              Project root (absolute path)
-              <input
-                value={editing.projectRoot}
-                placeholder={projectRootDefault || '/Users/you/code/repo'}
-                onInput={(e) => setEditing({ ...editing, projectRoot: (e.target as HTMLInputElement).value })}
-              />
-            </label>
-
-            <div class="modal-row">
-              <Field label="Working dir">
-                <CustomSelect
-                  value={editing.workingDirectoryMode}
-                  onChange={(workingDirectoryMode) =>
-                    setEditing({
-                      ...editing,
-                      workingDirectoryMode: workingDirectoryMode as AgentDefinition['workingDirectoryMode'],
-                    })
-                  }
-                  options={[
-                    { value: 'project', label: 'Shared project tree' },
-                    { value: 'isolated-worktree', label: 'Isolated git worktree' },
-                  ]}
+              <Field label="Role / Nhiệm vụ">
+                <Input
+                  value={editing.role}
+                  placeholder="author / editor / analyst / polish"
+                  onInput={(e) => setEditing({ ...editing, role: (e.target as HTMLInputElement).value })}
                 />
               </Field>
-              <label class="field checkbox">
-                <input
-                  type="checkbox"
-                  checked={editing.enabled !== false}
-                  onChange={(e) => setEditing({ ...editing, enabled: (e.target as HTMLInputElement).checked })}
+
+              <Field label="System Prompt">
+                <Textarea
+                  rows={4}
+                  placeholder="Mô tả chỉ dẫn phong cách và nguyên tắc cho agent..."
+                  value={editing.prompt}
+                  onInput={(e) => setEditing({ ...editing, prompt: (e.target as HTMLTextAreaElement).value })}
                 />
-                Enabled
-              </label>
+              </Field>
+            </div>
+
+            <div class="modal-section">
+              <div class="modal-section-title">Cấu hình CLI & Adapter</div>
+              <div class="modal-row-3">
+                <Field label="Adapter">
+                  <CustomSelect
+                    value={editing.adapter}
+                    onChange={(adapter) => {
+                      setEditing({
+                        ...editing,
+                        adapter,
+                        executable: ADAPTER_DEFAULTS[adapter] ?? editing.executable,
+                        args: [],
+                      });
+                    }}
+                    options={[
+                      { value: 'claude-code', label: 'Claude Code' },
+                      { value: 'codex', label: 'Codex' },
+                      { value: 'agy', label: 'Antigravity (agy)' },
+                      { value: 'grok', label: 'Grok' },
+                      { value: 'gemini', label: 'Gemini' },
+                    ]}
+                  />
+                </Field>
+                <Field label="Executable">
+                  <Input
+                    value={editing.executable}
+                    onInput={(e) => setEditing({ ...editing, executable: (e.target as HTMLInputElement).value })}
+                  />
+                </Field>
+                <Field label="Màu đại diện">
+                  <div class="color-input-wrap">
+                    <input
+                      type="color"
+                      value={editing.color}
+                      onInput={(e) => setEditing({ ...editing, color: (e.target as HTMLInputElement).value })}
+                    />
+                    <span class="mono-small">{editing.color}</span>
+                  </div>
+                </Field>
+              </div>
+
+              <Field label="Args bổ sung">
+                <Input
+                  value={formatAgentArgs(editing.args ?? [])}
+                  placeholder='vd: --model "claude-opus-4"'
+                  onInput={(e) => setEditing({ ...editing, args: parseAgentArgs((e.target as HTMLInputElement).value) })}
+                />
+              </Field>
+
+              <Field label="Project root (Absolute Path)">
+                <Input
+                  value={editing.projectRoot}
+                  placeholder={projectRootDefault || '/Users/you/code/repo'}
+                  onInput={(e) => setEditing({ ...editing, projectRoot: (e.target as HTMLInputElement).value })}
+                />
+              </Field>
+
+              <div class="modal-row-2">
+                <Field label="Working Directory">
+                  <CustomSelect
+                    value={editing.workingDirectoryMode}
+                    onChange={(workingDirectoryMode) =>
+                      setEditing({
+                        ...editing,
+                        workingDirectoryMode: workingDirectoryMode as AgentDefinition['workingDirectoryMode'],
+                      })
+                    }
+                    options={[
+                      { value: 'project', label: 'Shared project tree' },
+                      { value: 'isolated-worktree', label: 'Isolated git worktree' },
+                    ]}
+                  />
+                </Field>
+                <div class="field-checkbox-wrap">
+                  <label class="field-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={editing.enabled !== false}
+                      onChange={(e) => setEditing({ ...editing, enabled: (e.target as HTMLInputElement).checked })}
+                    />
+                    Kích hoạt (Enabled)
+                  </label>
+                </div>
+              </div>
             </div>
 
             <div class="modal-actions">
               <button type="button" class="btn secondary" onClick={() => setEditing(null)}>Hủy</button>
-              <button type="button" class="btn" disabled={busy === 'save'} onClick={() => void saveAgent()}>
-                Lưu
+              <button type="button" class="btn teal" disabled={busy === 'save'} onClick={() => void saveAgent()}>
+                {busy === 'save' ? 'Đang lưu…' : 'Lưu Agent'}
               </button>
             </div>
           </div>
