@@ -6,9 +6,11 @@ import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
 import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
+import { FormulasPage, FormulaPage } from './pages/Training.tsx';
 import { AgentsPage } from './pages/Agents.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { TerminalDrawer } from './components/terminal/TerminalDrawer.tsx';
+import { TurnBridge } from './features/turn-bridge/TurnBridge.tsx';
 import { getTerminalState, subscribeTerminals } from './components/terminal/terminalStore.ts';
 import { api } from './api.ts';
 
@@ -54,6 +56,12 @@ function App() {
     case 'writer-pack':
       page = <WriterPackPage id={route.id} />;
       break;
+    case 'training-formulas':
+      page = <FormulasPage />;
+      break;
+    case 'training-formula':
+      page = <FormulaPage id={route.id} />;
+      break;
     case 'agents':
       page = <AgentsPage />;
       break;
@@ -80,6 +88,7 @@ function App() {
         <p class="muted" style={{ marginTop: '2rem' }}>{health}</p>
       </main>
       <TerminalDrawer />
+      <TurnBridge />
     </div>
   );
 }

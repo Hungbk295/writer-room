@@ -1,5 +1,6 @@
 /** Spy daemon — local HTTP API + static UI for Tauri webview. */
 
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AgentDefinition, TeamGuardConfig } from '@writer-room/shared';
@@ -21,6 +22,10 @@ import {
 } from './writer-packs.ts';
 import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
+import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
+import { preflightVideo } from './training/preflight.ts';
+import { runFormulaDiscovery } from './training/orchestrator.ts';
+import { getFormula, listFormulas } from './training/storage.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -72,6 +77,12 @@ export async function createHttpApp(): Promise<HttpApp> {
 
   const harness = await createAgentHarness({ dataDir: root, defaultProjectRoot: APP_ROOT });
 
+  // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
+  // exactly once per daemon process here, where `harness` and `spy` are already in
+  // scope together (see `training/orchestrator.ts`'s wiring-note doc comment for why
+  // this does NOT live on `harness.ts`).
+  registerTrainingSettleListener(harness.pipeline.scheduler, { dataDir: root, spy });
+
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
   return { spy, harness, startedAt: Date.now(), webRoot };
 }
@@ -102,7 +113,9 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const { ensureDefaultAgents } = await import('./agents/defaults.ts');
         ensureDefaultAgents(harness.config, APP_ROOT);
         return json({
-          agents: harness.listAgents(),
+          // Pipeline lane-scheduler clones (`ephemeral: true`) are internal
+          // dispatch state, not agents a human configures — never surface them here.
+          agents: harness.listAgents().filter((a) => a.ephemeral !== true),
           guards: harness.config.guards(),
           defaults: ['claude', 'codex', 'agy', 'grok'],
         });
@@ -303,6 +316,95 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             'Cache-Control': 'no-cache, no-transform',
             Connection: 'keep-alive',
           },
+        });
+      }
+
+      // ── Pipeline (M0.5) ───────────────────────────────────────
+      // Manual/test dispatch entry point. Training/Writer orchestrators (M1+) will
+      // call `harness.pipeline.scheduler.dispatchItem` directly instead of going
+      // through HTTP — this route exists so the walking skeleton is exercisable
+      // without a domain lane built on top of it yet.
+      if (method === 'POST' && pathname === '/api/pipeline/items/dispatch') {
+        const body = await readBody(req);
+        const batchId = String(body['batchId'] ?? '');
+        const itemId = String(body['itemId'] ?? '');
+        const stage = String(body['stage'] ?? '');
+        const templateId = String(body['templateId'] ?? '');
+        const promptMarkdown = typeof body['promptMarkdown'] === 'string' ? body['promptMarkdown'] : '';
+        const promptVersion = String(body['promptVersion'] ?? '');
+        const attempt = Number(body['attempt']);
+        if (!batchId || !itemId || !stage || !templateId || !promptMarkdown.trim()
+          || !promptVersion || !Number.isInteger(attempt)) {
+          return error('batchId, itemId, stage, templateId, promptMarkdown, promptVersion, attempt (số nguyên) đều bắt buộc');
+        }
+        const inputHashes = Array.isArray(body['inputHashes']) ? body['inputHashes'].map(String) : [];
+        const result = await harness.pipeline.scheduler.dispatchItem({
+          batchId, itemId, stage, attempt, templateId, promptMarkdown, promptVersion, inputHashes,
+          envelope: body['envelope'] ?? {},
+        });
+        return json(result);
+      }
+
+      if (method === 'GET' && pathname === '/api/pipeline/health') {
+        return json({
+          ok: true,
+          maxParallel: harness.pipeline.scheduler.getMaxParallel(),
+          liveClones: harness.pipeline.scheduler.getLiveCloneCount(),
+          ledgerRows: harness.pipeline.ledger.all().length,
+        });
+      }
+
+      // ── Training (M1) ─────────────────────────────────────────
+      if (method === 'POST' && pathname === '/api/training/preflight') {
+        const body = await readBody(req);
+        const videoSnapshotId = String(body['videoSnapshotId'] ?? '');
+        if (!videoSnapshotId) return error('videoSnapshotId bắt buộc');
+        return json(await preflightVideo(spy, harness.agents, videoSnapshotId));
+      }
+
+      if (method === 'POST' && pathname === '/api/training/formula-discovery') {
+        const body = await readBody(req);
+        const videoSnapshotId = String(body['videoSnapshotId'] ?? '');
+        if (!videoSnapshotId) return error('videoSnapshotId bắt buộc');
+        const batchId = typeof body['batchId'] === 'string' && body['batchId'].trim()
+          ? body['batchId']
+          : randomUUID();
+        const result = await runFormulaDiscovery(
+          { spy, agents: harness.agents, scheduler: harness.pipeline.scheduler },
+          { batchId, videoSnapshotId },
+        );
+        return json({ batchId, ...result });
+      }
+
+      if (method === 'GET' && pathname === '/api/training/formulas') {
+        return json({ formulas: await listFormulas() });
+      }
+
+      const formulaMatch = /^\/api\/training\/formulas\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && formulaMatch) {
+        const formula = await getFormula(decodeURIComponent(formulaMatch[1]!));
+        if (!formula) return error('Formula không tồn tại', 404);
+        return json(formula);
+      }
+
+      if (method === 'GET' && pathname === '/api/training/formula-discovery/status') {
+        const batchId = url.searchParams.get('batchId') ?? '';
+        const videoSnapshotId = url.searchParams.get('videoSnapshotId') ?? '';
+        if (!batchId || !videoSnapshotId) return error('batchId và videoSnapshotId bắt buộc');
+        // `all()` already returns one row per turnKey, latest version wins (see
+        // `StageLedger`'s constructor comment) — but more than one turnKey can match
+        // this (batchId, itemId, stage) key (e.g. retried attempts), so still pick
+        // the row with the latest `recordedAt` among matches.
+        const rows = harness.pipeline.ledger.all().filter((row) =>
+          row.batchId === batchId && row.itemId === videoSnapshotId && row.stage === ANALYZE_STAGE
+        );
+        if (rows.length === 0) return json({ found: false });
+        const latest = rows.reduce((a, b) => (Date.parse(b.recordedAt) > Date.parse(a.recordedAt) ? b : a));
+        return json({
+          found: true,
+          status: latest.outcome,
+          errorCode: latest.errorCode,
+          artifactHash: latest.artifactHash,
         });
       }
 

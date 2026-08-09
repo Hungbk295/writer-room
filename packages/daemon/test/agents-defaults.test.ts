@@ -42,6 +42,31 @@ describe('default agents', () => {
     expect(cfg.list()).toHaveLength(4);
   });
 
+  test('codex default args pass reasoning effort as -c override, never a bare positional', () => {
+    // §5.7 regression guard: a bare 'high' silently eats codex exec's one allowed
+    // [PROMPT] positional, so a real headless turn prompt appended after it gets
+    // rejected with "unexpected argument". Must always be `-c model_reasoning_effort=high`.
+    const codex = buildDefaultAgents(dir).find((a) => a.id === 'codex')!;
+    expect(codex.args).not.toContain('high');
+    expect(codex.args).toContain('model_reasoning_effort=high');
+    const idx = codex.args.indexOf('model_reasoning_effort=high');
+    expect(codex.args[idx - 1]).toBe('-c');
+  });
+
+  test('ensureDefaultAgents repairs the old broken codex args (bare "high" positional)', () => {
+    const cfg = new AgentConfigStore(dir);
+    ensureDefaultAgents(cfg, dir);
+    const codex = cfg.get('codex')!;
+    cfg.save({
+      ...codex,
+      args: ['--model', 'gpt-5.6-terra', 'high', '--dangerously-bypass-approvals-and-sandbox'],
+    });
+
+    ensureDefaultAgents(cfg, dir);
+    expect(cfg.get('codex')?.args).not.toContain('high');
+    expect(cfg.get('codex')?.args).toContain('model_reasoning_effort=high');
+  });
+
   test('grok adapter builds interactive and headless specs without --mcp-config', () => {
     const agent = buildDefaultAgents(dir).find((a) => a.id === 'grok')!;
     const adapter = getAdapter('grok');

@@ -18,9 +18,15 @@
       "name": "@writer-room/daemon",
       "version": "2.0.0",
       "dependencies": {
+        "@writer-room/pipeline-core": "workspace:*",
         "@writer-room/shared": "workspace:*",
         "@writer-room/spy": "workspace:*",
+        "@writer-room/training-core": "workspace:*",
       },
+    },
+    "packages/pipeline-core": {
+      "name": "@writer-room/pipeline-core",
+      "version": "2.0.0",
     },
     "packages/shared": {
       "name": "@writer-room/shared",
@@ -36,11 +42,16 @@
         "zod": "^4.4.3",
       },
     },
+    "packages/training-core": {
+      "name": "@writer-room/training-core",
+      "version": "2.0.0",
+    },
     "packages/web": {
       "name": "@writer-room/web",
       "version": "2.0.0",
       "dependencies": {
         "@tauri-apps/api": "^2.1.1",
+        "@writer-room/shared": "workspace:*",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
         "preact": "^10.26.4",
@@ -235,9 +246,13 @@
 
     "@writer-room/daemon": ["@writer-room/daemon@workspace:packages/daemon"],
 
+    "@writer-room/pipeline-core": ["@writer-room/pipeline-core@workspace:packages/pipeline-core"],
+
     "@writer-room/shared": ["@writer-room/shared@workspace:packages/shared"],
 
     "@writer-room/spy": ["@writer-room/spy@workspace:packages/spy"],
+
+    "@writer-room/training-core": ["@writer-room/training-core@workspace:packages/training-core"],
 
     "@writer-room/web": ["@writer-room/web@workspace:packages/web"],
 

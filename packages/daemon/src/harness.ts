@@ -11,6 +11,8 @@ import { McpTeamServer } from './team/mcp.ts';
 import { TeamStore } from './team/store.ts';
 import { TeamWorkflow, type TeamEvent, type TurnJob } from './team/workflow.ts';
 import { APP_ROOT, dataRoot, ensureDir } from './paths.ts';
+import { StageLedger } from './pipeline/ledger.ts';
+import { LaneScheduler } from './pipeline/lane-scheduler.ts';
 
 export type { TeamEvent, TurnJob };
 
@@ -24,6 +26,11 @@ export interface AgentHarness {
   subscribe(listener: (event: TeamEvent) => void): () => void;
   emit(event: TeamEvent): void;
   listAgents(): AgentDefinition[];
+  /** M0.5 walking skeleton — lane scheduler + audit ledger for pipeline turns (SDD §5.3, §5.5). */
+  pipeline: {
+    ledger: StageLedger;
+    scheduler: LaneScheduler;
+  };
   dispose(): void;
 }
 
@@ -80,6 +87,14 @@ export async function createAgentHarness(opts?: {
   const info = await mcp.start();
   mcpInfo = info;
 
+  // M0.5 walking skeleton (SDD §5.3, §5.5): pipeline lane scheduler + audit ledger.
+  // `agents`/`workflow` are already constructed above; the scheduler needs both but
+  // must not depend on the `AgentHarness` object being built below (circular).
+  await ensureDir(join(dataDir, 'pipeline'));
+  const ledger = new StageLedger(join(dataDir, 'pipeline', 'ledger.jsonl'));
+  const scheduler = new LaneScheduler({ agents, workflow, ledger, dataDir });
+  scheduler.reconcileOnBoot();
+
   return {
     agents,
     config,
@@ -93,7 +108,9 @@ export async function createAgentHarness(opts?: {
     },
     emit,
     listAgents: () => agents.list(),
+    pipeline: { ledger, scheduler },
     dispose() {
+      scheduler.dispose();
       mcp.stop();
       db.close();
       listeners.clear();

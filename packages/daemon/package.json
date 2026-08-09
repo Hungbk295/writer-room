@@ -7,8 +7,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@writer-room/pipeline-core": "workspace:*",
     "@writer-room/shared": "workspace:*",
-    "@writer-room/spy": "workspace:*"
+    "@writer-room/spy": "workspace:*",
+    "@writer-room/training-core": "workspace:*"
   },
   "scripts": {
     "test": "bun test",

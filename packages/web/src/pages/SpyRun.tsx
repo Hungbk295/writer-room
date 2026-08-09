@@ -7,6 +7,7 @@ import {
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
 import { TranscriptPanel } from '../components/TranscriptPanel.tsx';
+import { FormulaDiscoveryAction } from '../features/training/FormulaDiscoveryAction.tsx';
 
 function thumbSrc(video: SpyVideoRow): string {
   return video.thumbnailUrl
@@ -33,6 +34,9 @@ export function SpyRunPage({ id }: { id: string }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const detailRef = useRef<HTMLElement | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterTab, setFilterTab] = useState<'all' | 'ready' | 'missing'>('all');
 
   const selectVideo = (videoId: string) => {
     setActiveId(videoId);
@@ -169,42 +173,53 @@ export function SpyRunPage({ id }: { id: string }) {
 
   const skippedCount = videos.filter((v) => v.transcriptStatus !== 'ok').length;
   const readyCount = videos.length - skippedCount;
-  const sorted = videos
-    .slice()
-    .sort((a, b) => Number(b.transcriptStatus === 'ok') - Number(a.transcriptStatus === 'ok'));
+  const sorted = useMemo(
+    () => videos.slice().sort((a, b) => Number(b.transcriptStatus === 'ok') - Number(a.transcriptStatus === 'ok')),
+    [videos],
+  );
+
+  const filteredVideos = useMemo(() => {
+    return sorted.filter((v) => {
+      if (filterTab === 'ready' && v.transcriptStatus !== 'ok') return false;
+      if (filterTab === 'missing' && v.transcriptStatus === 'ok') return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return v.title.toLowerCase().includes(q) || v.sourceVideoId.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [sorted, filterTab, searchQuery]);
 
   const active = videos.find((v) => v.id === activeId) ?? sorted[0] ?? null;
 
   return (
-    <div class="spy-run-page">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Kênh đã spy</h1>
-          <p class="page-lead" style={{ marginBottom: 0 }}>
-            <a href={source} target="_blank" rel="noreferrer" class="link-btn">
-              {source} ↗
+    <div class="spy-run-container">
+      <div class="spy-run-header">
+        <div class="spy-run-title-group">
+          <h1>Kênh đã spy</h1>
+          <div class="spy-run-meta-pills">
+            <span class={`chip ${status === 'completed' ? 'ok' : 'warn'}`}>{status || 'ready'}</span>
+            <a href={source} target="_blank" rel="noreferrer" class="chip info" style={{ textDecoration: 'none' }}>
+              📺 {source.replace('https://www.youtube.com/', '')} ↗
             </a>
-          </p>
+            <span class="chip"><strong>{videos.length}</strong> video</span>
+            <span class="chip"><strong>{readyCount}</strong> transcript</span>
+            <span class="chip" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem' }} title={id}>
+              ID: {id.slice(0, 8)}…
+            </span>
+          </div>
         </div>
-        <a class="btn secondary" href={href({ name: 'spy' })}>← Spy</a>
-      </div>
 
-      <div class="meta" style={{ marginBottom: '1.25rem', alignItems: 'center' }}>
-        <span class={`chip ${status === 'completed' ? 'ok' : 'warn'}`}>{status}</span>
-        <span><strong>{videos.length}</strong> video</span>
-        <span><strong>{readyCount}</strong> transcript</span>
-        <span class="chip" style={{ opacity: 0.75, fontFamily: 'var(--font-mono)', fontSize: '0.74rem' }} title={id}>
-          ID: {id.slice(0, 8)}…
-        </span>
+        <a class="btn secondary" href={href({ name: 'spy' })}>← Danh sách Spy</a>
       </div>
 
       <div class="toolbar-actions">
         <div class="toolbar-group">
           <button class="btn secondary" type="button" disabled={busy || readyCount === 0} onClick={selectAllReady}>
-            Chọn đã có transcript
+            ✓ Chọn đã có transcript ({readyCount})
           </button>
           <button class="btn secondary" type="button" disabled={selected.size === 0} onClick={clearSelection}>
-            Bỏ chọn
+            ✕ Bỏ chọn ({selected.size})
           </button>
         </div>
         <div class="toolbar-group">
@@ -214,7 +229,7 @@ export function SpyRunPage({ id }: { id: string }) {
             disabled={busy || selectedMissingCount === 0}
             onClick={() => void fetchSelectedMissing()}
           >
-            {fetchingId === 'selected' ? 'Đang lấy…' : `Lấy transcript còn thiếu (${selectedMissingCount})`}
+            {fetchingId === 'selected' ? 'Đang lấy…' : `⚡ Lấy transcript còn thiếu (${selectedMissingCount})`}
           </button>
           <button
             class="btn secondary"
@@ -222,22 +237,22 @@ export function SpyRunPage({ id }: { id: string }) {
             disabled={busy || skippedCount === 0}
             onClick={() => void fetchMoreSkipped(5)}
           >
-            {fetchingId === 'bulk' ? 'Đang lấy…' : `Lấy thêm ${Math.min(5, skippedCount)}`}
+            {fetchingId === 'bulk' ? 'Đang lấy…' : `+ Lấy thêm ${Math.min(5, skippedCount)}`}
           </button>
           <button
             class="btn secondary"
             type="button"
             disabled={busy || readyCount === 0}
             onClick={() => void refetchAll()}
-            title="Ghi đè transcript (vd. bản caption cuộn cũ)"
+            title="Ghi đè transcript"
           >
-            {fetchingId === 'refetch' ? '…' : 'Lấy lại (force)'}
+            {fetchingId === 'refetch' ? '…' : '🔄 Force fetch'}
           </button>
         </div>
       </div>
 
       {operation && (operation.status === 'queued' || operation.status === 'running') && (
-        <div class="stack" style={{ marginBottom: '1rem' }}>
+        <div class="stack" style={{ marginBottom: '0.5rem' }}>
           <div class="muted">{operation.step} · {operation.progress}/{operation.total || '?'}</div>
           <div class="progress">
             <span style={{ width: `${pct(operation.progress, operation.total || 1)}%` }} />
@@ -245,82 +260,112 @@ export function SpyRunPage({ id }: { id: string }) {
         </div>
       )}
 
-      {error && <p class="error">{error}</p>}
-      {notice && <p class="ok">{notice}</p>}
+      {error && <div class="banner error">{error}</div>}
+      {notice && <div class="banner ok">{notice}</div>}
 
-      <div class="video-split">
-        <aside class="video-list-pane panel">
-          <h2>Video ({sorted.length})</h2>
-          {sorted.length === 0 ? (
-            <p class="muted">Chưa có video.</p>
-          ) : (
-            <ul class="video-list">
-              {sorted.map((video) => {
+      <div class="spy-run-grid">
+        {/* Left Pane: Video Feed */}
+        <aside class="video-feed-pane">
+          <div class="feed-search-bar">
+            <input
+              type="text"
+              placeholder="🔍 Tìm tiêu đề video…"
+              value={searchQuery}
+              onInput={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
+            />
+          </div>
+
+          <div class="feed-filter-tabs">
+            <button
+              type="button"
+              class={`feed-tab-btn ${filterTab === 'all' ? 'active' : ''}`}
+              onClick={() => setFilterTab('all')}
+            >
+              Tất cả ({videos.length})
+            </button>
+            <button
+              type="button"
+              class={`feed-tab-btn ${filterTab === 'ready' ? 'active' : ''}`}
+              onClick={() => setFilterTab('ready')}
+            >
+              Có transcript ({readyCount})
+            </button>
+            <button
+              type="button"
+              class={`feed-tab-btn ${filterTab === 'missing' ? 'active' : ''}`}
+              onClick={() => setFilterTab('missing')}
+            >
+              Chưa có ({skippedCount})
+            </button>
+          </div>
+
+          <div class="video-feed-list">
+            {filteredVideos.length === 0 ? (
+              <p class="muted" style={{ padding: '1rem', textAlign: 'center' }}>Không tìm thấy video phù hợp.</p>
+            ) : (
+              filteredVideos.map((video) => {
                 const isActive = active?.id === video.id;
                 const isChecked = selected.has(video.sourceVideoId);
                 return (
-                  <li
+                  <div
                     key={video.id}
-                    class={`video-row ${isActive ? 'active' : ''}`}
+                    class={`feed-item ${isActive ? 'is-active' : ''}`}
                     onClick={() => selectVideo(video.id)}
                   >
-                    <label class="video-check" onClick={(e) => e.stopPropagation()}>
+                    <div class="feed-item-checkbox" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={isChecked}
                         onChange={() => toggleSelect(video.sourceVideoId)}
                       />
-                    </label>
-                    <div class="video-row-main">
-                      <img
-                        class="thumb"
-                        src={thumbSrc(video)}
-                        alt=""
-                        loading="lazy"
-                        width={104}
-                        height={58}
-                      />
-                      <div class="video-row-body">
-                        <strong>{video.title}</strong>
-                        <div class="meta">
-                          <span>{video.viewCount.toLocaleString()} views</span>
-                          <span>{formatDuration(video.durationSec)}</span>
-                          <span class={`chip ${statusChipClass(video.transcriptStatus)}`}>
-                            {video.transcriptStatus}
-                            {video.transcriptCount ? ` · ${video.transcriptCount}` : ''}
-                          </span>
-                        </div>
+                    </div>
+
+                    <div class="feed-item-thumb">
+                      <img src={thumbSrc(video)} alt="" loading="lazy" />
+                      {video.durationSec > 0 && (
+                        <span class="duration-badge">{formatDuration(video.durationSec)}</span>
+                      )}
+                    </div>
+
+                    <div class="feed-item-info">
+                      <span class="feed-item-title">{video.title}</span>
+                      <div class="feed-item-meta">
+                        <span>{video.viewCount.toLocaleString()} views</span>
+                        <span class={`chip ${statusChipClass(video.transcriptStatus)}`} style={{ fontSize: '0.72rem', padding: '0.1rem 0.4rem' }}>
+                          {video.transcriptStatus === 'ok' ? `✓ ${video.transcriptCount || ''}` : video.transcriptStatus}
+                        </span>
                       </div>
                     </div>
-                  </li>
+                  </div>
                 );
-              })}
-            </ul>
-          )}
+              })
+            )}
+          </div>
         </aside>
 
-        <section class="video-detail-pane panel" ref={detailRef}>
+        {/* Right Pane: Video Inspector */}
+        <section class="video-inspector-pane" ref={detailRef}>
           {active ? (
             <>
-              <div class="detail-hero">
-                <img class="thumb thumb-lg" src={thumbSrc(active)} alt="" />
-                <div class="detail-hero-body">
+              <div class="inspector-hero">
+                <div class="inspector-thumb-container">
+                  <img src={thumbSrc(active)} alt={active.title} />
+                </div>
+                <div class="inspector-hero-body">
                   <h2>{active.title}</h2>
-                  <div class="meta">
-                    <span>{active.viewCount.toLocaleString()} views</span>
-                    <span>{formatDuration(active.durationSec)}</span>
+                  <div class="meta" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span>👀 {active.viewCount.toLocaleString()} views</span>
+                    <span>⏱ {formatDuration(active.durationSec)}</span>
                     {active.publishedAt && (
-                      <span>{new Date(active.publishedAt).toLocaleDateString()}</span>
+                      <span>📅 {new Date(active.publishedAt).toLocaleDateString()}</span>
                     )}
                     <span class={`chip ${statusChipClass(active.transcriptStatus)}`}>
                       transcript: {active.transcriptStatus}
                     </span>
                     <span class="chip">{active.frameStatus} frames</span>
-                    {active.transcriptSource && (
-                      <span class="chip">{active.transcriptSource}</span>
-                    )}
                   </div>
-                  <div class="detail-hero-actions">
+
+                  <div class="inspector-hero-actions">
                     {active.transcriptStatus !== 'ok' && (
                       <button
                         class="btn teal"
@@ -328,7 +373,7 @@ export function SpyRunPage({ id }: { id: string }) {
                         disabled={busy}
                         onClick={() => void fetchOne(active)}
                       >
-                        {fetchingId === active.sourceVideoId ? '…' : 'Lấy transcript'}
+                        {fetchingId === active.sourceVideoId ? 'Đang lấy…' : '⚡ Lấy transcript'}
                       </button>
                     )}
                     <a
@@ -337,44 +382,49 @@ export function SpyRunPage({ id }: { id: string }) {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      YouTube ↗
+                      Xem trên YouTube ↗
                     </a>
+                    <FormulaDiscoveryAction video={active} />
                   </div>
                 </div>
               </div>
 
-              <h3 class="transcript-heading">Transcript</h3>
-              <TranscriptPanel
-                snapshotId={active.id}
-                transcriptStatus={active.transcriptStatus}
-                busy={busy}
-                onFetch={() => void fetchOne(active)}
-              />
+              <div class="transcript-section">
+                <TranscriptPanel
+                  snapshotId={active.id}
+                  transcriptStatus={active.transcriptStatus}
+                  busy={busy}
+                  onFetch={() => void fetchOne(active)}
+                />
+              </div>
             </>
           ) : (
-            <p class="muted">Chọn video để xem chi tiết.</p>
+            <div class="empty-transcript-card">
+              <span style={{ fontSize: '2.5rem' }}>👈</span>
+              <p class="muted">Chọn một video trong danh sách bên trái để kiểm tra thông tin và đọc transcript.</p>
+            </div>
           )}
         </section>
       </div>
 
       <div class="selection-bar">
         <div class="meta">
-          <strong>{selected.size}</strong> đã chọn
+          <strong>{selected.size}</strong> video đã chọn
           {selectedReadyIds.length > 0 && (
-            <span class="muted">· {selectedReadyIds.length} có transcript</span>
+            <span class="muted">· {selectedReadyIds.length} video sẵn sàng</span>
           )}
           {meta && (
-            <span class="muted">· pack {meta.wordCount} từ</span>
+            <span class="muted">· tổng {meta.wordCount} từ</span>
           )}
         </div>
-        <div class="row">
+        <div class="row" style={{ gap: '0.6rem' }}>
           <button
             class="btn secondary"
             type="button"
             disabled={busy || (selectedReadyIds.length === 0 && readyCount === 0)}
             onClick={() => void exportPack(false)}
           >
-            Xuất Source Pack
+            Xuất Source Pack (.md)
           </button>
           <button
             class="btn teal"
@@ -382,7 +432,7 @@ export function SpyRunPage({ id }: { id: string }) {
             disabled={busy || (selectedReadyIds.length === 0 && readyCount === 0)}
             onClick={() => void exportPack(true)}
           >
-            Gửi Writer
+            🚀 Gửi sang Writer
           </button>
         </div>
       </div>

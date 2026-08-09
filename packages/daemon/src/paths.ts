@@ -27,6 +27,13 @@ export function writerExportsRoot(root = dataRoot()): string {
   return join(root, 'exports', 'writer');
 }
 
+/** Root for Training (SDD 002 §M1) persisted Formula artifacts — mirrors
+ * `writerExportsRoot`'s JSON-per-record-under-a-data-root shape (see
+ * `packages/daemon/src/training/storage.ts`). */
+export function trainingRoot(root = dataRoot()): string {
+  return join(root, 'training');
+}
+
 export async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);

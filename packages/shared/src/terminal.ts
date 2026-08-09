@@ -63,6 +63,10 @@ export interface AgentDefinition {
   projectRoot: string;
   workingDirectoryMode: 'project' | 'isolated-worktree';
   enabled: boolean;
+  /** True for a pipeline lane-scheduler clone (`daemon/src/pipeline/agent-pool.ts`).
+   * Ephemeral agents are excluded from `GET /api/agents` and the Settings UI — they
+   * exist only for the lifetime of one turn and must never pollute the Agents page. */
+  ephemeral?: boolean;
 }
 
 export interface AgentConfigFile {

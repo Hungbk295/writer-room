@@ -19,6 +19,8 @@ export function TranscriptPanel({
   const [plain, setPlain] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!snapshotId || transcriptStatus !== 'ok') {
@@ -27,6 +29,7 @@ export function TranscriptPanel({
       setMeta(null);
       setPlain('');
       setError(null);
+      setSearch('');
       return;
     }
     let cancelled = false;
@@ -70,81 +73,124 @@ export function TranscriptPanel({
     }
   };
 
+  const handleCopy = async () => {
+    const textToCopy = mode === 'plain'
+      ? (plain || segments.map((s) => s.text).join(' '))
+      : segments.map((s) => `[${formatTimestamp(s.startSec)}] ${s.text}`).join('\n');
+    await navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   if (!snapshotId) {
     return (
-      <div class="transcript-pane empty-state">
-        <p class="muted">Chọn một video bên trái để xem transcript.</p>
+      <div class="empty-transcript-card">
+        <span style={{ fontSize: '2rem' }}>📺</span>
+        <p class="muted" style={{ margin: 0 }}>Chọn một video bên trái để đọc transcript.</p>
       </div>
     );
   }
 
   if (transcriptStatus !== 'ok') {
     return (
-      <div class="transcript-pane empty-state">
-        <p class="muted">
-          Chưa có transcript
-          {transcriptStatus && transcriptStatus !== 'skipped' ? ` (${transcriptStatus})` : ''}.
-        </p>
+      <div class="empty-transcript-card">
+        <span style={{ fontSize: '2.2rem' }}>📝</span>
+        <div>
+          <h4 style={{ margin: '0 0 0.25rem', fontSize: '1.05rem', color: 'var(--ink)' }}>Chưa có transcript</h4>
+          <p class="muted" style={{ margin: 0, fontSize: '0.88rem' }}>
+            Video này chưa được tải transcript nội dung ({transcriptStatus || 'skipped'}).
+          </p>
+        </div>
         {onFetch && (
           <button class="btn teal" type="button" disabled={busy} onClick={onFetch}>
-            {busy ? 'Đang lấy…' : 'Lấy transcript'}
+            {busy ? 'Đang lấy transcript…' : '⚡ Lấy transcript video này'}
           </button>
         )}
       </div>
     );
   }
 
+  const filteredSegments = search.trim()
+    ? segments.filter((s) => s.text.toLowerCase().includes(search.toLowerCase()))
+    : segments;
+
   return (
-    <div class="transcript-pane">
-      <div class="transcript-toolbar">
-        <div class="meta">
+    <div class="transcript-viewer">
+      <div class="transcript-header-bar">
+        <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+          <div class="segmented">
+            <button
+              type="button"
+              class={mode === 'timed' ? 'active' : ''}
+              onClick={() => setMode('timed')}
+            >
+              Timed
+            </button>
+            <button
+              type="button"
+              class={mode === 'plain' ? 'active' : ''}
+              onClick={() => setMode('plain')}
+            >
+              Plain Text
+            </button>
+          </div>
+
           {meta && (
-            <>
-              <span class="chip">{meta.count} đoạn</span>
-              {meta.source && <span class="chip">{meta.source}</span>}
-              {meta.hasNormalized && <span class="chip">normalized</span>}
-            </>
+            <span class="chip" style={{ fontSize: '0.78rem' }}>
+              {meta.count} đoạn · {meta.source || 'caption'}
+            </span>
           )}
         </div>
-        <div class="segmented">
-          <button
-            type="button"
-            class={mode === 'timed' ? 'active' : ''}
-            onClick={() => setMode('timed')}
-          >
-            Timed
-          </button>
-          <button
-            type="button"
-            class={mode === 'plain' ? 'active' : ''}
-            onClick={() => setMode('plain')}
-          >
-            Plain
+
+        <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+          {mode === 'timed' && (
+            <input
+              type="text"
+              class="transcript-search-input"
+              placeholder="🔍 Tìm trong transcript…"
+              value={search}
+              onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+            />
+          )}
+
+          <button type="button" class="btn secondary" style={{ height: '34px', fontSize: '0.8rem', padding: '0 0.75rem' }} onClick={() => void handleCopy()}>
+            {copied ? '✓ Đã copy' : '📋 Copy'}
           </button>
         </div>
       </div>
 
       {error && <p class="error">{error}</p>}
-      {loading && segments.length === 0 && <p class="muted">Đang tải transcript…</p>}
+      {loading && segments.length === 0 && <p class="muted">Đang tải dữ liệu transcript…</p>}
 
       {mode === 'timed' ? (
-        <ul class="transcript-lines">
-          {segments.map((seg) => (
-            <li key={seg.id}>
-              <time>{formatTimestamp(seg.startSec)}</time>
-              <span>{seg.text}</span>
-            </li>
-          ))}
-        </ul>
+        <div class="transcript-timeline">
+          {filteredSegments.length === 0 && search ? (
+            <p class="muted" style={{ padding: '1rem', textCenter: 'center' }}>Không tìm thấy từ khóa "{search}".</p>
+          ) : (
+            filteredSegments.map((seg) => (
+              <div key={seg.id} class="timeline-row">
+                <span class="timestamp-pill">{formatTimestamp(seg.startSec)}</span>
+                <span class="timeline-text">{seg.text}</span>
+              </div>
+            ))
+          )}
+        </div>
       ) : (
-        <div class="transcript-plain">{plain || segments.map((s) => s.text).join(' ')}</div>
+        <div class="transcript-plain-body">{plain || segments.map((s) => s.text).join(' ')}</div>
       )}
 
       {nextCursor != null && mode === 'timed' && (
-        <button class="btn secondary" type="button" disabled={loading} onClick={() => void loadMore()}>
-          {loading ? '…' : 'Tải thêm'}
+        <button
+          class="btn secondary"
+          type="button"
+          disabled={loading}
+          onClick={() => void loadMore()}
+          style={{ alignSelf: 'center', marginTop: '0.5rem' }}
+        >
+          {loading ? 'Đang tải thêm…' : 'Tải thêm đoạn tiếp theo'}
         </button>
       )}
     </div>
   );
 }
+

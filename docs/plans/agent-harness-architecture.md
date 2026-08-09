@@ -208,6 +208,31 @@ Tauri `portable-pty` starts from app base env then applies overrides; still neve
 
 ---
 
+### 5.7 `codex` args: `"high"` as a bare positional silently breaks headless `exec`
+
+**Symptom:** interactive Codex launch (Board/Agents page) looks fine; a **headless** dispatch
+(`codex exec ...`) exits immediately (exit code ≠0, zero output) with
+`error: unexpected argument '<prompt>' found`.
+
+**Cause:** the seeded `codex` agent's `args` was `["--model","gpt-5.6-terra","high","--dangerously-bypass-approvals-and-sandbox"]`.
+`codex exec` only accepts ONE positional (`[PROMPT]`); `--model` consumes exactly one value
+(`gpt-5.6-terra`), so the bare `"high"` becomes the first positional (silently swallowed as a
+throwaway "prompt" in interactive mode, where the real prompt is typed live) — then the real
+turn prompt appended by `buildHeadlessTurn` becomes a SECOND positional, which `exec` rejects
+outright. Interactive mode never surfaced this because there is no second positional to collide
+with.
+
+**Fix (shipped 2026-08-09, via `PUT /api/agents` — a data fix in `agents/team.json`, not a code
+change):** reasoning effort must be passed as a config override, not a positional:
+`-c model_reasoning_effort=high`, not a bare `"high"` in `args`.
+
+**Port rule / must-fix-if-reintroduced:** `packages/daemon/src/agents/defaults.ts` still seeds
+the broken `["--model","gpt-5.6-terra","high",...]` form on a fresh install — the shipped fix
+above only patched one already-running instance's persisted config. Whoever next touches
+`defaults.ts` should correct the seed to match §9's recipe.
+
+---
+
 ## 6. HTTP API surface (minimal portable contract)
 
 ```http
@@ -318,9 +343,10 @@ claude --model sonnet [--append-system-prompt …] --mcp-config data/agents/mcp-
 codex \
   -c 'mcp_servers.team.url="http://127.0.0.1:PORT/mcp"' \
   -c 'mcp_servers.team.bearer_token_env_var="WRITER_ROOM_MCP_TOKEN"' \
-  --model gpt-5.6-terra high \
+  --model gpt-5.6-terra -c model_reasoning_effort=high \
   --dangerously-bypass-approvals-and-sandbox
 # env: WRITER_ROOM_MCP_TOKEN=<bearer>
+# ⚠ NOT `--model gpt-5.6-terra high` (bare positional) — see §5.7.
 ```
 
 ### Antigravity (`agy`)

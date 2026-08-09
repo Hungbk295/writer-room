@@ -19,15 +19,25 @@ export const CLAUDE_DEFAULT_ARGS = [
 
 /**
  * Codex: gpt-5.6-terra + high reasoning effort.
- * Same shape as dna-spy board-claude codex profile
- * (`--model gpt-5.6-terra high`).
+ *
+ * Reasoning effort MUST be a `-c model_reasoning_effort=high` config override, never
+ * a bare `'high'` positional — `codex exec` only accepts one positional (`[PROMPT]`),
+ * so a bare `'high'` silently eats that slot and any real turn prompt appended after
+ * it (headless dispatch) gets rejected with "unexpected argument". Interactive launch
+ * never surfaced this because there's no second positional to collide with there.
+ * See `docs/plans/agent-harness-architecture.md` §5.7 (bug found + fixed 2026-08-09).
  */
 export const CODEX_DEFAULT_ARGS = [
   '--model',
   'gpt-5.6-terra',
-  'high',
+  '-c',
+  'model_reasoning_effort=high',
   '--dangerously-bypass-approvals-and-sandbox',
 ] as const;
+
+/** The old, broken first-seed shape (§5.7) — matched narrowly so the repair below
+ * never overwrites an args array a user customized on purpose. */
+const BROKEN_CODEX_ARGS_V1 = ['--model', 'gpt-5.6-terra', 'high', '--dangerously-bypass-approvals-and-sandbox'];
 
 /** Real xAI Grok Build (not Homebrew @vibe-kit/grok-cli which needs GROK_API_KEY). */
 export function resolveGrokExecutable(): string {
@@ -145,7 +155,10 @@ export function ensureDefaultAgents(cfg: AgentConfigStore, projectRoot: string):
 
   const codex = cfg.get('codex');
   if (codex && codex.adapter === 'codex' && (!codex.args || codex.args.length === 0
-    || (codex.args.length === 1 && codex.args[0] === '--dangerously-bypass-approvals-and-sandbox'))) {
+    || (codex.args.length === 1 && codex.args[0] === '--dangerously-bypass-approvals-and-sandbox')
+    // §5.7: the old seed's bare `'high'` positional breaks headless `codex exec`.
+    || (codex.args.length === BROKEN_CODEX_ARGS_V1.length
+      && codex.args.every((value, i) => value === BROKEN_CODEX_ARGS_V1[i])))) {
     cfg.save({ ...codex, args: [...byId('codex').args] });
   }
 

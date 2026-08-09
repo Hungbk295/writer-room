@@ -33,6 +33,8 @@ export interface AgentDefinition {
   projectRoot: string;
   workingDirectoryMode: 'project' | 'isolated-worktree' | string;
   enabled: boolean;
+  /** Pipeline lane-scheduler clone — excluded from the Agents list server-side. */
+  ephemeral?: boolean;
 }
 
 export interface AgentLaunchSpec {
@@ -155,6 +157,77 @@ export interface WriterPackSummary {
 export interface WriterPack extends WriterPackSummary {
   markdown: string;
   videoIds: string[];
+}
+
+// ── Training (M1 Formula Discovery) — mirrors `@writer-room/training-core`'s
+// `FormulaArtifact`/`AnalysisRule`/`Evidence` and daemon's `PreflightResult`/
+// `RunFormulaDiscoveryResult` exactly, not divergent field names.
+
+export interface TrainingPreflightBlocker {
+  code: 'INPUT_MISSING_TRANSCRIPT' | 'INPUT_NO_CHANNEL' | 'AGENT_UNAVAILABLE';
+  message: string;
+}
+
+export interface TrainingPreflightResult {
+  ready: boolean;
+  blockers: TrainingPreflightBlocker[];
+  channelTitle: string | null;
+  transcriptSegmentCount: number;
+}
+
+export interface FormulaDiscoveryDispatchResult {
+  batchId: string;
+  status: 'DISPATCHED' | 'BLOCKED' | 'WAITING_LANE' | 'FAILED';
+  turnId?: number;
+  blockers?: TrainingPreflightBlocker[];
+  reason?: string;
+}
+
+export interface FormulaDiscoveryStatus {
+  found: boolean;
+  status?: 'RUNNING' | 'COMMITTED' | 'FAILED' | 'INTERRUPTED';
+  errorCode?: string;
+  artifactHash?: string;
+}
+
+export interface FormulaSummary {
+  id: string;
+  status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
+  scope: 'SINGLE_CHANNEL' | 'PER_CHANNEL_COMPARE' | 'CROSS_CHANNEL_SHARED';
+  channelTitles: string[];
+  videoCount: number;
+  createdAt: string;
+  sourceBatchId?: string;
+}
+
+export interface FormulaEvidence {
+  segmentId: string;
+  quote: string;
+  startSec?: number;
+  endSec?: number;
+}
+
+export interface FormulaRule {
+  id: string;
+  statement: string;
+  evidence: FormulaEvidence[];
+}
+
+export interface FormulaIncludedArtifactRef {
+  videoSnapshotId: string;
+  analysisArtifactHash: string;
+}
+
+export interface Formula {
+  id: string;
+  status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
+  scope: 'SINGLE_CHANNEL' | 'PER_CHANNEL_COMPARE' | 'CROSS_CHANNEL_SHARED';
+  channelGroups: { channelTitle: string; videoSnapshotIds: string[] }[];
+  rules: FormulaRule[];
+  includedArtifacts: FormulaIncludedArtifactRef[];
+  warnings: string[];
+  createdAt: string;
+  sourceBatchId?: string;
 }
 
 export const api = {
@@ -288,6 +361,23 @@ export const api = {
       assignment: { agentId: string; task: string };
       turn: { ok: boolean; turnId?: number; reason?: string };
     }>('/api/team/assign', { method: 'POST', body: JSON.stringify(body) }),
+
+  trainingPreflight: (videoSnapshotId: string) =>
+    request<TrainingPreflightResult>('/api/training/preflight', {
+      method: 'POST',
+      body: JSON.stringify({ videoSnapshotId }),
+    }),
+  startFormulaDiscovery: (videoSnapshotId: string, batchId?: string) =>
+    request<FormulaDiscoveryDispatchResult>('/api/training/formula-discovery', {
+      method: 'POST',
+      body: JSON.stringify({ videoSnapshotId, batchId }),
+    }),
+  getFormulaDiscoveryStatus: (batchId: string, videoSnapshotId: string) =>
+    request<FormulaDiscoveryStatus>(
+      `/api/training/formula-discovery/status?batchId=${encodeURIComponent(batchId)}&videoSnapshotId=${encodeURIComponent(videoSnapshotId)}`,
+    ),
+  listFormulas: () => request<{ formulas: FormulaSummary[] }>('/api/training/formulas'),
+  getFormula: (id: string) => request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`),
 };
 
 export function formatDuration(sec: number): string {
