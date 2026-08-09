@@ -1,5 +1,6 @@
 import type { Route } from '../router.ts';
 import { href } from '../router.ts';
+import { TerminalToggleButton } from '../components/terminal/TerminalDrawer.tsx';
 
 export function Home() {
   return (
@@ -19,6 +20,11 @@ export function Home() {
           <div class="eyebrow">Staging</div>
           <h2>Writer</h2>
           <p>Source Pack đã chọn — xem, copy, tải markdown.</p>
+        </a>
+        <a class="destination" href={href({ name: 'agents' })}>
+          <div class="eyebrow">Harness</div>
+          <h2>Agents</h2>
+          <p>Claude, Codex, Agy, Grok — team MCP, assign, readiness.</p>
         </a>
         <a class="destination" href={href({ name: 'settings' })}>
           <div class="eyebrow">Cấu hình</div>
@@ -45,7 +51,10 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
           Writer
           {writerCount > 0 && <span class="nav-badge">{writerCount}</span>}
         </a>
+        <a class={is(['agents'])} href={href({ name: 'agents' })}>Agents</a>
         <a class={is(['settings'])} href={href({ name: 'settings' })}>Settings</a>
+        {/* Always-visible show/hide — same role as dna-spy sidebar "🖥 Terminal" */}
+        <TerminalToggleButton />
       </nav>
     </header>
   );

@@ -180,54 +180,64 @@ export function SpyRunPage({ id }: { id: string }) {
       <div class="page-header">
         <div>
           <h1 class="page-title">Kênh đã spy</h1>
-          <p class="page-lead" style={{ marginBottom: 0 }}>{source}</p>
+          <p class="page-lead" style={{ marginBottom: 0 }}>
+            <a href={source} target="_blank" rel="noreferrer" class="link-btn">
+              {source} ↗
+            </a>
+          </p>
         </div>
         <a class="btn secondary" href={href({ name: 'spy' })}>← Spy</a>
       </div>
 
-      <div class="meta" style={{ marginBottom: '1rem' }}>
-        <span class="chip">{status}</span>
-        <span class="muted">{videos.length} video</span>
-        <span class="muted">{readyCount} transcript</span>
-        <span class="muted mono-small">{id}</span>
+      <div class="meta" style={{ marginBottom: '1.25rem', alignItems: 'center' }}>
+        <span class={`chip ${status === 'completed' ? 'ok' : 'warn'}`}>{status}</span>
+        <span><strong>{videos.length}</strong> video</span>
+        <span><strong>{readyCount}</strong> transcript</span>
+        <span class="chip" style={{ opacity: 0.75, fontFamily: 'var(--font-mono)', fontSize: '0.74rem' }} title={id}>
+          ID: {id.slice(0, 8)}…
+        </span>
       </div>
 
-      <div class="row toolbar-actions">
-        <button class="btn secondary" type="button" disabled={busy || readyCount === 0} onClick={selectAllReady}>
-          Chọn đã có transcript
-        </button>
-        <button class="btn secondary" type="button" disabled={selected.size === 0} onClick={clearSelection}>
-          Bỏ chọn
-        </button>
-        <button
-          class="btn teal"
-          type="button"
-          disabled={busy || selectedMissingCount === 0}
-          onClick={() => void fetchSelectedMissing()}
-        >
-          {fetchingId === 'selected' ? 'Đang lấy…' : `Lấy transcript còn thiếu (${selectedMissingCount})`}
-        </button>
-        <button
-          class="btn secondary"
-          type="button"
-          disabled={busy || skippedCount === 0}
-          onClick={() => void fetchMoreSkipped(5)}
-        >
-          {fetchingId === 'bulk' ? 'Đang lấy…' : `Lấy thêm ${Math.min(5, skippedCount)}`}
-        </button>
-        <button
-          class="btn secondary"
-          type="button"
-          disabled={busy || readyCount === 0}
-          onClick={() => void refetchAll()}
-          title="Ghi đè transcript (vd. bản caption cuộn cũ)"
-        >
-          {fetchingId === 'refetch' ? '…' : 'Lấy lại (force)'}
-        </button>
+      <div class="toolbar-actions">
+        <div class="toolbar-group">
+          <button class="btn secondary" type="button" disabled={busy || readyCount === 0} onClick={selectAllReady}>
+            Chọn đã có transcript
+          </button>
+          <button class="btn secondary" type="button" disabled={selected.size === 0} onClick={clearSelection}>
+            Bỏ chọn
+          </button>
+        </div>
+        <div class="toolbar-group">
+          <button
+            class="btn teal"
+            type="button"
+            disabled={busy || selectedMissingCount === 0}
+            onClick={() => void fetchSelectedMissing()}
+          >
+            {fetchingId === 'selected' ? 'Đang lấy…' : `Lấy transcript còn thiếu (${selectedMissingCount})`}
+          </button>
+          <button
+            class="btn secondary"
+            type="button"
+            disabled={busy || skippedCount === 0}
+            onClick={() => void fetchMoreSkipped(5)}
+          >
+            {fetchingId === 'bulk' ? 'Đang lấy…' : `Lấy thêm ${Math.min(5, skippedCount)}`}
+          </button>
+          <button
+            class="btn secondary"
+            type="button"
+            disabled={busy || readyCount === 0}
+            onClick={() => void refetchAll()}
+            title="Ghi đè transcript (vd. bản caption cuộn cũ)"
+          >
+            {fetchingId === 'refetch' ? '…' : 'Lấy lại (force)'}
+          </button>
+        </div>
       </div>
 
       {operation && (operation.status === 'queued' || operation.status === 'running') && (
-        <div class="stack" style={{ marginBottom: '0.85rem' }}>
+        <div class="stack" style={{ marginBottom: '1rem' }}>
           <div class="muted">{operation.step} · {operation.progress}/{operation.total || '?'}</div>
           <div class="progress">
             <span style={{ width: `${pct(operation.progress, operation.total || 1)}%` }} />
@@ -240,7 +250,7 @@ export function SpyRunPage({ id }: { id: string }) {
 
       <div class="video-split">
         <aside class="video-list-pane panel">
-          <h2>Video</h2>
+          <h2>Video ({sorted.length})</h2>
           {sorted.length === 0 ? (
             <p class="muted">Chưa có video.</p>
           ) : (
@@ -252,27 +262,23 @@ export function SpyRunPage({ id }: { id: string }) {
                   <li
                     key={video.id}
                     class={`video-row ${isActive ? 'active' : ''}`}
+                    onClick={() => selectVideo(video.id)}
                   >
-                    <label class="video-check">
+                    <label class="video-check" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={isChecked}
                         onChange={() => toggleSelect(video.sourceVideoId)}
-                        onClick={(e) => e.stopPropagation()}
                       />
                     </label>
-                    <button
-                      type="button"
-                      class="video-row-main"
-                      onClick={() => selectVideo(video.id)}
-                    >
+                    <div class="video-row-main">
                       <img
                         class="thumb"
                         src={thumbSrc(video)}
                         alt=""
                         loading="lazy"
-                        width={160}
-                        height={90}
+                        width={104}
+                        height={58}
                       />
                       <div class="video-row-body">
                         <strong>{video.title}</strong>
@@ -285,7 +291,7 @@ export function SpyRunPage({ id }: { id: string }) {
                           </span>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   </li>
                 );
               })}
@@ -314,7 +320,7 @@ export function SpyRunPage({ id }: { id: string }) {
                       <span class="chip">{active.transcriptSource}</span>
                     )}
                   </div>
-                  <div class="row" style={{ marginTop: '0.65rem' }}>
+                  <div class="detail-hero-actions">
                     {active.transcriptStatus !== 'ok' && (
                       <button
                         class="btn teal"

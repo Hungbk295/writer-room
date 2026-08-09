@@ -1,8 +1,9 @@
-//! Spy desktop shell.
+//! Spy desktop shell + Terminal PTY Manager (decision 0010).
 //!
-//! The window is a view onto the daemon. The shell ensures the daemon is up,
-//! then points a webview at it. Closing the window does not kill the daemon —
-//! harvest jobs can outlive the UI.
+//! The window is a view onto the daemon. Closing the window does not kill the
+//! daemon — harvest jobs can outlive the UI. Terminal PTYs are owned by Rust.
+
+mod terminal;
 
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -109,6 +110,16 @@ fn failure_page(detail: &str) -> String {
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(terminal::TerminalManager::new())
+        .invoke_handler(tauri::generate_handler![
+            terminal::commands::terminal_create,
+            terminal::commands::terminal_write,
+            terminal::commands::terminal_resize,
+            terminal::commands::terminal_kill,
+            terminal::commands::terminal_list,
+            terminal::commands::terminal_snapshot,
+            terminal::commands::terminal_attach,
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
 

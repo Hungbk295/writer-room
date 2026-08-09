@@ -2,6 +2,7 @@
 
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import type { AgentDefinition, TeamGuardConfig } from '@writer-room/shared';
 import { SpyService } from '@writer-room/spy';
 import { acquireLock, releaseLock } from './lock.ts';
 import {
@@ -18,6 +19,8 @@ import {
   getWriterPack,
   listWriterPacks,
 } from './writer-packs.ts';
+import { createAgentHarness, type AgentHarness } from './harness.ts';
+import { TEAM_CHANNEL } from './agents/index.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -52,6 +55,7 @@ function contentType(path: string): string {
 
 export interface HttpApp {
   spy: SpyService;
+  harness: AgentHarness;
   startedAt: number;
   webRoot: string;
 }
@@ -66,12 +70,14 @@ export async function createHttpApp(): Promise<HttpApp> {
   const spy = new SpyService({ dataRoot: spyRoot(root) });
   await spy.init();
 
+  const harness = await createAgentHarness({ dataDir: root, defaultProjectRoot: APP_ROOT });
+
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
-  return { spy, startedAt: Date.now(), webRoot };
+  return { spy, harness, startedAt: Date.now(), webRoot };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
-  const { spy, startedAt, webRoot } = app;
+  const { spy, harness, startedAt, webRoot } = app;
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -80,10 +86,223 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
 
     try {
       if (method === 'GET' && pathname === '/api/health') {
+        const mcp = harness.teamMcpInfo();
         return json({
           ok: true,
           spy: SPY_FEATURE.enabled,
+          agents: harness.listAgents().length,
+          teamMcp: mcp ? { url: mcp.url } : null,
           uptimeMs: Date.now() - startedAt,
+        });
+      }
+
+      // ── Agents ────────────────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/agents') {
+        // Re-seed defaults if config was wiped or first boot under old daemon data dir.
+        const { ensureDefaultAgents } = await import('./agents/defaults.ts');
+        ensureDefaultAgents(harness.config, APP_ROOT);
+        return json({
+          agents: harness.listAgents(),
+          guards: harness.config.guards(),
+          defaults: ['claude', 'codex', 'agy', 'grok'],
+        });
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/seed-defaults') {
+        const { ensureDefaultAgents } = await import('./agents/defaults.ts');
+        const agents = ensureDefaultAgents(harness.config, APP_ROOT);
+        return json({ ok: true, agents, seeded: agents.map((a) => a.id) });
+      }
+
+      if ((method === 'PUT' || method === 'POST') && pathname === '/api/agents') {
+        const body = await readBody(req);
+        // Accept { agent: {...} } or the agent object at the top level (dna-spy style).
+        const raw = (body['agent'] && typeof body['agent'] === 'object')
+          ? body['agent']
+          : body;
+        if (!raw || typeof raw !== 'object' || !('id' in raw || 'name' in raw)) {
+          return error('agent object bắt buộc (id/name/adapter/…)');
+        }
+        const agent = raw as AgentDefinition;
+        if (!agent.id?.trim() && agent.name?.trim()) {
+          agent.id = agent.name
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 40) || 'agent';
+        }
+        return json({ agent: harness.agents.save(agent) });
+      }
+
+      const agentMatch = /^\/api\/agents\/([^/]+)$/.exec(pathname);
+      if (method === 'DELETE' && agentMatch) {
+        const ok = harness.agents.delete(decodeURIComponent(agentMatch[1]!));
+        if (!ok) return error('agent không tồn tại', 404);
+        return json({ ok: true, deleted: true });
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/detect') {
+        const body = await readBody(req);
+        const adapter = String(body['adapter'] ?? '');
+        const executable = typeof body['executable'] === 'string' ? body['executable'] : undefined;
+        if (!adapter) return error('adapter bắt buộc');
+        return json(await harness.agents.detect(adapter as AgentDefinition['adapter'], executable));
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/prepare-launch') {
+        const body = await readBody(req);
+        const agentId = String(body['agentId'] ?? '');
+        const cwd = typeof body['cwd'] === 'string' ? body['cwd'] : undefined;
+        if (!agentId) return error('agentId bắt buộc');
+        return json(await harness.agents.prepareLaunch(agentId, cwd));
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/launch-preview') {
+        const body = await readBody(req);
+        const agentId = String(body['agentId'] ?? '');
+        if (!agentId) return error('agentId bắt buộc');
+        return json(harness.agents.launchPreview(agentId));
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/readiness') {
+        const body = await readBody(req);
+        const agentId = String(body['agentId'] ?? '');
+        const cwd = typeof body['cwd'] === 'string' ? body['cwd'] : undefined;
+        if (!agentId) return error('agentId bắt buộc');
+        return json(await harness.agents.launchReadiness(agentId, cwd));
+      }
+
+      if (method === 'PUT' && pathname === '/api/agents/guards') {
+        const body = await readBody(req);
+        return json({ guards: harness.config.setGuards(body as Partial<TeamGuardConfig>) });
+      }
+
+      // ── Team hub ──────────────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/team/mcp') {
+        const info = harness.teamMcpInfo();
+        if (!info) return error('MCP team server chưa sẵn sàng', 503);
+        return json(info);
+      }
+
+      if (method === 'GET' && pathname === '/api/team/status') {
+        return json({
+          workflow: harness.workflow.status(),
+          agents: harness.store.agentStates(),
+          audit: harness.store.listAudit(50),
+        });
+      }
+
+      if (method === 'GET' && pathname === '/api/team/messages') {
+        const channel = url.searchParams.get('channel') || TEAM_CHANNEL;
+        const afterCursor = Number(url.searchParams.get('afterCursor') || 0);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        return json({
+          messages: harness.store.read({
+            channel,
+            afterCursor: Number.isFinite(afterCursor) ? afterCursor : 0,
+            limit: Number.isFinite(limit) ? limit : 50,
+          }),
+          latestCursor: harness.store.latestCursor(channel),
+        });
+      }
+
+      if (method === 'POST' && pathname === '/api/team/messages') {
+        const body = await readBody(req);
+        const msg = harness.store.send({
+          channel: String(body['channel'] ?? TEAM_CHANNEL),
+          senderAgentId: String(body['senderAgentId'] ?? 'human'),
+          body: String(body['body'] ?? ''),
+          mentions: Array.isArray(body['mentions']) ? body['mentions'].map(String) : [],
+          replyTo: typeof body['replyTo'] === 'string' ? body['replyTo'] : undefined,
+          idempotencyKey: typeof body['idempotencyKey'] === 'string' ? body['idempotencyKey'] : undefined,
+        });
+        harness.workflow.handleNewMessage(msg);
+        return json({ message: msg }, 201);
+      }
+
+      if (method === 'POST' && pathname === '/api/team/assign') {
+        const body = await readBody(req);
+        const agentId = String(body['agentId'] ?? '');
+        const task = String(body['task'] ?? '');
+        if (!agentId || !task.trim()) return error('agentId và task bắt buộc');
+        const assignment = harness.store.setAssignment(agentId, task, String(body['assignedBy'] ?? 'human'));
+        const turn = harness.workflow.requestTurn(agentId, 'assignment', undefined, {
+          taskNote: task,
+          orchestrated: body['orchestrated'] === true,
+          persistentInteractive: body['persistentInteractive'] === true,
+        });
+        return json({ assignment, turn });
+      }
+
+      if (method === 'POST' && pathname === '/api/team/turn/complete') {
+        const body = await readBody(req);
+        const turnId = Number(body['turnId']);
+        const exitCode = body['exitCode'] === null || body['exitCode'] === undefined
+          ? null
+          : Number(body['exitCode']);
+        if (!Number.isInteger(turnId)) return error('turnId không hợp lệ');
+        harness.workflow.turnComplete(turnId, {
+          exitCode,
+          resumeSessionRef: typeof body['resumeSessionRef'] === 'string' ? body['resumeSessionRef'] : undefined,
+        });
+        return json({ ok: true });
+      }
+
+      if (method === 'POST' && pathname === '/api/team/turn/heartbeat') {
+        const body = await readBody(req);
+        const turnId = Number(body['turnId']);
+        if (!Number.isInteger(turnId)) return error('turnId không hợp lệ');
+        return json(harness.workflow.heartbeat(turnId));
+      }
+
+      if (method === 'POST' && pathname === '/api/team/interrupt') {
+        const body = await readBody(req);
+        if (typeof body['turnId'] === 'number') {
+          return json(harness.workflow.interruptTurn(body['turnId']));
+        }
+        const agentId = String(body['agentId'] ?? '');
+        if (!agentId) return error('agentId hoặc turnId bắt buộc');
+        return json(harness.workflow.interruptAgent(agentId));
+      }
+
+      if (method === 'POST' && pathname === '/api/team/stop-all') {
+        return json(harness.workflow.stopAll());
+      }
+
+      if (method === 'POST' && pathname === '/api/team/reset') {
+        harness.workflow.reset();
+        return json({ ok: true, workflow: harness.workflow.status() });
+      }
+
+      // SSE: team events (spawnTurn, turnSettled, …)
+      if (method === 'GET' && pathname === '/api/team/events') {
+        const encoder = new TextEncoder();
+        let unsub: (() => void) | undefined;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const send = (event: unknown) => {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+            };
+            unsub = harness.subscribe(send);
+            send({ kind: 'hello', at: Date.now(), agents: harness.listAgents().map((a) => a.id) });
+            heartbeat = setInterval(() => {
+              try { controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`)); } catch { /* closed */ }
+            }, 15_000);
+          },
+          cancel() {
+            unsub?.();
+            if (heartbeat) clearInterval(heartbeat);
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+          },
         });
       }
 
@@ -331,12 +550,16 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
     },
   });
 
+  const mcp = app.harness.teamMcpInfo();
   console.log(`Writer Room http://127.0.0.1:${server.port}`);
   console.log(`data: ${dataRoot()}`);
   console.log(`spy: ${SPY_FEATURE.enabled ? 'on' : 'off'}`);
+  console.log(`agents: ${app.harness.listAgents().map((a) => a.id).join(', ')}`);
+  console.log(`team-mcp: ${mcp?.url ?? 'off'}`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
+    app.harness.dispose();
     await releaseLock();
     process.exit(0);
   };

@@ -20,3 +20,7 @@ packages/shell/target/
 binaries/
 .gstack/
 .playwright-mcp/
+
+# Runtime agent MCP tokens (written on prepareLaunch)
+.agents/mcp_config.json
+.grok/config.toml

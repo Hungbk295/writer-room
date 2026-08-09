@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@writer-room/shared": "workspace:*",
     "@writer-room/spy": "workspace:*"
   },
   "scripts": {

@@ -1,0 +1,12 @@
+[[permission]]
+identifier = "allow-terminal"
+description = "Allow Rust PTY terminal manager commands (create/write/resize/kill/list/snapshot/attach)."
+commands.allow = [
+  "terminal_create",
+  "terminal_write",
+  "terminal_resize",
+  "terminal_kill",
+  "terminal_list",
+  "terminal_snapshot",
+  "terminal_attach"
+]

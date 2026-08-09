@@ -4,6 +4,7 @@ export type Route =
   | { name: 'spy-run'; id: string }
   | { name: 'writer' }
   | { name: 'writer-pack'; id: string }
+  | { name: 'agents' }
   | { name: 'settings' };
 
 export function parseRoute(hash = location.hash): Route {
@@ -13,6 +14,7 @@ export function parseRoute(hash = location.hash): Route {
   if (parts[0] === 'spy') return { name: 'spy' };
   if (parts[0] === 'writer' && parts[1]) return { name: 'writer-pack', id: parts[1]! };
   if (parts[0] === 'writer') return { name: 'writer' };
+  if (parts[0] === 'agents') return { name: 'agents' };
   if (parts[0] === 'settings') return { name: 'settings' };
   return { name: 'home' };
 }
@@ -24,6 +26,7 @@ export function href(route: Route): string {
     case 'spy-run': return `#/spy/${route.id}`;
     case 'writer': return '#/writer';
     case 'writer-pack': return `#/writer/${route.id}`;
+    case 'agents': return '#/agents';
     case 'settings': return '#/settings';
   }
 }

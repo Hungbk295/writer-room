@@ -6,7 +6,7 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun test packages/spy packages/daemon",
-    "typecheck": "tsc -p packages/spy/tsconfig.json --noEmit && tsc -p packages/daemon/tsconfig.json --noEmit",
+    "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/spy/tsconfig.json --noEmit && tsc -p packages/daemon/tsconfig.json --noEmit",
     "daemon": "bun packages/daemon/src/index.ts",
     "spy": "bun packages/spy/src/cli.ts",
     "ui:build": "bun --cwd packages/web vite build",

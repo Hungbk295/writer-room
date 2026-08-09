@@ -16,7 +16,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Health {
   ok: boolean;
   spy: boolean;
+  agents?: number;
+  teamMcp?: { url: string } | null;
   uptimeMs: number;
+}
+
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  color: string;
+  role: string;
+  prompt: string;
+  adapter: string;
+  executable: string;
+  args: string[];
+  projectRoot: string;
+  workingDirectoryMode: 'project' | 'isolated-worktree' | string;
+  enabled: boolean;
+}
+
+export interface AgentLaunchSpec {
+  agentId: string;
+  executable: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  preview: string;
+  warnings: string[];
+  mode: string;
+}
+
+export interface TeamStatus {
+  workflow: {
+    stopped: boolean;
+    totalTurns: number;
+    queued: number;
+    running: number;
+    startedAt: number;
+  };
+  agents: Array<{ agentId: string; status: string; summary?: string; updatedAt: string }>;
+  audit: Array<{ id: number; kind: string; agentId?: string | null; detail: string; createdAt: string }>;
 }
 
 export interface SpyStarted {
@@ -200,6 +239,55 @@ export const api = {
   }),
   deleteWriterPack: (id: string) =>
     request<{ ok: boolean }>(`/api/writer/packs/${id}`, { method: 'DELETE' }),
+
+  listAgents: () =>
+    request<{ agents: AgentDefinition[]; guards: Record<string, number>; defaults?: string[] }>('/api/agents'),
+  saveAgent: (agent: AgentDefinition) =>
+    request<{ agent: AgentDefinition }>('/api/agents', {
+      method: 'PUT',
+      body: JSON.stringify(agent),
+    }),
+  deleteAgent: (id: string) =>
+    request<{ ok: boolean; deleted?: boolean }>(`/api/agents/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  detectAgent: (adapter: string, executable?: string) =>
+    request<{ adapter: string; executable: string; found: boolean; version?: string; error?: string }>(
+      '/api/agents/detect',
+      { method: 'POST', body: JSON.stringify({ adapter, executable }) },
+    ),
+  seedDefaultAgents: () =>
+    request<{ ok: boolean; agents: AgentDefinition[]; seeded: string[] }>('/api/agents/seed-defaults', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  launchPreview: (agentId: string) =>
+    request<AgentLaunchSpec>('/api/agents/launch-preview', {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
+  prepareLaunch: (agentId: string, cwd?: string) =>
+    request<AgentLaunchSpec>('/api/agents/prepare-launch', {
+      method: 'POST',
+      body: JSON.stringify({ agentId, cwd }),
+    }),
+  launchReadiness: (agentId: string, cwd?: string) =>
+    request<{ agentId: string; ready: boolean; errors: string[]; warnings: string[] }>(
+      '/api/agents/readiness',
+      { method: 'POST', body: JSON.stringify({ agentId, cwd }) },
+    ),
+  teamMcp: () => request<{ url: string; token: string }>('/api/team/mcp'),
+  teamStatus: () => request<TeamStatus>('/api/team/status'),
+  teamAssign: (body: {
+    agentId: string;
+    task: string;
+    persistentInteractive?: boolean;
+    orchestrated?: boolean;
+  }) =>
+    request<{
+      assignment: { agentId: string; task: string };
+      turn: { ok: boolean; turnId?: number; reason?: string };
+    }>('/api/team/assign', { method: 'POST', body: JSON.stringify(body) }),
 };
 
 export function formatDuration(sec: number): string {

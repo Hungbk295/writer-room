@@ -20,6 +20,12 @@ Canonical product hiện tại: **Spy-only** — xem root [`README.md`](../READM
 | Claude | [`claude/`](./claude/) | idle | — |
 | Grok | [`grok/`](./grok/) | done → idle after ship | [`spy-only-tauri`](./grok/spy-only-tauri.md) |
 
+## Deferred (feature-driven — không active)
+
+| ID | Plan | Khi nào kéo |
+|----|------|-------------|
+| P-DEF-1…3 | [`deferred-agent-terminal-process.md`](./deferred-agent-terminal-process.md) · detail [`docs/plans/deferred-agent-terminal-writer-loop.md`](../docs/plans/deferred-agent-terminal-writer-loop.md) | Terminal UI / WriterLoop / E2E agent turn — **nối harness**, không stack thứ hai |
+
 Log check gần nhất: [`SYNC.md`](./SYNC.md).
 
 ## Quy ước

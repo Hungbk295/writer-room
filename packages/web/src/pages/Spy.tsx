@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, type SpyRunSummary } from '../api.ts';
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
+import { CustomSelect, Field, Input } from '../components/ui/Forms.tsx';
 
 export function SpyPage() {
   const [url, setUrl] = useState('');
@@ -60,31 +61,51 @@ export function SpyPage() {
 
       <form class="panel stack" onSubmit={start} style={{ marginTop: '1.25rem' }}>
         <h2>Kênh mới</h2>
-        <label>
-          URL kênh / playlist
-          <input
+        <Field label="URL kênh / playlist">
+          <Input
             required
             placeholder="https://www.youtube.com/@handle"
             value={url}
             onInput={(e) => setUrl((e.target as HTMLInputElement).value)}
           />
-        </label>
-        <div class="row">
-          <label>
-            Depth
-            <select value={depth} onChange={(e) => setDepth((e.target as HTMLSelectElement).value as typeof depth)}>
-              <option value="metadata">metadata — nhanh</option>
-              <option value="transcript">transcript — nguyên liệu Source Pack</option>
-            </select>
-          </label>
-          <label>
-            Top N
-            <input type="number" min={1} max={20} value={topN} onInput={(e) => setTopN(Number((e.target as HTMLInputElement).value))} />
-          </label>
-          <label>
-            Scan
-            <input type="number" min={1} max={500} value={scanLimit} onInput={(e) => setScanLimit(Number((e.target as HTMLInputElement).value))} />
-          </label>
+        </Field>
+        <div class="spy-form-row">
+          <Field label="Depth">
+            <CustomSelect<'metadata' | 'transcript'>
+              value={depth}
+              onChange={(val) => setDepth(val)}
+              options={[
+                {
+                  value: 'transcript',
+                  label: 'transcript',
+                  description: 'nguyên liệu Source Pack',
+                },
+                {
+                  value: 'metadata',
+                  label: 'metadata',
+                  description: 'nhanh',
+                },
+              ]}
+            />
+          </Field>
+          <Field label="Top N">
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              value={topN}
+              onInput={(e) => setTopN(Number((e.target as HTMLInputElement).value))}
+            />
+          </Field>
+          <Field label="Scan">
+            <Input
+              type="number"
+              min={1}
+              max={500}
+              value={scanLimit}
+              onInput={(e) => setScanLimit(Number((e.target as HTMLInputElement).value))}
+            />
+          </Field>
         </div>
         <div class="row">
           <button class="btn teal" disabled={busy || !url.trim()}>

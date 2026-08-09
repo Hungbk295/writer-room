@@ -554,3 +554,32 @@ Mỗi phase shippable độc lập; P3 là lúc “Cook → Board → Director f
 ---
 
 *Plan này chỉ mô tả kiến trúc & thứ tự port. Không sửa code production cho đến khi user approve Phase 0 decisions (mục 10).*
+
+---
+
+## Implementation progress (2026-08-09)
+
+### Done
+
+- [x] `packages/shared` — terminal/agent/team contracts (+ `grok` adapter kind)
+- [x] Default 4 agents: `claude`, `codex`, `agy`, `grok` (seed into `writer-room-data/agents/team.json`)
+- [x] `packages/daemon` agents + team store/workflow/MCP + harness
+- [x] HTTP API: `/api/agents/*`, `/api/team/*`, SSE `/api/team/events`
+- [x] Web Agents page (`#/agents`) — list + **CRUD form** (＋ Agent mới / Edit / Delete) + Seed 4 defaults
+- [x] `GET /api/agents` re-seeds defaults if empty; `POST /api/agents/seed-defaults`; save accepts top-level agent body
+- [x] Rust PTY module ported under `src-tauri/src/terminal/` + commands registered
+- [x] Tests: `packages/daemon/test/agents-defaults.test.ts`
+- [x] Persist path: `writer-room-data/agents/team.json`
+
+### Deferred (parked — nối khi làm chức năng)
+
+Canonical process: **[`deferred-agent-terminal-writer-loop.md`](./deferred-agent-terminal-writer-loop.md)**  
+Board pointer: [`plan/deferred-agent-terminal-process.md`](../../plan/deferred-agent-terminal-process.md)
+
+| ID | Phần | Status |
+|----|------|--------|
+| P-DEF-1 | Terminal drawer + turnBridge (auto-open, inject, heartbeat) | deferred |
+| P-DEF-2 | WriterLoop + pure resume + prepare workspace | deferred |
+| P-DEF-3 | E2E wire: Assign/Start → pane → MCP settle → (loop advance) | deferred |
+
+Harness baseline **không** block Spy-only. Chỉ kéo 3 phần trên khi feature Writer/agent UI cần chúng.

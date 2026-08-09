@@ -6,13 +6,19 @@ import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
 import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
+import { AgentsPage } from './pages/Agents.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
+import { TerminalDrawer } from './components/terminal/TerminalDrawer.tsx';
+import { getTerminalState, subscribeTerminals } from './components/terminal/terminalStore.ts';
 import { api } from './api.ts';
 
 function App() {
   const [route, setRoute] = useState<Route>(parseRoute());
   const [health, setHealth] = useState<string>('…');
   const [writerCount, setWriterCount] = useState(0);
+  const [termTick, setTermTick] = useState(0);
+
+  useEffect(() => subscribeTerminals(() => setTermTick((n) => n + 1)), []);
 
   useEffect(() => {
     const onHash = () => setRoute(parseRoute());
@@ -48,6 +54,9 @@ function App() {
     case 'writer-pack':
       page = <WriterPackPage id={route.id} />;
       break;
+    case 'agents':
+      page = <AgentsPage />;
+      break;
     case 'settings':
       page = <SettingsPage />;
       break;
@@ -55,13 +64,22 @@ function App() {
       page = <Home />;
   }
 
+  // dna-spy: content height = 100vh - term height so drawer never covers scroll area.
+  void termTick;
+  const term = getTerminalState();
+  const termHeightPx = term.open ? `${term.height}px` : '0px';
+
   return (
-    <div class="app-shell">
+    <div
+      class="app-shell"
+      style={{ '--term-height': termHeightPx } as Record<string, string>}
+    >
       <TopNav route={route} writerCount={writerCount} />
       <main class="main">
         {page}
         <p class="muted" style={{ marginTop: '2rem' }}>{health}</p>
       </main>
+      <TerminalDrawer />
     </div>
   );
 }
