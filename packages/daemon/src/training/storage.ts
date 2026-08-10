@@ -5,7 +5,7 @@
  */
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { FormulaArtifact } from '@writer-room/training-core';
+import { normalizeFormula, sourceVideoCount, type FormulaArtifact } from '@writer-room/training-core';
 import { ensureDir, trainingRoot } from '../paths.ts';
 // `import type` only — no runtime dependency, so this does not create a real module
 // cycle even though `training-lab.ts` imports `saveTrainingLabRun`/`getTrainingLabRun`
@@ -16,9 +16,13 @@ import type { TrainingLabRun } from './training-lab.ts';
 export interface FormulaSummary {
   id: string;
   status: FormulaArtifact['status'];
-  scope: FormulaArtifact['scope'];
-  channelTitles: string[];
+  origin: FormulaArtifact['origin'];
+  version: number;
+  /** `ANALYZED`/`REFINED`: the one video's channel. `COMPOUND`: the genre. */
+  label: string;
+  /** Distinct source videos behind it — 1 for ANALYZED/REFINED, N for COMPOUND. */
   videoCount: number;
+  ruleCount: number;
   createdAt: string;
   sourceBatchId?: string;
 }
@@ -48,7 +52,7 @@ export async function saveFormula(formula: FormulaArtifact, dataDir?: string): P
 export async function getFormula(id: string, dataDir?: string): Promise<FormulaArtifact | null> {
   try {
     const raw = await readFile(formulaPath(id, dataDir), 'utf8');
-    return JSON.parse(raw) as FormulaArtifact;
+    return normalizeFormula(JSON.parse(raw) as FormulaArtifact);
   } catch {
     return null;
   }
@@ -68,13 +72,15 @@ export async function listFormulas(dataDir?: string): Promise<FormulaSummary[]> 
     if (!name.endsWith('.json')) continue;
     try {
       const raw = await readFile(join(root, name), 'utf8');
-      const formula = JSON.parse(raw) as FormulaArtifact;
+      const formula = normalizeFormula(JSON.parse(raw) as FormulaArtifact);
       summaries.push({
         id: formula.id,
         status: formula.status,
-        scope: formula.scope,
-        channelTitles: formula.channelGroups.map((g) => g.channelTitle),
-        videoCount: formula.includedArtifacts.length,
+        origin: formula.origin,
+        version: formula.version,
+        label: formula.origin === 'COMPOUND' ? (formula.genre ?? 'Compound') : (formula.channelTitle ?? 'Formula'),
+        videoCount: formula.origin === 'COMPOUND' ? sourceVideoCount(formula.rules) : 1,
+        ruleCount: formula.rules.length,
         createdAt: formula.createdAt,
         ...(formula.sourceBatchId ? { sourceBatchId: formula.sourceBatchId } : {}),
       });

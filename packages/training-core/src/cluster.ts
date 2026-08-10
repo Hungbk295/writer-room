@@ -13,6 +13,7 @@
  *    clusters the human approved);
  *  - it never drops a picked rule — every input appears in exactly one output cluster.
  */
+import { createHash } from 'node:crypto';
 import type { Evidence } from './contracts.ts';
 
 /** One rule the human picked out of some L1 Formula, flattened for clustering. */
@@ -30,7 +31,18 @@ export interface PickedRule {
 export type RuleClusterKind = 'SIMILAR' | 'SINGLE';
 
 export interface RuleCluster {
-  /** Stable within one `clusterRules` call: `c1`, `c2`, … in input order. */
+  /**
+   * Derived from the cluster's MEMBERSHIP, not its position — `c-<hash of sorted
+   * member refs>`.
+   *
+   * This matters because Studio proposals are keyed by `clusterId`. With positional
+   * ids (`c1`, `c2`, …) picking one more rule would renumber the clusters, and an
+   * already-approved proposal would silently re-attach to a different cluster. With
+   * a content-derived id: adding an unrelated pick leaves existing cluster ids
+   * untouched, so their proposals survive; and if a cluster's membership really does
+   * change, its id changes with it, so the stale proposal correctly stops matching
+   * instead of quietly applying to different rules.
+   */
   id: string;
   kind: RuleClusterKind;
   members: PickedRule[];
@@ -110,13 +122,21 @@ export function clusterRules(
     if (match) {
       match.members.push(rule);
     } else {
-      clusters.push({ id: `c${clusters.length + 1}`, kind: 'SINGLE', members: [rule] });
+      clusters.push({ id: '', kind: 'SINGLE', members: [rule] });
     }
   }
 
   for (const cluster of clusters) {
     cluster.kind = cluster.members.length > 1 ? 'SIMILAR' : 'SINGLE';
+    cluster.id = clusterId(cluster.members);
   }
 
   return clusters;
+}
+
+/** `c-<12 hex>` over the sorted `formulaId:ruleId` refs — see `RuleCluster.id`.
+ * Sorted so member insertion order cannot change a cluster's identity. */
+function clusterId(members: PickedRule[]): string {
+  const refs = members.map((m) => `${m.sourceFormulaId}:${m.sourceRuleId}`).sort();
+  return `c-${createHash('sha256').update(refs.join('|')).digest('hex').slice(0, 12)}`;
 }

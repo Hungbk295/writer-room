@@ -16,7 +16,7 @@ import type {
   VideoTranscript,
 } from './schema.ts';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -168,6 +168,44 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_scope
   ON profiles(scope, scope_id, kind, computed_at);
 
+-- v4: sổ quota Data API. Hai bucket độc lập theo tài liệu Google 01/06/2026:
+--   search  → trần 100 call/ngày (search.list có bucket riêng)
+--   general → 10.000 unit/ngày cho mọi endpoint còn lại
+-- quota_day là ngày theo America/Los_Angeles (giờ reset của Google Cloud quota).
+CREATE TABLE IF NOT EXISTS api_quota_usage (
+  bucket TEXT NOT NULL,
+  quota_day TEXT NOT NULL,
+  units INTEGER NOT NULL DEFAULT 0,
+  calls INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (bucket, quota_day)
+);
+
+-- v4: kênh ứng viên phát hiện qua search hoặc mở rộng đồ thị, chưa quét sâu.
+CREATE TABLE IF NOT EXISTS candidate_channels (
+  channel_id TEXT PRIMARY KEY,
+  title TEXT,
+  handle TEXT,
+  market TEXT,
+  discovered_via TEXT NOT NULL,
+  discovered_from TEXT,
+  subscriber_count INTEGER,
+  video_count INTEGER,
+  view_count INTEGER,
+  country TEXT,
+  published_at TEXT,
+  description TEXT,
+  fit_score REAL,
+  fit_reasons_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'new',
+  first_seen_at TEXT NOT NULL,
+  refreshed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_candidates_status_fit
+  ON candidate_channels(status, fit_score DESC);
+CREATE INDEX IF NOT EXISTS idx_candidates_market
+  ON candidate_channels(market, fit_score DESC);
+
 -- v3: danh sách kênh đối thủ theo dõi thủ công (không cần OAuth).
 CREATE TABLE IF NOT EXISTS competitors (
   id TEXT PRIMARY KEY,
@@ -208,7 +246,103 @@ CREATE INDEX IF NOT EXISTS idx_video_snapshots_source
 
 export type VideoListRow = VideoSnapshot;
 
+export type CandidateStatus = 'new' | 'shortlisted' | 'rejected' | 'scanned';
+export type DiscoverySource = 'search_video' | 'search_channel' | 'featured' | 'subscription' | 'manual';
+
+export interface CandidateChannelInput {
+  channelId: string;
+  title?: string | null;
+  handle?: string | null;
+  market?: string | null;
+  discoveredVia: DiscoverySource;
+  discoveredFrom?: string | null;
+  subscriberCount?: number | null;
+  videoCount?: number | null;
+  viewCount?: number | null;
+  country?: string | null;
+  publishedAt?: string | null;
+  description?: string | null;
+  fitScore?: number | null;
+  fitReasons?: unknown[];
+}
+
+export interface CandidateChannel extends Omit<CandidateChannelInput, 'fitReasons'> {
+  fitReasons: unknown[];
+  status: CandidateStatus;
+  firstSeenAt: string;
+  refreshedAt: string;
+}
+
+export interface CorpusVideoFilter {
+  titleQuery?: string;
+  channelIds?: string[];
+  sourceVideoIds?: string[];
+  minViews?: number;
+  maxViews?: number;
+  minDurationSec?: number;
+  maxDurationSec?: number;
+  publishedAfter?: string;
+  publishedBefore?: string;
+  hasTranscript?: boolean;
+  orderBy?: 'views' | 'velocity' | 'published_at' | 'duration' | 'engagement';
+  direction?: 'asc' | 'desc';
+  limit?: number;
+  cursor?: number;
+}
+
+export interface CorpusVideoRow {
+  videoSnapshotId: string;
+  sourceVideoId: string;
+  title: string;
+  channelTitle: string;
+  channelKey: string;
+  url: string;
+  viewCount: number;
+  likeCount: number | null;
+  commentCount: number | null;
+  durationSec: number;
+  publishedAt: string | null;
+  velocity: number;
+  engagement: number;
+  hasTranscript: boolean;
+}
+
+export interface CorpusChannelRow {
+  channelKey: string;
+  channelTitle: string;
+  videoCount: number;
+  totalViews: number;
+  avgViews: number;
+  maxViews: number;
+  firstPublished: string | null;
+  lastPublished: string | null;
+  avgDurationSec: number;
+  withTranscript: number;
+}
+
 type Row = Record<string, unknown>;
+
+function candidateFromRow(row: Row): CandidateChannel {
+  return {
+    channelId: String(row['channel_id']),
+    title: nullableString(row['title']),
+    handle: nullableString(row['handle']),
+    market: nullableString(row['market']),
+    discoveredVia: String(row['discovered_via']) as DiscoverySource,
+    discoveredFrom: nullableString(row['discovered_from']),
+    subscriberCount: row['subscriber_count'] === null ? null : Number(row['subscriber_count']),
+    videoCount: row['video_count'] === null ? null : Number(row['video_count']),
+    viewCount: row['view_count'] === null ? null : Number(row['view_count']),
+    country: nullableString(row['country']),
+    publishedAt: nullableString(row['published_at']),
+    description: nullableString(row['description']),
+    fitScore: row['fit_score'] === null ? null : Number(row['fit_score']),
+    fitReasons: parseJson<unknown[]>(row['fit_reasons_json']),
+    status: String(row['status']) as CandidateStatus,
+    firstSeenAt: String(row['first_seen_at']),
+    refreshedAt: String(row['refreshed_at']),
+  };
+}
 
 function parseJson<T>(value: unknown): T {
   return JSON.parse(String(value)) as T;
@@ -318,7 +452,8 @@ export class SpyStore {
           // already present
         }
       }
-      // v2 → v3 chỉ thêm bảng `competitors`, đã được SCHEMA_SQL tạo ở trên (IF NOT EXISTS).
+      // v2 → v3 thêm `competitors`; v3 → v4 thêm `api_quota_usage` + `candidate_channels`.
+      // Cả ba đều do SCHEMA_SQL tạo ở trên (IF NOT EXISTS) nên migration chỉ cần nâng version.
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
       }
@@ -933,6 +1068,267 @@ export class SpyStore {
       nowIso(),
     );
     return id;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v4 — Quota ledger
+  // ---------------------------------------------------------------------------
+
+  getQuotaUsage(bucket: string, quotaDay: string): { units: number; calls: number } {
+    const row = this.database.prepare(
+      'SELECT units, calls FROM api_quota_usage WHERE bucket=? AND quota_day=?',
+    ).get(bucket, quotaDay) as Row | undefined;
+    return row ? { units: Number(row['units']), calls: Number(row['calls']) } : { units: 0, calls: 0 };
+  }
+
+  addQuotaUsage(bucket: string, quotaDay: string, units: number, calls = 1): { units: number; calls: number } {
+    this.database.prepare(
+      `INSERT INTO api_quota_usage (bucket, quota_day, units, calls, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(bucket, quota_day) DO UPDATE SET
+         units = units + excluded.units,
+         calls = calls + excluded.calls,
+         updated_at = excluded.updated_at`,
+    ).run(bucket, quotaDay, units, calls, nowIso());
+    return this.getQuotaUsage(bucket, quotaDay);
+  }
+
+  /** Lịch sử tiêu quota, mới nhất trước — để nhìn xu hướng ngày qua ngày. */
+  listQuotaUsage(limit = 14): Array<{ bucket: string; quotaDay: string; units: number; calls: number }> {
+    const rows = this.database.prepare(
+      'SELECT * FROM api_quota_usage ORDER BY quota_day DESC, bucket ASC LIMIT ?',
+    ).all(limit) as Row[];
+    return rows.map((row) => ({
+      bucket: String(row['bucket']),
+      quotaDay: String(row['quota_day']),
+      units: Number(row['units']),
+      calls: Number(row['calls']),
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // v4 — Candidate channels
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ghi ứng viên. Không đè `status` và `first_seen_at` của bản ghi cũ —
+   * một kênh đã bị reject không được âm thầm quay lại 'new' ở lần discovery sau.
+   */
+  upsertCandidate(input: CandidateChannelInput): { created: boolean } {
+    const now = nowIso();
+    const result = this.database.prepare(
+      `INSERT INTO candidate_channels (
+         channel_id, title, handle, market, discovered_via, discovered_from,
+         subscriber_count, video_count, view_count, country, published_at, description,
+         fit_score, fit_reasons_json, status, first_seen_at, refreshed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+       ON CONFLICT(channel_id) DO UPDATE SET
+         title=COALESCE(excluded.title, title),
+         handle=COALESCE(excluded.handle, handle),
+         market=COALESCE(excluded.market, market),
+         subscriber_count=COALESCE(excluded.subscriber_count, subscriber_count),
+         video_count=COALESCE(excluded.video_count, video_count),
+         view_count=COALESCE(excluded.view_count, view_count),
+         country=COALESCE(excluded.country, country),
+         published_at=COALESCE(excluded.published_at, published_at),
+         description=COALESCE(excluded.description, description),
+         fit_score=COALESCE(excluded.fit_score, fit_score),
+         fit_reasons_json=excluded.fit_reasons_json,
+         refreshed_at=excluded.refreshed_at`,
+    ).run(
+      input.channelId,
+      input.title ?? null,
+      input.handle ?? null,
+      input.market ?? null,
+      input.discoveredVia,
+      input.discoveredFrom ?? null,
+      input.subscriberCount ?? null,
+      input.videoCount ?? null,
+      input.viewCount ?? null,
+      input.country ?? null,
+      input.publishedAt ?? null,
+      input.description ?? null,
+      input.fitScore ?? null,
+      JSON.stringify(input.fitReasons ?? []),
+      now,
+      now,
+    );
+    return { created: Number(result.changes) === 1 };
+  }
+
+  hasCandidate(channelId: string): boolean {
+    const row = this.database.prepare('SELECT 1 FROM candidate_channels WHERE channel_id=?').get(channelId);
+    return Boolean(row);
+  }
+
+  listCandidates(filter: {
+    status?: string;
+    market?: string;
+    minFitScore?: number;
+    minSubscribers?: number;
+    maxSubscribers?: number;
+    discoveredVia?: string;
+    limit?: number;
+    cursor?: number;
+  } = {}): CandidateChannel[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (filter.status) { where.push('status=?'); params.push(filter.status); }
+    if (filter.market) { where.push('market=?'); params.push(filter.market); }
+    if (filter.discoveredVia) { where.push('discovered_via=?'); params.push(filter.discoveredVia); }
+    if (filter.minFitScore !== undefined) { where.push('fit_score >= ?'); params.push(filter.minFitScore); }
+    if (filter.minSubscribers !== undefined) {
+      where.push('subscriber_count >= ?'); params.push(filter.minSubscribers);
+    }
+    if (filter.maxSubscribers !== undefined) {
+      where.push('subscriber_count <= ?'); params.push(filter.maxSubscribers);
+    }
+    const sql = `SELECT * FROM candidate_channels
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY fit_score DESC NULLS LAST, first_seen_at ASC
+      LIMIT ? OFFSET ?`;
+    params.push(filter.limit ?? 50, filter.cursor ?? 0);
+    return (this.database.prepare(sql).all(...params) as Row[]).map(candidateFromRow);
+  }
+
+  countCandidatesByStatus(): Record<string, number> {
+    const rows = this.database.prepare(
+      'SELECT status, COUNT(*) AS n FROM candidate_channels GROUP BY status',
+    ).all() as Row[];
+    return Object.fromEntries(rows.map((row) => [String(row['status']), Number(row['n'])]));
+  }
+
+  setCandidateStatus(channelIds: readonly string[], status: string): string[] {
+    const updated: string[] = [];
+    const statement = this.database.prepare(
+      'UPDATE candidate_channels SET status=?, refreshed_at=? WHERE channel_id=?',
+    );
+    const now = nowIso();
+    for (const channelId of channelIds) {
+      if (Number(statement.run(status, now, channelId).changes) > 0) updated.push(channelId);
+    }
+    return updated;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v4 — Corpus search (0 quota: chỉ đọc DB đã quét)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Tìm video xuyên TOÀN BỘ corpus, không giới hạn trong một spy run.
+   * Mỗi source_video_id chỉ trả bản snapshot mới nhất (video quét lại nhiều lần
+   * sinh nhiều dòng — trước đây không có chỗ nào khử trùng lặp).
+   */
+  searchCorpusVideos(filter: CorpusVideoFilter = {}): CorpusVideoRow[] {
+    const where: string[] = ['rn = 1'];
+    const params: Array<string | number> = [];
+    if (filter.titleQuery) { where.push('LOWER(title) LIKE ?'); params.push(`%${filter.titleQuery.toLowerCase()}%`); }
+    if (filter.channelIds?.length) {
+      // `spy_runs.source_identity` được canonical hoá thành dạng viết thường
+      // ('youtube:channel:/channel/ucxxx'), trong khi channel ID của YouTube
+      // phân biệt hoa thường ('UCxxx'). So khớp cả hai dạng, không thì filter
+      // theo channel_id thật sẽ luôn trả rỗng.
+      const clauses = filter.channelIds.map(() => '(channel_key = ? OR LOWER(channel_key) LIKE ?)');
+      where.push(`(${clauses.join(' OR ')})`);
+      for (const channelId of filter.channelIds) {
+        params.push(channelId, `%${channelId.toLowerCase()}%`);
+      }
+    }
+    if (filter.sourceVideoIds?.length) {
+      where.push(`source_video_id IN (${filter.sourceVideoIds.map(() => '?').join(',')})`);
+      params.push(...filter.sourceVideoIds);
+    }
+    if (filter.minViews !== undefined) { where.push('view_count >= ?'); params.push(filter.minViews); }
+    if (filter.maxViews !== undefined) { where.push('view_count <= ?'); params.push(filter.maxViews); }
+    if (filter.minDurationSec !== undefined) { where.push('duration_sec >= ?'); params.push(filter.minDurationSec); }
+    if (filter.maxDurationSec !== undefined) { where.push('duration_sec <= ?'); params.push(filter.maxDurationSec); }
+    if (filter.publishedAfter) { where.push('published_at >= ?'); params.push(filter.publishedAfter); }
+    if (filter.publishedBefore) { where.push('published_at <= ?'); params.push(filter.publishedBefore); }
+    if (filter.hasTranscript === true) { where.push("transcript_status = 'ok'"); }
+    if (filter.hasTranscript === false) { where.push("transcript_status != 'ok'"); }
+
+    const orderColumn = {
+      views: 'view_count',
+      velocity: 'velocity',
+      published_at: 'published_at',
+      duration: 'duration_sec',
+      engagement: 'engagement',
+    }[filter.orderBy ?? 'velocity'];
+    const direction = filter.direction === 'asc' ? 'ASC' : 'DESC';
+
+    const sql = `
+      SELECT * FROM (
+        SELECT
+          vs.id, vs.source_video_id, vs.title, vs.channel_title, vs.canonical_url,
+          vs.view_count, vs.like_count, vs.comment_count, vs.duration_sec,
+          vs.published_at, vs.transcript_status, vs.created_at,
+          sr.source_identity AS channel_key,
+          CAST(vs.view_count AS REAL) / MAX(1.0, julianday('now') - julianday(COALESCE(vs.published_at, vs.created_at))) AS velocity,
+          CASE WHEN vs.view_count > 0
+            THEN (COALESCE(vs.like_count, 0) + COALESCE(vs.comment_count, 0)) * 1.0 / vs.view_count
+            ELSE 0 END AS engagement,
+          ROW_NUMBER() OVER (PARTITION BY vs.source_video_id ORDER BY vs.created_at DESC, vs.rowid DESC) AS rn
+        FROM video_snapshots vs
+        JOIN spy_runs sr ON sr.id = vs.spy_run_id
+      )
+      WHERE ${where.join(' AND ')}
+      ORDER BY ${orderColumn} ${direction}
+      LIMIT ? OFFSET ?`;
+    params.push(filter.limit ?? 50, filter.cursor ?? 0);
+
+    return (this.database.prepare(sql).all(...params) as Row[]).map((row) => ({
+      videoSnapshotId: String(row['id']),
+      sourceVideoId: String(row['source_video_id']),
+      title: String(row['title']),
+      channelTitle: String(row['channel_title']),
+      channelKey: String(row['channel_key']),
+      url: String(row['canonical_url']),
+      viewCount: Number(row['view_count']),
+      likeCount: row['like_count'] === null ? null : Number(row['like_count']),
+      commentCount: row['comment_count'] === null ? null : Number(row['comment_count']),
+      durationSec: Number(row['duration_sec']),
+      publishedAt: nullableString(row['published_at']),
+      velocity: Number(row['velocity']),
+      engagement: Number(row['engagement']),
+      hasTranscript: String(row['transcript_status']) === 'ok',
+    }));
+  }
+
+  /** Thống kê corpus theo kênh — đếm trên snapshot mới nhất của mỗi video. */
+  corpusChannelStats(): CorpusChannelRow[] {
+    const rows = this.database.prepare(`
+      SELECT
+        channel_key,
+        MAX(channel_title) AS channel_title,
+        COUNT(*) AS video_count,
+        SUM(view_count) AS total_views,
+        AVG(view_count) AS avg_views,
+        MAX(view_count) AS max_views,
+        MIN(published_at) AS first_published,
+        MAX(published_at) AS last_published,
+        AVG(duration_sec) AS avg_duration_sec,
+        SUM(CASE WHEN transcript_status = 'ok' THEN 1 ELSE 0 END) AS with_transcript
+      FROM (
+        SELECT vs.*, sr.source_identity AS channel_key,
+          ROW_NUMBER() OVER (PARTITION BY vs.source_video_id ORDER BY vs.created_at DESC, vs.rowid DESC) AS rn
+        FROM video_snapshots vs
+        JOIN spy_runs sr ON sr.id = vs.spy_run_id
+      )
+      WHERE rn = 1
+      GROUP BY channel_key
+      ORDER BY avg_views DESC`).all() as Row[];
+    return rows.map((row) => ({
+      channelKey: String(row['channel_key']),
+      channelTitle: String(row['channel_title'] ?? ''),
+      videoCount: Number(row['video_count']),
+      totalViews: Number(row['total_views'] ?? 0),
+      avgViews: Number(row['avg_views'] ?? 0),
+      maxViews: Number(row['max_views'] ?? 0),
+      firstPublished: nullableString(row['first_published']),
+      lastPublished: nullableString(row['last_published']),
+      avgDurationSec: Number(row['avg_duration_sec'] ?? 0),
+      withTranscript: Number(row['with_transcript'] ?? 0),
+    }));
   }
 
   listCompetitors(ownerChannelId: string): Array<{

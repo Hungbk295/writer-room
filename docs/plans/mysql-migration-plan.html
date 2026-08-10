@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Writer Room — MySQL 8.4 + BFF Migration Plan</title>
+  <meta name="description" content="Kế hoạch chuyển Writer Room từ SQLite sang MySQL 8.4/InnoDB private-only qua HTTPS BFF, gồm OIDC, hard gates, backup/PITR, cutover và rollback.">
+  <style>
+    :root {
+      --ink:#17201d;--muted:#61706a;--forest:#173f35;--forest2:#0e2f27;--teal:#087f69;
+      --paper:#fffdfa;--surface:#f3f0ea;--line:#d8ddd7;--mint:#e0f5ea;--amber:#d97706;
+      --amber-bg:#fff3dc;--red:#b93842;--red-bg:#fff0f1;--blue:#2563eb;--blue-bg:#edf3ff;
+      --violet:#7357ba;--violet-bg:#f2edff;--shadow:0 18px 45px rgba(23,63,53,.09);--radius:18px;
+    }
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);background:linear-gradient(rgba(21,32,29,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(21,32,29,.025) 1px,transparent 1px),var(--surface);background-size:28px 28px;font:15px/1.62 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    a{color:#076553}a:hover{color:var(--teal)}button,input{font:inherit}.skip{position:absolute;left:-9999px}.skip:focus{left:12px;top:12px;z-index:99;background:#fff;padding:10px}
+    .hero{position:relative;overflow:hidden;padding:58px 24px 52px;color:#fff;background:radial-gradient(circle at 86% 12%,rgba(111,231,176,.28),transparent 25%),linear-gradient(135deg,var(--forest2),var(--forest))}
+    .hero:after{content:"MYSQL";position:absolute;right:-22px;bottom:-64px;color:rgba(255,255,255,.045);font-size:clamp(120px,18vw,240px);font-weight:950;line-height:1;letter-spacing:-.08em}.hero-inner{position:relative;z-index:1;max-width:1240px;margin:auto}
+    .eyebrow,.kicker{font-size:11px;font-weight:950;letter-spacing:.14em;text-transform:uppercase}.eyebrow{margin:0 0 12px;color:#9ce3c3}.kicker{display:inline-block;margin-bottom:7px;color:var(--teal)}
+    h1{max-width:1020px;margin:0;font-size:clamp(38px,5.6vw,66px);line-height:1.03;letter-spacing:-.045em}h2{margin:0 0 10px;color:var(--forest2);font-size:29px;line-height:1.18}h3{margin:25px 0 9px;color:var(--forest);font-size:20px;line-height:1.3}h4{margin:15px 0 6px;color:#33463f}.lead{color:#43534d;font-size:17px}.hero .lead{max-width:950px;color:#d8ece4;font-size:19px}
+    .chips{display:flex;flex-wrap:wrap;gap:9px;margin-top:25px}.chip,.tag{display:inline-flex;align-items:center;border-radius:999px;font-size:11px;font-weight:900}.chip{min-height:31px;border:1px solid rgba(255,255,255,.19);background:rgba(255,255,255,.08);color:#f2fff9;padding:5px 12px}.tag{justify-content:center;white-space:nowrap;padding:5px 10px}.tag.ok{background:var(--mint);color:#076553}.tag.pending{background:var(--amber-bg);color:#8c5100}.tag.block{background:var(--red-bg);color:var(--red)}.tag.keep{background:var(--blue-bg);color:#204fa9}.tag.later{background:var(--violet-bg);color:#58409a}
+    .progress-shell{position:relative;z-index:2;max-width:1240px;margin:-22px auto 0;padding:0 20px}.progress{display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;border:1px solid var(--line);border-radius:16px;background:var(--paper);box-shadow:var(--shadow);padding:17px 20px}.track{height:10px;overflow:hidden;border-radius:99px;background:#e6ebe6}.fill{width:0;height:100%;background:linear-gradient(90deg,var(--teal),#38b98e)}.progress strong{color:var(--forest)}.progress span{color:var(--muted);font-size:13px;font-weight:800}
+    .layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:24px;max-width:1240px;margin:24px auto 72px;padding:0 20px;align-items:start}.toc{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper);box-shadow:var(--shadow);padding:18px}.toc p{margin:0;color:var(--muted);font-size:11px;font-weight:950;letter-spacing:.14em;text-transform:uppercase}.toc ol{margin:8px 0 0;padding-left:20px}.toc li{margin:5px 0;color:#8b958f}.toc a{color:#3d4a45;text-decoration:none;font-size:13px;font-weight:700}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}.button{border:0;border-radius:10px;background:var(--forest);color:#fff;padding:10px;cursor:pointer;font-size:12px;font-weight:850}.button.alt{border:1px solid #bcc5bd;background:#fff;color:var(--forest)}
+    main{min-width:0}.section{scroll-margin-top:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--paper);box-shadow:var(--shadow);padding:30px;margin-bottom:20px}.grid2,.grid3,.grid4{display:grid;gap:14px;margin-top:16px}.grid2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid4{grid-template-columns:repeat(4,minmax(0,1fr))}.card{border:1px solid var(--line);border-radius:14px;background:#fbfcf9;padding:17px}.card h3,.card h4{margin-top:0}.metric{border-top:4px solid var(--teal);background:#fff}.metric.amber{border-color:var(--amber)}.metric.blue{border-color:var(--blue)}.metric.violet{border-color:var(--violet)}.metric b{display:block;color:var(--forest2);font-size:30px;line-height:1.2}.metric small{color:var(--muted);font-weight:800;text-transform:uppercase}
+    .callout{margin:18px 0;border-left:5px solid var(--amber);border-radius:0 13px 13px 0;background:var(--amber-bg);padding:16px 18px}.callout.danger{border-color:var(--red);background:var(--red-bg)}.callout.good{border-color:var(--teal);background:var(--mint)}.callout strong{color:#7d4600}.callout.danger strong{color:#85232b}.callout.good strong{color:#076553}
+    pre{overflow:auto;border-radius:13px;background:#102d25;color:#d9f2e7;padding:17px;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}code{border-radius:6px;background:#eef1ed;color:#1f4439;padding:2px 5px;font: .9em ui-monospace,SFMono-Regular,Menlo,monospace}.muted{color:var(--muted)}.small{font-size:13px}
+    .scope,.decision,.gate{display:grid;gap:14px;align-items:center;border-top:1px solid var(--line);padding:14px 0}.scope{grid-template-columns:1.1fr 1fr auto}.decision{grid-template-columns:105px minmax(0,1fr) 1fr}.gate{grid-template-columns:auto minmax(0,1fr) auto;border:1px solid var(--line);border-radius:12px;background:#fff;padding:13px 14px;margin:9px 0}.scope:first-child,.decision:first-child{border-top:0}.name,.decision-id,.gate-id{color:var(--forest);font-weight:950}.decision-id,.gate-id{color:var(--teal)}
+    .phase{position:relative;display:grid;grid-template-columns:78px minmax(0,1fr);gap:16px;padding-bottom:22px}.phase:before{content:"";position:absolute;left:38px;top:47px;bottom:0;width:2px;background:#bde8d2}.phase:last-child:before{display:none}.phase-id{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;width:76px;height:42px;border:2px solid var(--teal);border-radius:99px;background:var(--paper);color:#076553;font-weight:950}.phase-body{border:1px solid var(--line);border-radius:15px;background:#fff;padding:19px}.phase-head{display:flex;align-items:start;justify-content:space-between;gap:12px}.phase-head h3{margin:0}.phase-head p{margin:4px 0 12px;color:var(--muted)}.task{display:grid;grid-template-columns:22px 1fr;gap:9px;margin:8px 0}.task input{width:17px;height:17px;margin-top:3px;accent-color:var(--teal)}.task input:checked+label{color:var(--muted);text-decoration:line-through}.exit{margin-top:14px;border-radius:11px;background:var(--forest2);color:#e8f7f0;padding:12px 14px;font-size:13px}.exit strong{color:#95e1bf}
+    .table{overflow:auto;border:1px solid var(--line);border-radius:13px;margin:16px 0}table{width:100%;min-width:760px;border-collapse:collapse;background:#fff}th,td{border-bottom:1px solid var(--line);padding:12px 14px;text-align:left;vertical-align:top}th{background:#edf2ed;color:var(--forest);font-size:12px;text-transform:uppercase}tr:last-child td{border-bottom:0}.runbook{counter-reset:n;list-style:none;padding:0}.runbook li{counter-increment:n;position:relative;border-bottom:1px solid var(--line);padding:11px 0 11px 52px}.runbook li:before{content:counter(n,decimal-leading-zero);position:absolute;left:0;color:var(--teal);font-weight:950}footer{max-width:1240px;margin:-45px auto 32px;padding:0 20px;color:var(--muted);font-size:12px;text-align:right}
+    @media(max-width:980px){.layout{grid-template-columns:1fr}.toc{position:static;max-height:none}.toc ol{columns:2}.grid4{grid-template-columns:repeat(2,1fr)}}@media(max-width:700px){.hero{padding:42px 19px}.progress{grid-template-columns:1fr auto}.track{grid-column:1/-1}.layout,.progress-shell{padding-left:12px;padding-right:12px}.section{padding:22px 18px}.grid2,.grid3,.grid4{grid-template-columns:1fr}.scope,.decision,.gate{grid-template-columns:1fr}.toc ol{columns:1}.phase{grid-template-columns:58px 1fr}.phase-id{width:56px}.phase:before{left:28px}.phase-head{display:block}}
+    @media print{body{background:#fff;font-size:11px}.hero{padding:28px 20px}.progress-shell,.toc,.actions,.hero:after{display:none!important}.layout{display:block;max-width:none;margin:15px 0;padding:0}.section{box-shadow:none;break-inside:avoid;margin-bottom:12px;padding:18px}footer{margin:0}}
+  </style>
+</head>
+<body>
+  <a class="skip" href="#content">Bỏ qua điều hướng</a>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Writer Room · Migration Control Board</p>
+      <h1>SQLite → MySQL 8.4 qua HTTPS BFF</h1>
+      <p class="lead">MySQL/InnoDB là private source of truth trên server. Tauri, local daemon và CLI chỉ gọi BFF bằng HTTPS với user token; không thành phần desktop nào giữ database credential hoặc truy cập port 3306.</p>
+      <div class="chips"><span class="chip">Target: MySQL 8.4 LTS / InnoDB</span><span class="chip">Network: HTTPS 443 only</span><span class="chip">Auth: OIDC + Authorization Code + PKCE</span><span class="chip">Mode: online-only</span><span class="chip">Artifacts: device-local</span></div>
+    </div>
+  </header>
+
+  <div class="progress-shell" aria-live="polite"><div class="progress"><strong>Tiến độ checklist</strong><div class="track"><div class="fill" id="progressFill"></div></div><span id="progressValue">0 / 0 hoàn tất</span></div></div>
+
+  <div class="layout">
+    <aside class="toc" aria-label="Mục lục">
+      <p>Nội dung</p>
+      <ol>
+        <li><a href="#architecture">Kiến trúc đích</a></li><li><a href="#scope">Phạm vi</a></li><li><a href="#baseline">Baseline</a></li><li><a href="#decisions">ADR cần chốt</a></li><li><a href="#roadmap">Roadmap P0–P8</a></li><li><a href="#compatibility">Compatibility</a></li><li><a href="#bff">BFF &amp; security</a></li><li><a href="#data">Data &amp; search</a></li><li><a href="#operations">Hạ tầng &amp; backup</a></li><li><a href="#testing">Test gates</a></li><li><a href="#cutover">Cutover &amp; rollback</a></li><li><a href="#acceptance">Definition of Done</a></li><li><a href="#sources">Nguồn chính thức</a></li>
+      </ol>
+      <div class="actions"><button class="button" type="button" onclick="window.print()">In / PDF</button><button class="button alt" id="resetProgress" type="button">Reset</button></div>
+    </aside>
+
+    <main id="content">
+      <section class="section" id="architecture">
+        <span class="kicker">01 · Target architecture</span><h2>Ranh giới tin cậy bắt buộc</h2>
+        <pre>Tauri webview
+  └─ IPC có capability scope
+      └─ local daemon (loopback + per-launch token + origin check)
+          └─ HTTPS 443 + OIDC bearer token
+              └─ BFF/API trên server
+                  ├─ authn/authz · tenant derivation · validation · rate limit
+                  ├─ async application services · idempotency · MySQL pool
+                  └─ private Docker/VPC network → MySQL 8.4 / InnoDB :3306
+
+System browser ── Authorization Code + PKCE ── OIDC provider
+Device filesystem ── thumbnails/frames; MySQL chỉ giữ metadata reference</pre>
+        <div class="callout danger"><strong>Hard gate:</strong> BFF tự suy identity, role và workspace từ token + server-side membership. Không tin <code>ownerSubject</code>, <code>userId</code>, <code>role</code>, <code>tenantId</code> hoặc workspace gửi trong request body.</div>
+        <div class="grid4">
+          <article class="card metric"><small>Database</small><b>Private</b><p>Không public port 3306.</p></article>
+          <article class="card metric amber"><small>Public ingress</small><b>443</b><p>HTTPS BFF duy nhất.</p></article>
+          <article class="card metric blue"><small>Domain tables</small><b>16</b><p>6 Team + 10 Spy.</p></article>
+          <article class="card metric violet"><small>Cutover</small><b>Offline</b><p>Maintenance window.</p></article>
+        </div>
+      </section>
+
+      <section class="section" id="scope">
+        <span class="kicker">02 · Scope boundary</span><h2>Phạm vi migration</h2>
+        <div>
+          <div class="scope"><div><div class="name">Team Hub</div><span class="small muted">6 bảng messages, acks, assignments, agent state, turns, audit</span></div><div>Chuyển schema, dữ liệu, cursor và lifecycle operations vào MySQL.</div><span class="tag ok">IN SCOPE</span></div>
+          <div class="scope"><div><div class="name">Spy Catalog</div><span class="small muted">10 bảng domain, gồm competitors</span></div><div>Chuyển runs, channel/video, transcript, frames metadata, metrics, profiles, competitors.</div><span class="tag ok">IN SCOPE</span></div>
+          <div class="scope"><div><div class="name">BFF/API + OIDC client</div><span class="small muted">Server trust boundary mới</span></div><div>Bắt buộc; desktop không được kết nối MySQL trực tiếp.</div><span class="tag ok">IN SCOPE</span></div>
+          <div class="scope"><div><div class="name">Spy binary artifacts</div><span class="small muted">Thumbnail/frame content-addressed files</span></div><div>Giữ device-local; máy khác hiển thị <code>artifact_unavailable</code>.</div><span class="tag keep">GIỮ FILE</span></div>
+          <div class="scope"><div><div class="name">Pipeline / Formula / Writer state</div><span class="small muted">JSONL, JSON, Markdown, manifests</span></div><div>Không trộn consolidation filesystem vào database cutover.</div><span class="tag later">PHASE SAU</span></div>
+          <div class="scope"><div><div class="name">Agent config &amp; daemon lock</div><span class="small muted"><code>team.json</code>, <code>.daemon.lock</code></span></div><div>Vẫn là config/process-local state.</div><span class="tag keep">GIỮ FILE</span></div>
+        </div>
+      </section>
+
+      <section class="section" id="baseline">
+        <span class="kicker">03 · Current baseline</span><h2>Hiện trạng đã kiểm tra</h2>
+        <div class="grid3">
+          <article class="card"><h3>Persistence</h3><ul><li><code>team.sqlite</code>: 6 bảng, DDL inline.</li><li><code>spy.sqlite</code>: 10 domain tables + schema metadata + FTS5.</li><li>Cả hai store đang dùng <code>bun:sqlite</code> đồng bộ.</li></ul></article>
+          <article class="card"><h3>Quality snapshot</h3><ul><li>151 tests pass.</li><li>1 test fail + 1 unhandled error ở Training preflight.</li><li>Typecheck pass.</li></ul></article>
+          <article class="card"><h3>Missing foundation</h3><ul><li>Chưa có BFF package và OIDC flow.</li><li>Chưa có MySQL migrations/CI.</li><li>Chưa có backup, binlog archive, restore drill.</li></ul></article>
+        </div>
+        <div class="callout danger"><strong>Baseline đang BLOCKED:</strong> không freeze P0 khi test suite chưa xanh. Đồng thời không copy file SQLite khi daemon đang chạy; phải backup qua SQLite API hoặc stop + checkpoint WAL.</div>
+      </section>
+
+      <section class="section" id="decisions">
+        <span class="kicker">04 · Architecture decisions</span><h2>ADR đã chốt và còn pending</h2>
+        <div>
+          <div class="decision"><div class="decision-id">ADR-M1</div><div><strong>Topology</strong><br>Tauri/daemon → HTTPS BFF → private MySQL.</div><div><span class="tag ok">CONFIRMED</span> Không direct DB từ desktop.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M2</div><div><strong>Database</strong><br>MySQL 8.4 LTS, InnoDB, self-hosted.</div><div><span class="tag ok">CONFIRMED</span> Không MariaDB compatibility target.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M3</div><div><strong>Runtime mode</strong><br>Online-only, không local DB fallback.</div><div><span class="tag ok">CONFIRMED</span> Tránh hai source of truth.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M4</div><div><strong>Artifacts</strong><br>Binary artifact device-local.</div><div><span class="tag ok">CONFIRMED</span> Metadata cloud; file có thể unavailable.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M5</div><div><strong>OIDC provider</strong><br>Authentik, Keycloak hay provider managed?</div><div><span class="tag pending">PENDING</span> Không tự viết password/OAuth.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M6</div><div><strong>Tenancy</strong><br>User/workspace membership và admin model.</div><div><span class="tag pending">PENDING</span> Cần policy matrix trước API.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M7</div><div><strong>BFF contract</strong><br>REST resources, idempotency keys, pagination, error codes.</div><div><span class="tag pending">PENDING</span> Freeze trước port caller.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M8</div><div><strong>Vietnamese search</strong><br>FULLTEXT parser mặc định hay external search.</div><div><span class="tag pending">BENCHMARK</span> ngram không mặc định phù hợp tiếng Việt.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M9</div><div><strong>Availability</strong><br>Single VPS hay HA; RPO, RTO, retention.</div><div><span class="tag pending">PENDING</span> Baseline một server là SPOF.</div></div>
+          <div class="decision"><div class="decision-id">ADR-M10</div><div><strong>Cutover</strong><br>Maintenance window, không dual-write.</div><div><span class="tag ok">PROPOSED</span> Phù hợp dữ liệu nhỏ/single source hiện tại.</div></div>
+        </div>
+      </section>
+
+      <section class="section" id="roadmap">
+        <span class="kicker">05 · Delivery roadmap</span><h2>Roadmap P0–P8</h2><p class="lead">Tách boundary async, BFF security, MySQL dialect và data cutover thành các phase có exit gate riêng.</p>
+        <div>
+          <article class="phase"><div class="phase-id">P0</div><div class="phase-body"><div class="phase-head"><div><h3>ADR &amp; baseline freeze</h3><p>Chốt contract trước khi code.</p></div><span class="tag block">HARD GATE</span></div>
+            <div class="task"><input data-task id="p0-1" type="checkbox"><label for="p0-1">Phê duyệt ADR-M1…M10; cập nhật xung đột SDD 001/002/003.</label></div><div class="task"><input data-task id="p0-2" type="checkbox"><label for="p0-2">Sửa test Training preflight; ghi baseline xanh có commit SHA.</label></div><div class="task"><input data-task id="p0-3" type="checkbox"><label for="p0-3">Inventory schema/data/PK/FK/min-max IDs, competitors và artifact ledger.</label></div><div class="task"><input data-task id="p0-4" type="checkbox"><label for="p0-4">Freeze BFF resource model, error envelope, pagination và idempotency contract.</label></div><div class="exit"><strong>Exit:</strong> baseline xanh; không còn quyết định implementation-impacting chưa xác nhận.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P1</div><div class="phase-body"><div class="phase-head"><div><h3>Async domain ports trên SQLite</h3><p>Đổi sync boundary nhưng chưa đổi persistence.</p></div><span class="tag later">RỦI RO CAO</span></div>
+            <div class="task"><input data-task id="p1-1" type="checkbox"><label for="p1-1">Tạo async <code>TeamRepository</code>/<code>SpyRepository</code> contracts.</label></div><div class="task"><input data-task id="p1-2" type="checkbox"><label for="p1-2">Bọc SQLite stores trong adapters; chuyển caller sang <code>await</code>.</label></div><div class="task"><input data-task id="p1-3" type="checkbox"><label for="p1-3">Tạo repository contract suite dùng chung và async teardown.</label></div><div class="task"><input data-task id="p1-4" type="checkbox"><label for="p1-4">Không thêm MySQL URL vào daemon/Tauri/CLI.</label></div><div class="exit"><strong>Exit:</strong> ứng dụng vẫn chạy SQLite, behavior không đổi, toàn bộ test xanh.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P2</div><div class="phase-body"><div class="phase-head"><div><h3>BFF foundation &amp; API contract</h3><p>Đặt database logic trong server trust boundary.</p></div><span class="tag pending">FOUNDATION</span></div>
+            <div class="task"><input data-task id="p2-1" type="checkbox"><label for="p2-1">Tạo server package/service cho config, HTTP, structured errors, logging và shutdown.</label></div><div class="task"><input data-task id="p2-2" type="checkbox"><label for="p2-2">Implement Team/Spy endpoints hoặc RPC commands theo frozen contract.</label></div><div class="task"><input data-task id="p2-3" type="checkbox"><label for="p2-3">BFF tự derive subject/tenant/workspace; deny-by-default authorization.</label></div><div class="task"><input data-task id="p2-4" type="checkbox"><label for="p2-4">Validation, request size limits, rate limits, idempotency keys và audit context.</label></div><div class="task"><input data-task id="p2-5" type="checkbox"><label for="p2-5">Readiness tách app-ready, MySQL-ready và schema-compatible.</label></div><div class="exit"><strong>Exit:</strong> BFF contract tests pass; cross-tenant requests bị từ chối và được audit.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P3</div><div class="phase-body"><div class="phase-head"><div><h3>MySQL private infrastructure</h3><p>Provision database không có public attack surface.</p></div><span class="tag pending">OPS GATE</span></div>
+            <div class="task"><input data-task id="p3-1" type="checkbox"><label for="p3-1">Pin MySQL 8.4 LTS/InnoDB; private Docker network hoặc private subnet.</label></div><div class="task"><input data-task id="p3-2" type="checkbox"><label for="p3-2">Firewall: public 443; 3306 bind private/loopback và không publish Internet.</label></div><div class="task"><input data-task id="p3-3" type="checkbox"><label for="p3-3">Bật <code>require_secure_transport</code>; client dùng CA verification.</label></div><div class="task"><input data-task id="p3-4" type="checkbox"><label for="p3-4">Tạo users riêng: migration, runtime, backup; grants tối thiểu và rotation.</label></div><div class="task"><input data-task id="p3-5" type="checkbox"><label for="p3-5">Cấu hình pool/timeouts, disk thresholds, slow query log và metrics.</label></div><div class="task"><input data-task id="p3-6" type="checkbox"><label for="p3-6">Versioned SQL migrations + exclusive lock + CI clean bootstrap.</label></div><div class="exit"><strong>Exit:</strong> external port scan không thấy 3306; TLS identity verify pass; runtime user không có DDL.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P4</div><div class="phase-body"><div class="phase-head"><div><h3>MySQL schema &amp; repositories</h3><p>Port dialect và concurrency semantics trong BFF.</p></div><span class="tag later">IMPLEMENT</span></div>
+            <div class="task"><input data-task id="p4-1" type="checkbox"><label for="p4-1">Tạo 16 domain tables, FK, unique keys, indexes, InnoDB và explicit collations.</label></div><div class="task"><input data-task id="p4-2" type="checkbox"><label for="p4-2">Implement Team MySQL repo: insert ID, idempotency, monotonic ack và cursors.</label></div><div class="task"><input data-task id="p4-3" type="checkbox"><label for="p4-3">Implement Spy repo: operations, competitors và transcript replacement transaction.</label></div><div class="task"><input data-task id="p4-4" type="checkbox"><label for="p4-4">Connection-leased transactions; <code>SELECT … FOR UPDATE</code>/CAS khi cần.</label></div><div class="task"><input data-task id="p4-5" type="checkbox"><label for="p4-5">Retry deadlock/lock-timeout giới hạn; duplicate-key recovery rõ ràng.</label></div><div class="task"><input data-task id="p4-6" type="checkbox"><label for="p4-6">Mapper cho native JSON, BIGINT, DATETIME(3) UTC và nullable values.</label></div><div class="exit"><strong>Exit:</strong> repository suite pass trên SQLite và MySQL; concurrency tests không lost update/duplicate.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P5</div><div class="phase-body"><div class="phase-head"><div><h3>OIDC desktop &amp; loopback hardening</h3><p>Tauri là OAuth public client, không giữ secret.</p></div><span class="tag block">SECURITY GATE</span></div>
+            <div class="task"><input data-task id="p5-1" type="checkbox"><label for="p5-1">Authorization Code + PKCE qua system browser; validate state/nonce/issuer/audience.</label></div><div class="task"><input data-task id="p5-2" type="checkbox"><label for="p5-2">Deep-link hoặc ephemeral loopback callback; refresh token chỉ trong OS Keychain.</label></div><div class="task"><input data-task id="p5-3" type="checkbox"><label for="p5-3">Daemon loopback bind; per-launch capability token, strict Origin/Host validation.</label></div><div class="task"><input data-task id="p5-4" type="checkbox"><label for="p5-4">Tauri CSP, least capabilities/scopes; không load remote scripts.</label></div><div class="task"><input data-task id="p5-5" type="checkbox"><label for="p5-5">Không biến cloud input thành shell command; allowlist executable/args và test injection.</label></div><div class="exit"><strong>Exit:</strong> không có client/DB/signing secret trong bundle; auth interception, CSRF và command-injection tests pass.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P6</div><div class="phase-body"><div class="phase-head"><div><h3>HTTP adapters, importer &amp; search</h3><p>Chuyển local daemon sang BFF và chứng minh data parity.</p></div><span class="tag pending">NO-GO GATE</span></div>
+            <div class="task"><input data-task id="p6-1" type="checkbox"><label for="p6-1">Implement daemon HTTP repositories với bearer token, timeout, retry và error mapping.</label></div><div class="task"><input data-task id="p6-2" type="checkbox"><label for="p6-2">Exporter snapshot SQLite + chunked/idempotent MySQL importer theo FK order.</label></div><div class="task"><input data-task id="p6-3" type="checkbox"><label for="p6-3">Giữ PK/cursor; đặt <code>AUTO_INCREMENT</code> lớn hơn max ID.</label></div><div class="task"><input data-task id="p6-4" type="checkbox"><label for="p6-4">Verifier count/PK/FK/JSON/time/numeric/artifact SHA; rerun không duplicate.</label></div><div class="task"><input data-task id="p6-5" type="checkbox"><label for="p6-5">Benchmark FULLTEXT whitespace trên corpus Việt; đánh giá ngram riêng.</label></div><div class="task"><input data-task id="p6-6" type="checkbox"><label for="p6-6">Nếu không đạt threshold, tích hợp Meilisearch/OpenSearch qua BFF; MySQL vẫn source of truth.</label></div><div class="exit"><strong>Exit:</strong> verifier 100%, golden search đạt ngưỡng, remote repositories pass contract suite.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P7</div><div class="phase-body"><div class="phase-head"><div><h3>Rehearsal &amp; production cutover</h3><p>Chuyển source of truth trong maintenance window.</p></div><span class="tag block">CHANGE WINDOW</span></div>
+            <div class="task"><input data-task id="p7-1" type="checkbox"><label for="p7-1">Rehearse import, failed rerun, smoke và rollback trên clone production-like.</label></div><div class="task"><input data-task id="p7-2" type="checkbox"><label for="p7-2">Drain workload; stop daemon; checkpoint WAL; immutable SQLite backup.</label></div><div class="task"><input data-task id="p7-3" type="checkbox"><label for="p7-3">Final migrate → import → AUTO_INCREMENT → search rebuild → verifier.</label></div><div class="task"><input data-task id="p7-4" type="checkbox"><label for="p7-4">Switch daemon config sang HTTPS BFF; read-only smoke trước first write.</label></div><div class="task"><input data-task id="p7-5" type="checkbox"><label for="p7-5">Mở writes; theo dõi BFF errors/latency, pool, locks, disk và auth failures.</label></div><div class="exit"><strong>Exit:</strong> smoke/data/authz pass; không hidden fallback hoặc direct MySQL connection.</div>
+          </div></article>
+
+          <article class="phase"><div class="phase-id">P8</div><div class="phase-body"><div class="phase-head"><div><h3>Backup, observation &amp; cleanup</h3><p>Chứng minh khả năng phục hồi trước decommission SQLite.</p></div><span class="tag keep">POST-CUTOVER</span></div>
+            <div class="task"><input data-task id="p8-1" type="checkbox"><label for="p8-1">Daily full backup encrypted, off-server; continuous binlog archive và retention.</label></div><div class="task"><input data-task id="p8-2" type="checkbox"><label for="p8-2">Restore full + replay binlog đến target point; ghi RPO/RTO thực tế.</label></div><div class="task"><input data-task id="p8-3" type="checkbox"><label for="p8-3">Patch cadence, capacity review, disk/backup expiry và certificate alerts.</label></div><div class="task"><input data-task id="p8-4" type="checkbox"><label for="p8-4">Giữ SQLite backup read-only trong rollback window.</label></div><div class="task"><input data-task id="p8-5" type="checkbox"><label for="p8-5">Sau observation gate: xóa SQLite DDL/adapters và cập nhật README/SDD/runbooks.</label></div><div class="exit"><strong>Exit:</strong> restore drill pass; rollback window đóng; không còn SQLite runtime dependency.</div>
+          </div></article>
+        </div>
+      </section>
+
+      <section class="section" id="compatibility">
+        <span class="kicker">06 · Engineering repair matrix</span><h2>SQLite → BFF/MySQL compatibility</h2>
+        <div class="table"><table><thead><tr><th>Hiện tại</th><th>Rủi ro</th><th>Repair</th><th>Gate</th></tr></thead><tbody>
+          <tr><td>Sync <code>bun:sqlite</code></td><td>Remote HTTPS + MySQL là async I/O.</td><td>Async ports; HTTP adapter ở daemon, MySQL adapter trong BFF.</td><td>Contract suite trên cả adapters.</td></tr>
+          <tr><td><code>ON CONFLICT</code></td><td>Không phải MySQL syntax.</td><td>Unique key + <code>INSERT … ON DUPLICATE KEY UPDATE</code> hoặc duplicate recovery.</td><td>Concurrent idempotency tests.</td></tr>
+          <tr><td><code>BEGIN IMMEDIATE</code></td><td>Lock semantics khác InnoDB.</td><td>Leased connection, transaction, row lock/CAS và retry.</td><td>Contention/rollback tests.</td></tr>
+          <tr><td><code>RETURNING</code>/SQLite rowid</td><td>Không port trực tiếp.</td><td>Driver insert ID; explicit PK; verify AUTO_INCREMENT.</td><td>Exact ID under concurrency.</td></tr>
+          <tr><td>FTS5</td><td>Tokenizer/ranking/query grammar khác.</td><td>FULLTEXT benchmark; external search nếu fail.</td><td>Golden Vietnamese corpus.</td></tr>
+          <tr><td>TEXT UUID/keys</td><td>Default collation có thể case-insensitive.</td><td><code>CHAR(36)</code>/bounded VARCHAR với case-sensitive collation.</td><td>Case/accent collision fixtures.</td></tr>
+          <tr><td>ISO timestamp TEXT</td><td><code>DATETIME</code> không mang timezone.</td><td><code>DATETIME(3)</code>, UTC session, ISO-Z mapper.</td><td>Timezone/millisecond round-trip.</td></tr>
+          <tr><td>JSON text</td><td>Native JSON có driver return type khác.</td><td>MySQL JSON + validation + normalized mapper.</td><td>Semantic-equal JSON.</td></tr>
+          <tr><td>JS Number</td><td>BIGINT có thể mất precision.</td><td>String/BigInt domain policy; range check trước Number.</td><td>Boundary fixtures.</td></tr>
+          <tr><td>Local artifact path</td><td>Path không tồn tại trên máy khác.</td><td>Store device/artifact availability metadata; không giả lập cloud file.</td><td>Cross-device unavailable state.</td></tr>
+        </tbody></table></div>
+      </section>
+
+      <section class="section" id="bff">
+        <span class="kicker">07 · BFF and security contract</span><h2>Quy tắc không thể thương lượng</h2>
+        <div class="grid2">
+          <article class="card"><h3>Desktop/public client</h3><ul><li>Không MySQL URL/password, client secret, service token hoặc signing key.</li><li>System browser + Authorization Code + PKCE.</li><li>Refresh token trong OS Keychain; access token ngắn hạn.</li><li>Deep link/loopback callback kiểm state, nonce và exact redirect.</li></ul></article>
+          <article class="card"><h3>BFF/trusted server</h3><ul><li>Verify issuer, signature, audience, expiry và token type.</li><li>Derive identity/tenant/workspace; deny by default.</li><li>Validate payload; rate limit theo subject/workspace/IP.</li><li>Pool MySQL; secrets ở server secret store; audit mutation.</li></ul></article>
+        </div>
+        <div class="callout danger"><strong>Không dùng local daemon như security boundary.</strong> Người dùng kiểm soát máy desktop và có thể gọi loopback/BFF ngoài UI. Mọi authz quan trọng phải được BFF thực thi lại.</div>
+      </section>
+
+      <section class="section" id="data">
+        <span class="kicker">08 · Data movement and search</span><h2>Import order, type policy và FTS</h2>
+        <div class="grid2"><article class="card"><h3>Spy import order</h3><ol><li><code>operations</code></li><li><code>spy_runs</code></li><li><code>channels</code></li><li><code>video_snapshots</code></li><li><code>video_transcripts</code></li><li><code>transcript_segments</code></li><li><code>frame_samples</code></li><li><code>metrics</code>, <code>profiles</code></li><li><code>competitors</code></li></ol><p class="small muted"><code>schema_version</code> là SQLite migration metadata, không phải domain row. FTS shadow tables không import.</p></article>
+          <article class="card"><h3>Verifier</h3><ul><li>Row count + primary-key set.</li><li>0 hard FK orphan.</li><li>JSON semantic equality.</li><li>UTC/millisecond round-trip.</li><li>Numeric min/max/sum or checksum.</li><li>AUTO_INCREMENT &gt; max ID.</li><li>Artifact reference, byte length và SHA-256.</li></ul></article></div>
+        <pre>UUID hiện có          → CHAR(36) CHARACTER SET ascii + case-sensitive collation
+SHA-256               → CHAR(64) CHARACTER SET ascii + case-sensitive collation
+business identifier   → bounded VARCHAR + explicit case-sensitive collation
+Vietnamese content    → utf8mb4
+timestamps            → DATETIME(3), UTC, API emits ISO-8601 Z
+counters/cursors      → BIGINT [UNSIGNED khi domain không âm]
+duration/media time   → DOUBLE
+structured payload    → JSON
+large prose           → LONGTEXT</pre>
+        <div class="callout"><strong>FTS hard gate:</strong> parser mặc định tách từ theo whitespace; ngram được MySQL mô tả cho CJK. Không chọn ngram cho tiếng Việt chỉ vì có Unicode. Đo precision, recall, phrase behavior, dấu và ordering trên corpus thật.</div>
+      </section>
+
+      <section class="section" id="operations">
+        <span class="kicker">09 · Infrastructure and recovery</span><h2>Baseline tự vận hành MySQL</h2>
+        <div class="grid3"><article class="card"><h3>Network</h3><ul><li>3306 private-only.</li><li>HTTPS 443 reverse proxy.</li><li>TLS verify identity.</li><li>OS/firewall/container patching.</li></ul></article><article class="card"><h3>Backup/PITR</h3><ul><li>Daily full, encrypted.</li><li>Copy off-server.</li><li>Continuous binary logs.</li><li>Documented retention.</li></ul></article><article class="card"><h3>Observability</h3><ul><li>Disk, CPU, memory, connections.</li><li>Pool wait/timeout.</li><li>Slow queries/deadlocks.</li><li>Backup age and restore status.</li></ul></article></div>
+        <div class="callout danger"><strong>Single server = single point of failure.</strong> Backup không phải HA. Nếu downtime vượt SLO, cần replica/failover hoặc managed MySQL; đây là ADR-M9, không được ngầm giả định.</div>
+      </section>
+
+      <section class="section" id="testing">
+        <span class="kicker">10 · Quality gates</span><h2>Test trước production</h2>
+        <div>
+          <div class="gate"><div class="gate-id">T1</div><div><strong>Baseline &amp; repository parity</strong><br><span class="muted">SQLite, MySQL và remote HTTP adapters cùng contract.</span></div><span class="tag ok">REQUIRED</span></div>
+          <div class="gate"><div class="gate-id">T2</div><div><strong>Team + Spy lifecycle</strong><br><span class="muted">Idempotency, ack, turns, audit, competitors, transcript replace.</span></div><span class="tag ok">REQUIRED</span></div>
+          <div class="gate"><div class="gate-id">T3</div><div><strong>Tenant isolation/authz</strong><br><span class="muted">Forged body IDs, wrong workspace, expired token, confused-deputy attempts.</span></div><span class="tag block">SECURITY</span></div>
+          <div class="gate"><div class="gate-id">T4</div><div><strong>OAuth desktop</strong><br><span class="muted">PKCE/state/nonce, callback interception, refresh rotation, logout/revoke.</span></div><span class="tag block">SECURITY</span></div>
+          <div class="gate"><div class="gate-id">T5</div><div><strong>Tauri/loopback</strong><br><span class="muted">Origin/Host, capability token, CSP, command args and malicious cloud input.</span></div><span class="tag block">SECURITY</span></div>
+          <div class="gate"><div class="gate-id">T6</div><div><strong>Concurrency</strong><br><span class="muted">Duplicate keys, lost update, lock timeout/deadlock retry, insert IDs.</span></div><span class="tag ok">REQUIRED</span></div>
+          <div class="gate"><div class="gate-id">T7</div><div><strong>Vietnamese search</strong><br><span class="muted">Dấu, phrase, word boundaries, stopwords, filters và ranking.</span></div><span class="tag pending">SEMANTIC</span></div>
+          <div class="gate"><div class="gate-id">T8</div><div><strong>Importer/verifier</strong><br><span class="muted">Crash/rerun, PK/FK/JSON/time/numeric/artifact hashes.</span></div><span class="tag ok">REQUIRED</span></div>
+          <div class="gate"><div class="gate-id">T9</div><div><strong>Operations</strong><br><span class="muted">BFF/MySQL down, reconnect, pool exhaustion, disk full, TLS expiry.</span></div><span class="tag ok">REQUIRED</span></div>
+          <div class="gate"><div class="gate-id">T10</div><div><strong>Restore drill</strong><br><span class="muted">Full restore + binlog replay to chosen timestamp with measured RPO/RTO.</span></div><span class="tag block">NO-GO</span></div>
+        </div>
+      </section>
+
+      <section class="section" id="cutover">
+        <span class="kicker">11 · Change and recovery</span><h2>Cutover &amp; rollback</h2>
+        <ol class="runbook"><li>Thông báo maintenance; chặn command/write mới.</li><li>Drain/interrupt task có kiểm soát; dừng daemon.</li><li>Checkpoint WAL; tạo immutable SQLite backup + checksum.</li><li>Xác nhận off-server MySQL backup, binlog archive và restore drill mới nhất.</li><li>Chạy forward migrations bằng migration user.</li><li>Final import theo FK order; set AUTO_INCREMENT; build search.</li><li>Chạy verifier 100% và security smoke trên BFF.</li><li>Đổi daemon config sang HTTPS BFF; read-only smoke.</li><li>Mở writes; theo dõi error/latency/pool/locks/disk/auth.</li><li>Giữ SQLite backup read-only suốt rollback window.</li></ol>
+        <div class="grid2"><article class="card"><h3>Trước first MySQL write</h3><p>Dừng BFF, đổi daemon về immutable SQLite snapshot và verify. Đây là rollback sạch.</p><span class="tag ok">SAFE</span></article><article class="card"><h3>Sau first MySQL write</h3><p>Không blind-flip về SQLite vì thiếu delta. Forward-fix hoặc reverse-export delta có verifier.</p><span class="tag block">CONTROLLED ONLY</span></article></div>
+      </section>
+
+      <section class="section" id="acceptance">
+        <span class="kicker">12 · Definition of Done</span><h2>Tiêu chí hoàn tất</h2>
+        <div class="grid2"><article class="card"><h3>Data &amp; behavior</h3><ul><li>100% count/PK/FK/JSON verification.</li><li>Không mất cursor, ID, Unicode, time hoặc precision.</li><li>Team/Spy/Training/MCP/CLI giữ contract.</li><li>Golden Vietnamese search đạt threshold.</li><li>Artifact unavailable được biểu diễn đúng giữa thiết bị.</li></ul></article><article class="card"><h3>Security &amp; operations</h3><ul><li>Không DB/secret/signing credential trong desktop.</li><li>3306 không public; runtime user không DDL.</li><li>BFF authz/tenant isolation pass.</li><li>Restore drill đạt RPO/RTO.</li><li>Không hidden SQLite fallback hoặc direct DB path.</li><li>SDD/README/runbooks nhất quán.</li></ul></article></div>
+        <div class="callout good"><strong>Release rule:</strong> không đánh dấu hoàn tất nếu baseline, authz isolation, data verifier, FTS acceptance hoặc restore drill còn đỏ.</div>
+      </section>
+
+      <section class="section" id="sources">
+        <span class="kicker">13 · Research basis</span><h2>Nguồn chính thức</h2>
+        <div class="grid2"><article class="card"><h3>MySQL 8.4</h3><ul><li><a href="https://dev.mysql.com/doc/refman/8.4/en/backup-and-recovery.html">Backup and Recovery</a></li><li><a href="https://dev.mysql.com/doc/refman/8.4/en/point-in-time-recovery-binlog.html">PITR using binary log</a></li><li><a href="https://dev.mysql.com/doc/refman/8.4/en/using-encrypted-connections.html">Encrypted connections / require_secure_transport</a></li><li><a href="https://dev.mysql.com/doc/refman/8.4/en/access-control.html">Access control and accounts</a></li><li><a href="https://dev.mysql.com/doc/refman/8.4/en/fulltext-search-ngram.html">ngram FULLTEXT parser</a></li><li><a href="https://dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html">ON DUPLICATE KEY UPDATE</a></li></ul></article><article class="card"><h3>OIDC &amp; Tauri</h3><ul><li><a href="https://datatracker.ietf.org/doc/html/rfc8252">RFC 8252 — OAuth 2.0 for Native Apps</a></li><li><a href="https://openid.net/specs/openid-connect-core-1_0-18.html">OpenID Connect Core 1.0</a></li><li><a href="https://v2.tauri.app/security/csp/">Tauri Content Security Policy</a></li><li><a href="https://v2.tauri.app/security/permissions/">Tauri Permissions</a></li><li><a href="https://v2.tauri.app/security/scope/">Tauri Command Scopes</a></li><li><a href="https://v2.tauri.app/plugin/deep-linking/">Tauri Deep Linking</a></li></ul></article></div>
+      </section>
+    </main>
+  </div>
+  <footer>Writer Room · MySQL 8.4 + HTTPS BFF Migration Plan · Revised 2026-08-10</footer>
+  <script>
+    (()=>{const key="writer-room-mysql-bff-migration-plan-v3";const boxes=[...document.querySelectorAll("input[data-task]")];const fill=document.getElementById("progressFill");const value=document.getElementById("progressValue");const load=()=>{try{const saved=JSON.parse(localStorage.getItem(key)||"{}");boxes.forEach(b=>b.checked=saved[b.id]===true)}catch{localStorage.removeItem(key)}};const update=()=>{const done=boxes.filter(b=>b.checked).length;const pct=boxes.length?Math.round(done/boxes.length*100):0;fill.style.width=`${pct}%`;value.textContent=`${done} / ${boxes.length} hoàn tất · ${pct}%`;localStorage.setItem(key,JSON.stringify(Object.fromEntries(boxes.map(b=>[b.id,b.checked]))))};boxes.forEach(b=>b.addEventListener("change",update));document.getElementById("resetProgress").addEventListener("click",()=>{if(!confirm("Reset toàn bộ checklist?"))return;boxes.forEach(b=>b.checked=false);localStorage.removeItem(key);update()});load();update()})();
+  </script>
+</body>
+</html>

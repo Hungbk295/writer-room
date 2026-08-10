@@ -141,6 +141,7 @@ impl TerminalManager {
         if !std::path::Path::new(&cwd).is_dir() {
             return Err(format!("cwd không tồn tại: {cwd}"));
         }
+        let pty = native_pty_system();
         let cols = if req.cols >= 40 { req.cols } else { 120 };
         let rows = if req.rows >= 10 { req.rows } else { 30 };
         let pair = pty
@@ -209,7 +210,7 @@ impl TerminalManager {
 
         // waiter: chờ child exit → cập nhật trạng thái + báo lên
         std::thread::spawn(move || {
-            let code = child.wait().ok().map(|st| st.exit_code());
+            let code = child.wait().ok().map(|st: portable_pty::ExitStatus| st.exit_code());
             running.store(false, Ordering::SeqCst);
             on_exit(code);
         });

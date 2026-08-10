@@ -122,7 +122,7 @@ describe('startTrainingLabRun — happy path', () => {
     expect(run.status).toBe('RUNNING');
     expect(run.rounds.length).toBe(1);
     expect(run.rounds[0]!.formulaVersionIn.version).toBe(1);
-    expect(run.rounds[0]!.formulaVersionIn.parentFormulaId).toBeUndefined();
+    expect(run.rounds[0]!.formulaVersionIn.lineage.parentFormulaId).toBeUndefined();
 
     const draftAgentIds = new Set<string>();
     const critiqueAgentIds = new Set<string>();
@@ -210,7 +210,8 @@ describe('startTrainingLabRun — happy path', () => {
       expect(round.formulaVersionOut).not.toBeNull();
       expect(round.formulaVersionOut!.version).toBe(i + 2); // v1 -> round1 out v2, round2 out v3, round3 out v4
       expect(round.formulaVersionOut!.status).toBe('TRIAL');
-      expect(round.formulaVersionOut!.parentFormulaId).toBe(round.formulaVersionIn.id);
+      expect(round.formulaVersionOut!.lineage.parentFormulaId).toBe(round.formulaVersionIn.id);
+      expect(round.formulaVersionOut!.origin).toBe('REFINED');
       if (i < 2) {
         expect(finalRun!.rounds[i + 1]!.formulaVersionIn).toEqual(round.formulaVersionOut!);
       }

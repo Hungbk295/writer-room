@@ -57,10 +57,9 @@ import {
   type CritiqueArtifact,
   type DraftArtifact,
   type FormulaArtifact,
-  type FormulaVersion,
 } from '@writer-room/training-core';
 import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
-import { getTrainingLabRun, saveTrainingLabRun } from './storage.ts';
+import { getTrainingLabRun, saveFormula, saveTrainingLabRun } from './storage.ts';
 
 /** Training Lab stage ids (SDD §12a stage table) — new `stage: string` values; no
  * code elsewhere in the pipeline layer hardcodes an enum of allowed stages. */
@@ -83,10 +82,11 @@ const DRAFT_PROMPT_VERSION = 'training-lab-draft-v1';
 const CRITIQUE_PROMPT_VERSION = 'training-lab-critique-v2';
 const REFINE_PROMPT_VERSION = 'training-lab-refine-v2';
 
-/** Re-exported so callers of this module (routes, tests) don't need a second import
- * from `@writer-room/training-core` just to name the type this module builds new
- * versions of every REFINE round. */
-export type { FormulaVersion };
+/** Formula versions are plain `FormulaArtifact`s now (2026-08-10 unification):
+ * `version` and `lineage.parentFormulaId` live on the base type, so the old
+ * `FormulaVersion` wrapper no longer exists. Re-exported for callers/tests. */
+export type FormulaVersion = FormulaArtifact;
+export type { FormulaArtifact };
 
 export interface TrainingLabRound {
   round: number;
@@ -311,15 +311,16 @@ async function readCommittedArtifact<T>(dataDir: string, event: ItemSettledResul
   return JSON.parse(raw) as T;
 }
 
-function buildRefinedVersion(formulaVersionIn: FormulaVersion, rules: AnalysisRule[]): FormulaVersion {
-  // Carry `scope`/`channelGroups`/`includedArtifacts`/`warnings`/`sourceBatchId`
-  // forward unchanged (SDD §12a: stable across versions within one run) — only
-  // `rules`/`version`/`parentFormulaId`/`id`/`createdAt` actually change per version.
+function buildRefinedVersion(formulaVersionIn: FormulaVersion, rules: AnalysisRule[], labRunId: string): FormulaVersion {
+  // Carry `videoSnapshotId`/`channelTitle`/`includedArtifacts`/`warnings`/
+  // `sourceBatchId` forward unchanged (SDD §12a: stable across versions within one
+  // run) — only `rules`/`version`/`lineage`/`id`/`createdAt` change per version.
   return {
     ...formulaVersionIn,
     id: randomUUID(),
+    origin: 'REFINED',
     version: formulaVersionIn.version + 1,
-    parentFormulaId: formulaVersionIn.id,
+    lineage: { parentFormulaId: formulaVersionIn.id, labRunId },
     // ADR-6 hard-assert principle, same as `formulaFromSingleAnalysis`: a refined
     // Formula version is NEVER anything other than TRIAL — never auto-promoted.
     status: 'TRIAL',
@@ -520,9 +521,9 @@ export async function startTrainingLabRun(
   params: { videoSnapshotId: string; startingFormula: FormulaArtifact },
 ): Promise<TrainingLabRun> {
   const { videoSnapshotId, startingFormula } = params;
-  const v1: FormulaVersion = { ...startingFormula, version: 1, parentFormulaId: undefined };
+  const v1: FormulaVersion = { ...startingFormula };
   const now = new Date().toISOString();
-  const channelTitle = startingFormula.channelGroups[0]?.channelTitle ?? '';
+  const channelTitle = startingFormula.channelTitle ?? '';
 
   const round1: TrainingLabRound = {
     round: 1,
@@ -615,9 +616,15 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
     }
     case REFINE_STAGE: {
       const parsed = await readCommittedArtifact<{ rules: AnalysisRule[]; changeLog?: string[] }>(deps.dataDir, event);
-      const formulaVersionOut = buildRefinedVersion(round.formulaVersionIn, parsed.rules);
+      const formulaVersionOut = buildRefinedVersion(round.formulaVersionIn, parsed.rules, run.id);
       round.formulaVersionOut = formulaVersionOut;
       round.status = 'DONE';
+      // 2026-08-10: a refined version is saved to the SHARED Formula store, not only
+      // inside this run's log. Before this, every improvement the Training Lab made
+      // was invisible to the Studio's rule pool and unusable by the Writer — the run
+      // log contained the artifact instead of referencing it. The run still keeps its
+      // own copy for the round-by-round history the UI shows.
+      await saveFormula(formulaVersionOut, deps.dataDir);
 
       if (round.round < run.maxRounds) {
         const nextRound: TrainingLabRound = {

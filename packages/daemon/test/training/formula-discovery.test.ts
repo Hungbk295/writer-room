@@ -116,9 +116,10 @@ describe('runFormulaDiscovery — happy path', () => {
       { videoSnapshotId, analysisArtifactHash: settled.artifactHash! },
     ]);
     expect(formula!.warnings.some((w) => w.includes('LOW_SAMPLE'))).toBe(true);
-    expect(formula!.channelGroups).toEqual([
-      { channelTitle: 'Test Channel', videoSnapshotIds: [videoSnapshotId] },
-    ]);
+    expect(formula!.origin).toBe('ANALYZED');
+    expect(formula!.version).toBe(1);
+    expect(formula!.videoSnapshotId).toBe(videoSnapshotId);
+    expect(formula!.channelTitle).toBe('Test Channel');
     expect(formula!.rules.length).toBe(1);
   });
 });

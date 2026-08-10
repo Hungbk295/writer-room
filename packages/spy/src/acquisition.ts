@@ -27,6 +27,9 @@ function contentHash(text: string): string {
 }
 
 export class AcquisitionService {
+  /** Lý do lần enrich kênh gần nhất không lấy được subscriber — để chẩn đoán, không nuốt lỗi. */
+  lastChannelEnrichError: string | null = null;
+
   constructor(
     private readonly store: SpyStore,
     private readonly artifacts: ArtifactStore,
@@ -341,6 +344,9 @@ export class AcquisitionService {
     let subscriberCount: number | null = null;
     let videoCount: number | null = null;
     let totalViewCount: number | null = null;
+    // Trước đây lỗi ở đây bị nuốt hoàn toàn (catch rỗng) nên subscriber_count âm
+    // thầm là NULL và mọi metric cần subscriber vĩnh viễn 'unavailable' mà không
+    // ai biết vì sao. Giờ ghi lại lý do để chẩn đoán được.
     if (youtubeChannelId) {
       try {
         const stats = await this.dataApi.fetchChannelStatistics([youtubeChannelId]);
@@ -349,10 +355,17 @@ export class AcquisitionService {
           subscriberCount = channel.subscriberCount;
           videoCount = channel.videoCount;
           totalViewCount = channel.viewCount;
+        } else {
+          this.lastChannelEnrichError = `channels.list không trả kết quả cho ${youtubeChannelId} (thiếu API key?)`;
         }
-      } catch {
-        // Soft degrade — metrics that need subscriber stay unavailable.
+      } catch (error) {
+        this.lastChannelEnrichError = error instanceof Error ? error.message : String(error);
       }
+    } else {
+      this.lastChannelEnrichError = 'không xác định được YouTube channelId từ metadata video';
+    }
+    if (this.lastChannelEnrichError && subscriberCount === null) {
+      console.warn(`[spy] enrichChannel(${scopeId}) không lấy được subscriber: ${this.lastChannelEnrichError}`);
     }
     this.store.upsertChannel({
       channelId: scopeId,

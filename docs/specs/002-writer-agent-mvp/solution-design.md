@@ -349,7 +349,7 @@ stage-ledger.jsonl                       # per item, append-only
 
 formula-manifest.json                              # L1, one per video (§6.1a)
   formula_id, status: DRAFT | TRIAL | VALIDATED
-  scope: SINGLE_VIDEO, video_snapshot_id
+  origin: ANALYZED | REFINED | COMPOUND, version, lineage
   channel_title                                    # label for filtering only, never a grouping key
   included_item_hashes[], warnings[], content_hash
 
@@ -407,17 +407,14 @@ ItemRun
 
 FormulaArtifact                          # L1 — the atomic unit (§12b), produced by ANALYZE
   status: DRAFT | TRIAL | VALIDATED
-  scope: SINGLE_VIDEO                    # the only scope a batch can ever produce (ADR-5)
+  origin: ANALYZED                       # the only origin a batch can produce (ADR-5)
+  version; lineage
   videoSnapshotId; channelTitle          # channelTitle = display/filter label, not a key
   rules; includedArtifacts; warnings
-
-CompoundFormula                          # L2 — Studio-only, human-curated, genre-scoped (§12b)
-  genre; scope: COMPOUND; status; version; sessionId
-  rules[CompoundRule{ statement, facet, provenance[], origin }]
-  sourceVideoCount                       # honest sample size
+  # REFINED (Training Lab) and COMPOUND (Studio) are the SAME type — see §8.2/ADR-14
 
 WriterItem
-  formulaRef: { formulaId, contentHash, level: SINGLE_VIDEO | COMPOUND }
+  formulaRef: { formulaId, contentHash }   # any origin — the Writer does not care which
                                           # pinned per item, not per batch (§6.3) — a batch may
                                           # write several titles in parallel, each against a
                                           # different Formula (per-video or compound)
@@ -702,7 +699,7 @@ Everything above avoids touching `TeamWorkflow` except these, each small and add
 3. **Preflight runs before the Start button enables** (§7.2): agent binary detected, Claude
    and Codex reachable, transcript present and non-empty per item, input hashes computed,
    disk space, budget estimate.
-4. **No scope decision exists.** One video always yields one Formula (`scope: SINGLE_VIDEO`),
+4. **No scope decision exists.** One video always yields one Formula (`origin: ANALYZED`),
    whether the batch spans one channel or ten (ADR-5). Merging rules across videos into a
    genre Formula is a separate, human-driven Studio session (§12b), never part of a batch.
 5. Each item runs `ANALYZE` (Claude) → `REVIEW` (Codex, optional per config) → `VALIDATED`.
@@ -760,7 +757,7 @@ per-item preflight, the dashboard, per-item retry — over machinery M0.5/M1 alr
 TRAIN_BATCH(videos[]):
   for each video (up to maxParallel concurrently):
      PREPARE → ANALYZE → (REVIEW) → DONE     # §6.1 item stage machine, unchanged
-     commit FormulaArtifact { scope: SINGLE_VIDEO, status: TRIAL, channelTitle: <label only> }
+     commit FormulaArtifact { origin: ANALYZED, status: TRIAL, channelTitle: <label only> }
   → N independent Formulas, each independently retryable, promotable, and refinable
     in the Training Lab (§12a)
 ```
@@ -799,7 +796,7 @@ are not" from "finished". The dashboard header and the app's nav badge both surf
 
 1. User adds one or more title items. Each item independently pins its own Formula (status shown
    inline: `TRIAL` badge) and its own Curated Pack — **not** one Formula for the whole batch. The
-   picker offers both levels interchangeably (§12b): a **per-video** Formula (`SINGLE_VIDEO`) or a
+   picker offers every origin interchangeably (§8.2): a per-video (`ANALYZED`/`REFINED`) or a
    **compound genre** Formula (`COMPOUND`); both are hash-pinned identically and the Writer treats
    them the same. This is what lets one batch write several titles in parallel against different
    Formulas — the batch is just a set of independently-pinned items, exactly like the Training
@@ -894,7 +891,7 @@ COMMIT_FORMULA(item):                  # per video — there is no cross-item ag
 1. Require the item's ANALYZE artifact to be successful.
 2. Verify its artifact hash still matches on disk; abort with AGGREGATION_STALE.
 3. Pin the analysis artifact hash, videoSnapshotId, and channelTitle (label only).
-4. Emit rules with their evidence and provenance; scope = SINGLE_VIDEO.
+4. Emit rules with their evidence; origin = ANALYZED, version = 1.
 5. Never assign VALIDATED status in the MVP.
 
 STUDIO_MERGE(pickedRules[]):           # §12b — human-gated at both ends, never auto-invoked
@@ -904,7 +901,7 @@ STUDIO_MERGE(pickedRules[]):           # §12b — human-gated at both ends, nev
 2. For each cluster the human approved for merging: one bounded LLM turn proposes merged
    wording, carrying the union of source provenance. Empty provenance ⇒ STUDIO_RULE_UNGROUNDED.
 3. Human accepts / edits / rejects each proposal individually; nothing commits without that.
-4. Emit CompoundFormula { genre, rules, sourceVideoCount, status: DRAFT }.
+4. Emit FormulaArtifact { origin: COMPOUND, genre, rules, status: DRAFT }.
 5. Promotion to TRIAL is a separate explicit human action (ADR-6).
 
 DISPATCH(item, stage):
@@ -1042,19 +1039,46 @@ Every extracted pattern must carry `evidence: [{ locator, quote }]` pointing int
 transcript. Validation rejects any rule with zero evidence (`AGENT_UNGROUNDED`) — this is the
 Training-side equivalent of the Writer citation gate and is what makes the Formula auditable.
 
-### 8.2 Formula artifact
+### 8.2 Formula artifact — one type, one store, three origins (ADR-14)
 
-Two levels, both hash-pinned and both usable by the Writer (§12b):
+There is exactly **one** Formula type and **one** store (`training/formulas/{id}.json`).
+`origin` discriminates how it was made:
 
-- **`FormulaArtifact`** (L1, `scope: SINGLE_VIDEO`) — `rules[]`, `videoSnapshotId`,
-  `channelTitle` (label only), `includedArtifacts[]`, `warnings[]`, `status`. Produced by
-  `ANALYZE`; one per video, never merged by a batch (ADR-5).
-- **`CompoundFormula`** (L2, `scope: COMPOUND`) — `genre`, `rules[CompoundRule]` each carrying
-  non-empty `provenance[]`, `sourceVideoCount`, `sessionId`, `version`, `status`. Produced
-  only by a human-curated Studio session (§12b, ADR-13).
+| `origin` | Made by | Carries |
+|---|---|---|
+| `ANALYZED` | `ANALYZE` on one video (§6.1a) | `videoSnapshotId`, `channelTitle` |
+| `REFINED` | a Training Lab round (§12a) | same, plus `lineage.parentFormulaId`, `lineage.labRunId` |
+| `COMPOUND` | a human-curated Studio session (§12b) | `genre`, rules carrying `sources[]`, `lineage.studioSessionId` |
 
-`VALIDATED` is unreachable in MVP code at both levels, not merely unused (an assertion enforces
-it). Promotion to `TRIAL` is always an explicit human action (ADR-6).
+```ts
+interface FormulaArtifact {
+  id; status; origin; version;
+  rules: FormulaRule[];              // FormulaRule = AnalysisRule + optional sources[]/mergeOrigin
+  videoSnapshotId?; channelTitle?;   // ANALYZED / REFINED
+  genre?;                            // COMPOUND
+  includedArtifacts[]; lineage; warnings[]; createdAt;
+}
+```
+
+Two rules make this load-bearing rather than cosmetic:
+
+1. **A process log references its Formula; it never contains it.** `lab-runs/*.json` and
+   `studio-sessions/*.json` keep ids, and every version they produce is written to the shared
+   store. Before this (fixed 2026-08-10) refined versions lived only inside the lab run and
+   compound Formulas only inside the session — so the two things that represent *improvement*
+   were exactly the two things the Studio's rule pool and the Writer could not use.
+2. **Downstream never special-cases a level.** The Writer pins any Formula by id + hash; the
+   Studio pool reads every `ANALYZED`/`REFINED` Formula uniformly (it skips `COMPOUND`, whose
+   rules are already merged output — re-merging them would double-count provenance).
+
+The replaced `scope` field (`SINGLE_CHANNEL`/`PER_CHANNEL_COMPARE`/`CROSS_CHANNEL_SHARED`) and
+`channelGroups[]` described the channel-grouping design ADR-5 rejected. `channelGroups` also
+could not express the real invariant — an `ANALYZED` Formula is about exactly **one** video —
+which forced `?? 'unknown'` fallbacks at every read site. Legacy files are migrated at read time
+by `normalizeFormula()`; no rewrite pass over the data directory is needed.
+
+`VALIDATED` is unreachable in MVP code at every origin, not merely unused. Promotion to `TRIAL`
+is always an explicit human action (ADR-6).
 
 ### 8.3 Curated Pack v1 (GAP-14)
 
@@ -1224,8 +1248,8 @@ Formula version — plus the run's overall status and round count.
 
 | Level | What it is | How it is made | Belongs to |
 |---|---|---|---|
-| **L1 — per-video Formula** | `FormulaArtifact`, `scope: SINGLE_VIDEO` | `ANALYZE` (M1), optionally sharpened by the Training Lab loop (§12a) | one video. A channel has *many*, and they legitimately disagree |
-| **L2 — compound Formula** | `CompoundFormula`, `scope: COMPOUND` | **Only** the Studio, only with a human picking every rule | a **content genre** (`thể loại`) the user names — never a channel |
+| **L1 — per-video Formula** | `FormulaArtifact`, `origin: ANALYZED`/`REFINED` | `ANALYZE` (M1), optionally sharpened by the Training Lab loop (§12a) | one video. A channel has *many*, and they legitimately disagree |
+| **L2 — compound Formula** | `FormulaArtifact`, `origin: COMPOUND` | **Only** the Studio, only with a human picking every rule | a **content genre** (`thể loại`) the user names — never a channel |
 
 There is no automatic path from L1 to L2. Nothing in the system ever produces a compound
 Formula as a side effect of a batch finishing.
@@ -1325,44 +1349,45 @@ every other promotion in this system (ADR-6). `VALIDATED` remains unreachable in
 promoted compound Formula then appears in the Writer's Formula picker (§6.3) alongside per-video
 Formulas — from the Writer's point of view they are interchangeable, both hash-pinned per item.
 
+### Cluster identity is content-derived, not positional
+
+`RuleCluster.id` is `c-<hash of the sorted member refs>`, never `c1`/`c2`. Proposals are keyed
+by `clusterId`, so with positional ids picking one more rule would renumber every cluster and an
+already-approved proposal would silently re-attach to different rules. With a content-derived
+id, adding an unrelated pick leaves existing cluster ids untouched (their proposals survive),
+and a cluster whose membership genuinely changes gets a new id — so the stale proposal correctly
+stops matching instead of quietly applying to the wrong thing.
+
+The same reasoning gives `CARRIED` rules the id `<clusterId>-carried`.
+
+### Which rules a merged rule inherits
+
+A `SYNTHESIZED` rule's `evidence[]` is the union of the evidence of every rule it was merged
+from, and its `sources[]` names each one. That is what keeps a merged rule grounded despite
+nobody having written its wording by hand, and it is exactly the set the lean `CRITIQUE`
+envelope ships instead of full transcripts.
+
 ### Data
 
 ```text
-studio-sessions/{sessionId}/
-  session.json          # genre name, status, working set of picked rule refs, created/updated
-  clusters.json         # deterministic clustering output, regenerable from the picked set
-  proposals/{n}.json    # LLM-synthesized rule proposals + human decision (accept/edit/reject)
-  compound-v{n}.json    # CompoundFormula snapshot after each accepted round of edits
-  trials/{n}/           # test-write rounds: draft.json, critique.json (reuses §12a artifacts)
+training/formulas/{id}.json        # the ONE store — ANALYZED, REFINED and COMPOUND alike
+training/studio-sessions/{id}.json # session log: genre, picks[], clusters[], proposals[],
+                                   # and the in-progress DRAFT compound
 ```
 
+A session's compound Formula is held **in the session** while it is `DRAFT` and is written to
+the shared store only on promotion — so an in-progress merge never shows up in the Writer's
+Formula picker. See §8.2 for the `FormulaArtifact`/`FormulaRule`/`RuleSource` shapes; the Studio
+introduces no Formula type of its own (ADR-14).
+
 ```ts
-interface CompoundRuleProvenance {
-  videoSnapshotId: string;
-  channelTitle: string;          // label/audit only — never a grouping key
-  sourceFormulaId: string;
-  sourceRuleId: string;
-  evidence: Evidence[];          // carried from the L1 rule; powers the lean CRITIQUE envelope
-}
-
-interface CompoundRule {
+interface RuleProposal {
   id: string;
-  statement: string;
-  facet?: string;
-  provenance: CompoundRuleProvenance[];   // non-empty, enforced
-  origin: 'CARRIED' | 'SYNTHESIZED' | 'HUMAN_EDITED';
-}
-
-interface CompoundFormula {
-  id: string;
-  genre: string;
-  scope: 'COMPOUND';
-  status: FormulaStatus;                  // DRAFT until the human promotes it to TRIAL
-  rules: CompoundRule[];
-  sourceVideoCount: number;               // honest sample size, replaces batch LOW_SAMPLE
-  sessionId: string;
-  version: number;
-  createdAt: string;
+  clusterId: string;                      // content-derived — see above
+  statement: string;                      // LLM's wording, or the human's after an edit
+  sources: RuleSource[];
+  decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  edited?: boolean;                        // → mergeOrigin HUMAN_EDITED instead of SYNTHESIZED
 }
 ```
 
@@ -1507,6 +1532,14 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
   - Rule-level (not Formula-level) picking is deliberate: per-video Formulas "có điểm giống và khác nhau", so the user must be able to keep the good parts of each.
   - Trade-off: building a genre Formula is manual work with no one-click path, and the Studio is a genuinely new surface (rule pool browser, cluster view, proposal review, trial history) rather than a variation on the batch dashboard. Accepted deliberately — this is the product's core intellectual loop, not a utility screen.
   - Consequence for contracts: `CritiqueEvidence` gains `videoSnapshotId` so critique grounding survives across multiple source videos, and the compound `CRITIQUE` envelope ships cited evidence spans instead of full transcripts (a direct response to the observed ~96KB `AGENT_NO_OUTPUT` failure, §12b).
+  - User confirmed: 2026-08-10.
+
+- [x] **ADR-14 — One Formula type in one store, discriminated by `origin`; a process log references its Formula rather than containing it.**
+  - Rationale: an architecture review on 2026-08-10 found the two mechanisms that *improve* a Formula were both dead ends. `saveFormula` had exactly one caller (`aggregator.ts`), so Training Lab's refined versions lived only inside `lab-runs/*.json` and the Studio's compound Formulas only inside `studio-sessions/*.json` — invisible to the Studio's rule pool and unusable by the Writer. Refining a Formula to v2 and then being unable to merge from v2 is the defect this closes.
+  - Also retires `scope`/`channelGroups`, left over from the channel-grouping design ADR-5 rejected. `channelGroups` could not express the actual invariant (an `ANALYZED` Formula describes exactly one video), which is why every read site needed `?? 'unknown'` fallbacks — a data model failing to state a fact the code depends on.
+  - Collapses `FormulaVersion` and `CompoundFormula` into `FormulaArtifact`: with `version` and `lineage` on the base type, both wrappers became pure ceremony.
+  - Trade-off: one flat type with per-origin optional fields instead of a discriminated union. Chosen deliberately — a union would force storage, pool, UI, and Writer to all narrow before reading `rules`, the field every one of them actually wants.
+  - Migration: `normalizeFormula()` upgrades legacy files on read; no rewrite pass, old files stay readable.
   - User confirmed: 2026-08-10.
 
 ## Quality Requirements

@@ -27,6 +27,16 @@ import { preflightVideo } from './training/preflight.ts';
 import { runFormulaDiscovery } from './training/orchestrator.ts';
 import { getFormula, getTrainingLabRun, listFormulas, listTrainingLabRuns } from './training/storage.ts';
 import { registerTrainingLabSettleListener, startTrainingLabRun } from './training/training-lab.ts';
+import {
+  createStudioSession,
+  getStudioSession,
+  listRulePool,
+  listStudioSessions,
+  promoteCompound,
+  rebuildCompound,
+  recomputeClusters,
+  saveStudioSession,
+} from './training/studio.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -440,6 +450,62 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const run = await getTrainingLabRun(decodeURIComponent(labRunMatch[1]!));
         if (!run) return error('Training Lab run không tồn tại', 404);
         return json(run);
+      }
+
+      // ── Formula Studio (SDD §12b, ADR-13) ─────────────────────
+      // Everything below is deterministic app code — no model call, no token spent.
+      // The LLM only enters at SYNTHESIZE (P3), which is not wired yet.
+      if (method === 'GET' && pathname === '/api/studio/rule-pool') {
+        const includeOlderVersions = url.searchParams.get('includeOlderVersions') === 'true';
+        return json({ rules: await listRulePool(dataRoot(), { includeOlderVersions }) });
+      }
+
+      if (method === 'POST' && pathname === '/api/studio/sessions') {
+        const body = await readBody(req);
+        const genre = String(body['genre'] ?? '').trim();
+        if (!genre) return error('genre bắt buộc — compound Formula thuộc về một thể loại, không phải một kênh');
+        return json(await createStudioSession(genre, dataRoot()), 201);
+      }
+
+      if (method === 'GET' && pathname === '/api/studio/sessions') {
+        return json({ sessions: await listStudioSessions(dataRoot()) });
+      }
+
+      const studioSessionMatch = /^\/api\/studio\/sessions\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && studioSessionMatch) {
+        const session = await getStudioSession(decodeURIComponent(studioSessionMatch[1]!), dataRoot());
+        if (!session) return error('Studio session không tồn tại', 404);
+        return json(session);
+      }
+
+      const studioActionMatch = /^\/api\/studio\/sessions\/([^/]+)\/(picks|promote)$/.exec(pathname);
+      if (method === 'POST' && studioActionMatch) {
+        const session = await getStudioSession(decodeURIComponent(studioActionMatch[1]!), dataRoot());
+        if (!session) return error('Studio session không tồn tại', 404);
+
+        if (studioActionMatch[2] === 'picks') {
+          const body = await readBody(req);
+          const picks = Array.isArray(body['picks']) ? body['picks'] : null;
+          if (!picks) return error('picks phải là mảng { formulaId, ruleId }');
+          session.picks = picks.map((p: Record<string, unknown>) => ({
+            formulaId: String(p['formulaId'] ?? ''),
+            ruleId: String(p['ruleId'] ?? ''),
+          }));
+          // Re-cluster and rebuild on every pick change: both are cheap, deterministic
+          // and derived, so recomputing keeps them from ever disagreeing with `picks`.
+          await recomputeClusters(session, dataRoot());
+          await rebuildCompound(session, dataRoot());
+          await saveStudioSession(session, dataRoot());
+          return json(session);
+        }
+
+        try {
+          await promoteCompound(session, dataRoot());
+        } catch (e) {
+          return error(e instanceof Error ? e.message : 'promote thất bại');
+        }
+        await saveStudioSession(session, dataRoot());
+        return json(session);
       }
 
       // ── Settings ──────────────────────────────────────────────

@@ -7,6 +7,9 @@ import { OperationManager } from './operations.ts';
 import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
 import { HarvestService } from './harvest.ts';
+import { QuotaLedger } from './quota.ts';
+import { DiscoveryService } from './discovery.ts';
+import { nicheConfigSchema, NICHE_TEMPLATE, scoreChannelFit, type NicheConfig } from './niche.ts';
 import { buildSourcePack } from './source-pack.ts';
 import {
   YtDlpAdapter,
@@ -40,6 +43,9 @@ export * from './harvest.ts';
 export * from './source-pack.ts';
 export * from './profile/index.ts';
 export * from './adapters/index.ts';
+export * from './quota.ts';
+export * from './niche.ts';
+export * from './discovery.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
 
 export interface SpyServiceOptions {
@@ -144,7 +150,10 @@ export class SpyService {
   readonly acquisition: AcquisitionService;
   readonly profile: ProfileService;
   readonly harvest: HarvestService;
+  readonly quota: QuotaLedger;
+  readonly discovery: DiscoveryService;
   config: SpyConfig;
+  private niche: NicheConfig | null = null;
 
   private readonly youtube: YoutubePort;
   private readonly media: MediaPort;
@@ -177,6 +186,8 @@ export class SpyService {
       this.config.sampling,
     );
     this.profile = new ProfileService(this.store, this.llm);
+    this.quota = new QuotaLedger(this.store);
+    this.discovery = new DiscoveryService(this.store, this.dataApi, this.quota);
     this.harvest = new HarvestService(
       this.store,
       this.youtube,
@@ -532,6 +543,8 @@ export class SpyService {
   // ---------------------------------------------------------------------------
 
   private assertDataApi(): void {
+    // Adapter được inject từ ngoài (test, hoặc backend khác) tự lo credential.
+    if (this.dataApiAdapter === null) return;
     if (!this.config.youtubeDataApiKey?.trim()) {
       throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey trong config/spy.json');
     }
@@ -590,6 +603,203 @@ export class SpyService {
       threads,
       quotaUnitsApprox: 1,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Niche strategy file — <data>/config/niche.json
+  // ---------------------------------------------------------------------------
+
+  private nichePath(): string {
+    return join(resolve(this.dataRoot, '..'), 'config', 'niche.json');
+  }
+
+  async getNiche(): Promise<{ config: NicheConfig; path: string; exists: boolean }> {
+    const path = this.nichePath();
+    if (this.niche) return { config: this.niche, path, exists: true };
+    try {
+      const raw = await readFile(path, 'utf8');
+      this.niche = nicheConfigSchema.parse(JSON.parse(raw));
+      return { config: this.niche, path, exists: true };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        // Chưa có file: trả template để biết cần điền gì, không ném lỗi.
+        return { config: NICHE_TEMPLATE, path, exists: false };
+      }
+      throw new AppError('invalid_input', `niche.json không hợp lệ: ${(error as Error).message}`);
+    }
+  }
+
+  /** Bắt buộc phải có niche.json thật — discovery không chạy trên template rỗng. */
+  private async requireNiche(): Promise<NicheConfig> {
+    const { config, exists, path } = await this.getNiche();
+    if (!exists) {
+      throw new AppError('invalid_input', `Chưa có ${path}. Gọi spy_niche_set để tạo trước khi discovery.`);
+    }
+    if (config.markets.every((market) => market.seedKeywords.length === 0)) {
+      throw new AppError('invalid_input', 'niche.json chưa có seedKeywords nào — không sinh được query');
+    }
+    return config;
+  }
+
+  async setNiche(patch: unknown): Promise<{ config: NicheConfig; path: string }> {
+    const config = nicheConfigSchema.parse(patch);
+    const path = this.nichePath();
+    await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
+    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    this.niche = config;
+    return { config, path };
+  }
+
+  /** Chấm thử một kênh với niche hiện tại — để hiệu chỉnh trọng số trước khi quét hàng loạt. */
+  async scoreFit(input: {
+    channelId: string;
+    title?: string;
+    description?: string;
+    subscriberCount?: number;
+    videoCount?: number;
+    viewCount?: number;
+    country?: string;
+    marketId?: string;
+  }) {
+    const { config } = await this.getNiche();
+    const market = input.marketId
+      ? config.markets.find((m) => m.id === input.marketId)
+      : config.markets[0];
+    return scoreChannelFit(input, config, market);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Discovery — search (bucket 100/ngày) + đồ thị (1 unit/kênh)
+  // ---------------------------------------------------------------------------
+
+  quotaStatus() {
+    return { ...this.quota.status(), history: this.store.listQuotaUsage(14) };
+  }
+
+  async discoverChannels(input: Parameters<DiscoveryService['discoverChannels']>[1]) {
+    this.assertDataApi();
+    return this.discovery.discoverChannels(await this.requireNiche(), input);
+  }
+
+  async discoverVideos(input: Parameters<DiscoveryService['discoverVideos']>[1]) {
+    this.assertDataApi();
+    return this.discovery.discoverVideos(await this.requireNiche(), input);
+  }
+
+  async expandGraph(input: Parameters<DiscoveryService['expandGraph']>[1]) {
+    this.assertDataApi();
+    const { config } = await this.getNiche();
+    return this.discovery.expandGraph(config, input);
+  }
+
+  listCandidates(filter: Parameters<SpyStore['listCandidates']>[0] = {}) {
+    const rows = this.store.listCandidates(filter);
+    return { count: rows.length, byStatus: this.store.countCandidatesByStatus(), candidates: rows };
+  }
+
+  decideCandidates(channelIds: string[], status: 'shortlisted' | 'rejected' | 'new') {
+    if (channelIds.length === 0) throw new AppError('invalid_input', 'Cần ít nhất 1 channel_id');
+    const updated = this.store.setCandidateStatus(channelIds, status);
+    return {
+      status,
+      updated,
+      notFound: channelIds.filter((id) => !updated.includes(id)),
+      byStatus: this.store.countCandidatesByStatus(),
+    };
+  }
+
+  /**
+   * Quét sâu hàng loạt ứng viên đã shortlist. Mỗi kênh ~21 unit cho 500 video,
+   * nên trần mặc định đặt theo quota còn lại chứ không theo số kênh.
+   */
+  async scanCandidates(input: {
+    channelIds?: string[];
+    maxChannels?: number;
+    scanLimit?: number;
+    depth?: 'metadata' | 'transcript';
+    dryRun?: boolean;
+  }, ownerSubject = 'local') {
+    this.assertDataApi();
+    const maxChannels = Math.max(1, Math.min(input.maxChannels ?? 10, 100));
+    const targets = input.channelIds?.length
+      ? input.channelIds.slice(0, maxChannels)
+      : this.store.listCandidates({ status: 'shortlisted', limit: maxChannels }).map((c) => c.channelId);
+
+    if (targets.length === 0) {
+      throw new AppError('invalid_input', 'Không có kênh nào để quét — shortlist ứng viên trước hoặc truyền channel_ids');
+    }
+    const scanLimit = Math.max(1, Math.min(input.scanLimit ?? 60, 500));
+    // 1 channels.list + ceil(n/50) playlistItems + ceil(n/50) videos.list
+    const unitsPerChannel = 1 + Math.ceil(scanLimit / 50) * 2;
+    const estimatedUnits = unitsPerChannel * targets.length;
+
+    if (input.dryRun) {
+      return {
+        dryRun: true,
+        targets,
+        scanLimit,
+        unitsPerChannel,
+        estimatedUnits,
+        quota: this.quota.status(),
+        affordable: this.quota.remaining('general') >= estimatedUnits,
+      };
+    }
+    if (this.quota.remaining('general') < estimatedUnits) {
+      throw new AppError(
+        'quota_exceeded',
+        `Cần ~${estimatedUnits} unit nhưng chỉ còn ${this.quota.remaining('general')}. Giảm max_channels hoặc scan_limit.`,
+      );
+    }
+
+    const started: Array<{ channelId: string; operationId: string; spyRunId: string }> = [];
+    for (const channelId of targets) {
+      const op = this.channelSpy({
+        url: `https://www.youtube.com/channel/${channelId}`,
+        topN: 5,
+        scanLimit,
+        rankBy: 'velocity',
+        minDurationSec: 60,
+        depth: input.depth ?? 'metadata',
+        idempotencyKey: `scan-candidate-${channelId}-${scanLimit}`,
+      }, ownerSubject);
+      started.push({ channelId, operationId: op.operationId, spyRunId: op.spyRunId });
+    }
+    this.store.setCandidateStatus(targets, 'scanned');
+    return { dryRun: false, started, estimatedUnits, quota: this.quota.status() };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Corpus search — 0 quota, chạy trên dữ liệu đã quét
+  // ---------------------------------------------------------------------------
+
+  corpusVideos(filter: Parameters<SpyStore['searchCorpusVideos']>[0] & { transcriptQuery?: string } = {}) {
+    let effective = filter;
+    if (filter.transcriptQuery) {
+      const hits = this.store.searchTranscriptFts({ query: filter.transcriptQuery, limit: 500 });
+      const ids = [...new Set(hits.map((hit) => hit.sourceVideoId))];
+      if (ids.length === 0) {
+        return { count: 0, videos: [], transcriptMatches: 0, note: 'Không có transcript nào khớp' };
+      }
+      const merged = filter.sourceVideoIds?.length
+        ? ids.filter((id) => filter.sourceVideoIds!.includes(id))
+        : ids;
+      effective = { ...filter, sourceVideoIds: merged };
+    }
+    const videos = this.store.searchCorpusVideos(effective);
+    return {
+      count: videos.length,
+      videos,
+      transcriptMatches: filter.transcriptQuery ? (effective.sourceVideoIds?.length ?? 0) : null,
+      note: 'Tìm trong corpus đã quét — không tốn quota API.',
+    };
+  }
+
+  corpusChannels(filter: { minVideos?: number; minAvgViews?: number; limit?: number } = {}) {
+    const rows = this.store.corpusChannelStats()
+      .filter((row) => (filter.minVideos === undefined || row.videoCount >= filter.minVideos))
+      .filter((row) => (filter.minAvgViews === undefined || row.avgViews >= filter.minAvgViews))
+      .slice(0, filter.limit ?? 100);
+    return { count: rows.length, channels: rows, note: 'Thống kê từ corpus đã quét — không tốn quota API.' };
   }
 
   // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ File này chỉ là bảng theo dõi thi công — không lặp lại thiết k�
 | Field | Value |
 |---|---|
 | Thiết kế gốc | SDD §6.1a (batch), §12b (Studio), ADR-5, ADR-13 |
-| Trạng thái | Chưa bắt đầu — chờ user duyệt thứ tự phase |
+| Trạng thái | **P1 + P2 done** (2026-08-10, E2E thật đã chạy) · P3→P5 chưa làm · P0 bỏ, P6 hoãn |
 | Cập nhật | 2026-08-10 |
 
 ## 0. Đề xuất thứ tự — đọc trước

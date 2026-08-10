@@ -193,9 +193,12 @@ export interface FormulaDiscoveryStatus {
 export interface FormulaSummary {
   id: string;
   status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
-  scope: 'SINGLE_CHANNEL' | 'PER_CHANNEL_COMPARE' | 'CROSS_CHANNEL_SHARED';
-  channelTitles: string[];
+  origin: FormulaOrigin;
+  version: number;
+  /** Channel title for ANALYZED/REFINED, genre for COMPOUND. */
+  label: string;
   videoCount: number;
+  ruleCount: number;
   createdAt: string;
   sourceBatchId?: string;
 }
@@ -211,6 +214,9 @@ export interface FormulaRule {
   id: string;
   statement: string;
   evidence: FormulaEvidence[];
+  /** COMPOUND only — where this merged rule came from. */
+  sources?: RuleSource[];
+  mergeOrigin?: 'CARRIED' | 'SYNTHESIZED' | 'HUMAN_EDITED';
 }
 
 export interface FormulaIncludedArtifactRef {
@@ -218,13 +224,37 @@ export interface FormulaIncludedArtifactRef {
   analysisArtifactHash: string;
 }
 
+/** ADR-14: one Formula type, one store, discriminated by `origin`. Mirrors
+ * `@writer-room/training-core`'s `FormulaArtifact` field-for-field. */
+export type FormulaOrigin = 'ANALYZED' | 'REFINED' | 'COMPOUND';
+
+export interface RuleSource {
+  videoSnapshotId: string;
+  channelTitle: string;
+  sourceFormulaId: string;
+  sourceRuleId: string;
+  evidence: FormulaEvidence[];
+}
+
+export interface FormulaLineage {
+  parentFormulaId?: string;
+  labRunId?: string;
+  studioSessionId?: string;
+}
+
 export interface Formula {
   id: string;
   status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
-  scope: 'SINGLE_CHANNEL' | 'PER_CHANNEL_COMPARE' | 'CROSS_CHANNEL_SHARED';
-  channelGroups: { channelTitle: string; videoSnapshotIds: string[] }[];
+  origin: FormulaOrigin;
+  version: number;
   rules: FormulaRule[];
+  /** ANALYZED / REFINED only. */
+  videoSnapshotId?: string;
+  channelTitle?: string;
+  /** COMPOUND only. */
+  genre?: string;
   includedArtifacts: FormulaIncludedArtifactRef[];
+  lineage: FormulaLineage;
   warnings: string[];
   createdAt: string;
   sourceBatchId?: string;
@@ -237,10 +267,9 @@ export interface Formula {
 // plus `version`/`parentFormulaId` (round 1's `formulaVersionIn` is the existing
 // `FormulaArtifact` wrapped, per `startTrainingLabRun`).
 
-export interface FormulaVersion extends Formula {
-  version: number;
-  parentFormulaId?: string;
-}
+/** ADR-14: `version`/`lineage` live on `Formula` itself now, so a "version" IS a
+ * Formula. Alias kept because the Training Lab UI names it that way. */
+export type FormulaVersion = Formula;
 
 export interface DraftArtifact {
   title: string;
@@ -251,6 +280,8 @@ export interface DraftArtifact {
 export interface CritiqueEvidence {
   quote: string;
   segmentIds?: string[];
+  /** Required when critiquing a COMPOUND Formula (SDD §12b). */
+  videoSnapshotId?: string;
 }
 
 export interface CritiquePattern {
@@ -296,6 +327,68 @@ export interface TrainingLabRunSummary {
   status: 'RUNNING' | 'DONE' | 'FAILED';
   roundCount: number;
   createdAt: string;
+  updatedAt: string;
+}
+
+// ── Formula Studio (SDD §12b, ADR-13) — mirrors
+// `packages/daemon/src/training/studio.ts` field-for-field.
+
+export interface RuleRef {
+  formulaId: string;
+  ruleId: string;
+}
+
+export interface PoolRule extends RuleRef {
+  formulaVersion: number;
+  formulaOrigin: FormulaOrigin;
+  videoSnapshotId: string;
+  channelTitle: string;
+  statement: string;
+  evidenceCount: number;
+  formulaCreatedAt: string;
+}
+
+export interface PickedRule {
+  videoSnapshotId: string;
+  channelTitle: string;
+  sourceFormulaId: string;
+  sourceRuleId: string;
+  statement: string;
+  evidence: FormulaEvidence[];
+}
+
+export interface RuleCluster {
+  id: string;
+  kind: 'SIMILAR' | 'SINGLE';
+  members: PickedRule[];
+}
+
+export interface RuleProposal {
+  id: string;
+  clusterId: string;
+  statement: string;
+  sources: RuleSource[];
+  decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  edited?: boolean;
+}
+
+export interface StudioSession {
+  id: string;
+  genre: string;
+  picks: RuleRef[];
+  clusters: RuleCluster[];
+  proposals: RuleProposal[];
+  compound: Formula | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudioSessionSummary {
+  id: string;
+  genre: string;
+  pickCount: number;
+  ruleCount: number;
+  status: Formula['status'] | 'EMPTY';
   updatedAt: string;
 }
 
@@ -446,6 +539,23 @@ export const api = {
       `/api/training/formula-discovery/status?batchId=${encodeURIComponent(batchId)}&videoSnapshotId=${encodeURIComponent(videoSnapshotId)}`,
     ),
   listFormulas: () => request<{ formulas: FormulaSummary[] }>('/api/training/formulas'),
+
+  // ── Formula Studio (SDD §12b) — all deterministic, no token spent ──
+  listRulePool: (includeOlderVersions = false) =>
+    request<{ rules: PoolRule[] }>(
+      `/api/studio/rule-pool${includeOlderVersions ? '?includeOlderVersions=true' : ''}`,
+    ),
+  listStudioSessions: () => request<{ sessions: StudioSessionSummary[] }>('/api/studio/sessions'),
+  getStudioSession: (id: string) => request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}`),
+  createStudioSession: (genre: string) =>
+    request<StudioSession>('/api/studio/sessions', { method: 'POST', body: JSON.stringify({ genre }) }),
+  setStudioPicks: (id: string, picks: RuleRef[]) =>
+    request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/picks`, {
+      method: 'POST',
+      body: JSON.stringify({ picks }),
+    }),
+  promoteStudioCompound: (id: string) =>
+    request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/promote`, { method: 'POST' }),
   getFormula: (id: string) => request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`),
 
   startTrainingLabRun: (formulaId: string) =>

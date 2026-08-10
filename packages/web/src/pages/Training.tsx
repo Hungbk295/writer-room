@@ -2,6 +2,21 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, type Formula, type FormulaRule, type FormulaSummary } from '../api.ts';
 import { href } from '../router.ts';
 
+/** ADR-14: `origin` replaced `scope`. Shown in Vietnamese because it is the one
+ * thing that tells the user whether a Formula came from one video, from refining
+ * one, or from a Studio merge. */
+export function originLabel(origin: Formula['origin']): string {
+  if (origin === 'COMPOUND') return 'Ghép (thể loại)';
+  if (origin === 'REFINED') return 'Đã tinh chỉnh';
+  return '1 video';
+}
+
+/** Distinct source videos behind a compound Formula — derived, never stored, so it
+ * cannot disagree with `rules` (mirrors `sourceVideoCount` in training-core). */
+export function compoundVideoCount(formula: Formula): number {
+  return new Set(formula.rules.flatMap((r) => (r.sources ?? []).map((s) => s.videoSnapshotId))).size;
+}
+
 /** SDD §7.7: "A TRIAL Formula shows its badge everywhere it appears" — reused by
  * both the list row and the detail header so the rule holds in exactly one place. */
 export function statusBadgeClass(status: Formula['status']): string {
@@ -103,13 +118,15 @@ export function FormulasPage() {
                     href={href({ name: 'training-formula', id: formula.id })}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <strong>{formula.channelTitles.join(', ') || 'Formula'}</strong>
+                    <strong>{formula.label}</strong>
                   </a>
                   <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
                 </div>
                 <div class="meta">
-                  <span>{formula.scope}</span>
+                  <span>{originLabel(formula.origin)}</span>
+                  {formula.version > 1 && <span>v{formula.version}</span>}
                   <span>{formula.videoCount} video</span>
+                  <span>{formula.ruleCount} rule</span>
                   <span>{new Date(formula.createdAt).toLocaleString()}</span>
                 </div>
               </li>
@@ -150,12 +167,14 @@ export function FormulaPage({ id }: { id: string }) {
         <div>
           <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
             <h1 class="page-title" style={{ marginBottom: 0 }}>
-              {formula.channelGroups.map((g) => g.channelTitle).join(', ') || 'Formula'}
+              {formula.genre ?? formula.channelTitle ?? 'Formula'}
             </h1>
             <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
           </div>
           <p class="page-lead" style={{ marginBottom: 0 }}>
-            {formula.scope} · {formula.rules.length} rule · {new Date(formula.createdAt).toLocaleString()}
+            {originLabel(formula.origin)}
+            {formula.version > 1 ? ` · v${formula.version}` : ''} · {formula.rules.length} rule ·{' '}
+            {new Date(formula.createdAt).toLocaleString()}
           </p>
         </div>
         <a class="btn secondary" href={href({ name: 'training-formulas' })}>← Formula</a>
@@ -172,15 +191,18 @@ export function FormulaPage({ id }: { id: string }) {
       )}
 
       <section class="panel">
-        <h2>Channel groups</h2>
-        <ul class="list">
-          {formula.channelGroups.map((g) => (
-            <li key={g.channelTitle}>
-              <strong>{g.channelTitle}</strong>
-              <div class="meta">{g.videoSnapshotIds.length} video</div>
-            </li>
-          ))}
-        </ul>
+        <h2>Nguồn</h2>
+        {formula.origin === 'COMPOUND' ? (
+          <p class="muted" style={{ margin: 0 }}>
+            Formula thể loại "{formula.genre}" — ghép từ {compoundVideoCount(formula)} video.
+            Mỗi rule bên dưới ghi rõ nó đến từ video nào.
+          </p>
+        ) : (
+          <p class="muted" style={{ margin: 0 }}>
+            {formula.channelTitle ?? 'Không rõ kênh'} · 1 video
+            {formula.lineage.parentFormulaId ? ' · đã tinh chỉnh từ bản trước' : ''}
+          </p>
+        )}
       </section>
 
       <section class="panel" style={{ marginTop: '1rem' }}>

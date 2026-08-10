@@ -101,16 +101,54 @@ export function formulaFromSingleAnalysis(
   return {
     id: randomUUID(),
     status: 'TRIAL',
-    scope: 'SINGLE_CHANNEL',
-    channelGroups: [
-      { channelTitle: analysis.channelTitle, videoSnapshotIds: [analysis.videoSnapshotId] },
-    ],
+    origin: 'ANALYZED',
+    version: 1,
+    videoSnapshotId: analysis.videoSnapshotId,
+    channelTitle: analysis.channelTitle,
     rules: analysis.rules,
     includedArtifacts: [includedRef],
-    // SDD §6.5 LOW_SAMPLE: "< 3 videos per channel" — one video is always low-sample.
+    lineage: {},
+    // One video is one sample — stated honestly rather than silently.
     warnings: ['LOW_SAMPLE: Formula built from 1 video — TRIAL only, not statistically validated'],
     createdAt: new Date().toISOString(),
     ...(sourceBatchId ? { sourceBatchId } : {}),
+  };
+}
+
+/** The pre-2026-08-10 on-disk Formula shape, before `scope`/`channelGroups` were
+ * replaced by `origin`/`videoSnapshotId`/`channelTitle` (ADR-5). */
+interface LegacyFormulaShape {
+  scope?: string;
+  channelGroups?: { channelTitle: string; videoSnapshotIds: string[] }[];
+  origin?: string;
+  version?: number;
+  lineage?: unknown;
+}
+
+/**
+ * Read-time migration. Formulas written before the 2026-08-10 unification carry
+ * `scope`/`channelGroups` and no `origin`/`version`/`lineage`; this maps them onto
+ * the current shape on the way out of storage, so no rewrite pass over the data
+ * directory is needed and an old file stays readable forever.
+ *
+ * Every legacy Formula was necessarily produced by `formulaFromSingleAnalysis` (the
+ * only writer that existed), so `origin: 'ANALYZED'` and `version: 1` are facts here,
+ * not guesses.
+ */
+export function normalizeFormula(raw: FormulaArtifact): FormulaArtifact {
+  const legacy = raw as FormulaArtifact & LegacyFormulaShape;
+  if (legacy.origin && typeof legacy.version === 'number' && legacy.lineage) {
+    return raw;
+  }
+  const group = legacy.channelGroups?.[0];
+  const { scope: _scope, channelGroups: _channelGroups, ...rest } = legacy;
+  return {
+    ...rest,
+    origin: 'ANALYZED',
+    version: legacy.version ?? 1,
+    lineage: {},
+    videoSnapshotId: raw.videoSnapshotId ?? group?.videoSnapshotIds[0],
+    channelTitle: raw.channelTitle ?? group?.channelTitle,
   };
 }
 
@@ -215,19 +253,19 @@ export function validateCompoundRule(rule: CompoundRule): ValidateCompoundRuleRe
   if (!rule.statement || rule.statement.trim().length === 0) {
     return { ok: false, errorCode: 'STUDIO_RULE_UNGROUNDED', reason: `rule "${rule.id}" has an empty statement` };
   }
-  if (!Array.isArray(rule.provenance) || rule.provenance.length === 0) {
+  if (!Array.isArray(rule.sources) || rule.sources.length === 0) {
     return {
       ok: false,
       errorCode: 'STUDIO_RULE_UNGROUNDED',
-      reason: `rule "${rule.id}" has zero provenance entries — a merged rule must name the video(s) it came from`,
+      reason: `rule "${rule.id}" has zero sources — a merged rule must name the video(s) it came from`,
     };
   }
-  for (const source of rule.provenance) {
+  for (const source of rule.sources) {
     if (!source.videoSnapshotId || !source.sourceFormulaId || !source.sourceRuleId) {
       return {
         ok: false,
         errorCode: 'STUDIO_RULE_UNGROUNDED',
-        reason: `rule "${rule.id}" has a provenance entry missing videoSnapshotId/sourceFormulaId/sourceRuleId`,
+        reason: `rule "${rule.id}" has a source entry missing videoSnapshotId/sourceFormulaId/sourceRuleId`,
       };
     }
   }

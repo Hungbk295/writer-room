@@ -75,8 +75,39 @@ export interface CommentThread {
   }>;
 }
 
+export interface SearchHit {
+  kind: 'video' | 'channel' | 'playlist';
+  videoId: string | null;
+  channelId: string | null;
+  title: string | null;
+  description: string | null;
+  channelTitle: string | null;
+  publishedAt: string | null;
+  thumbnailUrl: string | null;
+}
+
+export interface SearchInput {
+  q?: string;
+  type?: 'video' | 'channel';
+  order?: 'relevance' | 'date' | 'viewCount' | 'rating' | 'title' | 'videoCount';
+  maxResults?: number;
+  regionCode?: string;
+  relevanceLanguage?: string;
+  publishedAfter?: string;
+  publishedBefore?: string;
+  videoDuration?: 'any' | 'short' | 'medium' | 'long';
+  channelId?: string;
+  pageToken?: string;
+}
+
 export interface YouTubeDataApiPort {
   fetchVideoStatistics(videoIds: readonly string[]): Promise<Map<string, VideoStatistics>>;
+  /** search.list — bucket quota RIÊNG, 100 call/ngày. Gọi hà tiện. */
+  search?(input: SearchInput): Promise<{ hits: SearchHit[]; nextPageToken: string | null }>;
+  /** channelSections.list — featured channels, 1 unit. Đường rẻ nhất để mở rộng đồ thị. */
+  fetchFeaturedChannels?(channelId: string): Promise<string[]>;
+  /** subscriptions.list — chỉ chạy khi kênh để subscriptions public, 1 unit. */
+  fetchPublicSubscriptions?(channelId: string, maxResults?: number): Promise<string[] | null>;
   fetchChannelStatistics(channelIds: readonly string[]): Promise<Map<string, ChannelStatistics>>;
   resolveChannelByHandle?(handle: string): Promise<ChannelStatistics | null>;
   fetchVideoComments?(input: {
@@ -97,6 +128,7 @@ interface ApiItem {
   id?: string | { channelId?: string; playlistId?: string; videoId?: string };
   snippet?: {
     title?: string;
+    description?: string;
     publishedAt?: string;
     tags?: string[];
     channelId?: string;
@@ -142,6 +174,20 @@ interface CommentSnippet {
 interface CommentResource {
   id?: string;
   snippet?: CommentSnippet;
+}
+
+interface ChannelSectionListResponse {
+  items?: Array<{
+    snippet?: { type?: string; position?: number };
+    contentDetails?: { channels?: string[]; playlists?: string[] };
+  }>;
+}
+
+interface SubscriptionListResponse {
+  items?: Array<{
+    snippet?: { resourceId?: { channelId?: string }; title?: string };
+  }>;
+  nextPageToken?: string;
 }
 
 interface CommentThreadListResponse {
@@ -272,6 +318,107 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
       viewCount: parseCount(item.statistics?.viewCount),
       uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
     };
+  }
+
+  /**
+   * search.list — endpoint DUY NHẤT tìm được nội dung chưa biết, nhưng bucket
+   * riêng chỉ 100 call/ngày. Mỗi lần phân trang là một call nữa.
+   */
+  async search(input: SearchInput): Promise<{ hits: SearchHit[]; nextPageToken: string | null }> {
+    if (!this.enabled()) {
+      throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey — không chạy được search');
+    }
+    const params: Record<string, string> = {
+      part: 'snippet',
+      maxResults: String(Math.max(1, Math.min(input.maxResults ?? 50, 50))),
+      // Mặc định của API là video,channel,playlist — luôn set tường minh.
+      type: input.type ?? 'video',
+      order: input.order ?? 'relevance',
+    };
+    if (input.q) params['q'] = input.q;
+    if (input.regionCode) params['regionCode'] = input.regionCode;
+    if (input.relevanceLanguage) params['relevanceLanguage'] = input.relevanceLanguage;
+    if (input.publishedAfter) params['publishedAfter'] = input.publishedAfter;
+    if (input.publishedBefore) params['publishedBefore'] = input.publishedBefore;
+    if (input.channelId) params['channelId'] = input.channelId;
+    // videoDuration chỉ hợp lệ khi type=video.
+    if (input.videoDuration && (input.type ?? 'video') === 'video') {
+      params['videoDuration'] = input.videoDuration;
+    }
+    if (input.pageToken) params['pageToken'] = input.pageToken;
+
+    const payload = await this.fetch('search', params);
+    const hits: SearchHit[] = [];
+    for (const item of payload.items ?? []) {
+      const id = item.id;
+      const isObject = id && typeof id === 'object';
+      const videoId = isObject ? (id as { videoId?: string }).videoId ?? null : null;
+      const channelId = isObject
+        ? (id as { channelId?: string }).channelId ?? null
+        : null;
+      const kind: SearchHit['kind'] = videoId ? 'video' : channelId ? 'channel' : 'playlist';
+      hits.push({
+        kind,
+        videoId,
+        channelId: channelId ?? item.snippet?.channelId ?? null,
+        title: item.snippet?.title ?? null,
+        description: item.snippet?.description ?? null,
+        channelTitle: item.snippet?.channelTitle ?? null,
+        publishedAt: item.snippet?.publishedAt ?? null,
+        thumbnailUrl: item.snippet?.thumbnails?.high?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
+      });
+    }
+    return { hits, nextPageToken: payload.nextPageToken ?? null };
+  }
+
+  /**
+   * channelSections.list → section type `multipleChannels` → contentDetails.channels[].
+   * Nhiều kênh không cấu hình section nào, trả mảng rỗng là bình thường.
+   * Lưu ý: snippet.featuredChannelsUrls đã deprecated từ 12/05/2021, phải đọc contentDetails.
+   */
+  async fetchFeaturedChannels(channelId: string): Promise<string[]> {
+    if (!this.enabled()) {
+      throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey');
+    }
+    const payload = await this.fetch('channelSections', {
+      part: 'contentDetails,snippet',
+      channelId,
+    }) as unknown as ChannelSectionListResponse;
+    const found = new Set<string>();
+    for (const item of payload.items ?? []) {
+      if (item.snippet?.type !== 'multipleChannels') continue;
+      for (const id of item.contentDetails?.channels ?? []) {
+        if (id && id !== channelId) found.add(id);
+      }
+    }
+    return [...found];
+  }
+
+  /**
+   * subscriptions.list cho kênh của người khác — chỉ chạy nếu kênh để public.
+   * Trả `null` khi bị 403 (mặc định của YouTube là ẩn) để caller cache negative
+   * thay vì retry vô ích; mảng rỗng nghĩa là public nhưng không đăng ký ai.
+   */
+  async fetchPublicSubscriptions(channelId: string, maxResults = 50): Promise<string[] | null> {
+    if (!this.enabled()) {
+      throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey');
+    }
+    try {
+      const payload = await this.fetch('subscriptions', {
+        part: 'snippet',
+        channelId,
+        maxResults: String(Math.max(1, Math.min(maxResults, 50))),
+      }) as unknown as SubscriptionListResponse;
+      const found = new Set<string>();
+      for (const item of payload.items ?? []) {
+        const id = item.snippet?.resourceId?.channelId;
+        if (id && id !== channelId) found.add(id);
+      }
+      return [...found];
+    } catch (error) {
+      if (error instanceof AppError && /\b403\b/.test(error.message)) return null;
+      throw error;
+    }
   }
 
   /**

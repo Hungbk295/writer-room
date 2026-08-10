@@ -137,11 +137,12 @@ describe('formulaFromSingleAnalysis', () => {
 
     expect(formula.status).toBe('TRIAL');
     expect(formula.sourceBatchId).toBe('batch-1');
-    expect(formula.scope).toBe('SINGLE_CHANNEL');
+    expect(formula.origin).toBe('ANALYZED');
+    expect(formula.version).toBe(1);
+    expect(formula.lineage).toEqual({});
     expect(formula.rules).toEqual(analysis.rules);
-    expect(formula.channelGroups).toEqual([
-      { channelTitle: 'Channel One', videoSnapshotIds: ['video-1'] },
-    ]);
+    expect(formula.videoSnapshotId).toBe('video-1');
+    expect(formula.channelTitle).toBe('Channel One');
     expect(formula.includedArtifacts).toEqual([
       { videoSnapshotId: 'video-1', analysisArtifactHash: 'deadbeef' },
     ]);

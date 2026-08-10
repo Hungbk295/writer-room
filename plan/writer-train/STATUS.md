@@ -20,16 +20,36 @@ Lane Training của SDD 002 + execution layer dùng chung (M0 → M3).
 | M1 — Formula Discovery 1 video | **done 2026-08-09** — full flow demo Claude(sonnet)→Codex(terra high) chạy thật thành công, xem "Demo full flow" bên dưới |
 | M1.5 — Training Lab (calibration loop, mới thêm) | **backend+UI done 2026-08-09, E2E thật 1/3 vòng thành công** — xem "Training Lab" bên dưới |
 | M2 — Batch training (N video song song) | **thiết kế xong 2026-08-10, chưa code** — chỉ còn phần *thực thi*: N video → N Formula độc lập, **không gộp gì cả**. SDD §6.1a. Chia phase: P0 (batch-lite) + P6 (dashboard đầy đủ). |
-| M2.5 — Formula Studio (mới, user-directed 2026-08-10) | **thiết kế xong, chưa code** — human chọn rule → app cluster → LLM ghép chữ → human duyệt → viết thử + critique → promote thành Formula theo *thể loại*. SDD §12b, ADR-13. Chia phase P1→P5, xem `PHASES-M2-STUDIO.md`. |
+| M2.5 — Formula Studio (mới, user-directed 2026-08-10) | **P1+P2 done, E2E thật xanh** — kho rule + chọn + gom nhóm + promote, 194/194 test. **Kiến trúc Formula đã hợp nhất (ADR-14)**. P3 (LLM ghép chữ) → P5 chưa làm. Xem `PHASES-M2-STUDIO.md`. |
 | M3 — Resilience | chưa bắt đầu |
 
 ## Notes / blockers
 
 - ADR-2, ADR-8, ADR-9, ADR-10 đã được user xác nhận 2026-08-09. **ADR-5 + ADR-13 xác nhận 2026-08-10.**
 - **Đổi hướng quan trọng 2026-08-10 (ADR-5):** channel **không** phải trục gom Formula. User: "1 kênh có nhiều formula… merge cần human chọn rồi mới dùng thuật toán/call llm. Nó là phép thử không thể auto được." Nên: bản thiết kế `PER_CHANNEL_COMPARE`/`comparison-report` viết sáng cùng ngày đã **bị bỏ hẳn** (không phải hoãn). Formula per-video là đơn vị nguyên tử; gộp thành Formula **theo thể loại content** diễn ra trong Formula Studio (M2.5) do human lái.
+### Hợp nhất kiến trúc Formula (2026-08-10, ADR-14) — review phát hiện 4 lỗi thật
+
+Review kiến trúc trước khi xây Studio, phát hiện:
+
+1. **`saveFormula` chỉ có 1 caller** (`aggregator.ts`) → bản refine của Training Lab nằm **bên trong** `lab-runs/*.json`, compound nằm **bên trong** `studio-sessions/*.json`. Hai thứ đại diện cho "cải thiện" đều vô hình với rule pool của Studio và không dùng được cho Writer. Refine formula lên v2 rồi không merge được từ v2 — đây là lỗi chính.
+2. **`scope`/`channelGroups` còn sót** từ thiết kế trục-channel mà ADR-5 đã bỏ. `channelGroups` không diễn đạt được bất biến thật ("1 Formula ANALYZED = đúng 1 video") nên mọi chỗ đọc phải `?? 'unknown'`.
+3. **Cluster id theo vị trí** (`c1`,`c2`) trong code tôi vừa viết — proposal khoá theo `clusterId`, pick thêm 1 rule là đánh số lại → proposal đã duyệt gắn nhầm cụm, im lặng. Đã sửa thành `c-<hash của tập member>`.
+4. **Rule id không đảm bảo ổn định qua REFINE** — prompt gợi ý giữ id nhưng không có gì kiểm tra. Chưa hại vì Studio chưa đọc bản refine, nhưng sẽ hại sau khi sửa (1). **Còn để ngỏ, chưa fix.**
+
+Đã làm: một type `FormulaArtifact` duy nhất, một store duy nhất, phân biệt bằng `origin: ANALYZED | REFINED | COMPOUND`; `version`+`lineage` lên base type nên `FormulaVersion` và `CompoundFormula` bị xoá (thành thừa). Training Lab giờ `saveFormula` mỗi bản refine; Studio `saveFormula` khi promote. Formula cũ migrate lúc đọc bằng `normalizeFormula()` — không cần script rewrite. 152/152 xanh, typecheck sạch.
+
+### P2 done + E2E thật (2026-08-10)
+
+Backend `studio.ts` (session store, kho rule, cluster, merge, promote) + 6 route `/api/studio/*` + trang UI `#/studio`. 194/194 test xanh (15 test studio mới), typecheck + `vite build` sạch.
+
+**E2E thật trên daemon đang chạy, xác nhận đủ chuỗi:** tạo phiên → chọn 3 rule → gom nhóm → compound `DRAFT` → promote → `TRIAL` `origin: COMPOUND` ghi vào store chung, hiện cạnh formula ANALYZED trong `/api/training/formulas`, và **không** lọt ngược vào kho rule (pool chỉ còn `ANALYZED`). Cảnh báo `SINGLE_SOURCE` bắn đúng khi mọi rule cùng một video. Dedup version chạy đúng: mặc định 8 rule, bật "cả bản cũ" ra 15. Dữ liệu test đã dọn sạch sau khi xong.
+
+**Giới hạn thật của cluster, phát hiện khi E2E — chưa xử lý:** hai rule *cùng nghĩa* nhưng một viết tiếng Việt, một viết tiếng Anh thì **không gom được** (độ trùng token = 0). Formula `9a88a60d` (09-08) có statement tiếng Anh, `0fcb21c0` (10-08) tiếng Việt. Prompt ANALYZE **đã có** ràng buộc "cùng ngôn ngữ với transcript" (`orchestrator.ts:85`) nên formula mới không dính, nhưng formula cũ thì có. Rộng hơn: gom theo chữ chỉ bắt được rule *diễn đạt giống nhau*, không bắt được diễn đạt khác mà cùng ý.
+
 - Studio tái dùng nguyên `dispatchItem` + vòng DRAFT/CRITIQUE của Training Lab. 1 thay đổi contract thật sự cần: `CritiqueEvidence` thêm `videoSnapshotId` để critique cite được nhiều video nguồn. Kèm ràng buộc envelope: critique bản compound **chỉ gửi các đoạn evidence đã cite**, không gửi full transcript — trực tiếp phòng lỗi `AGENT_NO_OUTPUT` ~96KB đã gặp thật ở vòng 2 Training Lab.
 - **ADR-8 quyết định cuối:** hoàn tất `turnBridge` (P-DEF-1b) phía Tauri client, dùng lại Rust PTY sẵn có. **Không xây daemon-side Turn Runner** — user đã bỏ hẳn hướng này, không giữ làm phương án dự phòng. Đóng app Tauri = batch tạm dừng (CON-13), chấp nhận đánh đổi.
-- ADR-5 (multi-channel scope) vẫn `Pending`, chặn M2.
+- ADR-14 (hợp nhất Formula store) xác nhận 2026-08-10 — xem mục dưới.
+- **Đã dọn grok 2026-08-10:** giết orphan PID 60055 (sống 1 ngày 11h, không có `--single`, từ trước bản fix), xoá clone leak `grok-7a0f46...` khỏi `team.json`, đánh dấu run treo `85505e5f` thành `FAILED`. `liveClones` về 0. Một run grok khác đã tự về `DONE` → fix `--single` trong `adapters.ts` **có** hiệu lực; nguyên nhân treo còn lại chưa rõ, chưa nên dùng grok cho pipeline turn tới khi có M3 orphan-kill.
 - Ranh giới tôn trọng: không sửa `packages/daemon/src/team/**`, `src-tauri/**`, `packages/daemon/src/agents/**` (chỉ gọi API sẵn có).
 
 ### M0.5 đã build gì (2026-08-09)

@@ -382,6 +382,163 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         includeReplies: args['include_replies'] !== false,
       }),
     }),
+    // ---------------------------------------------------------------------
+    // Discovery — xem plan/claude/spy-discovery-design.md
+    // Bucket search: 100 call/ngày. Bucket general: 10.000 unit/ngày.
+    // ---------------------------------------------------------------------
+    wrap({
+      name: 'spy_quota_status',
+      description: 'Còn bao nhiêu quota search (100/ngày) và general (10.000 unit/ngày), reset lúc nào. 0 chi phí.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 16_384,
+      handler: () => spy.quotaStatus(),
+    }),
+    wrap({
+      name: 'spy_niche_get',
+      description: 'Đọc file chiến lược niche.json (trả template nếu chưa có).',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: () => spy.getNiche(),
+    }),
+    wrap({
+      name: 'spy_niche_set',
+      description: 'Ghi đè niche.json. Truyền toàn bộ object config (markets, seedKeywords, scoring, notes).',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 32_768,
+      handler: (args) => spy.setNiche(args['config'] ?? args),
+    }),
+    wrap({
+      name: 'spy_niche_score_fit',
+      description: 'Chấm thử độ hợp niche cho một kênh (0-100 + lý do). Không tốn quota, dùng để hiệu chỉnh trọng số.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 16_384,
+      handler: (args) => spy.scoreFit({
+        channelId: text(args['channel_id'], 'channel_id'),
+        title: typeof args['title'] === 'string' ? args['title'] : undefined,
+        description: typeof args['description'] === 'string' ? args['description'] : undefined,
+        subscriberCount: typeof args['subscriber_count'] === 'number' ? args['subscriber_count'] : undefined,
+        videoCount: typeof args['video_count'] === 'number' ? args['video_count'] : undefined,
+        viewCount: typeof args['view_count'] === 'number' ? args['view_count'] : undefined,
+        country: typeof args['country'] === 'string' ? args['country'] : undefined,
+        marketId: typeof args['market_id'] === 'string' ? args['market_id'] : undefined,
+      }),
+    }),
+    wrap({
+      name: 'spy_discover_channels',
+      description: 'Tìm kênh cùng niche bằng search.list theo ma trận từ khoá của niche.json. TỐN bucket search (100 call/ngày) — luôn chạy dry_run trước.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.discoverChannels({
+        maxQueries: integer(args['max_queries'], 4, 1, 100),
+        marketId: typeof args['market_id'] === 'string' ? args['market_id'] : undefined,
+        includeChannelSearch: args['include_channel_search'] === true,
+        publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
+        dryRun: args['dry_run'] === true,
+      }),
+    }),
+    wrap({
+      name: 'spy_discover_videos',
+      description: 'Tìm video theo một truy vấn; kênh của chúng cũng thành ứng viên. TỐN 1 call bucket search.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.discoverVideos({
+        query: text(args['query'], 'query'),
+        marketId: typeof args['market_id'] === 'string' ? args['market_id'] : undefined,
+        order: args['order'] === 'date' || args['order'] === 'relevance' ? args['order'] : 'viewCount',
+        maxResults: integer(args['max_results'], 50, 1, 50),
+        publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
+        dryRun: args['dry_run'] === true,
+      }),
+    }),
+    wrap({
+      name: 'spy_expand_graph',
+      description: 'Mở rộng đồ thị kênh qua featured channels (+ public subscriptions). 1-2 unit/kênh gốc, KHÔNG tốn bucket search.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.expandGraph({
+        channelIds: Array.isArray(args['channel_ids']) ? stringList(args['channel_ids'], 'channel_ids') : undefined,
+        maxSeeds: integer(args['max_seeds'], 25, 1, 200),
+        includeSubscriptions: args['include_subscriptions'] === true,
+        dryRun: args['dry_run'] === true,
+      }),
+    }),
+    wrap({
+      name: 'spy_candidates_list',
+      description: 'Danh sách kênh ứng viên đã phát hiện, xếp theo điểm hợp niche. 0 chi phí.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 120_000,
+      handler: (args) => spy.listCandidates({
+        status: typeof args['status'] === 'string' ? args['status'] : undefined,
+        market: typeof args['market'] === 'string' ? args['market'] : undefined,
+        discoveredVia: typeof args['discovered_via'] === 'string' ? args['discovered_via'] : undefined,
+        minFitScore: typeof args['min_fit_score'] === 'number' ? args['min_fit_score'] : undefined,
+        minSubscribers: typeof args['min_subscribers'] === 'number' ? args['min_subscribers'] : undefined,
+        maxSubscribers: typeof args['max_subscribers'] === 'number' ? args['max_subscribers'] : undefined,
+        limit: integer(args['limit'], 50, 1, 200),
+        cursor: integer(args['cursor'], 0, 0, 100_000),
+      }),
+    }),
+    wrap({
+      name: 'spy_candidates_decide',
+      description: 'Đánh dấu ứng viên: shortlisted | rejected | new. Kênh đã reject không bị discovery sau ghi đè về new.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 32_768,
+      handler: (args) => {
+        const status = text(args['status'], 'status');
+        if (status !== 'shortlisted' && status !== 'rejected' && status !== 'new') {
+          throw new AppError('invalid_input', 'status phải là shortlisted | rejected | new');
+        }
+        return spy.decideCandidates(stringList(args['channel_ids'], 'channel_ids'), status);
+      },
+    }),
+    wrap({
+      name: 'spy_scan_candidates',
+      description: 'Quét sâu hàng loạt kênh đã shortlist (~21 unit/kênh cho 500 video). Có dry_run và chặn khi thiếu quota.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 64_000,
+      handler: (args, context) => spy.scanCandidates({
+        channelIds: Array.isArray(args['channel_ids']) ? stringList(args['channel_ids'], 'channel_ids') : undefined,
+        maxChannels: integer(args['max_channels'], 10, 1, 100),
+        scanLimit: integer(args['scan_limit'], 60, 1, 500),
+        depth: args['depth'] === 'transcript' ? 'transcript' : 'metadata',
+        dryRun: args['dry_run'] === true,
+      }, context.subject),
+    }),
+    wrap({
+      name: 'spy_corpus_videos',
+      description: 'Tìm video xuyên TOÀN BỘ corpus đã quét (không giới hạn một run). Lọc theo title, transcript, view, thời lượng, ngày. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 120_000,
+      handler: (args) => spy.corpusVideos({
+        titleQuery: typeof args['title_query'] === 'string' ? args['title_query'] : undefined,
+        transcriptQuery: typeof args['transcript_query'] === 'string' ? args['transcript_query'] : undefined,
+        channelIds: Array.isArray(args['channel_ids']) ? stringList(args['channel_ids'], 'channel_ids') : undefined,
+        minViews: typeof args['min_views'] === 'number' ? args['min_views'] : undefined,
+        maxViews: typeof args['max_views'] === 'number' ? args['max_views'] : undefined,
+        minDurationSec: typeof args['min_duration_sec'] === 'number' ? args['min_duration_sec'] : undefined,
+        maxDurationSec: typeof args['max_duration_sec'] === 'number' ? args['max_duration_sec'] : undefined,
+        publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
+        publishedBefore: typeof args['published_before'] === 'string' ? args['published_before'] : undefined,
+        hasTranscript: typeof args['has_transcript'] === 'boolean' ? args['has_transcript'] : undefined,
+        orderBy: typeof args['order_by'] === 'string'
+          ? args['order_by'] as 'views' | 'velocity' | 'published_at' | 'duration' | 'engagement'
+          : 'velocity',
+        direction: args['direction'] === 'asc' ? 'asc' : 'desc',
+        limit: integer(args['limit'], 50, 1, 200),
+        cursor: integer(args['cursor'], 0, 0, 100_000),
+      }),
+    }),
+    wrap({
+      name: 'spy_corpus_channels',
+      description: 'Thống kê từng kênh trong corpus đã quét: số video, view trung bình, khoảng đăng, tỉ lệ có transcript. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.corpusChannels({
+        minVideos: typeof args['min_videos'] === 'number' ? args['min_videos'] : undefined,
+        minAvgViews: typeof args['min_avg_views'] === 'number' ? args['min_avg_views'] : undefined,
+        limit: integer(args['limit'], 100, 1, 200),
+      }),
+    }),
     wrap({
       name: 'spy_competitors_list',
       description: 'Danh sách kênh đối thủ đang theo dõi (state cục bộ, không cần OAuth).',

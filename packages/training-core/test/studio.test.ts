@@ -104,8 +104,9 @@ describe('validateCompoundRule', () => {
     return {
       id: 'cr-1',
       statement: 'Mở bài bằng câu chuyện cá nhân có số liệu cụ thể',
-      origin: 'SYNTHESIZED',
-      provenance: [
+      mergeOrigin: 'SYNTHESIZED',
+      evidence: [{ segmentIds: ['seg-1'], quote: 'hồi đó tôi kiếm được 3 triệu' }],
+      sources: [
         {
           videoSnapshotId: 'video-1',
           channelTitle: 'Channel One',
@@ -123,7 +124,7 @@ describe('validateCompoundRule', () => {
   });
 
   test('rejects a rule with no provenance — the core Studio gate', () => {
-    const result = validateCompoundRule(rule({ provenance: [] }));
+    const result = validateCompoundRule(rule({ sources: [] }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.errorCode).toBe('STUDIO_RULE_UNGROUNDED');
   });
@@ -131,7 +132,7 @@ describe('validateCompoundRule', () => {
   test('rejects an incomplete provenance entry', () => {
     const result = validateCompoundRule(
       rule({
-        provenance: [
+        sources: [
           {
             videoSnapshotId: 'video-1',
             channelTitle: 'Channel One',
