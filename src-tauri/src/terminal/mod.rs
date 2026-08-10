@@ -141,9 +141,10 @@ impl TerminalManager {
         if !std::path::Path::new(&cwd).is_dir() {
             return Err(format!("cwd không tồn tại: {cwd}"));
         }
-        let pty = native_pty_system();
+        let cols = if req.cols >= 40 { req.cols } else { 120 };
+        let rows = if req.rows >= 10 { req.rows } else { 30 };
         let pair = pty
-            .openpty(PtySize { rows: req.rows, cols: req.cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("openpty: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&req.executable);
@@ -166,6 +167,12 @@ impl TerminalManager {
         cmd.env("TERM", term);
         if !req.env.contains_key("COLORTERM") {
             cmd.env("COLORTERM", "truecolor");
+        }
+        if !req.env.contains_key("COLUMNS") {
+            cmd.env("COLUMNS", cols.to_string());
+        }
+        if !req.env.contains_key("LINES") {
+            cmd.env("LINES", rows.to_string());
         }
 
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn: {e}"))?;
@@ -231,6 +238,9 @@ impl TerminalManager {
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        if cols < 40 || rows < 10 {
+            return Ok(());
+        }
         let s = self.get(session_id)?;
         let result = s
             .master

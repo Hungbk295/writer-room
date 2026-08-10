@@ -7,6 +7,7 @@ import { SpyPage } from './pages/Spy.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
 import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
 import { FormulasPage, FormulaPage } from './pages/Training.tsx';
+import { TrainingLabPage, TrainingLabRunPage } from './pages/TrainingLab.tsx';
 import { AgentsPage } from './pages/Agents.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { TerminalDrawer } from './components/terminal/TerminalDrawer.tsx';
@@ -61,6 +62,12 @@ function App() {
       break;
     case 'training-formula':
       page = <FormulaPage id={route.id} />;
+      break;
+    case 'training-lab':
+      page = <TrainingLabPage />;
+      break;
+    case 'training-lab-run':
+      page = <TrainingLabRunPage id={route.id} />;
       break;
     case 'agents':
       page = <AgentsPage />;

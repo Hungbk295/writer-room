@@ -94,7 +94,7 @@ describe('runFormulaDiscovery — happy path', () => {
           {
             id: 'rule-1',
             statement: 'Opens with a direct question to the viewer.',
-            evidence: [{ segmentId: firstSegment.id, quote }],
+            evidence: [{ segmentIds: [firstSegment.id], quote }],
           },
         ],
       }),
@@ -145,7 +145,7 @@ describe('runFormulaDiscovery — ungrounded rejection', () => {
             id: 'rule-1',
             statement: 'Claims something the transcript never says.',
             evidence: [{
-              segmentId: `seg-${videoSnapshotId}-1`,
+              segmentIds: [`seg-${videoSnapshotId}-1`],
               quote: 'this exact sentence never appears anywhere in the transcript',
             }],
           },

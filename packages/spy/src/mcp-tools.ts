@@ -35,6 +35,11 @@ function integer(value: unknown, fallback: number, minimum: number, maximum: num
   return parsed;
 }
 
+function stringList(value: unknown, name: string): string[] {
+  if (!Array.isArray(value)) throw new AppError('invalid_input', `${name} phải là mảng string`);
+  return value.map((item) => text(item, name));
+}
+
 function assertScopes(context: SpyToolContext, required: string[]): void {
   for (const scope of required) {
     if (!context.scopes.has(scope)) {
@@ -149,7 +154,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_channel_videos',
-      description: 'Liệt kê video đã spy, sort ở SQL (mặc định velocity).',
+      description: 'Liệt kê video đã spy (mặc định sort theo velocity; lọc/sort thực hiện trong JS sau khi load run).',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.listChannelVideos({
@@ -264,7 +269,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_channel_outliers',
-      description: 'Video outlier của kênh.',
+      description: 'Video outlier của kênh (modified z-score theo age cohort). Trả cả số mục không chấm được.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.channelOutliers(
@@ -342,13 +347,59 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_channel_diff',
-      description: 'So hai kênh.',
+      description: 'So hai kênh: delta/ratio từng chỉ số + token tiêu đề riêng của mỗi bên.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.channelDiff(
         text(args['channel_id_a'], 'channel_id_a'),
         text(args['channel_id_b'], 'channel_id_b'),
       ),
+    }),
+    wrap({
+      name: 'spy_videos_by_ids',
+      description: 'Tra cứu metadata + stats nhiều video theo id (≤50). Không cần spy run trước. ~1 quota unit.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.videosByIds(stringList(args['video_ids'], 'video_ids')),
+    }),
+    wrap({
+      name: 'spy_channels_by_ids',
+      description: 'Tra cứu metadata + stats nhiều kênh theo id hoặc @handle (≤50). ~1 quota unit.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.channelsByIds(stringList(args['channel_ids'], 'channel_ids')),
+    }),
+    wrap({
+      name: 'spy_video_comments',
+      description: 'Comment thread của một video hoặc cả kênh (commentThreads.list, ~1 quota unit).',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => spy.videoComments({
+        videoId: typeof args['video_id'] === 'string' ? args['video_id'] : undefined,
+        channelId: typeof args['channel_id'] === 'string' ? args['channel_id'] : undefined,
+        maxResults: integer(args['max_results'], 20, 1, 100),
+        order: args['order'] === 'time' ? 'time' : 'relevance',
+        includeReplies: args['include_replies'] !== false,
+      }),
+    }),
+    wrap({
+      name: 'spy_competitors_list',
+      description: 'Danh sách kênh đối thủ đang theo dõi (state cục bộ, không cần OAuth).',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: (args) => spy.listCompetitors(text(args['owner_channel_id'] ?? args['channel_id'], 'owner_channel_id')),
+    }),
+    wrap({
+      name: 'spy_competitors_update',
+      description: 'Thêm/bớt kênh đối thủ theo dõi. follow và unfollow không được trùng nhau.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 32_768,
+      handler: (args) => spy.updateCompetitors({
+        ownerChannelId: text(args['owner_channel_id'] ?? args['channel_id'], 'owner_channel_id'),
+        follow: Array.isArray(args['follow']) ? stringList(args['follow'], 'follow') : [],
+        unfollow: Array.isArray(args['unfollow']) ? stringList(args['unfollow'], 'unfollow') : [],
+        note: typeof args['note'] === 'string' ? args['note'] : undefined,
+      }),
     }),
   ];
 }

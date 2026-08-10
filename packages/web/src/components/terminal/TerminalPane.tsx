@@ -36,8 +36,11 @@ export function TerminalPane({ sessionId, readOnly, active }: Props) {
     // Defer first fit until layout has non-zero size (drawer may just open).
     const firstFit = () => {
       try {
+        if (!holder || holder.clientWidth < 100 || holder.clientHeight < 50) return;
         fit.fit();
-        void termResize(sessionId, term.cols, term.rows).catch(() => {});
+        if (term.cols >= 40 && term.rows >= 10) {
+          void termResize(sessionId, term.cols, term.rows).catch(() => {});
+        }
       } catch {
         /* holder may still be 0×0 */
       }
@@ -106,10 +109,14 @@ export function TerminalPane({ sessionId, readOnly, active }: Props) {
     if (!active) return;
     const run = () => {
       try {
+        const holder = holderRef.current;
+        if (!holder || holder.clientWidth < 100 || holder.clientHeight < 50) return;
         fitRef.current?.fit();
         termRef.current?.focus();
         const t = termRef.current;
-        if (t) void termResize(sessionId, t.cols, t.rows).catch(() => {});
+        if (t && t.cols >= 40 && t.rows >= 10) {
+          void termResize(sessionId, t.cols, t.rows).catch(() => {});
+        }
       } catch {
         /* ignore */
       }

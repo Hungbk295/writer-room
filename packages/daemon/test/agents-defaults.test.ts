@@ -67,6 +67,24 @@ describe('default agents', () => {
     expect(cfg.get('codex')?.args).toContain('model_reasoning_effort=high');
   });
 
+  test('codex headless turn wires `exec resume <id>` when resumeSessionRef is set, plain `exec` otherwise', () => {
+    const agent = buildDefaultAgents(dir).find((a) => a.id === 'codex')!;
+    const adapter = getAdapter('codex');
+
+    const fresh = adapter.buildHeadlessTurn(agent, { cwd: dir, turnPrompt: 'do the thing' });
+    expect(fresh.args[0]).toBe('exec');
+    expect(fresh.args).not.toContain('resume');
+
+    const resumed = adapter.buildHeadlessTurn(agent, {
+      cwd: dir,
+      turnPrompt: 'do the next thing',
+      resumeSessionRef: '019fe777-ba8b-73f0-9891-8101c1b0e186',
+    });
+    expect(resumed.args.slice(0, 3)).toEqual(['exec', 'resume', '019fe777-ba8b-73f0-9891-8101c1b0e186']);
+    expect(resumed.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+    expect(resumed.args[resumed.args.length - 1]).toBe('do the next thing');
+  });
+
   test('grok adapter builds interactive and headless specs without --mcp-config', () => {
     const agent = buildDefaultAgents(dir).find((a) => a.id === 'grok')!;
     const adapter = getAdapter('grok');

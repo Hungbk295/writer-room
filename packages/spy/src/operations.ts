@@ -2,6 +2,9 @@ import { AppError, asAppError } from './errors.ts';
 import type { SpyStore } from './store.ts';
 import type { Operation, OperationKind } from './schema.ts';
 
+/** Trần chờ tối đa của OperationManager.wait — khớp với trần 600s khai báo ở spy_wait. */
+export const MAX_WAIT_MS = 600_000;
+
 export interface OperationContext {
   readonly operationId: string;
   readonly signal: AbortSignal;
@@ -118,7 +121,8 @@ export class OperationManager {
         await Promise.race([
           completion,
           new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, Math.max(0, Math.min(timeoutMs, 60_000)));
+            // Trần 10 phút: đủ cho harvest dài, vẫn chặn được caller truyền timeout vô hạn.
+            timer = setTimeout(resolve, Math.max(0, Math.min(timeoutMs, MAX_WAIT_MS)));
           }),
         ]);
       } finally {

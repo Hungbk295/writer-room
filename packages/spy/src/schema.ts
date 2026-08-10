@@ -320,7 +320,8 @@ export type Operation = z.infer<typeof operationSchema>;
 export const spyConfigSchema = z.object({
   youtubeDataApiKey: z.string().optional(),
   sampling: samplingPolicySchema.partial().optional(),
-  concurrency: z.number().int().min(1).max(4).default(1),
+  /** Số worker fetch transcript song song. Default 3 = giữ nguyên hành vi trước khi config được nối vào harvest. */
+  concurrency: z.number().int().min(1).max(4).default(3),
 }).strict();
 
 export type SpyConfig = z.infer<typeof spyConfigSchema>;

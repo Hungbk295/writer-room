@@ -201,7 +201,7 @@ export interface FormulaSummary {
 }
 
 export interface FormulaEvidence {
-  segmentId: string;
+  segmentIds: string[];
   quote: string;
   startSec?: number;
   endSec?: number;
@@ -228,6 +228,75 @@ export interface Formula {
   warnings: string[];
   createdAt: string;
   sourceBatchId?: string;
+}
+
+// ── Training Lab — calibration loop (SDD §12a, M1.5) — mirrors
+// `packages/daemon/src/training/training-lab.ts` and
+// `@writer-room/training-core`'s `FormulaVersion`/`DraftArtifact`/`CritiqueArtifact`
+// exactly, field-for-field. `FormulaVersion` is the same shape as `Formula` above
+// plus `version`/`parentFormulaId` (round 1's `formulaVersionIn` is the existing
+// `FormulaArtifact` wrapped, per `startTrainingLabRun`).
+
+export interface FormulaVersion extends Formula {
+  version: number;
+  parentFormulaId?: string;
+}
+
+export interface DraftArtifact {
+  title: string;
+  script: string;
+  appliedRules: string[];
+}
+
+export interface CritiqueEvidence {
+  quote: string;
+  segmentIds?: string[];
+}
+
+export interface CritiquePattern {
+  id: string;
+  ruleId?: string;
+  description: string;
+  sourceEvidence: CritiqueEvidence[];
+  draftEvidence: CritiqueEvidence[];
+}
+
+export interface CritiqueArtifact {
+  positivePatterns: CritiquePattern[];
+  negativePatterns: CritiquePattern[];
+}
+
+export interface TrainingLabRound {
+  round: number;
+  formulaVersionIn: FormulaVersion;
+  draft: DraftArtifact | null;
+  draftArtifactHash: string | null;
+  critique: CritiqueArtifact | null;
+  critiqueArtifactHash: string | null;
+  formulaVersionOut: FormulaVersion | null;
+  status: 'DRAFTING' | 'CRITIQUING' | 'REFINING' | 'DONE' | 'FAILED';
+  errorCode?: string;
+}
+
+export interface TrainingLabRun {
+  id: string;
+  videoSnapshotId: string;
+  channelTitle: string;
+  status: 'RUNNING' | 'DONE' | 'FAILED';
+  maxRounds: number;
+  rounds: TrainingLabRound[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TrainingLabRunSummary {
+  id: string;
+  videoSnapshotId: string;
+  channelTitle: string;
+  status: 'RUNNING' | 'DONE' | 'FAILED';
+  roundCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const api = {
@@ -378,6 +447,15 @@ export const api = {
     ),
   listFormulas: () => request<{ formulas: FormulaSummary[] }>('/api/training/formulas'),
   getFormula: (id: string) => request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`),
+
+  startTrainingLabRun: (formulaId: string) =>
+    request<TrainingLabRun>('/api/training/lab/start', {
+      method: 'POST',
+      body: JSON.stringify({ formulaId }),
+    }),
+  listTrainingLabRuns: () => request<{ runs: TrainingLabRunSummary[] }>('/api/training/lab/runs'),
+  getTrainingLabRun: (id: string) =>
+    request<TrainingLabRun>(`/api/training/lab/runs/${encodeURIComponent(id)}`),
 };
 
 export function formatDuration(sec: number): string {

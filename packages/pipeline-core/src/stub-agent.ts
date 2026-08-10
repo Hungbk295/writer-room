@@ -18,6 +18,12 @@
  *   write-outside writes a file outside out/ in addition to out/result.json, so a
  *                 later sandbox-violation detector (tree diff) has something to
  *                 catch; this script's job is only to produce that fs state
+ *   write-in-cwd  writes a file inside runDir but outside out/ (e.g. a
+ *                 `.grok/config.toml`-shaped path) in addition to out/result.json —
+ *                 contained within the turn's own directory, NOT an escape. Added
+ *                 2026-08-10 as the regression fixture for the real Grok Build bug
+ *                 (`writeGrokMcpConfig` writes MCP config into the turn's cwd, which
+ *                 the sandbox-violation detector was wrongly flagging).
  *   hang          never resolves — used by tests that spawn this as a real child
  *                 process and exercise a timeout/kill path themselves
  *
@@ -29,7 +35,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-export type StubAgentMode = 'ok' | 'exit-nonzero' | 'no-output' | 'bad-schema' | 'write-outside' | 'hang';
+export type StubAgentMode = 'ok' | 'exit-nonzero' | 'no-output' | 'bad-schema' | 'write-outside' | 'write-in-cwd' | 'hang';
 
 export interface StubAgentResult {
   exitCode: number;
@@ -70,6 +76,12 @@ export async function runStubAgent(runDir: string, mode: string): Promise<StubAg
     case 'write-outside':
       await writeValidResult();
       await writeFile(resolve(runDir, '..', 'escaped.txt'), 'sandbox violation\n', 'utf8');
+      return { exitCode: 0 };
+
+    case 'write-in-cwd':
+      await writeValidResult();
+      await mkdir(join(runDir, '.grok'), { recursive: true });
+      await writeFile(join(runDir, '.grok', 'config.toml'), 'not a violation\n', 'utf8');
       return { exitCode: 0 };
 
     case 'exit-nonzero':

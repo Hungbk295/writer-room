@@ -6,30 +6,76 @@ import { analyzeVoice } from './voice.ts';
 import { analyzeStructure } from './structure.ts';
 import { analyzeOutlier } from './outlier.ts';
 
+/** Gom evidence ref từ payload (mảng item có .evidence, hoặc object đơn có .evidence). */
+function collectEvidence(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload.flatMap((item) => collectEvidence(item));
+  if (payload && typeof payload === 'object') {
+    const evidence = (payload as { evidence?: unknown }).evidence;
+    if (Array.isArray(evidence)) return evidence;
+  }
+  return [];
+}
+
 export class ProfileService {
   constructor(
     private readonly store: SpyStore,
     private readonly llm: LlmPort,
   ) {}
 
-  hookTaxonomy(spyRunId: string, videoIds?: string[]) {
-    return analyzeHooks(this.store, this.llm, spyRunId, videoIds);
+  /**
+   * Ghi kết quả phân tích vào bảng `profiles`.
+   * Trước đây store.saveProfile không có caller nào → bảng luôn rỗng →
+   * spy_channel_profile luôn trả hooks:null, topics:null.
+   */
+  private persist(spyRunId: string, kind: string, scope: 'channel' | 'video', scopeId: string, payload: unknown): void {
+    if (payload === null || payload === undefined) return;
+    this.store.saveProfile({
+      scope,
+      scopeId,
+      spyRunId,
+      kind,
+      payload,
+      evidence: collectEvidence(payload),
+      model: this.llm.model,
+    });
   }
 
-  topicClusters(spyRunId: string) {
-    return analyzeTopics(this.store, this.llm, spyRunId);
+  private channelScopeId(spyRunId: string): string {
+    const run = this.store.getSpyRun(spyRunId);
+    return run?.sourceIdentity ?? spyRunId;
   }
 
-  voiceProfile(spyRunId: string) {
-    return analyzeVoice(this.store, this.llm, spyRunId);
+  async hookTaxonomy(spyRunId: string, videoIds?: string[]) {
+    const result = await analyzeHooks(this.store, this.llm, spyRunId, videoIds);
+    // Chỉ cache khi phân tích toàn kênh; bản lọc theo videoIds không đại diện cho kênh.
+    if (!videoIds || videoIds.length === 0) {
+      this.persist(spyRunId, 'hooks', 'channel', this.channelScopeId(spyRunId), result);
+    }
+    return result;
   }
 
-  videoStructure(spyRunId: string, sourceVideoId: string) {
-    return analyzeStructure(this.store, this.llm, spyRunId, sourceVideoId);
+  async topicClusters(spyRunId: string) {
+    const result = await analyzeTopics(this.store, this.llm, spyRunId);
+    this.persist(spyRunId, 'topics', 'channel', this.channelScopeId(spyRunId), result);
+    return result;
   }
 
-  outlierExplanation(spyRunId: string, sourceVideoId: string, outlierScore: number, cohort: string) {
-    return analyzeOutlier(this.store, this.llm, spyRunId, sourceVideoId, outlierScore, cohort);
+  async voiceProfile(spyRunId: string) {
+    const result = await analyzeVoice(this.store, this.llm, spyRunId);
+    this.persist(spyRunId, 'voice', 'channel', this.channelScopeId(spyRunId), result);
+    return result;
+  }
+
+  async videoStructure(spyRunId: string, sourceVideoId: string) {
+    const result = await analyzeStructure(this.store, this.llm, spyRunId, sourceVideoId);
+    this.persist(spyRunId, 'structure', 'video', sourceVideoId, result);
+    return result;
+  }
+
+  async outlierExplanation(spyRunId: string, sourceVideoId: string, outlierScore: number, cohort: string) {
+    const result = await analyzeOutlier(this.store, this.llm, spyRunId, sourceVideoId, outlierScore, cohort);
+    this.persist(spyRunId, 'outlier', 'video', sourceVideoId, result);
+    return result;
   }
 }
 

@@ -6,6 +6,8 @@ export type Route =
   | { name: 'writer-pack'; id: string }
   | { name: 'training-formulas' }
   | { name: 'training-formula'; id: string }
+  | { name: 'training-lab' }
+  | { name: 'training-lab-run'; id: string }
   | { name: 'agents' }
   | { name: 'settings' };
 
@@ -18,6 +20,8 @@ export function parseRoute(hash = location.hash): Route {
   if (parts[0] === 'writer') return { name: 'writer' };
   if (parts[0] === 'training' && parts[1] === 'formulas' && parts[2]) return { name: 'training-formula', id: parts[2]! };
   if (parts[0] === 'training' && parts[1] === 'formulas') return { name: 'training-formulas' };
+  if (parts[0] === 'training' && parts[1] === 'lab' && parts[2]) return { name: 'training-lab-run', id: parts[2]! };
+  if (parts[0] === 'training' && parts[1] === 'lab') return { name: 'training-lab' };
   if (parts[0] === 'agents') return { name: 'agents' };
   if (parts[0] === 'settings') return { name: 'settings' };
   return { name: 'home' };
@@ -32,6 +36,8 @@ export function href(route: Route): string {
     case 'writer-pack': return `#/writer/${route.id}`;
     case 'training-formulas': return '#/training/formulas';
     case 'training-formula': return `#/training/formulas/${route.id}`;
+    case 'training-lab': return '#/training/lab';
+    case 'training-lab-run': return `#/training/lab/${route.id}`;
     case 'agents': return '#/agents';
     case 'settings': return '#/settings';
   }

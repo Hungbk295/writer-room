@@ -54,6 +54,9 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
         <a class={is(['training-formulas', 'training-formula'])} href={href({ name: 'training-formulas' })}>
           Formula
         </a>
+        <a class={is(['training-lab', 'training-lab-run'])} href={href({ name: 'training-lab' })}>
+          Training Lab
+        </a>
         <a class={is(['agents'])} href={href({ name: 'agents' })}>Agents</a>
         <a class={is(['settings'])} href={href({ name: 'settings' })}>Settings</a>
         {/* Always-visible show/hide — same role as dna-spy sidebar "🖥 Terminal" */}

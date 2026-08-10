@@ -1,13 +1,60 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import { api, type Formula, type FormulaSummary } from '../api.ts';
+import { api, type Formula, type FormulaRule, type FormulaSummary } from '../api.ts';
 import { href } from '../router.ts';
 
 /** SDD §7.7: "A TRIAL Formula shows its badge everywhere it appears" — reused by
  * both the list row and the detail header so the rule holds in exactly one place. */
-function statusBadgeClass(status: Formula['status']): string {
+export function statusBadgeClass(status: Formula['status']): string {
   if (status === 'TRIAL') return 'chip warn';
   if (status === 'VALIDATED') return 'chip ok';
   return 'chip';
+}
+
+/** The exact rule + evidence rendering style established here for the M1 Formula
+ * detail view — reused as-is by the Training Lab round view (SDD §12a UI) so "the
+ * formula agent 1 trích xuất" (part 1) and "formula sau khi căn chỉnh" (part 4)
+ * both look identical to this canonical Formula rendering, not a re-invented style. */
+export function RuleList({ rules }: { rules: FormulaRule[] }) {
+  if (!rules || !Array.isArray(rules) || rules.length === 0) {
+    return <p class="muted" style={{ margin: 0 }}>Không có rule.</p>;
+  }
+  return (
+    <ul class="list">
+      {rules.map((rule) => (
+        <li key={rule.id}>
+          <strong>{rule.statement}</strong>
+          <div class="meta" style={{ marginTop: '0.15rem' }}>
+            <span class="muted">{rule.id}</span>
+          </div>
+          <div class="stack" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
+            {(rule.evidence || []).map((ev, i) => {
+              const segIds = ev.segmentIds || ((ev as any).segmentId ? [(ev as any).segmentId] : []);
+              return (
+                <blockquote
+                  key={`${rule.id}-${i}`}
+                  style={{
+                    margin: 0,
+                    padding: '0.5rem 0.75rem',
+                    borderLeft: '3px solid var(--teal)',
+                    background: 'rgba(31, 138, 122, 0.06)',
+                    borderRadius: '6px',
+                  }}
+                >
+                  <code>{ev.quote}</code>
+                  {segIds.length > 0 && (
+                    <div class="meta" style={{ marginTop: '0.25rem' }}>
+                      <span>segment{segIds.length > 1 ? 's' : ''}: {segIds.join(', ')}</span>
+                      {typeof ev.startSec === 'number' && <span>{ev.startSec}s–{ev.endSec}s</span>}
+                    </div>
+                  )}
+                </blockquote>
+              );
+            })}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 export function FormulasPage() {
@@ -46,9 +93,16 @@ export function FormulasPage() {
         ) : (
           <ul class="list">
             {formulas.map((formula) => (
-              <li key={formula.id}>
+              <li
+                key={formula.id}
+                style={{ cursor: 'pointer' }}
+                onClick={() => { location.hash = href({ name: 'training-formula', id: formula.id }); }}
+              >
                 <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                  <a href={href({ name: 'training-formula', id: formula.id })}>
+                  <a
+                    href={href({ name: 'training-formula', id: formula.id })}
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <strong>{formula.channelTitles.join(', ') || 'Formula'}</strong>
                   </a>
                   <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
@@ -131,33 +185,7 @@ export function FormulaPage({ id }: { id: string }) {
 
       <section class="panel" style={{ marginTop: '1rem' }}>
         <h2>Rules ({formula.rules.length})</h2>
-        <ul class="list">
-          {formula.rules.map((rule) => (
-            <li key={rule.id}>
-              <strong>{rule.statement}</strong>
-              <div class="stack" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
-                {rule.evidence.map((ev, i) => (
-                  <blockquote
-                    key={`${rule.id}-${i}`}
-                    style={{
-                      margin: 0,
-                      padding: '0.5rem 0.75rem',
-                      borderLeft: '3px solid var(--teal)',
-                      background: 'rgba(31, 138, 122, 0.06)',
-                      borderRadius: '6px',
-                    }}
-                  >
-                    <code>{ev.quote}</code>
-                    <div class="meta" style={{ marginTop: '0.25rem' }}>
-                      <span>segment: {ev.segmentId}</span>
-                      {typeof ev.startSec === 'number' && <span>{ev.startSec}s–{ev.endSec}s</span>}
-                    </div>
-                  </blockquote>
-                ))}
-              </div>
-            </li>
-          ))}
-        </ul>
+        <RuleList rules={formula.rules} />
       </section>
 
       <section class="panel" style={{ marginTop: '1rem' }}>
@@ -173,6 +201,73 @@ export function FormulaPage({ id }: { id: string }) {
           ))}
         </ul>
       </section>
+
+      <section class="panel" style={{ marginTop: '1rem' }}>
+        <h2>Training Lab</h2>
+        <p class="muted" style={{ marginTop: 0 }}>
+          Chạy vòng lặp viết lại → chấm → căn chỉnh (tối đa 3 vòng) trên video nguồn của
+          Formula này, xem toàn bộ lịch sử ở tab Training Lab.
+        </p>
+        <StartTrainingLabAction formulaId={formula.id} />
+      </section>
+    </div>
+  );
+}
+
+type LabTriggerPhase = 'idle' | 'starting' | 'done' | 'failed';
+
+/** Trigger for starting a Training Lab run FROM an existing Formula (SDD §12a UI —
+ * "you start a run from an EXISTING Formula"). Same done-state UX precedent as
+ * `FormulaDiscoveryAction`'s "Xem Formula →" link: after the POST succeeds, show a
+ * link the user clicks rather than an automatic redirect. */
+function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
+  const [phase, setPhase] = useState<LabTriggerPhase>('idle');
+  const [runId, setRunId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const start = async () => {
+    setPhase('starting');
+    setError(null);
+    try {
+      const run = await api.startTrainingLabRun(formulaId);
+      setRunId(run.id);
+      setPhase('done');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase('failed');
+    }
+  };
+
+  if (phase === 'idle') {
+    return (
+      <button class="btn secondary" type="button" onClick={() => void start()}>
+        🔬 Bắt đầu Training Lab
+      </button>
+    );
+  }
+
+  if (phase === 'starting') {
+    return <span class="chip warn">🔬 Đang khởi động…</span>;
+  }
+
+  if (phase === 'done') {
+    return (
+      <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+        <span class="chip ok">🔬 Đã bắt đầu</span>
+        {runId && (
+          <a class="btn teal" href={href({ name: 'training-lab-run', id: runId })}>
+            Xem tiến trình →
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  // phase === 'failed'
+  return (
+    <div class="stack" style={{ gap: '0.35rem' }}>
+      <p class="error" style={{ margin: 0, fontSize: '0.82rem' }}>{error}</p>
+      <button class="btn secondary" type="button" onClick={() => setPhase('idle')}>Thử lại</button>
     </div>
   );
 }

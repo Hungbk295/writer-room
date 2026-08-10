@@ -14,7 +14,7 @@ type Phase = 'idle' | 'preflighting' | 'blocked' | 'running' | 'done' | 'failed'
 /** Human-readable mapping for the grounding-validator / agent-turn error codes
  * `LaneScheduler`/`training-core` can produce (SDD §5.2 commit-rule branches).
  * Falls back to the raw code for anything not explicitly listed. */
-function describeErrorCode(code: string | undefined): string {
+export function describeErrorCode(code: string | undefined): string {
   switch (code) {
     case 'AGENT_EXIT':
       return 'AGENT_EXIT — agent thoát bất thường trước khi ghi kết quả';

@@ -33,10 +33,79 @@
  *     turn will simply never settle from this client's point of view.
  */
 import type { TeamEvent } from '@writer-room/shared/terminal';
-import { isTauri, onTermExit, termKill, termSnapshot } from '../../components/terminal/terminalApi.ts';
+import { b64ToBytes, isTauri, onTermExit, termKill, termSnapshot } from '../../components/terminal/terminalApi.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
+
+/**
+ * Session-id capture (added 2026-08-09, SDD §12a session-continuity fix). A resumed
+ * turn needs the daemon to know the prior turn's CLI session id — `turn/complete`
+ * accepts an optional `resumeSessionRef` for exactly this, but nothing here ever
+ * populated it before now, so `store.resumeRef(agentId)` (daemon-side) always found
+ * nothing and every turn ran fresh regardless of clone-id reuse.
+ *
+ * Both CLIs print their session id as plain text near the very start of output —
+ * verified for real against the actual binaries, not guessed:
+ *  - Claude Code (`--output-format stream-json`): a JSON line containing
+ *    `"session_id":"<uuid>"` (present on effectively every emitted event).
+ *  - Codex (`codex exec` / `codex exec resume`): a banner line `session id: <uuid>`.
+ * First match wins; extraction is opportunistic (checked on the first available
+ * snapshot right after launch, then again on every heartbeat poll until found) since
+ * the ring buffer may not have flushed anything in the first instant after spawn.
+ */
+const SESSION_ID_PATTERNS = [
+  /"session_id"\s*:\s*"([0-9a-fA-F-]{8,})"/,
+  /^session id:\s*([0-9a-fA-F-]{8,})/m,
+];
+
+function decodeSnapshotText(data: string): string {
+  return new TextDecoder().decode(b64ToBytes(data));
+}
+
+function extractSessionId(text: string): string | null {
+  for (const pattern of SESSION_ID_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Pane reuse (added 2026-08-10, ported from dna-spy's `client/src/components/agents/
+ * turnBridge.ts` "Nhánh 2" — same problem, same fix). Session continuity (above) only
+ * resumes the underlying CLI's own conversation context; `handleSpawnTurn` still
+ * unconditionally opened a BRAND NEW read-only pane/tab for every turn regardless of
+ * clone-id reuse, so a 3-round Training Lab run (2 agent identities: DRAFT and
+ * CRITIQUE+REFINE sharing one each, §12a `training-lab.ts`) still left ~10 dead tabs
+ * in the drawer — one per turn, not one per agent. `paneByAgent` tracks the most
+ * recent pane per `agentId`; `closeExistingPanesForAgent` closes it (and any other
+ * stray read-only tab for that agent found by scanning `tabs`, belt-and-suspenders
+ * like the dna-spy original) right before launching a new one. Same-agent turns are
+ * dispatched sequentially by the pipeline scheduler (a new round's turn only starts
+ * after the previous round's has already settled), so the "old" pane is virtually
+ * always already exited — this mainly just removes it from the drawer instead of
+ * leaving a dead tab behind; the `closeTab`/`termKill` call is a no-op-but-safe path
+ * for the rare case it is somehow still alive.
+ */
+const paneByAgent = new Map<string, string>();
+
+async function closeExistingPanesForAgent(agentId: string): Promise<void> {
+  const stale = new Set<string>();
+  for (const tab of terminals.getState().tabs) {
+    if (tab.agentId === agentId && tab.readOnly) stale.add(tab.sessionId);
+  }
+  const mapped = paneByAgent.get(agentId);
+  if (mapped) stale.add(mapped);
+  paneByAgent.delete(agentId);
+  for (const sessionId of stale) {
+    try {
+      await terminals.closeTab(sessionId);
+    } catch (err) {
+      console.error('[turnBridge] closeTab failed while clearing old pane for', agentId, err);
+    }
+  }
+}
 
 function postJson(path: string, body: unknown): void {
   void fetch(path, {
@@ -70,6 +139,8 @@ export function startTurnBridge(): () => void {
   // turnId -> last ring-buffer sequence number seen, for heartbeat diffing.
   const lastSeenSequence = new Map<number, number>();
   const heartbeatIntervals = new Map<number, ReturnType<typeof setInterval>>();
+  // turnId -> CLI session id, once found in the pane's output (see extractSessionId).
+  const sessionIdByTurn = new Map<number, string>();
 
   function stopHeartbeat(turnId: number): void {
     const h = heartbeatIntervals.get(turnId);
@@ -80,12 +151,19 @@ export function startTurnBridge(): () => void {
     lastSeenSequence.delete(turnId);
   }
 
+  function captureSessionIdIfMissing(turnId: number, snap: { data: string }): void {
+    if (sessionIdByTurn.has(turnId)) return;
+    const found = extractSessionId(decodeSnapshotText(snap.data));
+    if (found) sessionIdByTurn.set(turnId, found);
+  }
+
   function startHeartbeat(turnId: number, sessionId: string): void {
     const interval = setInterval(() => {
       void termSnapshot(sessionId)
         .catch(() => null)
         .then((snap) => {
           if (!snap) return;
+          captureSessionIdIfMissing(turnId, snap);
           const prev = lastSeenSequence.get(turnId);
           if (prev !== snap.sequence) {
             lastSeenSequence.set(turnId, snap.sequence);
@@ -105,6 +183,7 @@ export function startTurnBridge(): () => void {
     if (claimed.has(event.turnId)) return; // already launched, defend against dup delivery
     claimed.add(event.turnId);
     try {
+      await closeExistingPanesForAgent(event.agentId);
       const sessionId = await terminals.launchTab({
         executable: event.spec.executable,
         args: event.spec.args,
@@ -115,8 +194,13 @@ export function startTurnBridge(): () => void {
         title: `${event.agentId} · ${event.spec.mode}`,
         turnId: event.turnId,
       });
+      paneByAgent.set(event.agentId, sessionId);
       turnIdToSessionId.set(event.turnId, sessionId);
       startHeartbeat(event.turnId, sessionId);
+      // Best-effort early capture — the session id line is usually the very first
+      // thing a CLI prints, so don't wait for the first 10s heartbeat tick if a
+      // snapshot is already available right after launch.
+      void termSnapshot(sessionId).then((snap) => captureSessionIdIfMissing(event.turnId, snap)).catch(() => {});
     } catch (err) {
       claimed.delete(event.turnId);
       console.error('[turnBridge] launchTab failed for turn', event.turnId, err);
@@ -188,7 +272,13 @@ export function startTurnBridge(): () => void {
     claimed.delete(e.turnId);
     stopHeartbeat(e.turnId);
     turnIdToSessionId.delete(e.turnId);
-    postJson('/api/team/turn/complete', { turnId: e.turnId, exitCode: e.exitCode ?? null });
+    const resumeSessionRef = sessionIdByTurn.get(e.turnId);
+    sessionIdByTurn.delete(e.turnId);
+    postJson('/api/team/turn/complete', {
+      turnId: e.turnId,
+      exitCode: e.exitCode ?? null,
+      ...(resumeSessionRef ? { resumeSessionRef } : {}),
+    });
   }).then((unlisten) => {
     unlistenExit = unlisten;
   });

@@ -25,7 +25,8 @@ import { TEAM_CHANNEL } from './agents/index.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { runFormulaDiscovery } from './training/orchestrator.ts';
-import { getFormula, listFormulas } from './training/storage.ts';
+import { getFormula, getTrainingLabRun, listFormulas, listTrainingLabRuns } from './training/storage.ts';
+import { registerTrainingLabSettleListener, startTrainingLabRun } from './training/training-lab.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -82,6 +83,12 @@ export async function createHttpApp(): Promise<HttpApp> {
   // scope together (see `training/orchestrator.ts`'s wiring-note doc comment for why
   // this does NOT live on `harness.ts`).
   registerTrainingSettleListener(harness.pipeline.scheduler, { dataDir: root, spy });
+
+  // Training Lab (M1.5, SDD §12a): register the DRAFT/CRITIQUE/REFINE-settle
+  // calibration-loop listener exactly once per daemon process, right beside the M1
+  // listener above — both subscribe to the same `onItemSettled` source and each
+  // ignores events the other owns (see `training-lab.ts`'s doc comment).
+  registerTrainingLabSettleListener(harness.pipeline.scheduler, { dataDir: root, spy });
 
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
   return { spy, harness, startedAt: Date.now(), webRoot };
@@ -406,6 +413,33 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           errorCode: latest.errorCode,
           artifactHash: latest.artifactHash,
         });
+      }
+
+      // ── Training Lab (M1.5) ───────────────────────────────────
+      if (method === 'POST' && pathname === '/api/training/lab/start') {
+        const body = await readBody(req);
+        const formulaId = String(body['formulaId'] ?? '');
+        if (!formulaId) return error('formulaId bắt buộc');
+        const formula = await getFormula(formulaId);
+        if (!formula) return error('Formula không tồn tại', 404);
+        const videoSnapshotId = formula.includedArtifacts[0]?.videoSnapshotId;
+        if (!videoSnapshotId) return error('Formula không có video nguồn (includedArtifacts rỗng)');
+        const run = await startTrainingLabRun(
+          { spy, scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+          { videoSnapshotId, startingFormula: formula },
+        );
+        return json(run, 201);
+      }
+
+      if (method === 'GET' && pathname === '/api/training/lab/runs') {
+        return json({ runs: await listTrainingLabRuns() });
+      }
+
+      const labRunMatch = /^\/api\/training\/lab\/runs\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && labRunMatch) {
+        const run = await getTrainingLabRun(decodeURIComponent(labRunMatch[1]!));
+        if (!run) return error('Training Lab run không tồn tại', 404);
+        return json(run);
       }
 
       // ── Settings ──────────────────────────────────────────────

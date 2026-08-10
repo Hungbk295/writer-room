@@ -6,12 +6,19 @@
  * §3, Training-specific types live here, not in `pipeline-core`).
  */
 
-/** One cited quote from a pinned transcript segment (SDD §8.1). */
+/** One cited quote from the pinned transcript (SDD §8.1). */
 export interface Evidence {
-  segmentId: string;
-  /** Must be an exact substring of that segment's `text` — this is what makes a
-   * rule "grounded" (SDD §8.1: "Validation rejects any rule with zero evidence...
-   * this is the Training-side equivalent of the Writer citation gate"). */
+  /**
+   * One or more segment ids, in transcript order (changed 2026-08-10 from a single
+   * `segmentId` — real auto-caption transcripts chunk into ~4s windows that often
+   * split mid-sentence, so a single segment is frequently too short to hold a
+   * complete, natural quote). `quote` must be an exact substring of those segments'
+   * `text` values joined with a single space, in the order given — this is what
+   * makes a rule "grounded" (SDD §8.1: "Validation rejects any rule with zero
+   * evidence... this is the Training-side equivalent of the Writer citation gate").
+   * Segments do not need to be contiguous, but usually are for a real quote.
+   */
+  segmentIds: string[];
   quote: string;
   startSec?: number;
   endSec?: number;
@@ -65,4 +72,117 @@ export interface FormulaArtifact {
    * to the Formula it produced, since `id` itself is a fresh `randomUUID()` unrelated
    * to `batchId`. Optional/additive: older persisted Formulas simply omit it. */
   sourceBatchId?: string;
+}
+
+/**
+ * SDD §12a "Training Lab — calibration loop": one version in a per-video Formula
+ * version history. `version: 1` is always the original `ANALYZE` output (the
+ * existing M1 `FormulaArtifact`, wrapped — not re-derived); each `REFINE` round
+ * produces `version: N+1` with `parentFormulaId` pointing at the `FormulaArtifact.id`
+ * it was refined from. Every version is kept (§12a "Formula versioning" — "v1, v2,
+ * v3... are never deleted, they are the run's log"); nothing here auto-promotes a
+ * version to canonical, same ADR-6 spirit `formulaFromSingleAnalysis` already follows.
+ */
+export interface FormulaVersion extends FormulaArtifact {
+  version: number;
+  parentFormulaId?: string;
+}
+
+/** One cited quote used by a `CritiquePattern` (SDD §12a "Grounding rule for
+ * CRITIQUE"). `segmentIds` is present only on the source-transcript side — the
+ * draft has no transcript-style segmentation, so draft-side evidence is a bare
+ * substring-match quote. Same multi-segment shape as `Evidence` above, and for the
+ * same reason (2026-08-10). */
+export interface CritiqueEvidence {
+  quote: string;
+  segmentIds?: string[];
+  /** SDD §12b: which video this source quote came from. Omitted on the single-video
+   * Training Lab path (there is only one transcript, so it is implied); REQUIRED when
+   * critiquing a `CompoundFormula`, whose rules come from several videos. */
+  videoSnapshotId?: string;
+}
+
+/**
+ * One positive-or-negative observation the `CRITIQUE` stage makes about a `DRAFT`,
+ * grounded on BOTH sides per SDD §12a: at least one quote from the original pinned
+ * transcript (`sourceEvidence`, `segmentId` required) AND at least one quote that is
+ * an exact substring of the draft's own `script` (`draftEvidence`). This is what
+ * actually verifies a `DraftArtifact.appliedRules` self-report instead of trusting
+ * it — see `validateCritique` in `validator.ts`.
+ */
+export interface CritiquePattern {
+  id: string;
+  ruleId?: string;
+  description: string;
+  sourceEvidence: CritiqueEvidence[];
+  draftEvidence: CritiqueEvidence[];
+}
+
+/** The `CRITIQUE`-stage artifact (SDD §12a stage table). Grading is qualitative
+ * pattern-matching, not a numeric score (user: "tạo tiêu chí chấm đơn giản thôi"). */
+export interface CritiqueArtifact {
+  positivePatterns: CritiquePattern[];
+  negativePatterns: CritiquePattern[];
+}
+
+/** The `DRAFT`-stage artifact (SDD §12a stage table). `appliedRules` is a
+ * self-report from the writer agent — NOT trusted on its own; `CRITIQUE` verifies
+ * it against the real transcript and the draft's own text. */
+export interface DraftArtifact {
+  title: string;
+  script: string;
+  appliedRules: string[];
+}
+
+/* ------------------------------------------------------------------------- *
+ * Formula Studio (SDD §12b, ADR-5/ADR-13) — the L2 "compound" Formula level.
+ *
+ * L1 = `FormulaArtifact` above: one video's rules, the atomic unit.
+ * L2 = `CompoundFormula` below: rules a HUMAN picked across several L1 Formulas
+ *      and merged, scoped to a content genre (`thể loại`) — never to a channel,
+ *      and never produced automatically by a batch (ADR-5).
+ * ------------------------------------------------------------------------- */
+
+/** Where one compound rule came from. Non-empty `provenance[]` is what makes a
+ * merged rule auditable AND what lets the compound `CRITIQUE` ship only the cited
+ * evidence spans instead of whole transcripts (SDD §12b "Envelope size"). */
+export interface CompoundRuleProvenance {
+  videoSnapshotId: string;
+  /** Display/audit label only — never a grouping key (ADR-5). */
+  channelTitle: string;
+  sourceFormulaId: string;
+  sourceRuleId: string;
+  /** Carried verbatim from the L1 rule; powers the lean critique envelope. */
+  evidence: Evidence[];
+}
+
+/** How a compound rule came to exist. `CARRIED` = a single picked rule taken as-is;
+ * `SYNTHESIZED` = an LLM worded one rule out of a cluster the human approved;
+ * `HUMAN_EDITED` = the human rewrote the statement themselves. */
+export type CompoundRuleOrigin = 'CARRIED' | 'SYNTHESIZED' | 'HUMAN_EDITED';
+
+export interface CompoundRule {
+  id: string;
+  statement: string;
+  /** Non-empty, enforced by `validateCompoundRule`. */
+  provenance: CompoundRuleProvenance[];
+  origin: CompoundRuleOrigin;
+}
+
+/** A genre-scoped Formula assembled in a Studio session. `status` follows ADR-6:
+ * starts `DRAFT`, becomes `TRIAL` only by explicit human promotion, never
+ * `VALIDATED` in the MVP. */
+export interface CompoundFormula {
+  id: string;
+  /** User-named content genre, e.g. "kể chuyện tài chính cá nhân". Free-form on
+   * purpose — the point is that the user discovers the right genres by doing this,
+   * so there is no hardcoded taxonomy (SDD §12b "Genre, not channel"). */
+  genre: string;
+  status: FormulaStatus;
+  rules: CompoundRule[];
+  /** Distinct videos across all rules' provenance — the honest sample size. */
+  sourceVideoCount: number;
+  sessionId: string;
+  version: number;
+  createdAt: string;
 }

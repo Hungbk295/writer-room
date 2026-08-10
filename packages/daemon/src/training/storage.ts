@@ -7,6 +7,11 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FormulaArtifact } from '@writer-room/training-core';
 import { ensureDir, trainingRoot } from '../paths.ts';
+// `import type` only — no runtime dependency, so this does not create a real module
+// cycle even though `training-lab.ts` imports `saveTrainingLabRun`/`getTrainingLabRun`
+// from this file (SDD §12a: `TrainingLabRun` is defined in `training-lab.ts`, storage
+// mirrors the existing `saveFormula`/`getFormula`/`listFormulas` pattern for it below).
+import type { TrainingLabRun } from './training-lab.ts';
 
 export interface FormulaSummary {
   id: string;
@@ -78,5 +83,76 @@ export async function listFormulas(dataDir?: string): Promise<FormulaSummary[]> 
     }
   }
   summaries.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return summaries;
+}
+
+/**
+ * Training Lab (SDD §12a) run persistence — same JSON-per-record-under-a-subdir
+ * idiom as `formulas` above, at `trainingRoot()/lab-runs`. The orchestrator
+ * (`training-lab.ts`) re-reads via `getTrainingLabRun` at the start of handling every
+ * settle event, mutates in memory, and re-saves — there is no separate in-memory-only
+ * run registry that could desync from disk (see `training-lab.ts`'s doc comment).
+ */
+export interface TrainingLabRunSummary {
+  id: string;
+  videoSnapshotId: string;
+  channelTitle: string;
+  status: TrainingLabRun['status'];
+  roundCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function labRunsDir(dataDir?: string): string {
+  return join(trainingRoot(dataDir), 'lab-runs');
+}
+
+function labRunPath(id: string, dataDir?: string): string {
+  return join(labRunsDir(dataDir), `${id}.json`);
+}
+
+export async function saveTrainingLabRun(run: TrainingLabRun, dataDir?: string): Promise<void> {
+  await ensureDir(labRunsDir(dataDir));
+  await writeFile(labRunPath(run.id, dataDir), `${JSON.stringify(run, null, 2)}\n`, 'utf8');
+}
+
+export async function getTrainingLabRun(id: string, dataDir?: string): Promise<TrainingLabRun | null> {
+  try {
+    const raw = await readFile(labRunPath(id, dataDir), 'utf8');
+    return JSON.parse(raw) as TrainingLabRun;
+  } catch {
+    return null;
+  }
+}
+
+export async function listTrainingLabRuns(dataDir?: string): Promise<TrainingLabRunSummary[]> {
+  const root = labRunsDir(dataDir);
+  await ensureDir(root);
+  let names: string[] = [];
+  try {
+    names = await readdir(root);
+  } catch {
+    return [];
+  }
+  const summaries: TrainingLabRunSummary[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = await readFile(join(root, name), 'utf8');
+      const run = JSON.parse(raw) as TrainingLabRun;
+      summaries.push({
+        id: run.id,
+        videoSnapshotId: run.videoSnapshotId,
+        channelTitle: run.channelTitle,
+        status: run.status,
+        roundCount: run.rounds.length,
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+      });
+    } catch {
+      // skip corrupt
+    }
+  }
+  summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return summaries;
 }

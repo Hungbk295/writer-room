@@ -72,6 +72,70 @@ async function loadConfig(dataRoot: string, override?: SpyConfig): Promise<SpyCo
   });
 }
 
+interface OutlierRow {
+  videoId: string;
+  viewCount?: number | null;
+  cohort: string;
+  metricUsed?: string | null;
+  /** MetricValue<number> từ metrics/performance.ts — KHÔNG phải number. */
+  outlierScore: unknown;
+}
+
+/**
+ * Đọc một MetricValue<number> (hoặc number thô của payload cũ) ra số.
+ * Trước đây channelOutliers so thẳng object với số → NaN → luôn trả rỗng.
+ */
+function readMetricNumber(raw: unknown): { score: number | null; method: string } {
+  if (typeof raw === 'number') {
+    return { score: Number.isFinite(raw) ? raw : null, method: 'deterministic' };
+  }
+  if (raw && typeof raw === 'object') {
+    const holder = raw as { value?: unknown; method?: unknown };
+    const value = holder.value;
+    const method = typeof holder.method === 'string' ? holder.method : 'unavailable';
+    if (typeof value === 'number' && Number.isFinite(value)) return { score: value, method };
+    return { score: null, method };
+  }
+  return { score: null, method: 'unavailable' };
+}
+
+function numbersIn(payload: unknown, prefix = '', out: Record<string, number> = {}): Record<string, number> {
+  if (!payload || typeof payload !== 'object') return out;
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out[path] = value;
+    } else if (value && typeof value === 'object' && 'value' in (value as Record<string, unknown>)) {
+      const inner = (value as { value?: unknown }).value;
+      if (typeof inner === 'number' && Number.isFinite(inner)) out[path] = inner;
+      else numbersIn(inner, path, out);
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      numbersIn(value, path, out);
+    }
+  }
+  return out;
+}
+
+/** Top token theo |lift − 1| từ ChannelMetrics.title.tokenLift, dùng cho channelDiff. */
+function topTokens(metrics: unknown, limit = 15): string[] {
+  const title = (metrics as { title?: { tokenLift?: unknown } } | null)?.title;
+  const lifts = Array.isArray(title?.tokenLift) ? title.tokenLift : [];
+  return lifts
+    .filter((row): row is { token: string } => Boolean(row) && typeof (row as { token?: unknown }).token === 'string')
+    .slice(0, limit)
+    .map((row) => row.token);
+}
+
+function pickDimensions(payload: unknown, dimensions: string[]): unknown {
+  if (!payload || typeof payload !== 'object' || dimensions.length === 0) return payload;
+  const source = payload as Record<string, unknown>;
+  const picked: Record<string, unknown> = {};
+  for (const dimension of dimensions) {
+    if (dimension in source) picked[dimension] = source[dimension];
+  }
+  return picked;
+}
+
 export class SpyService {
   readonly dataRoot: string;
   readonly artifacts: ArtifactStore;
@@ -113,7 +177,14 @@ export class SpyService {
       this.config.sampling,
     );
     this.profile = new ProfileService(this.store, this.llm);
-    this.harvest = new HarvestService(this.store, this.youtube, this.operations, this.llm, this.artifacts);
+    this.harvest = new HarvestService(
+      this.store,
+      this.youtube,
+      this.operations,
+      this.llm,
+      this.artifacts,
+      this.config.concurrency,
+    );
   }
 
   async init(): Promise<void> {
@@ -122,6 +193,7 @@ export class SpyService {
     await this.artifacts.initialize();
     this.config = await loadConfig(this.dataRoot, this.config);
     this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    this.harvest.setConcurrency(this.config.concurrency);
     this.operations.reconcile();
   }
 
@@ -240,6 +312,7 @@ export class SpyService {
     }
     this.config = spyConfigSchema.parse(next);
     this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    this.harvest.setConcurrency(this.config.concurrency);
     this.acquisition.setDefaultSampling(this.config.sampling);
 
     const configPath = defaultConfigPath(this.dataRoot);
@@ -278,6 +351,7 @@ export class SpyService {
     const metrics = this.store.getLatestMetrics('channel', scopeId);
     const hooks = this.store.getLatestProfile('channel', scopeId, 'hooks');
     const topics = this.store.getLatestProfile('channel', scopeId, 'topics');
+    const voice = this.store.getLatestProfile('channel', scopeId, 'voice');
     return {
       spyRunId: run.id,
       computedAt: metrics?.computedAt ?? run.completedAt,
@@ -285,14 +359,44 @@ export class SpyService {
       metrics: metrics?.payload ?? null,
       hooks: hooks?.payload ?? null,
       topics: topics?.payload ?? null,
+      voice: voice?.payload ?? null,
+      // Profile chỉ có sau khi chạy spy_hook_taxonomy / spy_topic_clusters / spy_voice_profile.
+      profileModel: hooks?.model ?? topics?.model ?? voice?.model ?? null,
+      missingProfiles: [
+        hooks ? null : 'hooks',
+        topics ? null : 'topics',
+        voice ? null : 'voice',
+      ].filter((kind): kind is string => kind !== null),
     };
   }
 
   channelOutliers(channelIdOrSpyRunId: string, minScore = 1.5) {
     const run = this.resolveRun(channelIdOrSpyRunId);
     const metrics = this.store.getLatestMetrics('channel', run.sourceIdentity);
-    const payload = metrics?.payload as { outliers?: Array<{ videoId: string; outlierScore: number; cohort: string }> } | null;
-    return (payload?.outliers ?? []).filter((o) => o.outlierScore >= minScore);
+    const payload = metrics?.payload as { outliers?: OutlierRow[] } | null;
+    const rows = payload?.outliers ?? [];
+    const scored = rows.map((row) => {
+      const { score, method } = readMetricNumber(row.outlierScore);
+      return {
+        videoId: row.videoId,
+        viewCount: row.viewCount ?? null,
+        cohort: row.cohort,
+        metricUsed: row.metricUsed ?? null,
+        outlierScore: score,
+        method,
+      };
+    });
+    return {
+      spyRunId: run.id,
+      computedAt: metrics?.computedAt ?? null,
+      minScore,
+      sampleSize: rows.length,
+      // Điểm không tính được (mẫu nhỏ / MAD=0) tách riêng thay vì bị lọc im lặng.
+      unscored: scored.filter((row) => row.outlierScore === null).length,
+      outliers: scored
+        .filter((row) => row.outlierScore !== null && row.outlierScore >= minScore)
+        .sort((a, b) => (b.outlierScore ?? 0) - (a.outlierScore ?? 0)),
+    };
   }
 
   titlePatterns(channelIdOrSpyRunId: string) {
@@ -330,26 +434,190 @@ export class SpyService {
     return this.profile.voiceProfile(run.id);
   }
 
+  /**
+   * So sánh video theo dimension. `dimensions` rỗng = lấy tất cả.
+   * Dimension hợp lệ khớp key cấp 1 của VideoMetrics: title | performance | speech | visual.
+   */
   compare(videoIds: string[], dimensions: string[]) {
+    const known = ['title', 'performance', 'speech', 'visual'];
+    const unknownDimensions = dimensions.filter((d) => !known.includes(d));
+    const results = videoIds.map((videoId) => {
+      const payload = this.store.getLatestMetrics('video', videoId)?.payload ?? null;
+      return {
+        videoId,
+        metrics: payload === null ? null : pickDimensions(payload, dimensions),
+        missing: payload === null,
+      };
+    });
+
+    // Bảng số phẳng để so ngang: field → giá trị từng video + min/max/spread.
+    const flat = results.map((row) => ({ videoId: row.videoId, numbers: numbersIn(row.metrics) }));
+    const fields = [...new Set(flat.flatMap((row) => Object.keys(row.numbers)))].sort();
+    const table = fields.map((field) => {
+      const values = flat
+        .map((row) => ({ videoId: row.videoId, value: row.numbers[field] }))
+        .filter((entry): entry is { videoId: string; value: number } => entry.value !== undefined);
+      const numeric = values.map((entry) => entry.value);
+      const min = numeric.length ? Math.min(...numeric) : null;
+      const max = numeric.length ? Math.max(...numeric) : null;
+      return {
+        field,
+        values,
+        min,
+        max,
+        spread: min !== null && max !== null ? max - min : null,
+        ratio: min !== null && max !== null && min !== 0 ? max / min : null,
+      };
+    });
+
     return {
       videoIds,
-      dimensions,
-      results: videoIds.map((videoId) => ({
-        videoId,
-        metrics: this.store.getLatestMetrics('video', videoId)?.payload ?? null,
-      })),
+      dimensions: dimensions.length ? dimensions : known,
+      unknownDimensions,
+      method: 'deterministic' as const,
+      results,
+      table,
     };
   }
 
+  /** Diff thật giữa hai kênh: chênh lệch từng chỉ số số học + khác biệt token/topic. */
   channelDiff(channelIdA: string, channelIdB: string) {
+    const a = this.channelProfile(channelIdA);
+    const b = this.channelProfile(channelIdB);
+    const numbersA = numbersIn(a.metrics);
+    const numbersB = numbersIn(b.metrics);
+    const fields = [...new Set([...Object.keys(numbersA), ...Object.keys(numbersB)])].sort();
+
+    const diff = fields.map((field) => {
+      const valueA = numbersA[field] ?? null;
+      const valueB = numbersB[field] ?? null;
+      const delta = valueA !== null && valueB !== null ? valueB - valueA : null;
+      return {
+        field,
+        a: valueA,
+        b: valueB,
+        delta,
+        ratio: valueA !== null && valueB !== null && valueA !== 0 ? valueB / valueA : null,
+        onlyIn: valueA === null ? 'b' : valueB === null ? 'a' : null,
+      };
+    });
+
+    const tokensA = topTokens(a.metrics);
+    const tokensB = topTokens(b.metrics);
     return {
-      a: this.channelProfile(channelIdA),
-      b: this.channelProfile(channelIdB),
+      a: { channel: channelIdA, ...a },
+      b: { channel: channelIdB, ...b },
+      method: 'deterministic' as const,
+      diff,
+      /** Chênh lệch lớn nhất theo |ratio − 1|, bỏ qua field chỉ có ở một bên. */
+      topDivergence: diff
+        .filter((row) => row.ratio !== null)
+        .sort((x, y) => Math.abs((y.ratio ?? 1) - 1) - Math.abs((x.ratio ?? 1) - 1))
+        .slice(0, 15),
+      titleTokens: {
+        sharedTop: tokensA.filter((token) => tokensB.includes(token)),
+        onlyA: tokensA.filter((token) => !tokensB.includes(token)),
+        onlyB: tokensB.filter((token) => !tokensA.includes(token)),
+      },
     };
   }
 
   listChannels(limit = 100) {
     return this.store.listChannels(limit);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wrapper YouTube Data API — tra cứu trực tiếp, không cần spy run trước.
+  // Batch 50 id/call, 1 quota unit/call.
+  // ---------------------------------------------------------------------------
+
+  private assertDataApi(): void {
+    if (!this.config.youtubeDataApiKey?.trim()) {
+      throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey trong config/spy.json');
+    }
+  }
+
+  async videosByIds(videoIds: string[]) {
+    this.assertDataApi();
+    if (videoIds.length === 0) throw new AppError('invalid_input', 'Cần ít nhất 1 video_id');
+    if (videoIds.length > 50) throw new AppError('invalid_input', 'Tối đa 50 video_id mỗi lần');
+    const found = await this.dataApi.fetchVideoStatistics(videoIds);
+    return {
+      requested: videoIds.length,
+      videos: videoIds.map((id) => found.get(id) ?? null).filter((v) => v !== null),
+      missing: videoIds.filter((id) => !found.has(id)),
+      quotaUnitsApprox: Math.ceil(videoIds.length / 50),
+    };
+  }
+
+  async channelsByIds(channelIds: string[]) {
+    this.assertDataApi();
+    if (channelIds.length === 0) throw new AppError('invalid_input', 'Cần ít nhất 1 channel_id');
+    if (channelIds.length > 50) throw new AppError('invalid_input', 'Tối đa 50 channel_id mỗi lần');
+    const handles = channelIds.filter((id) => id.startsWith('@'));
+    const ids = channelIds.filter((id) => !id.startsWith('@'));
+    const found = await this.dataApi.fetchChannelStatistics(ids);
+    const resolved = [...found.values()];
+    for (const handle of handles) {
+      const channel = await this.dataApi.resolveChannelByHandle?.(handle);
+      if (channel) resolved.push(channel);
+    }
+    return {
+      requested: channelIds.length,
+      channels: resolved,
+      missing: ids.filter((id) => !found.has(id)),
+      quotaUnitsApprox: Math.ceil(ids.length / 50) + handles.length,
+    };
+  }
+
+  async videoComments(input: {
+    videoId?: string;
+    channelId?: string;
+    maxResults?: number;
+    order?: 'relevance' | 'time';
+    includeReplies?: boolean;
+  }) {
+    this.assertDataApi();
+    if (!this.dataApi.fetchVideoComments) {
+      throw new AppError('capability_missing', 'Data API adapter không hỗ trợ comment');
+    }
+    const threads = await this.dataApi.fetchVideoComments(input);
+    return {
+      scope: input.videoId ? { videoId: input.videoId } : { channelId: input.channelId },
+      order: input.order ?? 'relevance',
+      count: threads.length,
+      totalReplies: threads.reduce((sum, thread) => sum + thread.totalReplyCount, 0),
+      threads,
+      quotaUnitsApprox: 1,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Competitor list — state cục bộ, không cần OAuth.
+  // ---------------------------------------------------------------------------
+
+  listCompetitors(ownerChannelId: string) {
+    const rows = this.store.listCompetitors(ownerChannelId);
+    return { ownerChannelId, count: rows.length, competitors: rows };
+  }
+
+  updateCompetitors(input: { ownerChannelId: string; follow?: string[]; unfollow?: string[]; note?: string }) {
+    const follow = input.follow ?? [];
+    const unfollow = input.unfollow ?? [];
+    const overlap = follow.filter((id) => unfollow.includes(id));
+    if (overlap.length > 0) {
+      throw new AppError('invalid_input', `Không thể vừa follow vừa unfollow: ${overlap.join(', ')}`);
+    }
+    const added = follow.filter((id) => this.store.addCompetitor(input.ownerChannelId, id, input.note));
+    const removed = unfollow.filter((id) => this.store.removeCompetitor(input.ownerChannelId, id));
+    return {
+      ownerChannelId: input.ownerChannelId,
+      added,
+      alreadyFollowing: follow.filter((id) => !added.includes(id)),
+      removed,
+      notFollowing: unfollow.filter((id) => !removed.includes(id)),
+      competitors: this.store.listCompetitors(input.ownerChannelId),
+    };
   }
 
   listChannelVideos(query: unknown) {

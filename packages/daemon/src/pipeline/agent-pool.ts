@@ -29,9 +29,21 @@ function shortHash(input: string, len = 6): string {
  * itself gets truncated to fit the remaining budget). 6 hex chars is a deliberately
  * small collision-risk tradeoff acceptable at M0.5 scale (one running batch at a
  * time, human-attended) — not a cryptographic identifier.
+ *
+ * `sessionGroup` (added 2026-08-09, SDD §12a session-continuity fix): when set, the
+ * id ignores `attempt` entirely and stays stable across repeated ACQUIRE calls with
+ * the same (templateId, batchId, itemId, sessionGroup) — e.g. Training Lab's DRAFT
+ * stage passes a group stable across all 3 rounds, so the SAME clone id is reused
+ * round over round. That stability is what lets `TeamStore.resumeRef(agentId)`
+ * (keyed by this exact id string) find the prior round's session and resume it —
+ * reaping the clone's config entry between rounds does not clear that lookup, it
+ * lives in a separate store. Without `sessionGroup`, behavior is unchanged (id keyed
+ * by `attempt`, a fresh clone every dispatch, matching M0.5's original design).
  */
-export function cloneAgentId(templateId: string, batchId: string, itemId: string, attempt: number): string {
-  const suffix = `-${shortHash(batchId)}-${shortHash(itemId)}-a${attempt}`;
+export function cloneAgentId(templateId: string, batchId: string, itemId: string, attempt: number, sessionGroup?: string): string {
+  const suffix = sessionGroup
+    ? `-${shortHash(batchId)}-${shortHash(itemId)}-s${shortHash(sessionGroup, 4)}`
+    : `-${shortHash(batchId)}-${shortHash(itemId)}-a${attempt}`;
   const templateBudget = Math.max(1, MAX_ID_LEN - suffix.length);
   const template = templateId.slice(0, templateBudget);
   return `${template}${suffix}`.slice(0, MAX_ID_LEN);
@@ -43,6 +55,8 @@ export interface AcquireCloneParams {
   itemId: string;
   attempt: number;
   itemRunDir: string;
+  /** See `cloneAgentId`'s doc comment. */
+  sessionGroup?: string;
 }
 
 /**
@@ -55,7 +69,7 @@ export interface AcquireCloneParams {
  */
 export function acquireClone(agents: AgentManager, params: AcquireCloneParams): AgentDefinition {
   const template = agents.get(params.templateId);
-  const id = cloneAgentId(params.templateId, params.batchId, params.itemId, params.attempt);
+  const id = cloneAgentId(params.templateId, params.batchId, params.itemId, params.attempt, params.sessionGroup);
   return agents.save({
     ...template,
     id,

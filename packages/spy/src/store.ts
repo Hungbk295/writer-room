@@ -16,7 +16,7 @@ import type {
   VideoTranscript,
 } from './schema.ts';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -168,6 +168,18 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_scope
   ON profiles(scope, scope_id, kind, computed_at);
 
+-- v3: danh sách kênh đối thủ theo dõi thủ công (không cần OAuth).
+CREATE TABLE IF NOT EXISTS competitors (
+  id TEXT PRIMARY KEY,
+  owner_channel_id TEXT NOT NULL,
+  competitor_channel_id TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(owner_channel_id, competitor_channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_competitors_owner
+  ON competitors(owner_channel_id, created_at);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
   text,
   content='transcript_segments',
@@ -295,6 +307,9 @@ export class SpyStore {
       this.database.prepare('INSERT INTO schema_version(version) VALUES (?)').run(SCHEMA_VERSION);
     } else {
       const version = Number(row['version']);
+      if (!Number.isInteger(version) || version < 1 || version > SCHEMA_VERSION) {
+        throw new AppError('internal', `Unsupported database schema ${String(row['version'])}`);
+      }
       if (version === 1) {
         this.database.exec(MIGRATION_1_TO_2);
         try {
@@ -302,9 +317,10 @@ export class SpyStore {
         } catch {
           // already present
         }
+      }
+      // v2 → v3 chỉ thêm bảng `competitors`, đã được SCHEMA_SQL tạo ở trên (IF NOT EXISTS).
+      if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
-      } else if (version !== SCHEMA_VERSION) {
-        throw new AppError('internal', `Unsupported database schema ${String(row['version'])}`);
       }
     }
   }
@@ -917,6 +933,38 @@ export class SpyStore {
       nowIso(),
     );
     return id;
+  }
+
+  listCompetitors(ownerChannelId: string): Array<{
+    competitorChannelId: string;
+    note: string | null;
+    createdAt: string;
+  }> {
+    const rows = this.database.prepare(
+      `SELECT competitor_channel_id, note, created_at FROM competitors
+       WHERE owner_channel_id=? ORDER BY created_at ASC`,
+    ).all(ownerChannelId) as Row[];
+    return rows.map((row) => ({
+      competitorChannelId: String(row['competitor_channel_id']),
+      note: nullableString(row['note']),
+      createdAt: String(row['created_at']),
+    }));
+  }
+
+  /** Idempotent: follow lại kênh đã có không tạo bản ghi trùng. */
+  addCompetitor(ownerChannelId: string, competitorChannelId: string, note?: string): boolean {
+    const result = this.database.prepare(
+      `INSERT OR IGNORE INTO competitors (id, owner_channel_id, competitor_channel_id, note, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), ownerChannelId, competitorChannelId, note ?? null, nowIso());
+    return Number(result.changes) > 0;
+  }
+
+  removeCompetitor(ownerChannelId: string, competitorChannelId: string): boolean {
+    const result = this.database.prepare(
+      `DELETE FROM competitors WHERE owner_channel_id=? AND competitor_channel_id=?`,
+    ).run(ownerChannelId, competitorChannelId);
+    return Number(result.changes) > 0;
   }
 
   getLatestProfile(scope: string, scopeId: string, kind: string): {

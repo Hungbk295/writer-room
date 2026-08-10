@@ -131,7 +131,17 @@ const codex: AgentAdapter = {
     return spec;
   },
   buildHeadlessTurn(agent, ctx) {
-    const spec = baseSpec(agent, ctx, ['exec', ...agent.args, ctx.turnPrompt], 'headless-turn');
+    // `codex exec resume <SESSION_ID> [OPTIONS] [PROMPT]` — verified 2026-08-09 against
+    // codex-cli 0.147.0 (`codex exec resume --help`): SESSION_ID/PROMPT are positional,
+    // all `exec` options (--model, -c, --dangerously-bypass-approvals-and-sandbox) are
+    // also valid under `resume`. A real resumed turn was confirmed to retain prior-turn
+    // memory (see docs/plans/agent-harness-architecture.md §5.8) and cost far fewer
+    // tokens than a fresh turn — this is the load-bearing fix for SDD §12a's deferred
+    // "session continuity for DRAFT" item.
+    const args = ctx.resumeSessionRef
+      ? ['exec', 'resume', ctx.resumeSessionRef, ...agent.args, ctx.turnPrompt]
+      : ['exec', ...agent.args, ctx.turnPrompt];
+    const spec = baseSpec(agent, ctx, args, 'headless-turn');
     spec.warnings.push('Codex headless: MCP team tools not auto-wired — prompt embeds assignment/messages');
     return spec;
   },
@@ -242,8 +252,17 @@ const grok: AgentAdapter = {
       if (i > 0 && arr[i - 1] === '--mcp-config') return false;
       return true;
     });
-    // Headless: pass prompt positionally (see `grok --help`).
-    const args = [...cleaned, prompt];
+    // Headless MUST use `-p/--single` (real bug found 2026-08-10, verified against
+    // grok-cli 1.0.0 by hand): a bare positional PROMPT is documented as "Initial
+    // prompt for the INTERACTIVE session" — it launches the TUI seeded with that
+    // prompt, not a one-shot run. A real pipeline turn confirmed this: Grok wrote a
+    // valid out/result.json, then sat idle at 0% CPU forever instead of exiting,
+    // because it was still an open interactive session waiting for more input.
+    // `--single`/`-p` is the documented one-shot flag: "Prints the response to
+    // stdout and exits". `--permission-mode bypassPermissions` mirrors codex's
+    // `--dangerously-bypass-approvals-and-sandbox` — pipeline turns run unattended,
+    // no human present to approve tool calls.
+    const args = [...cleaned, '--permission-mode', 'bypassPermissions', '--single', prompt];
     const spec = baseSpec(agent, ctx, args, 'headless-turn');
     spec.warnings.push('Grok headless: assignment/messages embedded in prompt; MCP from .grok/config.toml if present');
     return spec;

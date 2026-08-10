@@ -113,6 +113,8 @@ export const terminals = {
       env['TERM'] = 'xterm-256color';
     }
     if (!env['COLORTERM']) env['COLORTERM'] = 'truecolor';
+    if (!env['COLUMNS']) env['COLUMNS'] = String(cols);
+    if (!env['LINES']) env['LINES'] = String(rows);
     // Prefer user CLI homes over Homebrew when PATH is present (Homebrew
     // ships a different `grok` package that requires GROK_API_KEY).
     if (env['PATH'] && !env['PATH'].includes('/.grok/bin')) {

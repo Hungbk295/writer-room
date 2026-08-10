@@ -18,6 +18,11 @@ import {
   type VideoTranscript,
 } from './schema.ts';
 
+function clampConcurrency(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(4, Math.floor(value)));
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
@@ -44,13 +49,23 @@ function sortKey(orderBy: ChannelVideosQuery['orderBy'], row: VideoListRow, now:
 }
 
 export class HarvestService {
+  /** Số worker fetch transcript song song — lấy từ config.concurrency (1..4). */
+  private concurrency: number;
+
   constructor(
     private readonly store: SpyStore,
     private readonly youtube: YoutubePort,
     private readonly operations: OperationManager,
     private readonly llm: LlmPort,
     private readonly artifacts?: ArtifactStore,
-  ) {}
+    concurrency = 3,
+  ) {
+    this.concurrency = clampConcurrency(concurrency);
+  }
+
+  setConcurrency(value: number | undefined): void {
+    this.concurrency = clampConcurrency(value ?? this.concurrency);
+  }
 
   listChannelVideos(raw: unknown) {
     const query = channelVideosQuerySchema.parse(raw);
@@ -144,7 +159,7 @@ export class HarvestService {
         let fetched = 0;
         let skipped = 0;
         const failed: Array<{ videoId: string; reason: string }> = [];
-        const concurrency = 3;
+        const concurrency = this.concurrency;
         let index = 0;
         const workers = Array.from({ length: Math.min(concurrency, videoIds.length) }, async () => {
           while (index < videoIds.length) {

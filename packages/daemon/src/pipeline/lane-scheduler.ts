@@ -35,6 +35,11 @@ export interface DispatchItemParams {
   /** Per-dispatch override of the scoped-budget placeholder defaults (see class doc). */
   maxTurns?: number;
   maxDurationMinutes?: number;
+  /** Forwarded to `agent-pool.ts`'s `acquireClone` — see its doc comment. When set, this
+   * dispatch's clone id is stable across `attempt`, letting the underlying CLI session
+   * resume turn over turn instead of starting fresh (SDD §12a session-continuity fix,
+   * 2026-08-09). Omit for the default M0.5 behavior (fresh clone every attempt). */
+  sessionGroup?: string;
   /**
    * Optional domain-owned grounding check (SDD §5.2 commit-rule Branch 4,
    * `AGENT_UNGROUNDED`) — e.g. Training-core's `validateAnalysis` bound to the
@@ -231,8 +236,9 @@ export class LaneScheduler {
     // would make the detector blind to precisely the escape vector it exists to
     // catch. Known limitation: two DIFFERENT STAGES of the same (item, attempt)
     // dispatched concurrently would share this snapshot root and could false-flag
-    // each other's legitimate `out/` writes; M0.5 stages run sequentially per item,
-    // so this does not arise in practice yet.
+    // each other's legitimate writes; M0.5 stages run sequentially per item, so this
+    // does not arise in practice yet. (Everything WITHIN one stage's own directory —
+    // `out/` or otherwise — is allowed; see the post-settle check below.)
     const sandboxRoot = join(itemRunDir, '..');
     const baselineFiles = await listFilesRecursive(sandboxRoot);
 
@@ -242,7 +248,9 @@ export class LaneScheduler {
     }
 
     // Step 5 (ACQUIRE): clone the template agent for this turn.
-    const clone = acquireClone(this.deps.agents, { templateId, batchId, itemId, attempt, itemRunDir });
+    const clone = acquireClone(this.deps.agents, {
+      templateId, batchId, itemId, attempt, itemRunDir, sessionGroup: params.sessionGroup,
+    });
     const cloneId = clone.id;
 
     // Step 6: dispatch — exclusive + scoped budget, never mcp__team.
@@ -358,8 +366,19 @@ export class LaneScheduler {
 
       // Branch 5: sandbox violation — post-hoc tree diff (SDD §5.2 "Codex specifics":
       // Codex cannot be technically confined, so this is a detector, not enforcement).
+      // Allowed prefix is the WHOLE `{stage}/` cwd, not just `{stage}/out/` (fixed
+      // 2026-08-10, real Grok Build bug: `writeGrokMcpConfig` — daemon-owned
+      // infrastructure, not agent action — writes `.grok/config.toml` into the turn's
+      // own cwd because Grok has no `--mcp-config` flag; that landed at
+      // `{stage}/.grok/config.toml` and was being flagged as an escape even though it
+      // never left the turn's own directory. The actual threat this branch exists to
+      // catch (SDD §5.2 "Codex specifics") is an agent escaping ITS OWN stage
+      // directory into a sibling stage or above (see the `write-outside` stub-agent
+      // test, which writes to `../escaped.txt` — outside `{stage}/` entirely, still
+      // caught). A file anywhere inside `{stage}/`, however it got there, is
+      // contained and not a violation.
       const afterFiles = await listFilesRecursive(entry.sandboxRoot);
-      const allowedPrefix = `${entry.stage}/out/`;
+      const allowedPrefix = `${entry.stage}/`;
       for (const relPath of afterFiles) {
         if (entry.baselineFiles.has(relPath)) continue;
         if (relPath.startsWith(allowedPrefix)) continue;

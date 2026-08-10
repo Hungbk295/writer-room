@@ -4,7 +4,7 @@
 |-------|-------|
 | Agent | writer-train |
 | Status | active |
-| Current plan | [`HANDOFF.md`](./HANDOFF.md) |
+| Current plan | [`HANDOFF.md`](./HANDOFF.md) · phase M2/M2.5: [`PHASES-M2-STUDIO.md`](./PHASES-M2-STUDIO.md) |
 | Last commit | — |
 | Last sync check | — |
 | Updated | 2026-08-09 |
@@ -18,12 +18,16 @@ Lane Training của SDD 002 + execution layer dùng chung (M0 → M3).
 | M0 — Pipeline Core + stub agent | **done** — `packages/pipeline-core` created 2026-08-09, `bun test` 33/33 green, typecheck clean |
 | M0.5 — Walking skeleton (turnBridge P-DEF-1b) | **done 2026-08-09** — E2E thật xác nhận: turn Claude thật qua turnBridge, `out/result.json` commit thành artifact có hash, clone reaped |
 | M1 — Formula Discovery 1 video | **done 2026-08-09** — full flow demo Claude(sonnet)→Codex(terra high) chạy thật thành công, xem "Demo full flow" bên dưới |
-| M2 — Batch + multi-channel | user nói chưa cần quan tâm — sẽ mô tả luồng nhiều video/channel sau. Chờ ADR-5 khi tới lúc. |
+| M1.5 — Training Lab (calibration loop, mới thêm) | **backend+UI done 2026-08-09, E2E thật 1/3 vòng thành công** — xem "Training Lab" bên dưới |
+| M2 — Batch training (N video song song) | **thiết kế xong 2026-08-10, chưa code** — chỉ còn phần *thực thi*: N video → N Formula độc lập, **không gộp gì cả**. SDD §6.1a. Chia phase: P0 (batch-lite) + P6 (dashboard đầy đủ). |
+| M2.5 — Formula Studio (mới, user-directed 2026-08-10) | **thiết kế xong, chưa code** — human chọn rule → app cluster → LLM ghép chữ → human duyệt → viết thử + critique → promote thành Formula theo *thể loại*. SDD §12b, ADR-13. Chia phase P1→P5, xem `PHASES-M2-STUDIO.md`. |
 | M3 — Resilience | chưa bắt đầu |
 
 ## Notes / blockers
 
-- ADR-2, ADR-8, ADR-9, ADR-10 đã được user xác nhận 2026-08-09.
+- ADR-2, ADR-8, ADR-9, ADR-10 đã được user xác nhận 2026-08-09. **ADR-5 + ADR-13 xác nhận 2026-08-10.**
+- **Đổi hướng quan trọng 2026-08-10 (ADR-5):** channel **không** phải trục gom Formula. User: "1 kênh có nhiều formula… merge cần human chọn rồi mới dùng thuật toán/call llm. Nó là phép thử không thể auto được." Nên: bản thiết kế `PER_CHANNEL_COMPARE`/`comparison-report` viết sáng cùng ngày đã **bị bỏ hẳn** (không phải hoãn). Formula per-video là đơn vị nguyên tử; gộp thành Formula **theo thể loại content** diễn ra trong Formula Studio (M2.5) do human lái.
+- Studio tái dùng nguyên `dispatchItem` + vòng DRAFT/CRITIQUE của Training Lab. 1 thay đổi contract thật sự cần: `CritiqueEvidence` thêm `videoSnapshotId` để critique cite được nhiều video nguồn. Kèm ràng buộc envelope: critique bản compound **chỉ gửi các đoạn evidence đã cite**, không gửi full transcript — trực tiếp phòng lỗi `AGENT_NO_OUTPUT` ~96KB đã gặp thật ở vòng 2 Training Lab.
 - **ADR-8 quyết định cuối:** hoàn tất `turnBridge` (P-DEF-1b) phía Tauri client, dùng lại Rust PTY sẵn có. **Không xây daemon-side Turn Runner** — user đã bỏ hẳn hướng này, không giữ làm phương án dự phòng. Đóng app Tauri = batch tạm dừng (CON-13), chấp nhận đánh đổi.
 - ADR-5 (multi-channel scope) vẫn `Pending`, chặn M2.
 - Ranh giới tôn trọng: không sửa `packages/daemon/src/team/**`, `src-tauri/**`, `packages/daemon/src/agents/**` (chỉ gọi API sẵn có).
@@ -72,3 +76,21 @@ Dùng lại đúng hạ tầng generic của M0.5 (`POST /api/pipeline/items/dis
 Đã sửa qua `PUT /api/agents` (chỉnh data trong `agents/team.json`, **không sửa code nguồn** — tôn trọng ranh giới không đụng `packages/daemon/src/agents/**`). Turn thứ 2 (turnId 6) chạy thành công trong 46s, Codex áp dụng đủ cả 7 rule, viết script ~450 từ tiếng Việt đúng phong cách Formula (mở bằng câu chuyện cụ thể có số liệu, đặt tên khái niệm riêng "Phí Trôi Dạt" lặp lại như nhãn phần, chia 3 "Phần", nhân vật phụ đối lập (Mai), chốt bằng khung 3 khái niệm).
 
 **Đã sửa tận gốc (2026-08-09, user cho phép đụng ngoài ranh giới lần này):** `packages/daemon/src/agents/defaults.ts` — `CODEX_DEFAULT_ARGS` đổi sang `-c model_reasoning_effort=high`; thêm nhánh repair trong `ensureDefaultAgents()` nhận diện đúng shape args cũ bị lỗi (`BROKEN_CODEX_ARGS_V1`) và tự vá cho mọi instance/agent session khác từng seed bản cũ (không đụng args nếu user đã tự tùy biến). Thêm 2 test regression guard trong `packages/daemon/test/agents-defaults.test.ts`. `bun test` 101/101 xanh, typecheck sạch. Đây là lần duy nhất tôi đụng `packages/daemon/src/agents/**` ngoài ngoại lệ workspaceRoots đã định — có xin phép trước.
+
+## Training Lab — calibration loop (M1.5, mới, 2026-08-09)
+
+Thiết kế đầy đủ chốt với user, ghi vào SDD `docs/specs/002-writer-agent-mvp/solution-design.md` §12a — coi đó là nguồn sự thật, không lặp lại chi tiết ở đây.
+
+### Xây gì
+
+- **Backend**: `packages/training-core` thêm `FormulaVersion`, `CritiqueArtifact`/`CritiquePattern`/`CritiqueEvidence`, `DraftArtifact`, `validateCritique()` (grounding 2 chiều: source phải trỏ transcript thật, draft phải trỏ script thật). `packages/daemon/src/training/training-lab.ts` (mới) — state machine `DRAFT(codex)→CRITIQUE(claude)→REFINE(claude)`, tối đa 3 vòng, tái dùng 100% `LaneScheduler.dispatchItem` sẵn có (không sửa `lane-scheduler.ts`), điều khiển hoàn toàn qua 1 `onItemSettled` listener (giống `aggregator.ts`). 3 route mới: `POST /api/training/lab/start`, `GET /api/training/lab/runs`, `GET /api/training/lab/runs/:id`. `bun test` 110/110 xanh (9 test mới), typecheck sạch.
+- **UI**: tab "Training Lab" riêng (`#/training/lab` danh sách, `#/training/lab/:id` chi tiết) — mỗi vòng hiện đủ 4 phần đúng yêu cầu user: Formula vào, bài viết agent 2, chấm điểm (positive/negative pattern có bằng chứng 2 chiều), Formula sau chỉnh. Nút "🔬 Bắt đầu Training Lab" gắn trên trang Formula detail (M1). Typecheck + `vite build` xanh.
+- **Cố ý chưa làm** (ghi rõ trong §12a, không phải thiếu sót): CLI session-resume thật cho Codex (cần sửa `adapters.ts`, ngoài ranh giới, cần hỏi user riêng); merge Formula nhiều video (user nói bàn sau); điểm số dạng số (dùng pattern định tính theo đúng yêu cầu "tiêu chí đơn giản").
+
+### E2E thật (2026-08-09) — 1/3 vòng thành công, phát hiện 1 lỗi thật
+
+Chạy Training Lab thật trên Formula "Sói Tài Chính" đã có (v1, 7 rule):
+
+- **Vòng 1: thành công trọn vẹn** — Codex viết bài mới ("Lương 45 Triệu Nhưng Vẫn Không Dám Nghỉ Việc..."), Claude chấm ra **6 positive + 3 negative pattern**, mỗi pattern có bằng chứng cả 2 phía (transcript gốc + bài viết). Negative pattern bắt được lỗi tinh vi self-report `appliedRules` không thể bắt được (vd: nguồn luôn nói tiền tròn số "khoảng 3-4 triệu", draft lại viết số chính xác) — **đúng chứng minh giá trị thiết kế ban đầu**. Formula v2 sinh ra: 7 rule → 8 rule, có căn cứ.
+- **Vòng 2: fail thật ở bước CRITIQUE** — Claude exit code 0 nhưng không ghi `out/result.json` (`AGENT_NO_OUTPUT`). Nghi do prompt vòng 2 lớn hơn (~96KB: transcript + formula 8 rule + draft) khiến model kết thúc phản hồi trước khi gọi tool ghi file. Hệ thống phát hiện đúng, dừng run sạch (`run.status: FAILED`), không chạy tiếp với dữ liệu thiếu — **đúng thiết kế, không phải bug hỏng dữ liệu**.
+- **Cần theo dõi tiếp**: nếu `AGENT_NO_OUTPUT` lặp lại nhiều ở CRITIQUE/REFINE (prompt lớn), có thể cần giảm kích thước envelope (chỉ gửi các segment liên quan thay vì cả transcript) hoặc tăng `timeoutMs`/nhắc lại rõ hơn trong prompt — chưa đủ dữ liệu để kết luận, mới thấy 1 lần.

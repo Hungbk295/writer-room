@@ -335,10 +335,6 @@ export function AgentsPage() {
                   <span class="chip">{agent.role || 'no role'}</span>
                   <span class="muted small">{agent.workingDirectoryMode}</span>
                 </div>
-                <div class="meta-row path-row" title={agent.projectRoot}>
-                  <span class="meta-label">Root:</span>
-                  <span class="path-text">{agent.projectRoot}</span>
-                </div>
                 <div class="meta-row cmd-row">
                   <code>{agent.executable} {(agent.args ?? []).join(' ')}</code>
                 </div>

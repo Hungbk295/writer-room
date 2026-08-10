@@ -57,10 +57,35 @@ export interface PlaylistVideoItem {
   position: number;
 }
 
+export interface CommentThread {
+  commentId: string;
+  videoId: string | null;
+  authorDisplayName: string | null;
+  text: string;
+  likeCount: number | null;
+  publishedAt: string | null;
+  updatedAt: string | null;
+  totalReplyCount: number;
+  replies: Array<{
+    commentId: string;
+    authorDisplayName: string | null;
+    text: string;
+    likeCount: number | null;
+    publishedAt: string | null;
+  }>;
+}
+
 export interface YouTubeDataApiPort {
   fetchVideoStatistics(videoIds: readonly string[]): Promise<Map<string, VideoStatistics>>;
   fetchChannelStatistics(channelIds: readonly string[]): Promise<Map<string, ChannelStatistics>>;
   resolveChannelByHandle?(handle: string): Promise<ChannelStatistics | null>;
+  fetchVideoComments?(input: {
+    videoId?: string;
+    channelId?: string;
+    maxResults?: number;
+    order?: 'relevance' | 'time';
+    includeReplies?: boolean;
+  }): Promise<CommentThread[]>;
   listUploadsPlaylistItems?(
     uploadsPlaylistId: string,
     limit: number,
@@ -102,6 +127,32 @@ interface ApiItem {
 
 interface ListResponse {
   items?: ApiItem[];
+  nextPageToken?: string;
+}
+
+interface CommentSnippet {
+  authorDisplayName?: string;
+  textOriginal?: string;
+  textDisplay?: string;
+  likeCount?: number;
+  publishedAt?: string;
+  updatedAt?: string;
+}
+
+interface CommentResource {
+  id?: string;
+  snippet?: CommentSnippet;
+}
+
+interface CommentThreadListResponse {
+  items?: Array<{
+    snippet?: {
+      videoId?: string;
+      totalReplyCount?: number;
+      topLevelComment?: CommentResource;
+    };
+    replies?: { comments?: CommentResource[] };
+  }>;
   nextPageToken?: string;
 }
 
@@ -221,6 +272,68 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
       viewCount: parseCount(item.statistics?.viewCount),
       uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
     };
+  }
+
+  /**
+   * commentThreads.list — 1 quota unit/call, tối đa 100 thread/call.
+   * Truyền videoId HOẶC channelId (channelId = comment trên mọi video của kênh).
+   */
+  async fetchVideoComments(input: {
+    videoId?: string;
+    channelId?: string;
+    maxResults?: number;
+    order?: 'relevance' | 'time';
+    includeReplies?: boolean;
+  }): Promise<CommentThread[]> {
+    if (!this.enabled()) {
+      throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey — không lấy được comment');
+    }
+    if (!input.videoId && !input.channelId) {
+      throw new AppError('invalid_input', 'Cần videoId hoặc channelId');
+    }
+    if (input.videoId && input.channelId) {
+      throw new AppError('invalid_input', 'Chỉ truyền một trong videoId / channelId');
+    }
+    const wanted = Math.max(1, Math.min(input.maxResults ?? 20, 100));
+    const includeReplies = input.includeReplies !== false;
+    const params: Record<string, string> = {
+      part: includeReplies ? 'snippet,replies' : 'snippet',
+      maxResults: String(wanted),
+      order: input.order === 'time' ? 'time' : 'relevance',
+      textFormat: 'plainText',
+    };
+    if (input.videoId) params['videoId'] = input.videoId;
+    if (input.channelId) params['allThreadsRelatedToChannelId'] = input.channelId;
+
+    const payload = await this.fetch('commentThreads', params) as unknown as CommentThreadListResponse;
+    const threads: CommentThread[] = [];
+    for (const item of payload.items ?? []) {
+      const top = item.snippet?.topLevelComment;
+      const snippet = top?.snippet;
+      if (!top?.id || !snippet) continue;
+      threads.push({
+        commentId: top.id,
+        videoId: item.snippet?.videoId ?? input.videoId ?? null,
+        authorDisplayName: snippet.authorDisplayName ?? null,
+        text: snippet.textOriginal ?? snippet.textDisplay ?? '',
+        likeCount: parseCount(snippet.likeCount === undefined ? undefined : String(snippet.likeCount)),
+        publishedAt: snippet.publishedAt ?? null,
+        updatedAt: snippet.updatedAt ?? null,
+        totalReplyCount: Number(item.snippet?.totalReplyCount ?? 0),
+        replies: (item.replies?.comments ?? [])
+          .filter((reply) => Boolean(reply.id && reply.snippet))
+          .map((reply) => ({
+            commentId: reply.id!,
+            authorDisplayName: reply.snippet?.authorDisplayName ?? null,
+            text: reply.snippet?.textOriginal ?? reply.snippet?.textDisplay ?? '',
+            likeCount: parseCount(
+              reply.snippet?.likeCount === undefined ? undefined : String(reply.snippet.likeCount),
+            ),
+            publishedAt: reply.snippet?.publishedAt ?? null,
+          })),
+      });
+    }
+    return threads;
   }
 
   async listUploadsPlaylistItems(

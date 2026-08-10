@@ -153,6 +153,18 @@ describe('LaneScheduler — commit rule + clone lifecycle', () => {
     expect(await exists(join(dispatch.itemRunDir, '..', 'escaped.txt'))).toBe(true);
     expect(await exists(join(dispatch.itemRunDir, 'item-manifest.json'))).toBe(false);
   });
+
+  test('write-in-cwd: COMMITTED — a file inside the turn\'s own stage dir (outside out/) is not a violation', async () => {
+    // §5.7 regression guard: real Grok Build turns write `.grok/config.toml` into
+    // their own cwd (daemon-owned MCP wiring, not agent misbehavior — Grok has no
+    // `--mcp-config` flag). That is contained within `{stage}/`, unlike `write-outside`
+    // above which escapes it — must COMMIT, not fail AGENT_SANDBOX_VIOLATION.
+    const scheduler = harness.pipeline.scheduler;
+    const { dispatch, settled } = await dispatchAndSettle(harness, scheduler, baseParams({ itemId: 'item-6' }), 'write-in-cwd');
+    expect(settled.outcome).toBe('COMMITTED');
+    expect(await exists(join(dispatch.itemRunDir, '.grok', 'config.toml'))).toBe(true);
+    expect(await exists(join(dispatch.itemRunDir, 'item-manifest.json'))).toBe(true);
+  });
 });
 
 describe('LaneScheduler — lane admission (GAP-3 / backpressure)', () => {

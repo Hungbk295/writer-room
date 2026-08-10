@@ -70,7 +70,7 @@ breaks, with the section that closes it. Items marked **BLOCKER** stop the flow 
 | CON-2 | A user may run one item or any user-selected batch size. Batch size is not a quality gate or execution cap. |
 | CON-3 | Resource controls limit concurrency, time, turns, and cost per item; they do not require or prohibit a particular item count. |
 | CON-4 | Formula Discovery accepts one or more videos. Small samples produce a usable `TRIAL` Formula with warnings, not a statistically validated Formula. |
-| CON-5 | Training inputs may come from one or multiple channels, but the user must select the intended Formula scope before aggregation. |
+| CON-5 | Training inputs may come from one or multiple channels; the batch never merges them. One video always yields one Formula, and combining Formulas is a human-curated Studio act (ADR-5, §12b). |
 | CON-6 | Each batch item owns its state, checkpoint, attempts, artifacts, and error. Batch status is derived from item states. |
 | CON-7 | One failed item must not rerun, invalidate, or overwrite successful sibling items. |
 | CON-8 | Claude is the primary Analyzer/Author; Codex is the Reviewer/Critic. There is no silent fallback to Agy/Grok. |
@@ -169,11 +169,12 @@ flowchart LR
 
 | Interface | Input | Output |
 |---|---|---|
-| Dataset Builder | One or more videos, channel metadata, Formula scope | Immutable dataset revision + preflight report |
+| Dataset Builder | One or more videos + channel metadata (label only — no scope, ADR-5) | Immutable dataset revision + preflight report |
 | Batch API | Workflow kind, dataset revision, item selection, budget | Batch plus independent item runs |
 | Item Actions | Item ID, action, expected checkpoint hash | Retry, stop, skip, approve, or resume result |
-| Formula Aggregation | Selected successful item IDs and hashes | Formula draft plus provenance manifest |
-| Writer Input | Formula version, one or more titles, per-title Curated Pack | Independent Writer items |
+| Formula Commit | One successful item's ANALYZE hash | One per-video Formula + provenance manifest |
+| Formula Studio | Human-picked rule refs across videos, genre name | Clusters → LLM proposals → human-accepted compound Formula (§12b) |
+| Writer Input | A Formula ref (per-video or compound), one or more titles, per-title Curated Pack | Independent Writer items |
 
 **Outbound interfaces**
 
@@ -328,7 +329,7 @@ endpoints inside the p95 budget (GAP/§13 Performance).
 dataset-manifest.json
   revision_id, items[{item_id, source_id, channel_id, channel_title,
                       transcript_hash, input_hash, preflight: OK | BLOCKED, blockers[]}]
-  execution_mode, formula_scope, created_at
+  execution_mode, created_at            # no formula_scope — a batch never merges (ADR-5)
 
 batch-manifest.json
   batch_id, workflow_kind, dataset_revision_id
@@ -346,10 +347,14 @@ stage-ledger.jsonl                       # per item, append-only
   {turn_key, batch_id, item_id, stage, attempt, epoch, agent_id,
    turn_id, status, started_at, settled_at, artifact_hash?, error?}
 
-formula-manifest.json
+formula-manifest.json                              # L1, one per video (§6.1a)
   formula_id, status: DRAFT | TRIAL | VALIDATED
-  scope, included_item_hashes[], excluded_items[]
-  channel_groups, warnings[], content_hash
+  scope: SINGLE_VIDEO, video_snapshot_id
+  channel_title                                    # label for filtering only, never a grouping key
+  included_item_hashes[], warnings[], content_hash
+
+studio-sessions/{sessionId}/…                      # L2 compound Formulas (§12b) — human-curated,
+                                                    # genre-scoped, never produced by a batch
 ```
 
 Artifacts are immutable. Retrying creates a new attempt only for the selected item and
@@ -370,8 +375,9 @@ revision; unchanged item analyses may be reused by input hash.
 | GET | `/api/batches/:batchId/items/:itemId/log?attempt=&stage=` | Tail `stdout.log` for the run console |
 | POST | `/api/batches/:batchId/items/:itemId/actions/:action` | `retry` \| `stop` \| `skip` \| `resume` \| `approve` \| `reject` |
 | POST | `/api/batches/:batchId/actions/:action` | `pause` \| `resume` \| `stop` \| `retry-failed` \| `continue-with-successes` |
-| POST | `/api/training/batches/:batchId/formulas` | Aggregate selected successful items |
-| POST | `/api/writer/batches` | Create one-title or multi-title Writer batch |
+| POST | `/api/training/batches/:batchId/formulas` | Commit the per-video Formula for each successful item; returns N Formulas, one per video, never merged (§6.1a, ADR-5) |
+| — | Formula Studio endpoints (`/api/studio/*`) | Merging/compounding lives entirely here, human-driven — see §12b |
+| POST | `/api/writer/batches` | Create one-title or multi-title Writer batch; each item independently pins its own `formulaVersionId` (§6.3) |
 | POST | `/api/writer/items/:itemId/actions/:action` | `select-thesis` \| `lock-brief` \| `approve` \| `reject` \| `export` |
 | GET | `/api/writer/items/:itemId/export` | Download the export bundle |
 | GET | `/api/batches/:batchId/events?cursor=N` | SSE with monotonic cursor, replay from cursor, and item correlation |
@@ -387,7 +393,7 @@ silently applying a stale decision.
 ```text
 DatasetRevision
   items[]; executionMode: SINGLE | BATCH
-  formulaScope: SINGLE_CHANNEL | PER_CHANNEL_COMPARE | CROSS_CHANNEL_SHARED
+  # no formulaScope — a batch never merges anything (ADR-5); one video in, one Formula out
 
 BatchRun
   workflowKind: FORMULA_DISCOVERY | WRITER
@@ -399,11 +405,22 @@ ItemRun
         | SUCCEEDED | FAILED | SKIPPED | CANCELLED | INTERRUPTED
   stage; attempt; epoch; inputHashes; checkpointHash; error
 
-FormulaArtifact
+FormulaArtifact                          # L1 — the atomic unit (§12b), produced by ANALYZE
   status: DRAFT | TRIAL | VALIDATED
-  scope; rules; channelGroups; includedArtifacts; warnings
+  scope: SINGLE_VIDEO                    # the only scope a batch can ever produce (ADR-5)
+  videoSnapshotId; channelTitle          # channelTitle = display/filter label, not a key
+  rules; includedArtifacts; warnings
+
+CompoundFormula                          # L2 — Studio-only, human-curated, genre-scoped (§12b)
+  genre; scope: COMPOUND; status; version; sessionId
+  rules[CompoundRule{ statement, facet, provenance[], origin }]
+  sourceVideoCount                       # honest sample size
 
 WriterItem
+  formulaRef: { formulaId, contentHash, level: SINGLE_VIDEO | COMPOUND }
+                                          # pinned per item, not per batch (§6.3) — a batch may
+                                          # write several titles in parallel, each against a
+                                          # different Formula (per-video or compound)
   authorAgentId = "claude"; criticAgentId = "codex"
   reviewLimit = 2; repairLimit = 1; schemaRepairLimit = 1; turnBudget
 ```
@@ -685,10 +702,9 @@ Everything above avoids touching `TeamWorkflow` except these, each small and add
 3. **Preflight runs before the Start button enables** (§7.2): agent binary detected, Claude
    and Codex reachable, transcript present and non-empty per item, input hashes computed,
    disk space, budget estimate.
-4. UI requires a Formula scope:
-   - `SINGLE_CHANNEL`: one Formula for one target channel.
-   - `PER_CHANNEL_COMPARE`: group analyses by channel and show differences; with one video per channel, each result is marked low-sample.
-   - `CROSS_CHANNEL_SHARED`: find shared patterns and channel-specific exceptions; output is not labeled a channel Formula.
+4. **No scope decision exists.** One video always yields one Formula (`scope: SINGLE_VIDEO`),
+   whether the batch spans one channel or ten (ADR-5). Merging rules across videos into a
+   genre Formula is a separate, human-driven Studio session (§12b), never part of a batch.
 5. Each item runs `ANALYZE` (Claude) → `REVIEW` (Codex, optional per config) → `VALIDATED`.
    The scheduler holds items in `WAITING_LANE` when the lane is busy; the dashboard shows the
    queue position so a waiting item never looks stuck.
@@ -722,6 +738,47 @@ flowchart LR
 | `REPAIR` | Claude | analysis + review | `analysis-v{n+1}.json` | max 1, then `FAILED` |
 | `DONE` | app | accepted analysis | checkpoint hash | selectable for aggregation |
 
+### 6.1a Batch training: N videos in parallel, N independent Formulas (M2, ADR-5)
+
+**M2 scales execution, not interpretation.** A training batch takes any `N ≥ 1` videos and
+produces exactly `N` per-video Formulas. It performs **no cross-item aggregation whatsoever** —
+no channel grouping, no merged Formula, no comparison report. Merging is a separate,
+human-driven act in the Formula Studio (§12b). This is ADR-5.
+
+**Execution is channel-blind by design.** The Lane Scheduler (§5.3) dispatches by
+`(batchId, itemId, stage)` and clones one agent per item; nothing in `ACQUIRE`/`ADMIT`/`REAP`
+reads `channel_id`. A batch of 5 videos from one channel and a batch of 5 videos from 5
+different channels run **identically** — same `maxParallel` cap, same retry/skip semantics,
+same partial-success rules (ADR-4). Same-channel vs cross-channel is not a mode the pipeline
+has; it is only a property of what the user happened to select.
+
+This is why M2 needs no scheduler, budget, or status change: §5.3, §5.4 and §6.2 are already
+correct for it. What M2 actually adds is the batch *dataset/UI* layer — selecting N videos,
+per-item preflight, the dashboard, per-item retry — over machinery M0.5/M1 already proved live.
+
+```text
+TRAIN_BATCH(videos[]):
+  for each video (up to maxParallel concurrently):
+     PREPARE → ANALYZE → (REVIEW) → DONE     # §6.1 item stage machine, unchanged
+     commit FormulaArtifact { scope: SINGLE_VIDEO, status: TRIAL, channelTitle: <label only> }
+  → N independent Formulas, each independently retryable, promotable, and refinable
+    in the Training Lab (§12a)
+```
+
+`channel_id` / `channelTitle` stays on every item and every Formula, but purely as a **label
+for filtering and display** in the Studio's rule browser — never as a grouping key that changes
+what gets produced. `SCOPE_REQUIRED` (§6.5) is deleted: a multi-channel dataset needs no scope
+decision, because a batch never merges anything.
+
+`LOW_SAMPLE` (§6.5) is likewise no longer a batch-level concept. Every per-video Formula is by
+definition single-sample; that is its nature, not a warning. Sample size becomes meaningful only
+in the Studio, where a compound Formula records how many videos its rules were drawn from.
+
+**Post-batch, the user has N per-video Formulas and three independent choices**, none automatic:
+1. Refine any one of them through the Training Lab loop (§12a).
+2. Write a script directly against any one of them (§6.3).
+3. Take rules from several of them into the Formula Studio to build a genre Formula (§12b).
+
 ### 6.2 Batch status derivation (GAP-18)
 
 Evaluated in order; the first match wins.
@@ -740,8 +797,14 @@ are not" from "finished". The dashboard header and the app's nav badge both surf
 
 ### 6.3 Primary Flow B: Write one or many scripts
 
-1. User chooses one Formula version (status shown inline: `TRIAL` badge) and adds one or more
-   title items, each with its own Curated Pack.
+1. User adds one or more title items. Each item independently pins its own Formula (status shown
+   inline: `TRIAL` badge) and its own Curated Pack — **not** one Formula for the whole batch. The
+   picker offers both levels interchangeably (§12b): a **per-video** Formula (`SINGLE_VIDEO`) or a
+   **compound genre** Formula (`COMPOUND`); both are hash-pinned identically and the Writer treats
+   them the same. This is what lets one batch write several titles in parallel against different
+   Formulas — the batch is just a set of independently-pinned items, exactly like the Training
+   side (§6.1a). Writing a title with a compound Formula is precisely the "thử viết bài mới" test
+   that tells the user whether that genre Formula is any good.
 2. Preflight per item: Formula pinned by hash, pack has ≥1 claim, pack hash pinned, agents ready.
 3. Claude proposes 3–5 Thesis candidates per item → item enters `HUMAN_WAIT (select-thesis)`
    and **reaps its clone** so other items keep moving.
@@ -800,8 +863,8 @@ the system retries by itself.
 | `BATCH_BUDGET_EXHAUSTED` | scoped budget spent | scheduler | batch `NEEDS_ATTENTION` | "Hết budget của batch" | Cấp thêm budget | no |
 | `INPUT_MISSING_TRANSCRIPT` | no transcript | preflight | `BLOCKED` | "Video chưa có transcript" | nút "Tải transcript" (gọi Spy) | no |
 | `INPUT_NO_CHANNEL` | channel unresolved | preflight | `BLOCKED` | "Chưa xác định được channel" | chọn channel thủ công | no |
-| `SCOPE_REQUIRED` | multi-channel, no scope | dataset validation | batch blocked | "Dataset có {n} channel — chọn cách hiểu" | chọn scope | no |
-| `LOW_SAMPLE` | < 3 videos per channel | aggregation | warning | "Mẫu nhỏ — Formula chỉ ở mức TRIAL" | xác nhận rõ ràng | n/a |
+| `STUDIO_RULE_UNGROUNDED` | synthesized compound rule has empty `provenance[]` | Studio validator (§12b) | proposal rejected | "Rule ghép không truy được về video nguồn" | tổng hợp lại / sửa tay | no |
+| `STUDIO_EVIDENCE_OUT_OF_SCOPE` | critique cites a `videoSnapshotId` outside the compound's provenance set | `validateCritique` (§12b) | `FAILED` (retryable) | "Agent trích dẫn video không nằm trong formula này" | Thử lại | no |
 | `STALE_ACTION` | checkpoint hash mismatch | API 409 | unchanged | "Trạng thái đã thay đổi — đã tải lại" | thao tác lại | auto-refresh |
 | `AGGREGATION_STALE` | included artifact changed | aggregator | Formula draft stale | "Nguồn đã đổi — cần tổng hợp lại" | Tổng hợp lại | no |
 | `INTERRUPTED` | daemon restart/crash | boot recovery | `INTERRUPTED` → requeued | "Đã khôi phục sau khởi động lại" | tự chạy tiếp | yes (new attempt) |
@@ -827,13 +890,22 @@ RETRY_ITEM(batchId, itemId, failedStage, expectedCheckpointHash):
 7. Validate and commit the new artifact before advancing the item.
 8. Recalculate batch summary from all item states.
 
-AGGREGATE_FORMULA(selectedItems):
-1. Require at least one successful selected item.
-2. Verify every selected artifact hash still matches on disk; abort with AGGREGATION_STALE.
-3. Pin analysis artifact hashes and channel IDs.
-4. Apply the chosen Formula scope.
-5. Emit rules, differences/exceptions, sample warnings, and provenance.
-6. Never assign VALIDATED status in the MVP.
+COMMIT_FORMULA(item):                  # per video — there is no cross-item aggregation (ADR-5)
+1. Require the item's ANALYZE artifact to be successful.
+2. Verify its artifact hash still matches on disk; abort with AGGREGATION_STALE.
+3. Pin the analysis artifact hash, videoSnapshotId, and channelTitle (label only).
+4. Emit rules with their evidence and provenance; scope = SINGLE_VIDEO.
+5. Never assign VALIDATED status in the MVP.
+
+STUDIO_MERGE(pickedRules[]):           # §12b — human-gated at both ends, never auto-invoked
+1. CLUSTER(pickedRules) — deterministic app code, no LLM: identical/near-identical → merge
+   candidate; same facet + different tactic → conflict surfaced for a human decision; unique
+   → carried through unchanged.
+2. For each cluster the human approved for merging: one bounded LLM turn proposes merged
+   wording, carrying the union of source provenance. Empty provenance ⇒ STUDIO_RULE_UNGROUNDED.
+3. Human accepts / edits / rejects each proposal individually; nothing commits without that.
+4. Emit CompoundFormula { genre, rules, sourceVideoCount, status: DRAFT }.
+5. Promotion to TRIAL is a separate explicit human action (ADR-6).
 
 DISPATCH(item, stage):
 1. turn_key = sha256(batchId|itemId|stage|attempt|inputHashes|promptVersion)
@@ -857,14 +929,18 @@ waiting, what I can do about it.
 
 | Screen | Route | Purpose | Required states |
 |---|---|---|---|
-| New Run | `/runs/new` | choose workflow, inputs, scope, budget | empty, invalid, preflight-blocked, ready |
+| New Run | `/runs/new` | choose workflow, inputs, budget (no scope — ADR-5) | empty, invalid, preflight-blocked, ready |
 | Preflight | inline panel | per-item readiness | checking, blocked (with fix action), ok |
 | Batch Dashboard | `/batches/:id` | live progress and batch actions | connecting, running, needs-attention, partial, done, cancelled, offline |
 | Item Detail | `/batches/:id/items/:itemId` | attempts, artifacts, log, errors, actions | running, failed, human-wait, interrupted, succeeded |
 | Run Console | drawer in Item Detail | tail of `stdout.log` | streaming, ended, empty |
 | Thesis / Approval Queue | `/batches/:id/review` | sequential human gates | empty, one-at-a-time, all-done |
-| Formula Aggregation | `/batches/:id/formula` | select items, see exclusions | nothing selected, low-sample warning, stale |
 | Formula Detail | `/formulas/:id` | rules, provenance, warnings | TRIAL badge always visible |
+| **Studio — Rule Pool** | `/studio/sessions/:id/pool` | browse & pick rules across all per-video Formulas; filter by channel/video/facet/text | empty pool, nothing picked, picked-set summary |
+| **Studio — Clusters** | `/studio/sessions/:id/clusters` | overlaps, conflicts, uniques among picked rules | no clusters yet, conflict needing a decision, ready to synthesize |
+| **Studio — Proposals** | `/studio/sessions/:id/proposals` | LLM-worded merged rules, each accept/edit/reject | pending, accepted, edited, rejected |
+| **Studio — Trials** | `/studio/sessions/:id/trials` | test-write rounds: draft + two-sided critique + human verdict | none yet, drafting, critiquing, ready-to-judge |
+| **Studio — Compound Formula** | `/studio/compounds/:id` | genre Formula, rules with provenance, promote action | DRAFT, TRIAL badge, source video count |
 | Writer Export | `/writer/items/:id/export` | bundle + exclusions | ready, blocked by unapproved |
 | Agents Health | existing `/agents` + a pipeline card | binaries, live clones vs `maxParallel`, guard headroom | ok, degraded, unavailable |
 
@@ -879,7 +955,7 @@ blocked items are excluded from the run with a visible count.
 │ ✓ Lane rảnh: claude, codex            ✓ Ổ đĩa: 42 GB trống  │
 │ ✓ 4/5 video có transcript                                    │
 │ ✗ Video D — chưa có transcript        [Tải transcript]       │
-│ ! Dataset có 2 channel — cần chọn cách hiểu  [Chọn scope]    │
+│ → Kết quả: 4 Formula riêng cho 4 video (ghép ở Studio sau)   │
 │ Ước tính: ~10 lượt agent · ~12 phút (song song 4)            │
 │                             [Bỏ qua video D và chạy 4 item] │
 └──────────────────────────────────────────────────────────────┘
@@ -889,10 +965,10 @@ blocked items are excluded from the run with a visible count.
 
 1. Choose workflow: `Tìm Formula` or `Viết Script`.
 2. Choose execution: `Đơn` or `Hàng loạt`; both use the same item table.
-3. For Formula, add videos (from a Spy run or by URL) and confirm each channel.
-4. If more than one channel exists, choose `So sánh channel` or `Tìm điểm chung`.
-   The chosen scope is restated in one plain sentence before Start so the user cannot
-   misread it ("Kết quả sẽ là 2 Formula riêng cho 2 channel, không phải 1 Formula chung").
+3. For Formula, add videos (from a Spy run or by URL); channel is shown per video as a label.
+4. No scope question is asked (ADR-5). One plain sentence states the outcome before Start so
+   nobody expects a merge: "Kết quả sẽ là {n} Formula riêng cho {n} video — ghép thành Formula
+   thể loại ở Studio sau." Mixing channels in one batch is allowed and needs no confirmation.
 5. Review budget và `maxParallel`, run preflight, then start.
 
 ### 7.4 Batch dashboard
@@ -968,9 +1044,17 @@ Training-side equivalent of the Writer citation gate and is what makes the Formu
 
 ### 8.2 Formula artifact
 
-`rules[]`, `channelGroups[]`, `includedArtifacts[]` (hash-pinned), `warnings[]`, `scope`, and
-`status`. `VALIDATED` is unreachable in MVP code, not merely unused (an assertion in the
-aggregator enforces it).
+Two levels, both hash-pinned and both usable by the Writer (§12b):
+
+- **`FormulaArtifact`** (L1, `scope: SINGLE_VIDEO`) — `rules[]`, `videoSnapshotId`,
+  `channelTitle` (label only), `includedArtifacts[]`, `warnings[]`, `status`. Produced by
+  `ANALYZE`; one per video, never merged by a batch (ADR-5).
+- **`CompoundFormula`** (L2, `scope: COMPOUND`) — `genre`, `rules[CompoundRule]` each carrying
+  non-empty `provenance[]`, `sourceVideoCount`, `sessionId`, `version`, `status`. Produced
+  only by a human-curated Studio session (§12b, ADR-13).
+
+`VALIDATED` is unreachable in MVP code at both levels, not merely unused (an assertion enforces
+it). Promotion to `TRIAL` is always an explicit human action (ADR-6).
 
 ### 8.3 Curated Pack v1 (GAP-14)
 
@@ -1043,12 +1127,267 @@ the UI offers "Nâng cấp pack này" rather than failing silently.
 | M0 | Pipeline Core | Dataset, batch, item, attempt, checkpoint, ledger, partial-status, and fake-scheduler tests pass with a `stub` agent adapter |
 | **M0.5** | **Walking skeleton (was missing)** | turnBridge (P-DEF-1b) + Lane Scheduler dispatch **one real Claude turn** that writes `out/result.json`, which the app validates and commits. Proves GAP-1/2/3 are closed before any domain work. |
 | M1 | Formula Discovery single | One video produces a reviewable, provenance-linked `TRIAL` Formula |
-| M2 | Batch + multi-channel | Arbitrary `N`, scope selection, parallel clones + reaping, partial success, item retry, and selective aggregation work |
+| **M1.5** | **Training Lab — calibration loop (post-M1 addition, user-directed 2026-08-09)** | A video's Formula is round-tripped through a draft→critique→refine loop (max 3 rounds) and produces a version history the user can inspect and promote. See §12a. |
+| M2 | Batch training (any `N`, any channels) | Arbitrary `N` videos run in parallel and produce `N` independent per-video Formulas — clones + reaping, partial success, item retry, per-item preflight, batch dashboard. **No aggregation of any kind** (§6.1a, ADR-5) |
+| **M2.5** | **Formula Studio — merge + test-write (user-directed 2026-08-10)** | A human picks rules across several per-video Formulas, the app clusters them, an LLM words the merges, the human accepts, and the resulting compound Formula is test-written and critiqued in the same session — then promoted to `TRIAL` for a named genre. See §12b. |
 | M3 | Resilience | Kill the daemon mid-batch, kill an agent process, pull the network: every item recovers to a correct state with no duplicate commit and no orphan process |
-| M4 | Writer single + batch UI | One or many titles complete independently through human approval and selective export, including the review queue |
+| M4 | Writer single + batch UI | One or many titles complete independently through human approval and selective export, including the review queue; each title pins its own Formula — per-video or compound — so one batch can span several Formulas in parallel (§6.3) |
 | M5 | Pilot and evaluation | User runs any chosen volume; metrics accumulate per item and Formula version |
 
 No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
+
+## 12a. Training Lab — calibration loop (added 2026-08-09, post-M1, user-directed)
+
+Not in the original SDD 002 scope. Added after a live demo exposed a real gap: a
+Writer-agent draft that self-reports `appliedRules` against a Formula has **nothing
+checking that claim** — `DRAFT` had no grounding hook (unlike `ANALYZE`'s
+`AGENT_UNGROUNDED`, §5.2 Branch 4). The Training Lab closes that gap and turns it into
+a feedback loop that improves the Formula itself, scoped to **one video at a time**
+(user: "mỗi video 1 formula rồi sau đó mới merge lại"). Cross-video merge is not part of this
+loop by design — it became the Formula Studio (§12b, ADR-5/ADR-13), which reuses this loop's
+`DRAFT`/`CRITIQUE` machinery at the compound level.
+
+### Stage machine (per video, per round, max 3 rounds)
+
+| Stage | Owner | Input | Output | Notes |
+|---|---|---|---|---|
+| `ANALYZE` | Claude ("agent 1") | transcript | `FormulaVersion 1` | Existing M1 stage, unchanged |
+| `DRAFT` | Codex ("agent 2") | latest `FormulaVersion` | draft `{title, script, appliedRules[]}` | See "Session continuity" below |
+| `CRITIQUE` | Claude ("agent 1" — same role, has the transcript) | transcript + `FormulaVersion` + draft | `Positive patterns[]` + `Negative patterns[]` | Grading is qualitative pattern-matching, not a numeric score (user: "tạo tiêu chí chấm đơn giản thôi") |
+| `REFINE` | Claude | patterns from `CRITIQUE` | `FormulaVersion N+1` (proposed) | Every rule change must cite which pattern justified it — no unexplained edits |
+
+Loop: `DRAFT → CRITIQUE → REFINE` repeats with the newly refined `FormulaVersion` as
+next round's input, up to **3 rounds total**, then stops and surfaces the full history
+to the user — it does not run forever and does not silently pick a "best" round.
+
+### Grounding rule for `CRITIQUE` (both directions)
+
+Every pattern (positive or negative) must cite evidence from **both** sides:
+- `sourceEvidence`: a quote from the original pinned transcript (same evidence shape as
+  `ANALYZE`, §8.1 — `{segmentIds: string[], quote}`; `segmentIds` may name more than one
+  consecutive segment when the natural quote spans a segment boundary — real auto-caption
+  transcripts chunk into ~4s windows that often split mid-sentence, updated 2026-08-10).
+- `draftEvidence`: a quote that is an exact substring of the draft's own `script` text
+  (no segment id — the draft has no transcript-style segmentation; substring-match
+  against the raw script is the grounding check).
+
+A pattern with no evidence on either side is invalid output, same spirit as
+`AGENT_UNGROUNDED` — this is what actually verifies an agent's `appliedRules`
+self-report instead of trusting it.
+
+### Formula versioning
+
+- Every round's `FormulaVersion` is kept — v1, v2, v3... are never deleted, they are
+  the run's log (user: "vẫn lưu lại v1, và các version tiếp theo để làm bản logs").
+- The **latest** version at any point is what gets sent to `DRAFT` for the next round
+  (user: "formula v2 sẽ được dùng làm bản latest gửi cho agent viết").
+- Promoting a version to be "the" Formula for that video (i.e. what M1's existing
+  `/api/training/formulas` list would treat as canonical) is an explicit human action,
+  never automatic — same non-auto-promotion principle as ADR-6 (`TRIAL` never
+  auto-`VALIDATED`).
+
+### Session continuity for `DRAFT` (user: "agent 2 viết bài mỗi turn không cần fresh
+context, giữ nguyên để tiết kiệm token")
+
+Two honest layers, not one:
+1. **What's actually implemented:** each `DRAFT` round's prompt is kept lean — only
+   the latest `FormulaVersion` and (for round ≥2) the previous round's `CRITIQUE`
+   patterns are sent, never the transcript (agent 2 never needed it) and never the
+   prior rounds' full draft text. This is the real, load-bearing token-saving lever.
+2. **What is NOT implemented, flagged rather than silently faked:** true CLI-level
+   session resume (`--resume <id>` for Claude, `codex exec resume <id>` for Codex) is
+   not wired for pipeline turns. `adapters.ts`'s `codex.buildHeadlessTurn` does not
+   thread `ctx.resumeSessionRef` into the codex invocation at all today, and
+   `turnBridge` (`packages/web/src/features/turn-bridge/client.ts`) never parses a
+   session id out of CLI output to report back via `turn/complete`. Wiring this
+   requires editing `packages/daemon/src/agents/adapters.ts`, outside the Training
+   lane's normal boundary — deferred, needs explicit user sign-off before touching, not
+   bundled into this feature.
+
+### UI
+
+A dedicated **Training tab** (separate from the existing `/training/formulas` list,
+which stays as the simple single-shot M1 view): lists videos that have a Training Lab
+run, opens to show every round with all four sections the user asked for — the
+`ANALYZE` Formula version going in, the `DRAFT` output, the `CRITIQUE` patterns
+(positive/negative, each with its two-sided evidence), and the resulting `REFINE`d
+Formula version — plus the run's overall status and round count.
+
+## 12b. Formula Studio — human-curated merge + test-write (ADR-5, ADR-13)
+
+> User, 2026-08-10: *"quá trình merge formula t cần diễn ra theo kiểu human chọn rồi mới
+> dùng thuật toán / call llm rồi merge. Nó là phép thử không thể auto được… vấn đề là dùng
+> bản đó để thử viết bài mới, hay là được. vậy nên quá trình ghép formula + viết nó cần
+> build thành 1 studio."*
+
+### The model: two Formula levels
+
+| Level | What it is | How it is made | Belongs to |
+|---|---|---|---|
+| **L1 — per-video Formula** | `FormulaArtifact`, `scope: SINGLE_VIDEO` | `ANALYZE` (M1), optionally sharpened by the Training Lab loop (§12a) | one video. A channel has *many*, and they legitimately disagree |
+| **L2 — compound Formula** | `CompoundFormula`, `scope: COMPOUND` | **Only** the Studio, only with a human picking every rule | a **content genre** (`thể loại`) the user names — never a channel |
+
+There is no automatic path from L1 to L2. Nothing in the system ever produces a compound
+Formula as a side effect of a batch finishing.
+
+### Why the merge cannot be automatic
+
+Two per-video Formulas that both say something about hooks may be (a) the same rule worded
+differently, (b) genuinely different tactics that both work, or (c) contradictory. Only a human
+who has watched the content can tell which. So the Studio splits the work by what each party is
+actually good at:
+
+| Step | Owner | Why that owner |
+|---|---|---|
+| Pick which rules are candidates | **human** | This is the taste judgment; it is the whole point |
+| Find which picked rules overlap / conflict | **app code (deterministic)** | Mechanical similarity, no judgment, must be reproducible and free |
+| Word the merged rule for one cluster | **LLM** | Only synthesis of text the human already decided belongs together |
+| Accept / edit / reject each merged rule | **human** | The LLM proposes; it never commits |
+| Test-write with the result and judge it | **Codex + Claude, then human** | §12a machinery, reused |
+
+### Studio session loop
+
+```text
+BROWSE   human filters the rule pool across all L1 Formulas
+         (filters: channel, video, genre tag, facet, free text — channel is a filter, not a key)
+   ↓
+PICK     human ticks rules into the working set  ──────────────┐
+   ↓                                                           │
+CLUSTER  app code groups the picked rules (no LLM):            │
+           - identical / near-identical  → merge candidate      │
+           - same facet, different tactic → conflict, human decides keep-both or pick-one
+           - unique                       → carried through as-is
+   ↓                                                           │
+SYNTHESIZE  per cluster the human approved for merging, ONE bounded LLM turn
+            rewrites it into a single rule. Every synthesized rule keeps
+            `provenance[]` = every (videoSnapshotId, sourceFormulaId, sourceRuleId,
+            evidence[]) it came from. No provenance ⇒ invalid output, same spirit as
+            AGENT_UNGROUNDED.
+   ↓                                                           │
+REVIEW   human accepts / edits / rejects each proposed rule    │
+   ↓                                                           │
+DRAFT    Codex writes a test script from the compound Formula (§12a DRAFT stage, reused)
+   ↓                                                           │
+CRITIQUE Claude judges the draft, grounded on BOTH sides, citing across videos (below)
+   ↓                                                           │
+JUDGE    human reads draft + critique, then either:            │
+           - adjusts picks and loops ──────────────────────────┘
+           - or promotes the compound Formula to TRIAL for the named genre
+```
+
+The loop has **no round cap** — unlike the Training Lab's 3 (§12a), this one is human-paced and
+stops when the human stops. What is capped is each individual agent turn, by the ordinary
+per-turn budget (§5.4). A Studio session is a durable, resumable object; the user can close the
+app mid-session and come back.
+
+### Multi-video grounding for `CRITIQUE` (contract change)
+
+The Training Lab critiques a draft against **the** transcript. A compound Formula has no single
+source transcript, so `CritiqueEvidence` gains an optional `videoSnapshotId`:
+
+```ts
+interface CritiqueEvidence {
+  quote: string;
+  segmentIds?: string[];       // one or more consecutive segments (updated 2026-08-10)
+  videoSnapshotId?: string;   // NEW — required when critiquing a COMPOUND formula,
+                              // absent/implied for the single-video Training Lab path
+}
+```
+
+`validateCritique` extends accordingly: for a compound run, `sourceEvidence` must name a
+`videoSnapshotId` that is **in the compound's provenance set**, and the quote must be an exact
+substring of that video's cited segment. Draft-side evidence is unchanged (substring of the
+draft's own script). This preserves the property that proved its worth in the Training Lab's
+real round 1 — catching a rounded-number violation that the agent's own `appliedRules`
+self-report had happily claimed as compliant.
+
+**Envelope size is a designed constraint here, not an afterthought.** The Training Lab's real
+round-2 failure was `AGENT_NO_OUTPUT` at a ~96KB prompt carrying one full transcript
+(`plan/writer-train/STATUS.md`). A compound Formula drawn from 5 videos would carry five, which
+is not viable. So the `CRITIQUE` envelope for a compound run **never ships full transcripts** —
+it ships only the **cited evidence spans** already stored on each contributing rule (plus a
+small neighbouring-segment window for context). Provenance is what makes this possible: the
+rules already know exactly which segments matter. This keeps a 5-video compound critique in the
+same size class as a 1-video Training Lab critique.
+
+### Genre, not channel
+
+A compound Formula is created under a user-named **genre** (e.g. "kể chuyện tài chính cá nhân",
+"phân tích tin tức"). Genres are free-form user-created labels, not a fixed taxonomy — the whole
+point is that the user discovers the right genres by doing this, which is why the system must
+not ship a hardcoded list. A genre may draw rules from any channels; a channel may contribute to
+any number of genres. `channelTitle` survives only inside `provenance[]`, for audit and filtering.
+
+### Promotion
+
+Promoting a compound Formula to `TRIAL` for a genre is an explicit human action, exactly like
+every other promotion in this system (ADR-6). `VALIDATED` remains unreachable in MVP code. A
+promoted compound Formula then appears in the Writer's Formula picker (§6.3) alongside per-video
+Formulas — from the Writer's point of view they are interchangeable, both hash-pinned per item.
+
+### Data
+
+```text
+studio-sessions/{sessionId}/
+  session.json          # genre name, status, working set of picked rule refs, created/updated
+  clusters.json         # deterministic clustering output, regenerable from the picked set
+  proposals/{n}.json    # LLM-synthesized rule proposals + human decision (accept/edit/reject)
+  compound-v{n}.json    # CompoundFormula snapshot after each accepted round of edits
+  trials/{n}/           # test-write rounds: draft.json, critique.json (reuses §12a artifacts)
+```
+
+```ts
+interface CompoundRuleProvenance {
+  videoSnapshotId: string;
+  channelTitle: string;          // label/audit only — never a grouping key
+  sourceFormulaId: string;
+  sourceRuleId: string;
+  evidence: Evidence[];          // carried from the L1 rule; powers the lean CRITIQUE envelope
+}
+
+interface CompoundRule {
+  id: string;
+  statement: string;
+  facet?: string;
+  provenance: CompoundRuleProvenance[];   // non-empty, enforced
+  origin: 'CARRIED' | 'SYNTHESIZED' | 'HUMAN_EDITED';
+}
+
+interface CompoundFormula {
+  id: string;
+  genre: string;
+  scope: 'COMPOUND';
+  status: FormulaStatus;                  // DRAFT until the human promotes it to TRIAL
+  rules: CompoundRule[];
+  sourceVideoCount: number;               // honest sample size, replaces batch LOW_SAMPLE
+  sessionId: string;
+  version: number;
+  createdAt: string;
+}
+```
+
+### API
+
+```text
+POST /api/studio/sessions                      # create; body: { genre }
+GET  /api/studio/sessions | /:id
+POST /api/studio/sessions/:id/picks            # add/remove rule refs in the working set
+POST /api/studio/sessions/:id/cluster          # deterministic, no LLM, idempotent
+POST /api/studio/sessions/:id/synthesize       # one bounded LLM turn for approved clusters
+POST /api/studio/sessions/:id/proposals/:n/decision   # accept | edit | reject
+POST /api/studio/sessions/:id/test-write       # DRAFT → CRITIQUE round on current compound
+POST /api/studio/sessions/:id/promote          # human-only → TRIAL compound Formula for genre
+GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule for picking
+```
+
+### What is deliberately NOT in the Studio
+
+- **No auto-suggest of which rules to pick.** A "we think these 6 rules go well together"
+  feature would quietly re-introduce the automation ADR-5 rejects. It can be reconsidered later
+  as an explicitly-labelled suggestion the human still confirms — not now.
+- **No scoring of a compound Formula.** Whether a genre Formula is good is answered by
+  test-writing with it and reading the result, which is the loop above.
+- **No auto-promotion**, ever (ADR-6).
 
 ## Cross-Cutting Concepts
 
@@ -1119,10 +1458,12 @@ No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
   - Trade-off: manifests, UI, and events need item-level correlation.
   - User confirmed: 2026-08-09.
 
-- [ ] **ADR-5 — Multi-channel datasets require one of two outputs: per-channel comparison or cross-channel shared patterns.**
-  - Rationale: three videos from three channels cannot honestly produce one channel's Formula without an explicit interpretation.
-  - Trade-off: the UI adds a required scope decision and low-sample warnings.
-  - User confirmed: _Pending_
+- [x] **ADR-5 — Channel is not an aggregation axis. The per-video Formula is the atomic unit; merging is a human-driven experiment in the Formula Studio, never an automatic batch step.**
+  - Rationale (user, 2026-08-10): "1 kênh có nhiều formula nên cùng channel hay khác channel tôi nghĩ formula từng video sẽ có điểm giống và khác nhau… quá trình merge formula cần diễn ra theo kiểu human chọn rồi mới dùng thuật toán / call llm rồi merge. Nó là phép thử không thể auto được." A channel does not have *one* style — it has many, varying by content type. So auto-grouping N videos by `channel_id` and aggregating each group (the earlier `PER_CHANNEL_COMPARE` design) would fabricate a "channel Formula" that does not exist, and would do it automatically, which is exactly the judgment call that must stay human. Grouping by channel is not merely deferred — it is **rejected as the wrong axis**. The real output the user wants is a Formula per **content genre** (`thể loại content`), distilled by hand across videos that may or may not share a channel.
+  - Consequence: M2 keeps only the *execution* half of "batch + multi-channel" — run N videos in parallel, get N independent per-video Formulas (§6.1a). It performs **no** cross-item aggregation at all. All merging moves to the Formula Studio (§12b, ADR-13).
+  - Trade-off: there is no one-click "make me a Formula for this channel". Producing a reusable Formula costs deliberate human curation time in the Studio — which is the point, not a regression.
+  - Supersedes: the `SINGLE_CHANNEL` / `PER_CHANNEL_COMPARE` / `CROSS_CHANNEL_SHARED` scope trio and the auto `comparison-report.json`, both dropped from the design entirely.
+  - User confirmed: 2026-08-10.
 
 - [x] **ADR-6 — A small dataset may publish a `TRIAL` Formula, never an automatically `VALIDATED` Formula.**
   - Rationale: the user must be able to test a Formula from three videos while retaining honest confidence labels.
@@ -1160,6 +1501,13 @@ No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
   - Rationale: the structural citation gate needs claim ids, quotes, and locators.
   - Trade-off: an extra curation step before writing; existing packs need an upgrade path.
   - User confirmed: _Pending_
+
+- [x] **ADR-13 — Formula merging happens in a Formula Studio: human picks rules, deterministic code clusters them, an LLM only words the merge, and the result is judged by test-writing.**
+  - Rationale: the merge decision is taste, and taste cannot be batch-processed (ADR-5). Splitting the work by competence — human picks, code clusters, LLM words, human accepts — keeps every judgment with the human while still removing the tedious parts. Coupling merge with test-writing in one session is the user's core requirement ("vấn đề là dùng bản đó để thử viết bài mới, hay là được"): a compound Formula is a hypothesis, and the only honest test is writing with it.
+  - Rule-level (not Formula-level) picking is deliberate: per-video Formulas "có điểm giống và khác nhau", so the user must be able to keep the good parts of each.
+  - Trade-off: building a genre Formula is manual work with no one-click path, and the Studio is a genuinely new surface (rule pool browser, cluster view, proposal review, trial history) rather than a variation on the batch dashboard. Accepted deliberately — this is the product's core intellectual loop, not a utility screen.
+  - Consequence for contracts: `CritiqueEvidence` gains `videoSnapshotId` so critique grounding survives across multiple source videos, and the compound `CRITIQUE` envelope ships cited evidence spans instead of full transcripts (a direct response to the observed ~96KB `AGENT_NO_OUTPUT` failure, §12b).
+  - User confirmed: 2026-08-10.
 
 ## Quality Requirements
 
@@ -1232,7 +1580,12 @@ No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
 | integration | late write from superseded attempt | discarded, never committed |
 | integration | SSE reconnect with cursor | no missed or duplicated events |
 | e2e (real Claude) | M0.5 walking skeleton | one real turn commits one real artifact |
-| e2e | 3 videos / 2 channels | scope required, per-channel grouping, low-sample warnings |
+| e2e | 3 videos / 2 channels | 3 independent Formulas, no scope prompt, no merging attempted (ADR-5) |
+| unit | Studio clustering | identical rules cluster; same-facet-different-tactic flagged conflict, not auto-merged; unique rules carried through |
+| unit | compound rule validation | empty `provenance[]` → `STUDIO_RULE_UNGROUNDED`; synthesized rule keeps every source ref |
+| unit | compound critique grounding | `videoSnapshotId` outside the provenance set → `STUDIO_EVIDENCE_OUT_OF_SCOPE`; quote must match that video's cited segment |
+| integration | compound CRITIQUE envelope size | 5-video compound ships cited spans only, staying in the same size class as a 1-video Training Lab critique (regression guard for the observed ~96KB `AGENT_NO_OUTPUT`) |
+| e2e (real agents) | Studio session | pick rules from 3 videos → cluster → synthesize → accept → test-write → critique cites ≥2 source videos → promote to a genre `TRIAL` |
 | e2e | Writer batch of 3 titles | review queue, per-item approval, selective export with exclusion list |
 
 ## Risks and Technical Debt
@@ -1242,7 +1595,7 @@ No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
 - turnBridge is new code on the critical path; until M0.5 lands, no end-to-end claim in this document is proven.
 - A run is bound to an open app window; a closed laptop stops progress (accepted under CON-13; an unattended daemon runner remains the deferred escape hatch).
 - Codex headless receives assignment context through the prompt and cannot be tool-restricted; sandbox violations are detected, not prevented.
-- One video per channel is insufficient to infer stable channel-specific style; outputs must remain low-confidence hypotheses.
+- A per-video Formula is a single-sample hypothesis by construction. This is not a defect to warn about but the unit the Studio is built to work with: confidence comes from a human seeing the same pattern across videos and merging it deliberately (§12b), not from the batch counting samples.
 - Semantic evidence validation is not calibrated as a hard gate.
 - Cost tracking is Claude-only and best effort.
 - Agent CLI version drift can change argv/output format; preflight records the detected version with each run so a regression is attributable.
@@ -1281,8 +1634,11 @@ No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
 
 | Term | Definition | Context |
 |---|---|---|
-| Formula scope | Intended interpretation of a dataset: one channel, channel comparison, or shared patterns | Required before aggregation |
-| TRIAL Formula | Human-accepted Formula suitable for experiments but not statistically validated | May be created from a small dataset |
+| Per-video Formula (L1) | The atomic unit: one video's extracted rules, each evidence-grounded | Produced by `ANALYZE`; a channel has many and they may disagree |
+| Compound Formula (L2) | Rules hand-picked across several per-video Formulas and merged, scoped to a content genre | Studio-only, never auto-generated (ADR-5/13) |
+| Genre (`thể loại`) | User-named content category a compound Formula belongs to | Free-form, discovered by use — replaces channel as the grouping concept |
+| Provenance | Per compound rule: every (video, source Formula, source rule, evidence) it came from | Makes a merged rule auditable and powers the lean critique envelope |
+| TRIAL Formula | Human-accepted Formula suitable for experiments but not statistically validated | Applies to both levels; promotion is always manual |
 | Curated Pack | Per-title human-reviewed evidence with claim ids, quotes, and locators | Writer input; v1 is claim-addressable |
 | Partial success | Some batch items succeeded while others failed, skipped, or remain pending | Does not discard successful work |
 | Needs attention | Machine work is idle and only human decisions remain | Distinct from finished |

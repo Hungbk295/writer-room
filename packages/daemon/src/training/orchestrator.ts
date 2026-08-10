@@ -35,7 +35,7 @@ import { ANALYZE_STAGE } from './aggregator.ts';
 import { preflightVideo, type PreflightResult } from './preflight.ts';
 
 /** SDD §5.5 turn_key inputs — bump manually if the ANALYZE prompt template changes. */
-const PROMPT_VERSION = 'training-analyze-v1';
+const PROMPT_VERSION = 'training-analyze-v2';
 
 /**
  * Generous single-page transcript fetch limit (M1 simplification, documented
@@ -82,17 +82,24 @@ function buildAnalyzePrompt(): string {
     'anything else genuinely observable in the transcript. Do not force a fixed set of',
     'categories; only report patterns the transcript actually supports.',
     '',
+    'Write every `statement` in the SAME language as the transcript\'s `text` (e.g. if',
+    'the transcript is Vietnamese, write the statement in Vietnamese, not English).',
+    '',
     'For EVERY rule you report, cite at least one piece of evidence as',
-    '`{ "segmentId": "...", "quote": "..." }`, where `quote` is copied VERBATIM — an',
-    'exact substring — from that segment\'s `text` in `input/envelope.json`. This is',
-    'checked programmatically against the pinned transcript: a paraphrased, summarized,',
-    'or invented quote will be rejected and the entire analysis will fail. Copy the',
-    'exact characters from the segment text, do not clean up punctuation or casing.',
+    '`{ "segmentIds": ["..."], "quote": "..." }`. `segmentIds` is one or more segment',
+    'ids, IN TRANSCRIPT ORDER — use more than one when the natural quote you want spans',
+    'a segment boundary (segments are short, ~4s auto-caption chunks and often split',
+    'mid-sentence; prefer citing 2-3 consecutive segments over a truncated quote).',
+    '`quote` must be copied VERBATIM — an exact substring of those segments\' `text`',
+    'values joined with a single space, in the order you listed them. This is checked',
+    'programmatically against the pinned transcript: a paraphrased, summarized, or',
+    'invented quote will be rejected and the entire analysis will fail. Copy the exact',
+    'characters from the segment text, do not clean up punctuation or casing.',
     '',
     'Write your result as JSON to `out/result.json` in exactly this shape:',
     '',
     '```json',
-    '{ "rules": [ { "id": "rule-1", "statement": "...", "evidence": [ { "segmentId": "...", "quote": "..." } ] } ] }',
+    '{ "rules": [ { "id": "rule-1", "statement": "...", "evidence": [ { "segmentIds": ["..."], "quote": "..." } ] } ] }',
     '```',
   ].join('\n');
 }
