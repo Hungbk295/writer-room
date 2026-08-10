@@ -251,4 +251,44 @@ describe('validateCritique', () => {
       expect(result.reason).toContain('not an exact substring of the draft script');
     }
   });
+
+  test('accepts when previousNegativePatternIds is empty (round 1 — nothing to check)', () => {
+    const segments = segmentsMap({ 'seg-1': 'Have you ever wondered why the sky is blue?' });
+    const result = validateCritique(baseCritique(), segments, draftScript, []);
+    expect(result.ok).toBe(true);
+  });
+
+  test('rejects a missing regressionCheck entry for a previous round negative pattern', () => {
+    const segments = segmentsMap({ 'seg-1': 'Have you ever wondered why the sky is blue?' });
+    const result = validateCritique(baseCritique(), segments, draftScript, ['n1-from-round-1']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain('regressionCheck');
+      expect(result.reason).toContain('n1-from-round-1');
+    }
+  });
+
+  test('rejects an invalid regressionCheck status', () => {
+    const segments = segmentsMap({ 'seg-1': 'Have you ever wondered why the sky is blue?' });
+    const critique = baseCritique({
+      regressionCheck: [{ patternId: 'n1-from-round-1', status: 'maybe' as never, note: 'unclear' }],
+    });
+    const result = validateCritique(critique, segments, draftScript, ['n1-from-round-1']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain('invalid status');
+    }
+  });
+
+  test('accepts a full regressionCheck covering every previous negative pattern id', () => {
+    const segments = segmentsMap({ 'seg-1': 'Have you ever wondered why the sky is blue?' });
+    const critique = baseCritique({
+      regressionCheck: [
+        { patternId: 'n1-from-round-1', status: 'fixed', note: 'Draft now avoids the English code-switch.' },
+        { patternId: 'n2-from-round-1', status: 'still-present', note: 'CTA ending still present.' },
+      ],
+    });
+    const result = validateCritique(critique, segments, draftScript, ['n1-from-round-1', 'n2-from-round-1']);
+    expect(result.ok).toBe(true);
+  });
 });

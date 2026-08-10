@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AppError } from './errors.ts';
 import {
   canonicalChannelUrl,
+  canonicalVideoUrl,
   rankVideos,
+  youtubeVideoId,
 } from './evidence/index.ts';
 import {
   computeChannelMetrics,
@@ -16,6 +18,7 @@ import type { OperationManager } from './operations.ts';
 import type { SpyStore } from './store.ts';
 import {
   channelSpyInputSchema,
+  videoSpyInputSchema,
   type ChannelSpyInput,
   type StartedOp,
   type TranscriptSegment,
@@ -43,8 +46,89 @@ export class AcquisitionService {
     // Frame sampling removed with Deep video; kept for API compatibility.
   }
 
+  /**
+   * Spy đúng một video YouTube (watch / shorts / youtu.be / embed / live).
+   * depth=metadata: metadata + metrics; depth=transcript: thêm caption + thumbnail.
+   */
+  videoSpy(raw: unknown, ownerSubject = 'local'): StartedOp {
+    const input = videoSpyInputSchema.parse(raw);
+    const source = canonicalVideoUrl(input.url);
+    let spyRunId = '';
+    const operation = this.operations.start({
+      kind: 'acquire_video',
+      ownerSubject,
+      idempotencyKey: input.idempotencyKey,
+      request: input,
+      initialize: (created) => {
+        const run = this.store.createSpyRun({
+          operationId: created.id,
+          kind: 'video',
+          canonicalSource: source.canonicalUrl,
+          sourceIdentity: source.sourceIdentity,
+          config: input,
+          scanLimit: 1,
+          topN: 1,
+        });
+        spyRunId = run.id;
+        return run.id;
+      },
+      work: async (context) => {
+        const run = this.store.getSpyRunByOperation(context.operationId)!;
+        spyRunId = run.id;
+        this.store.updateSpyRun(run.id, { status: 'running' });
+        return this.runWork(run.id, context.signal, async () => {
+          context.progress(0, 3, 'inspecting video');
+          const info = await this.resolveVideoInfo(source.canonicalUrl, source.sourceIdentity, context.signal);
+
+          context.progress(1, 3, 'saving metadata');
+          await this.insertMetadataSnapshot(run.id, info, 1);
+          await this.enrichSnapshots(run.id, [info.sourceVideoId]);
+
+          const snapshot = this.store.getVideoSnapshotBySourceId(run.id, info.sourceVideoId)!;
+          const enriched: YoutubeVideoInfo = {
+            ...info,
+            durationSec: snapshot.durationSec > 0 ? snapshot.durationSec : info.durationSec,
+            viewCount: snapshot.viewCount > 0 ? snapshot.viewCount : info.viewCount,
+            publishedAt: snapshot.publishedAt ?? info.publishedAt,
+            channelTitle: snapshot.channelTitle || info.channelTitle,
+            thumbnailUrl: info.thumbnailUrl || youtubeThumbnailUrl(info.sourceVideoId),
+          };
+
+          const channelScope = enriched.channelId || run.sourceIdentity;
+          await this.enrichChannel(channelScope, [enriched]);
+
+          if (input.depth === 'metadata') {
+            await this.finishRun(run.id, channelScope);
+            return run.id;
+          }
+
+          context.progress(2, 3, 'capturing transcript');
+          if (context.signal.aborted) throw new AppError('cancelled', 'Operation đã bị hủy');
+          await this.captureTranscriptAndThumb(snapshot, enriched, context.signal);
+          await this.finishRun(run.id, channelScope);
+          return run.id;
+        });
+      },
+    });
+    spyRunId ||= this.store.getSpyRunByOperation(operation.id)?.id ?? '';
+    return { operationId: operation.id, spyRunId, status: operation.status };
+  }
+
   channelSpy(raw: unknown, ownerSubject = 'local'): StartedOp {
     const input = channelSpyInputSchema.parse(raw);
+    // Paste URL video vào Channel Spy → auto chuyển sang videoSpy (1 video).
+    // Tránh lỗi "URL video đơn không hợp lệ cho Channel Spy" khi user dán nhầm / UI cũ.
+    try {
+      if (youtubeVideoId(input.url)) {
+        return this.videoSpy({
+          url: input.url,
+          depth: input.depth,
+          idempotencyKey: input.idempotencyKey,
+        }, ownerSubject);
+      }
+    } catch {
+      // Host không phải YouTube / URL hỏng → để canonicalChannelUrl báo lỗi chuẩn.
+    }
     const source = canonicalChannelUrl(input.url);
     let spyRunId = '';
     const operation = this.operations.start({
@@ -143,6 +227,39 @@ export class AcquisitionService {
     });
     spyRunId ||= this.store.getSpyRunByOperation(operation.id)?.id ?? '';
     return { operationId: operation.id, spyRunId, status: operation.status };
+  }
+
+  /**
+   * Ưu tiên Data API (nhanh, có title/views/duration), fallback yt-dlp inspect.
+   * `sourceIdentity` dạng `youtube:video:VIDEOID` — dùng để suy ra id khi API rỗng.
+   */
+  private async resolveVideoInfo(
+    canonicalUrl: string,
+    sourceIdentity: string,
+    signal: AbortSignal,
+  ): Promise<YoutubeVideoInfo> {
+    const videoId = sourceIdentity.replace(/^youtube:video:/, '');
+    try {
+      const stats = await this.dataApi.fetchVideoStatistics([videoId]);
+      const api = stats.get(videoId);
+      if (api?.title) {
+        return {
+          sourceVideoId: videoId,
+          canonicalUrl,
+          title: api.title,
+          channelTitle: api.channelTitle ?? '',
+          channelId: api.channelId,
+          viewCount: api.viewCount ?? 0,
+          durationSec: api.durationSec ?? 0,
+          publishedAt: api.publishedAt,
+          thumbnailUrl: api.thumbnailUrl ?? youtubeThumbnailUrl(videoId),
+        };
+      }
+    } catch {
+      // soft degrade to yt-dlp
+    }
+    if (signal.aborted) throw new AppError('cancelled', 'Operation đã bị hủy');
+    return this.youtube.inspectVideo(canonicalUrl, signal);
   }
 
   private async listChannelVideos(

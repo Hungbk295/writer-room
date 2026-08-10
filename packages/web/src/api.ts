@@ -190,6 +190,24 @@ export interface FormulaDiscoveryStatus {
   artifactHash?: string;
 }
 
+/** Interactive (PTY) Formula Discovery — semi-auto path (2026-08-10), mirrors
+ * `packages/daemon/src/training/orchestrator.ts`'s `StartInteractiveFormulaDiscoveryResult`. */
+export interface InteractiveFormulaDiscoveryResult {
+  status: 'STARTED' | 'BLOCKED' | 'FAILED';
+  formulaId?: string;
+  launchSpec?: AgentLaunchSpec;
+  initialMessage?: string;
+  blockers?: TrainingPreflightBlocker[];
+  reason?: string;
+}
+
+/** Mirrors `orchestrator.ts`'s `ImportFormulaDiscoveryResult`. */
+export interface ImportFormulaDiscoveryResult {
+  status: 'IMPORTED' | 'NOT_DRAFT' | 'NO_OUTPUT' | 'INVALID';
+  formula?: Formula;
+  reason?: string;
+}
+
 export interface FormulaSummary {
   id: string;
   status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
@@ -292,9 +310,16 @@ export interface CritiquePattern {
   draftEvidence: CritiqueEvidence[];
 }
 
+export interface RegressionCheckEntry {
+  patternId: string;
+  status: 'fixed' | 'still-present' | 'partial';
+  note: string;
+}
+
 export interface CritiqueArtifact {
   positivePatterns: CritiquePattern[];
   negativePatterns: CritiquePattern[];
+  regressionCheck?: RegressionCheckEntry[];
 }
 
 export interface TrainingLabRound {
@@ -305,9 +330,21 @@ export interface TrainingLabRound {
   critique: CritiqueArtifact | null;
   critiqueArtifactHash: string | null;
   formulaVersionOut: FormulaVersion | null;
+  changeLog: string[] | null;
   status: 'DRAFTING' | 'CRITIQUING' | 'REFINING' | 'DONE' | 'FAILED';
   errorCode?: string;
 }
+
+/** The 4 default agents (`DEFAULT_AGENT_IDS`, `packages/daemon/src/agents/defaults.ts`)
+ * — kept as a plain string union here rather than importing from the daemon package,
+ * same boundary the rest of `api.ts` already follows for every other server type. */
+export type DefaultAgentId = 'claude' | 'codex' | 'agy' | 'grok';
+export const DEFAULT_AGENT_OPTIONS: { id: DefaultAgentId; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'agy', label: 'Antigravity' },
+  { id: 'grok', label: 'Grok' },
+];
 
 export interface TrainingLabRun {
   id: string;
@@ -318,6 +355,8 @@ export interface TrainingLabRun {
   rounds: TrainingLabRound[];
   createdAt: string;
   updatedAt: string;
+  draftAgent: DefaultAgentId;
+  critiqueAgent: DefaultAgentId;
 }
 
 export interface TrainingLabRunSummary {
@@ -328,6 +367,8 @@ export interface TrainingLabRunSummary {
   roundCount: number;
   createdAt: string;
   updatedAt: string;
+  draftAgent: DefaultAgentId;
+  critiqueAgent: DefaultAgentId;
 }
 
 // ── Formula Studio (SDD §12b, ADR-13) — mirrors
@@ -379,6 +420,11 @@ export interface StudioSession {
   clusters: RuleCluster[];
   proposals: RuleProposal[];
   compound: Formula | null;
+  /** SYNTHESIZE dispatch state (P3) — poll `getStudioSession` while `RUNNING` to see
+   * `proposals` update once the turn settles; mirrors `daemon/src/training/studio.ts`. */
+  synthesizeStatus: 'IDLE' | 'RUNNING' | 'FAILED';
+  synthesizeAttempt: number;
+  synthesizeError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -400,6 +446,8 @@ export const api = {
     run: SpyRunSummary;
     videos: SpyVideoRow[];
   }>(`/api/spy/runs/${id}`),
+  deleteSpyRun: (id: string) =>
+    request<{ ok: boolean }>(`/api/spy/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getOperation: (id: string) => request<SpyOperation>(`/api/spy/operations/${id}`),
 
   startChannel: (body: {
@@ -408,6 +456,11 @@ export const api = {
     topN?: number;
     scanLimit?: number;
   }) => request<SpyStarted>('/api/spy/channel', { method: 'POST', body: JSON.stringify(body) }),
+
+  startVideo: (body: {
+    url: string;
+    depth?: string;
+  }) => request<SpyStarted>('/api/spy/video', { method: 'POST', body: JSON.stringify(body) }),
 
   fetchTranscripts: (body: {
     videoIds?: string[];
@@ -538,7 +591,18 @@ export const api = {
     request<FormulaDiscoveryStatus>(
       `/api/training/formula-discovery/status?batchId=${encodeURIComponent(batchId)}&videoSnapshotId=${encodeURIComponent(videoSnapshotId)}`,
     ),
+  startInteractiveFormulaDiscovery: (videoSnapshotId: string, templateId: DefaultAgentId) =>
+    request<InteractiveFormulaDiscoveryResult>('/api/training/formula-discovery/interactive', {
+      method: 'POST',
+      body: JSON.stringify({ videoSnapshotId, templateId }),
+    }),
+  importFormulaDiscoveryResult: (formulaId: string) =>
+    request<ImportFormulaDiscoveryResult>(`/api/training/formulas/${encodeURIComponent(formulaId)}/import`, {
+      method: 'POST',
+    }),
   listFormulas: () => request<{ formulas: FormulaSummary[] }>('/api/training/formulas'),
+  deleteFormula: (id: string) =>
+    request<{ ok: boolean }>(`/api/training/formulas/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // ── Formula Studio (SDD §12b) — all deterministic, no token spent ──
   listRulePool: (includeOlderVersions = false) =>
@@ -549,6 +613,8 @@ export const api = {
   getStudioSession: (id: string) => request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}`),
   createStudioSession: (genre: string) =>
     request<StudioSession>('/api/studio/sessions', { method: 'POST', body: JSON.stringify({ genre }) }),
+  deleteStudioSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/studio/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setStudioPicks: (id: string, picks: RuleRef[]) =>
     request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/picks`, {
       method: 'POST',
@@ -556,16 +622,28 @@ export const api = {
     }),
   promoteStudioCompound: (id: string) =>
     request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/promote`, { method: 'POST' }),
+  synthesizeStudioProposals: (id: string, agentId?: DefaultAgentId) =>
+    request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/synthesize`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
+  decideStudioProposal: (id: string, proposalId: string, decision: 'ACCEPTED' | 'REJECTED', statement?: string) =>
+    request<StudioSession>(
+      `/api/studio/sessions/${encodeURIComponent(id)}/proposals/${encodeURIComponent(proposalId)}/decision`,
+      { method: 'POST', body: JSON.stringify({ decision, statement }) },
+    ),
   getFormula: (id: string) => request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`),
 
-  startTrainingLabRun: (formulaId: string) =>
+  startTrainingLabRun: (formulaId: string, draftAgent: DefaultAgentId, critiqueAgent: DefaultAgentId) =>
     request<TrainingLabRun>('/api/training/lab/start', {
       method: 'POST',
-      body: JSON.stringify({ formulaId }),
+      body: JSON.stringify({ formulaId, draftAgent, critiqueAgent }),
     }),
   listTrainingLabRuns: () => request<{ runs: TrainingLabRunSummary[] }>('/api/training/lab/runs'),
   getTrainingLabRun: (id: string) =>
     request<TrainingLabRun>(`/api/training/lab/runs/${encodeURIComponent(id)}`),
+  deleteTrainingLabRun: (id: string) =>
+    request<{ ok: boolean }>(`/api/training/lab/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
 
 export function formatDuration(sec: number): string {

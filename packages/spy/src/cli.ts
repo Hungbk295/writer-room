@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Spy CLI — channel harvest + Source Pack.
+ * Spy CLI — channel/video harvest + Source Pack.
  *
  *   bun run spy channel <url> [--depth transcript|metadata] [--top N] [--scan N]
+ *   bun run spy video <url> [--depth transcript|metadata]
  *   bun run spy source-pack <spy-run-id> [--limit N] [--out path]
  */
 
@@ -18,6 +19,11 @@ function usage(): never {
       --depth transcript|metadata   default: transcript
       --top N                       videos to capture evidence for (default 5)
       --scan N                      videos to list (default 60)
+      --pack                        after success, print Source Pack markdown
+      --out <path>                  write Source Pack to file (implies --pack)
+
+  bun run spy video <youtube-video-url> [options]
+      --depth transcript|metadata   default: transcript
       --pack                        after success, print Source Pack markdown
       --out <path>                  write Source Pack to file (implies --pack)
 
@@ -94,7 +100,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!arg1 || command !== 'channel') usage();
+  if (!arg1 || (command !== 'channel' && command !== 'video')) usage();
   const url = arg1;
 
   let topN = 5;
@@ -113,16 +119,22 @@ async function main(): Promise<void> {
     }
   }
 
-  const started = spy.channelSpy({
-    url,
-    topN,
-    scanLimit,
-    depth,
-    rankBy: 'velocity',
-    minDurationSec: 0,
-    idempotencyKey: `cli-channel-${randomUUID()}`,
-  });
-  console.error(JSON.stringify({ started, depth }, null, 2));
+  const started = command === 'video'
+    ? spy.videoSpy({
+      url,
+      depth,
+      idempotencyKey: `cli-video-${randomUUID()}`,
+    })
+    : spy.channelSpy({
+      url,
+      topN,
+      scanLimit,
+      depth,
+      rankBy: 'velocity',
+      minDurationSec: 0,
+      idempotencyKey: `cli-channel-${randomUUID()}`,
+    });
+  console.error(JSON.stringify({ started, depth, mode: command }, null, 2));
 
   const operation = await waitUntilDone(spy, started.operationId);
   if (operation.status !== 'completed') {
@@ -138,6 +150,7 @@ async function main(): Promise<void> {
   const summary = {
     spyRunId: started.spyRunId,
     status: operation.status,
+    kind: command,
     depth,
     videoCount: result.videos.length,
     withTranscript: result.videos.filter((v) => v.transcriptStatus === 'ok').length,
@@ -151,7 +164,10 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(summary, null, 2));
 
   if (wantPack) {
-    const pack = spy.exportSourcePack({ spyRunId: started.spyRunId, limit: topN });
+    const pack = spy.exportSourcePack({
+      spyRunId: started.spyRunId,
+      limit: command === 'video' ? 1 : topN,
+    });
     if (outPath) {
       const resolved = resolve(outPath);
       await mkdir(dirname(resolved), { recursive: true });

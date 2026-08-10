@@ -1,6 +1,8 @@
 import { useState } from 'preact/hooks';
 import {
   api,
+  DEFAULT_AGENT_OPTIONS,
+  type DefaultAgentId,
   type FormulaDiscoveryStatus,
   type FormulaSummary,
   type SpyVideoRow,
@@ -8,6 +10,8 @@ import {
 } from '../../api.ts';
 import { href } from '../../router.ts';
 import { useFormulaDiscoveryPoll } from '../../hooks.ts';
+import { termWrite } from '../../components/terminal/terminalApi.ts';
+import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type Phase = 'idle' | 'preflighting' | 'blocked' | 'running' | 'done' | 'failed';
 
@@ -163,6 +167,130 @@ export function FormulaDiscoveryAction({ video }: { video: SpyVideoRow }) {
         {error || describeErrorCode(errorCode ?? undefined)}
       </p>
       <button class="btn secondary" type="button" onClick={reset}>Thử lại</button>
+    </div>
+  );
+}
+
+type InteractivePhase = 'idle' | 'starting' | 'started' | 'blocked' | 'failed';
+
+/**
+ * Semi-auto "PTY tương tác" path (2026-08-10, user: "tự mở agent terminal, gửi
+ * message, đợi session xong thì tôi sẽ tự tạo và import kết quả" — modeled on their
+ * own dna-spy pattern). Unlike `FormulaDiscoveryAction` above, this does NOT poll
+ * for completion and does NOT auto-create the Formula — it opens a REAL interactive
+ * terminal (no `-p` one-shot flag, never auto-exits) pre-seeded with `prompt.md` +
+ * `input/envelope.json` in its cwd, and a placeholder `DRAFT` Formula appears in the
+ * Formula tab immediately. The user drives the session by hand, then goes to that
+ * Formula's page and clicks "Import kết quả" (`ImportFormulaResultAction`,
+ * `Training.tsx`) once it has written `out/result.json`.
+ */
+export function InteractiveFormulaDiscoveryAction({ video }: { video: SpyVideoRow }) {
+  const [phase, setPhase] = useState<InteractivePhase>('idle');
+  const [templateId, setTemplateId] = useState<DefaultAgentId>('grok');
+  const [blockers, setBlockers] = useState<TrainingPreflightBlocker[]>([]);
+  const [formulaId, setFormulaId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const start = async () => {
+    setError(null);
+    setPhase('starting');
+    try {
+      const result = await api.startInteractiveFormulaDiscovery(video.id, templateId);
+      if (result.status === 'BLOCKED') {
+        setBlockers(result.blockers ?? []);
+        setPhase('blocked');
+        return;
+      }
+      if (result.status !== 'STARTED' || !result.launchSpec || !result.formulaId) {
+        setError(result.reason ?? 'Không khởi động được phiên tương tác');
+        setPhase('failed');
+        return;
+      }
+      const spec = result.launchSpec;
+      const sessionId = await terminals.launchTab({
+        executable: spec.executable,
+        args: spec.args,
+        cwd: spec.cwd,
+        env: spec.env ?? {},
+        agentId: templateId,
+        title: `Tìm Formula (${templateId}) — ${video.title}`,
+        readOnly: false,
+      });
+      if (result.initialMessage) {
+        // The CLI's TUI needs a moment to finish booting before it will accept
+        // typed input — same precedent as the interactive-launch bugs found earlier
+        // today, verified by hand: sending too early is silently swallowed.
+        const message = result.initialMessage;
+        setTimeout(() => { void termWrite(sessionId, `${message}\r`); }, 1200);
+      }
+      setFormulaId(result.formulaId);
+      setPhase('started');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase('failed');
+    }
+  };
+
+  const disabledReason = video.transcriptStatus !== 'ok'
+    ? 'Video chưa có transcript — lấy transcript trước khi tìm Formula'
+    : undefined;
+
+  if (phase === 'idle') {
+    return (
+      <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <select
+          value={templateId}
+          onChange={(e) => setTemplateId((e.target as HTMLSelectElement).value as DefaultAgentId)}
+        >
+          {DEFAULT_AGENT_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>{o.label}</option>
+          ))}
+        </select>
+        <button
+          class="btn secondary"
+          type="button"
+          disabled={!!disabledReason}
+          title={disabledReason}
+          onClick={() => void start()}
+        >
+          🧪 Tìm Formula (PTY tương tác)
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === 'starting') {
+    return <span class="chip warn">🧪 Đang mở phiên…</span>;
+  }
+
+  if (phase === 'blocked') {
+    return (
+      <div class="stack" style={{ gap: '0.35rem' }}>
+        <span class="chip warn">🧪 Không thể chạy</span>
+        {blockers.map((b) => (
+          <p key={b.code} class="error" style={{ margin: 0, fontSize: '0.82rem' }}>{b.message}</p>
+        ))}
+        <button class="btn secondary" type="button" onClick={() => setPhase('idle')}>Thử lại</button>
+      </div>
+    );
+  }
+
+  if (phase === 'started' && formulaId) {
+    return (
+      <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
+        <span class="chip ok">🧪 Phiên đã mở</span>
+        <a class="btn teal" href={href({ name: 'training-formula', id: formulaId })}>
+          Xem Formula (chờ import) →
+        </a>
+      </div>
+    );
+  }
+
+  // phase === 'failed'
+  return (
+    <div class="stack" style={{ gap: '0.35rem' }}>
+      <p class="error" style={{ margin: 0, fontSize: '0.82rem' }}>{error}</p>
+      <button class="btn secondary" type="button" onClick={() => setPhase('idle')}>Thử lại</button>
     </div>
   );
 }

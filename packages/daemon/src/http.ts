@@ -24,11 +24,20 @@ import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
-import { runFormulaDiscovery } from './training/orchestrator.ts';
-import { getFormula, getTrainingLabRun, listFormulas, listTrainingLabRuns } from './training/storage.ts';
-import { registerTrainingLabSettleListener, startTrainingLabRun } from './training/training-lab.ts';
+import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
 import {
+  deleteFormula,
+  deleteTrainingLabRun,
+  getFormula,
+  getTrainingLabRun,
+  listFormulas,
+  listTrainingLabRuns,
+} from './training/storage.ts';
+import { DEFAULT_AGENT_IDS, registerTrainingLabSettleListener, startTrainingLabRun, type DefaultAgentId } from './training/training-lab.ts';
+import {
+  applyProposalDecision,
   createStudioSession,
+  deleteStudioSession,
   getStudioSession,
   listRulePool,
   listStudioSessions,
@@ -37,6 +46,7 @@ import {
   recomputeClusters,
   saveStudioSession,
 } from './training/studio.ts';
+import { registerStudioSynthesizeSettleListener, startStudioSynthesize } from './training/studio-synthesize.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -50,6 +60,14 @@ function json(data: unknown, status = 200): Response {
 
 function error(message: string, status = 400): Response {
   return json({ error: message }, status);
+}
+
+/** Shared by every route that accepts a user-chosen agent id (Training Lab's
+ * draft/critique agents, Studio's SYNTHESIZE agent) — factored out here (was inline
+ * only at the Training Lab route) so a second call site did not have to re-copy the
+ * same type guard. */
+function isDefaultAgentId(v: unknown): v is DefaultAgentId {
+  return typeof v === 'string' && (DEFAULT_AGENT_IDS as readonly string[]).includes(v);
 }
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
@@ -99,6 +117,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // listener above — both subscribe to the same `onItemSettled` source and each
   // ignores events the other owns (see `training-lab.ts`'s doc comment).
   registerTrainingLabSettleListener(harness.pipeline.scheduler, { dataDir: root, spy });
+
+  // Formula Studio SYNTHESIZE (P3, SDD §12b): registered once here too — no `spy`
+  // needed, SYNTHESIZE's envelope is just cluster statements, never a transcript.
+  registerStudioSynthesizeSettleListener(harness.pipeline.scheduler, { dataDir: root });
 
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
   return { spy, harness, startedAt: Date.now(), webRoot };
@@ -393,6 +415,35 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json({ batchId, ...result });
       }
 
+      // Interactive (PTY) Formula Discovery — semi-auto path (2026-08-10, user:
+      // "tự mở agent terminal, gửi message, đợi session xong thì tôi sẽ tự tạo và
+      // import kết quả", modeled on their own dna-spy semi-auto pattern). Does NOT
+      // go through `LaneScheduler` — see `orchestrator.ts`'s doc comment on
+      // `startInteractiveFormulaDiscovery` for why.
+      if (method === 'POST' && pathname === '/api/training/formula-discovery/interactive') {
+        const body = await readBody(req);
+        const videoSnapshotId = String(body['videoSnapshotId'] ?? '');
+        if (!videoSnapshotId) return error('videoSnapshotId bắt buộc');
+        const rawTemplateId = body['templateId'];
+        if (!isDefaultAgentId(rawTemplateId)) {
+          return error(`templateId không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+        }
+        const result = await startInteractiveFormulaDiscovery(
+          { spy, agents: harness.agents, dataDir: dataRoot() },
+          { videoSnapshotId, templateId: rawTemplateId },
+        );
+        return json(result);
+      }
+
+      const formulaImportMatch = /^\/api\/training\/formulas\/([^/]+)\/import$/.exec(pathname);
+      if (method === 'POST' && formulaImportMatch) {
+        const result = await importFormulaDiscoveryResult(
+          { spy, dataDir: dataRoot() },
+          { formulaId: decodeURIComponent(formulaImportMatch[1]!) },
+        );
+        return json(result);
+      }
+
       if (method === 'GET' && pathname === '/api/training/formulas') {
         return json({ formulas: await listFormulas() });
       }
@@ -402,6 +453,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const formula = await getFormula(decodeURIComponent(formulaMatch[1]!));
         if (!formula) return error('Formula không tồn tại', 404);
         return json(formula);
+      }
+      if (method === 'DELETE' && formulaMatch) {
+        const ok = await deleteFormula(decodeURIComponent(formulaMatch[1]!));
+        if (!ok) return error('Formula không tồn tại', 404);
+        return json({ ok: true });
       }
 
       if (method === 'GET' && pathname === '/api/training/formula-discovery/status') {
@@ -432,11 +488,32 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!formulaId) return error('formulaId bắt buộc');
         const formula = await getFormula(formulaId);
         if (!formula) return error('Formula không tồn tại', 404);
-        const videoSnapshotId = formula.includedArtifacts[0]?.videoSnapshotId;
-        if (!videoSnapshotId) return error('Formula không có video nguồn (includedArtifacts rỗng)');
+        // The Training Lab critiques a draft against ONE pinned transcript (§12a), so it
+        // needs a single source video. A COMPOUND Formula draws on several by
+        // construction — that is not a uniformity gap but the reason the Studio has its
+        // own multi-video-grounded test-write (§12b). Say so plainly instead of leaking
+        // "includedArtifacts rỗng" at the user.
+        if (formula.origin === 'COMPOUND') {
+          return error('Formula ghép có nhiều video nguồn — dùng chức năng viết thử trong Studio, không phải Training Lab');
+        }
+        const videoSnapshotId = formula.videoSnapshotId ?? formula.includedArtifacts[0]?.videoSnapshotId;
+        if (!videoSnapshotId) return error('Formula không xác định được video nguồn');
+        // Agent choice per role (2026-08-10, user: "cần có thêm setup chọn loại agent
+        // cho agent 1 và agent 2"). Default to 'grok' for callers that omit it
+        // (matches the hardcoded behavior before this was configurable).
+        const rawDraftAgent = body['draftAgent'];
+        const rawCritiqueAgent = body['critiqueAgent'];
+        if (rawDraftAgent !== undefined && !isDefaultAgentId(rawDraftAgent)) {
+          return error(`draftAgent không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+        }
+        if (rawCritiqueAgent !== undefined && !isDefaultAgentId(rawCritiqueAgent)) {
+          return error(`critiqueAgent không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+        }
+        const draftAgent: DefaultAgentId = isDefaultAgentId(rawDraftAgent) ? rawDraftAgent : 'grok';
+        const critiqueAgent: DefaultAgentId = isDefaultAgentId(rawCritiqueAgent) ? rawCritiqueAgent : 'grok';
         const run = await startTrainingLabRun(
           { spy, scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
-          { videoSnapshotId, startingFormula: formula },
+          { videoSnapshotId, startingFormula: formula, draftAgent, critiqueAgent },
         );
         return json(run, 201);
       }
@@ -451,10 +528,16 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!run) return error('Training Lab run không tồn tại', 404);
         return json(run);
       }
+      if (method === 'DELETE' && labRunMatch) {
+        const ok = await deleteTrainingLabRun(decodeURIComponent(labRunMatch[1]!));
+        if (!ok) return error('Training Lab run không tồn tại', 404);
+        return json({ ok: true });
+      }
 
       // ── Formula Studio (SDD §12b, ADR-13) ─────────────────────
-      // Everything below is deterministic app code — no model call, no token spent.
-      // The LLM only enters at SYNTHESIZE (P3), which is not wired yet.
+      // Everything down to `synthesize` is deterministic app code — no model call, no
+      // token spent. SYNTHESIZE (P3, below) is the one route that dispatches an LLM
+      // turn, and even then only proposes — the human still decides (ADR-13).
       if (method === 'GET' && pathname === '/api/studio/rule-pool') {
         const includeOlderVersions = url.searchParams.get('includeOlderVersions') === 'true';
         return json({ rules: await listRulePool(dataRoot(), { includeOlderVersions }) });
@@ -477,8 +560,13 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!session) return error('Studio session không tồn tại', 404);
         return json(session);
       }
+      if (method === 'DELETE' && studioSessionMatch) {
+        const ok = await deleteStudioSession(decodeURIComponent(studioSessionMatch[1]!), dataRoot());
+        if (!ok) return error('Studio session không tồn tại', 404);
+        return json({ ok: true });
+      }
 
-      const studioActionMatch = /^\/api\/studio\/sessions\/([^/]+)\/(picks|promote)$/.exec(pathname);
+      const studioActionMatch = /^\/api\/studio\/sessions\/([^/]+)\/(picks|promote|synthesize)$/.exec(pathname);
       if (method === 'POST' && studioActionMatch) {
         const session = await getStudioSession(decodeURIComponent(studioActionMatch[1]!), dataRoot());
         if (!session) return error('Studio session không tồn tại', 404);
@@ -499,11 +587,61 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           return json(session);
         }
 
+        if (studioActionMatch[2] === 'synthesize') {
+          const body = await readBody(req);
+          const rawAgentId = body['agentId'];
+          if (rawAgentId !== undefined && !isDefaultAgentId(rawAgentId)) {
+            return error(`agentId không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+          }
+          try {
+            // Returns immediately with `synthesizeStatus: 'RUNNING'` — the turn's
+            // proposals arrive later via `registerStudioSynthesizeSettleListener`,
+            // which the UI observes by polling `GET .../sessions/:id` (see that
+            // listener's doc comment for why no separate status endpoint exists).
+            const updated = await startStudioSynthesize(
+              { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+              session,
+              isDefaultAgentId(rawAgentId) ? rawAgentId : undefined,
+            );
+            return json(updated);
+          } catch (e) {
+            return error(e instanceof Error ? e.message : 'ghép thất bại');
+          }
+        }
+
         try {
           await promoteCompound(session, dataRoot());
         } catch (e) {
           return error(e instanceof Error ? e.message : 'promote thất bại');
         }
+        await saveStudioSession(session, dataRoot());
+        return json(session);
+      }
+
+      const studioDecisionMatch = /^\/api\/studio\/sessions\/([^/]+)\/proposals\/([^/]+)\/decision$/.exec(pathname);
+      if (method === 'POST' && studioDecisionMatch) {
+        const session = await getStudioSession(decodeURIComponent(studioDecisionMatch[1]!), dataRoot());
+        if (!session) return error('Studio session không tồn tại', 404);
+        const proposalId = decodeURIComponent(studioDecisionMatch[2]!);
+
+        const body = await readBody(req);
+        const decision = body['decision'];
+        if (decision !== 'ACCEPTED' && decision !== 'REJECTED') {
+          return error('decision phải là ACCEPTED hoặc REJECTED');
+        }
+        const rawStatement = body['statement'];
+        const statement = typeof rawStatement === 'string' ? rawStatement : undefined;
+
+        try {
+          applyProposalDecision(session, proposalId, decision, statement);
+        } catch (e) {
+          return error(e instanceof Error ? e.message : 'decision thất bại', 404);
+        }
+        // ADR-13: every decision immediately re-derives the compound Formula from
+        // scratch (same "cheap, deterministic, derived" reasoning `picks` already
+        // follows above) — there is no path where `proposals` and `compound` can
+        // disagree, even transiently between requests.
+        await rebuildCompound(session, dataRoot());
         await saveStudioSession(session, dataRoot());
         return json(session);
       }
@@ -612,6 +750,12 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           videos: result.videos,
         });
       }
+      if (method === 'DELETE' && spyRunMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const ok = spy.deleteSpyRun(spyRunMatch[1]!);
+        if (!ok) return error('Spy run không tồn tại', 404);
+        return json({ ok: true });
+      }
 
       const packMatch = /^\/api\/spy\/runs\/([^/]+)\/source-pack$/.exec(pathname);
       if (method === 'POST' && packMatch) {
@@ -676,6 +820,21 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           rankBy: 'velocity',
           minDurationSec: 0,
           idempotencyKey: `http-channel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        });
+        return json(started);
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/video') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readBody(req);
+        const urlValue = String(body['url'] ?? '');
+        if (!urlValue) return error('url bắt buộc');
+        const started = spy.videoSpy({
+          url: urlValue,
+          depth: body['depth'] === 'metadata' || body['depth'] === 'transcript'
+            ? body['depth']
+            : 'transcript',
+          idempotencyKey: `http-video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         });
         return json(started);
       }

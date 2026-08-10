@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import { api, type Formula, type FormulaRule, type FormulaSummary } from '../api.ts';
+import {
+  api, DEFAULT_AGENT_OPTIONS, type DefaultAgentId, type Formula, type FormulaRule, type FormulaSummary,
+} from '../api.ts';
 import { href } from '../router.ts';
+import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 
 /** ADR-14: `origin` replaced `scope`. Shown in Vietnamese because it is the one
  * thing that tells the user whether a Formula came from one video, from refining
@@ -85,6 +88,12 @@ export function FormulasPage() {
     void refresh().catch((err) => setError(err.message));
   }, [refresh]);
 
+  const remove = async (id: string) => {
+    setError(null);
+    await api.deleteFormula(id);
+    setFormulas((prev) => prev.filter((f) => f.id !== id));
+  };
+
   return (
     <div>
       <h1 class="page-title">Formula</h1>
@@ -108,26 +117,33 @@ export function FormulasPage() {
         ) : (
           <ul class="list">
             {formulas.map((formula) => (
-              <li
-                key={formula.id}
-                style={{ cursor: 'pointer' }}
-                onClick={() => { location.hash = href({ name: 'training-formula', id: formula.id }); }}
-              >
-                <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                  <a
-                    href={href({ name: 'training-formula', id: formula.id })}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <strong>{formula.label}</strong>
-                  </a>
-                  <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
+              <li key={formula.id} class="pack-row">
+                <div style={{ cursor: 'pointer' }} onClick={() => { location.hash = href({ name: 'training-formula', id: formula.id }); }}>
+                  <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                    <a
+                      href={href({ name: 'training-formula', id: formula.id })}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <strong>{formula.label}</strong>
+                    </a>
+                    <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
+                  </div>
+                  <div class="meta">
+                    <span>{originLabel(formula.origin)}</span>
+                    {formula.version > 1 && <span>v{formula.version}</span>}
+                    <span>{formula.videoCount} video</span>
+                    <span>{formula.ruleCount} rule</span>
+                    <span>{new Date(formula.createdAt).toLocaleString()}</span>
+                  </div>
                 </div>
-                <div class="meta">
-                  <span>{originLabel(formula.origin)}</span>
-                  {formula.version > 1 && <span>v{formula.version}</span>}
-                  <span>{formula.videoCount} video</span>
-                  <span>{formula.ruleCount} rule</span>
-                  <span>{new Date(formula.createdAt).toLocaleString()}</span>
+                <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
+                  <a class="btn secondary" href={href({ name: 'training-formula', id: formula.id })}>
+                    Mở
+                  </a>
+                  <DeleteButton
+                    title={formula.label}
+                    onDelete={() => remove(formula.id)}
+                  />
                 </div>
               </li>
             ))}
@@ -205,33 +221,91 @@ export function FormulaPage({ id }: { id: string }) {
         )}
       </section>
 
-      <section class="panel" style={{ marginTop: '1rem' }}>
-        <h2>Rules ({formula.rules.length})</h2>
-        <RuleList rules={formula.rules} />
-      </section>
+      {formula.status === 'DRAFT' ? (
+        <section class="panel" style={{ marginTop: '1rem' }}>
+          <h2>Chờ import</h2>
+          <ImportFormulaResultAction formulaId={formula.id} onImported={setFormula} />
+        </section>
+      ) : (
+        <>
+          <section class="panel" style={{ marginTop: '1rem' }}>
+            <h2>Rules ({formula.rules.length})</h2>
+            <RuleList rules={formula.rules} />
+          </section>
 
-      <section class="panel" style={{ marginTop: '1rem' }}>
-        <h2>Included artifacts ({formula.includedArtifacts.length})</h2>
-        <ul class="list">
-          {formula.includedArtifacts.map((a) => (
-            <li key={a.videoSnapshotId}>
-              <div class="meta">
-                <span>video: {a.videoSnapshotId}</span>
-                <span style={{ fontFamily: 'var(--font-mono)' }}>hash: {a.analysisArtifactHash.slice(0, 16)}…</span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
+          <section class="panel" style={{ marginTop: '1rem' }}>
+            <h2>Included artifacts ({formula.includedArtifacts.length})</h2>
+            <ul class="list">
+              {formula.includedArtifacts.map((a) => (
+                <li key={a.videoSnapshotId}>
+                  <div class="meta">
+                    <span>video: {a.videoSnapshotId}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)' }}>hash: {a.analysisArtifactHash.slice(0, 16)}…</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
 
-      <section class="panel" style={{ marginTop: '1rem' }}>
-        <h2>Training Lab</h2>
-        <p class="muted" style={{ marginTop: 0 }}>
-          Chạy vòng lặp viết lại → chấm → căn chỉnh (tối đa 3 vòng) trên video nguồn của
-          Formula này, xem toàn bộ lịch sử ở tab Training Lab.
-        </p>
-        <StartTrainingLabAction formulaId={formula.id} />
-      </section>
+          <section class="panel" style={{ marginTop: '1rem' }}>
+            <h2>Training Lab</h2>
+            <p class="muted" style={{ marginTop: 0 }}>
+              Chạy vòng lặp viết lại → chấm → căn chỉnh (tối đa 3 vòng) trên video nguồn của
+              Formula này, xem toàn bộ lịch sử ở tab Training Lab.
+            </p>
+            <StartTrainingLabAction formulaId={formula.id} />
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+type ImportPhase = 'idle' | 'importing' | 'error';
+
+/** Second half of the semi-auto "PTY tương tác" flow (2026-08-10, user's own
+ * dna-spy pattern) — `FormulaDiscoveryAction`/`InteractiveFormulaDiscoveryAction`
+ * (Spy video page) pre-creates this Formula as `DRAFT` with empty `rules` and opens
+ * an interactive terminal; this button is what the user clicks once that session has
+ * written `out/result.json` by hand. No polling — importing is a deliberate, one-shot
+ * user action, not something to auto-retry in the background. */
+function ImportFormulaResultAction({ formulaId, onImported }: { formulaId: string; onImported: (f: Formula) => void }) {
+  const [phase, setPhase] = useState<ImportPhase>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setPhase('importing');
+    setError(null);
+    try {
+      const result = await api.importFormulaDiscoveryResult(formulaId);
+      if (result.status === 'IMPORTED' && result.formula) {
+        onImported(result.formula);
+        return;
+      }
+      setError(result.reason ?? `Import thất bại (${result.status})`);
+      setPhase('error');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase('error');
+    }
+  };
+
+  return (
+    <div class="stack" style={{ gap: '0.5rem' }}>
+      <p class="muted" style={{ margin: 0 }}>
+        Formula này đang chờ kết quả từ phiên PTY tương tác (mở ở trang video trong Spy).
+        Sau khi phiên ghi xong <code>out/result.json</code>, bấm nút bên dưới để import.
+      </p>
+      {error && <p class="error" style={{ margin: 0, fontSize: '0.82rem' }}>{error}</p>}
+      <button
+        class="btn secondary"
+        type="button"
+        disabled={phase === 'importing'}
+        style={{ alignSelf: 'flex-start' }}
+        onClick={() => void run()}
+      >
+        {phase === 'importing' ? '📥 Đang import…' : '📥 Import kết quả'}
+      </button>
     </div>
   );
 }
@@ -246,12 +320,17 @@ function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
   const [phase, setPhase] = useState<LabTriggerPhase>('idle');
   const [runId, setRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Default 'grok' for both — matches the hardcoded behavior before agent choice was
+  // configurable (2026-08-10, user: "cần có thêm setup chọn loại agent cho agent 1
+  // và agent 2"), so an untouched dropdown reproduces the prior default exactly.
+  const [draftAgent, setDraftAgent] = useState<DefaultAgentId>('grok');
+  const [critiqueAgent, setCritiqueAgent] = useState<DefaultAgentId>('grok');
 
   const start = async () => {
     setPhase('starting');
     setError(null);
     try {
-      const run = await api.startTrainingLabRun(formulaId);
+      const run = await api.startTrainingLabRun(formulaId, draftAgent, critiqueAgent);
       setRunId(run.id);
       setPhase('done');
     } catch (err) {
@@ -262,9 +341,35 @@ function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
 
   if (phase === 'idle') {
     return (
-      <button class="btn secondary" type="button" onClick={() => void start()}>
-        🔬 Bắt đầu Training Lab
-      </button>
+      <div class="stack" style={{ gap: '0.6rem' }}>
+        <div class="row" style={{ gap: '1rem', flexWrap: 'wrap' }}>
+          <label class="stack" style={{ gap: '0.25rem' }}>
+            <span class="muted" style={{ fontSize: '0.82rem' }}>Agent 1 (chấm + căn chỉnh)</span>
+            <select
+              value={critiqueAgent}
+              onChange={(e) => setCritiqueAgent((e.target as HTMLSelectElement).value as DefaultAgentId)}
+            >
+              {DEFAULT_AGENT_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          <label class="stack" style={{ gap: '0.25rem' }}>
+            <span class="muted" style={{ fontSize: '0.82rem' }}>Agent 2 (viết)</span>
+            <select
+              value={draftAgent}
+              onChange={(e) => setDraftAgent((e.target as HTMLSelectElement).value as DefaultAgentId)}
+            >
+              {DEFAULT_AGENT_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <button class="btn secondary" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => void start()}>
+          🔬 Bắt đầu Training Lab
+        </button>
+      </div>
     );
   }
 

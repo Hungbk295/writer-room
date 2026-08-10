@@ -616,6 +616,43 @@ export class SpyStore {
     return this.getSpyRun(id)!;
   }
 
+  /** Operation gắn với spy run (nếu còn). Dùng để huỷ trước khi xoá. */
+  getSpyRunOperationId(id: string): string | null {
+    const row = this.database.prepare('SELECT operation_id FROM spy_runs WHERE id=?').get(id) as Row | undefined;
+    return row ? String(row['operation_id']) : null;
+  }
+
+  /**
+   * Xoá một spy run + snapshot / segments / frames / metrics / profiles của run đó.
+   * Giữ `video_transcripts` (chia sẻ theo source_video_id) và `channels` (chia sẻ).
+   * Trả `false` nếu run không tồn tại.
+   */
+  deleteSpyRun(id: string): boolean {
+    if (!this.getSpyRun(id)) return false;
+    this.transaction(() => {
+      const snapshots = this.database.prepare(
+        'SELECT id FROM video_snapshots WHERE spy_run_id=?',
+      ).all(id) as Array<{ id: string }>;
+      for (const snap of snapshots) {
+        const oldRows = this.database.prepare(
+          'SELECT rowid FROM transcript_segments WHERE video_snapshot_id=?',
+        ).all(snap.id) as Array<{ rowid: number }>;
+        for (const row of oldRows) {
+          this.database.prepare(
+            'INSERT INTO transcript_fts(transcript_fts, rowid) VALUES ("delete", ?)',
+          ).run(row.rowid);
+        }
+        this.database.prepare('DELETE FROM transcript_segments WHERE video_snapshot_id=?').run(snap.id);
+        this.database.prepare('DELETE FROM frame_samples WHERE video_snapshot_id=?').run(snap.id);
+      }
+      this.database.prepare('DELETE FROM metrics WHERE spy_run_id=?').run(id);
+      this.database.prepare('DELETE FROM profiles WHERE spy_run_id=?').run(id);
+      this.database.prepare('DELETE FROM video_snapshots WHERE spy_run_id=?').run(id);
+      this.database.prepare('DELETE FROM spy_runs WHERE id=?').run(id);
+    });
+    return true;
+  }
+
   upsertChannel(input: Omit<ChannelRecord, 'id'> & { id?: string }): ChannelRecord {
     const id = input.id ?? randomUUID();
     this.database.prepare(
@@ -1041,6 +1078,23 @@ export class SpyStore {
       computedAt: String(row['computed_at']),
       spyRunId: String(row['spy_run_id']),
     };
+  }
+
+  /** Lấy metrics mới nhất cho nhiều scopeId một lượt — tránh N+1 khi enrich corpus. */
+  getLatestMetricsBatch(scope: string, scopeIds: readonly string[]): Map<string, unknown> {
+    const result = new Map<string, unknown>();
+    if (scopeIds.length === 0) return result;
+    const rows = this.database.prepare(`
+      SELECT scope_id, payload_json FROM (
+        SELECT scope_id, payload_json,
+          ROW_NUMBER() OVER (PARTITION BY scope_id ORDER BY computed_at DESC) AS rn
+        FROM metrics
+        WHERE scope = ? AND scope_id IN (${scopeIds.map(() => '?').join(',')})
+      ) WHERE rn = 1`).all(scope, ...scopeIds) as Row[];
+    for (const row of rows) {
+      result.set(String(row['scope_id']), parseJson<unknown>(row['payload_json']));
+    }
+    return result;
   }
 
   saveProfile(input: {

@@ -174,12 +174,49 @@ export function validateCritique(
   critique: CritiqueArtifact,
   segmentsById: Map<string, { text: string }>,
   draftScript: string,
+  /** Negative pattern ids from the PREVIOUS round (2026-08-10, "gate" fix — user:
+   * "khi agent 1 check thì cũng k có gate để verify là đã sửa đúng chưa"). Empty/
+   * omitted on round 1 (nothing to check yet). Coverage-only check, "mức nhẹ" per
+   * user's own framing: every id here must appear in `critique.regressionCheck` with
+   * a valid `status` and a non-empty `note` — the TRUTH of that status is NOT
+   * verified (no evidence requirement), same trust level as REFINE's `changeLog`. */
+  previousNegativePatternIds: string[] = [],
 ): ValidateCritiqueResult {
   const positive = Array.isArray(critique.positivePatterns) ? critique.positivePatterns : [];
   const negative = Array.isArray(critique.negativePatterns) ? critique.negativePatterns : [];
 
   if (positive.length + negative.length === 0) {
     return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: 'critique has zero patterns — nothing found is not useful critique' };
+  }
+
+  if (previousNegativePatternIds.length > 0) {
+    const regressionCheck = Array.isArray(critique.regressionCheck) ? critique.regressionCheck : [];
+    const byId = new Map(regressionCheck.map((r) => [r.patternId, r]));
+    const validStatuses = new Set(['fixed', 'still-present', 'partial']);
+    for (const patternId of previousNegativePatternIds) {
+      const entry = byId.get(patternId);
+      if (!entry) {
+        return {
+          ok: false,
+          errorCode: 'AGENT_UNGROUNDED',
+          reason: `regressionCheck is missing an entry for previous round's negative pattern "${patternId}"`,
+        };
+      }
+      if (!validStatuses.has(entry.status)) {
+        return {
+          ok: false,
+          errorCode: 'AGENT_UNGROUNDED',
+          reason: `regressionCheck entry "${patternId}" has invalid status "${entry.status}" (must be fixed/still-present/partial)`,
+        };
+      }
+      if (typeof entry.note !== 'string' || !entry.note.trim()) {
+        return {
+          ok: false,
+          errorCode: 'AGENT_UNGROUNDED',
+          reason: `regressionCheck entry "${patternId}" has an empty note`,
+        };
+      }
+    }
   }
 
   const allPatterns = [

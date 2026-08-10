@@ -7,7 +7,7 @@ import {
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
 import { TranscriptPanel } from '../components/TranscriptPanel.tsx';
-import { FormulaDiscoveryAction } from '../features/training/FormulaDiscoveryAction.tsx';
+import { FormulaDiscoveryAction, InteractiveFormulaDiscoveryAction } from '../features/training/FormulaDiscoveryAction.tsx';
 
 function thumbSrc(video: SpyVideoRow): string {
   return video.thumbnailUrl
@@ -385,6 +385,9 @@ export function SpyRunPage({ id }: { id: string }) {
                       Xem trên YouTube ↗
                     </a>
                     <FormulaDiscoveryAction video={active} />
+                  </div>
+                  <div class="row" style={{ marginTop: '0.5rem' }}>
+                    <InteractiveFormulaDiscoveryAction video={active} />
                   </div>
                 </div>
               </div>

@@ -26,11 +26,15 @@
  * therefore where the HTTP routes AND the one-time settle-listener registration
  * live (see `aggregator.ts`'s `registerTrainingSettleListener`).
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { AgentLaunchSpec } from '@writer-room/shared';
 import type { SpyService } from '@writer-room/spy';
-import { validateAnalysis, type AnalysisArtifact, type AnalysisRule } from '@writer-room/training-core';
+import { validateAnalysis, type AnalysisArtifact, type AnalysisRule, type FormulaArtifact } from '@writer-room/training-core';
 import type { AgentManager } from '../agents/index.ts';
 import type { LaneScheduler } from '../pipeline/lane-scheduler.ts';
+import { getFormula, saveFormula } from './storage.ts';
 import { ANALYZE_STAGE } from './aggregator.ts';
 import { preflightVideo, type PreflightResult } from './preflight.ts';
 
@@ -164,4 +168,186 @@ export async function runFormulaDiscovery(
     return { status: 'WAITING_LANE', reason: dispatch.reason };
   }
   return { status: 'FAILED', reason: dispatch.reason };
+}
+
+// ── Interactive (PTY) Formula Discovery — semi-auto path (2026-08-10) ──────
+//
+// User request: headless `-p` one-shot turns always self-terminate the CLI process,
+// which is required for the automatic pipeline commit-rule to work at all (a bug
+// found earlier the same day — Grok's bare positional prompt launched an
+// INTERACTIVE session that never exited, hanging the pipeline forever — is the
+// exact failure mode a real interactive session has by design). The user does not
+// want that automatic path for ANALYZE; they want a REAL interactive terminal they
+// (or the agent) can drive by hand, with no auto-completion — mirroring their own
+// prior "semi-auto" pattern from the sibling repo dna-spy: starting the session
+// pre-creates a placeholder Formula (status `DRAFT`, empty `rules`) in the Formula
+// tab immediately, and that Formula's own page carries an "Import" action the user
+// clicks once the interactive session is done — see `importFormulaDiscoveryResult`
+// below. This intentionally does NOT go through `LaneScheduler`/the settle-listener
+// at all: there is no turn_key, no ledger row, no automatic commit-rule — the only
+// automation is (a) staging `input/envelope.json` + `prompt.md` in a scratch dir and
+// (b) launching that agent's REAL interactive session (`AgentManager.prepareLaunch`,
+// the exact same call the Agents page's "Launch" button uses) pointed at that dir.
+
+/** Same "write here, nothing else" pointer `LaneScheduler` appends to every
+ * pipeline `prompt.md` (`lane-scheduler.ts`'s `STANDING_POINTER`) — duplicated
+ * rather than imported since this path deliberately does NOT depend on the
+ * pipeline module (no ledger, no turn_key, nothing pipeline-shaped here). */
+const MANUAL_STANDING_POINTER =
+  'Write your result to out/result.json. Do not write anywhere else. Reply "done" when the file exists.';
+
+function manualAnalyzeDir(dataDir: string, formulaId: string): string {
+  return join(dataDir, 'workspaces', 'manual-analyze', formulaId);
+}
+
+export interface StartInteractiveFormulaDiscoveryParams {
+  videoSnapshotId: string;
+  templateId: string;
+}
+
+export interface StartInteractiveFormulaDiscoveryResult {
+  status: 'STARTED' | 'BLOCKED' | 'FAILED';
+  formulaId?: string;
+  launchSpec?: AgentLaunchSpec;
+  /** Short instruction text the client sends into the freshly-opened PTY pane
+   * (`terminals.termWrite`) right after launch — deliberately NOT the full ANALYZE
+   * prompt itself (pasting a long multi-line prompt as simulated keystrokes into a
+   * TUI is fragile across CLIs); the agent is told to go read the real prompt from
+   * `prompt.md`, exactly what already sits in its cwd. */
+  initialMessage?: string;
+  blockers?: PreflightResult['blockers'];
+  reason?: string;
+}
+
+export async function startInteractiveFormulaDiscovery(
+  deps: { spy: SpyService; agents: AgentManager; dataDir: string },
+  params: StartInteractiveFormulaDiscoveryParams,
+): Promise<StartInteractiveFormulaDiscoveryResult> {
+  const { spy, agents, dataDir } = deps;
+  const { videoSnapshotId, templateId } = params;
+
+  const preflight = await preflightVideo(spy, agents, videoSnapshotId);
+  if (!preflight.ready) {
+    return { status: 'BLOCKED', blockers: preflight.blockers };
+  }
+  const channelTitle = preflight.channelTitle ?? '';
+
+  const { segments } = spy.getTranscript(videoSnapshotId, 0, TRANSCRIPT_FETCH_LIMIT);
+  const envelopeSegments: EnvelopeSegment[] = segments.map((s) => ({
+    id: s.id, index: s.index, startSec: s.startSec, endSec: s.endSec, text: s.text,
+  }));
+  const envelope = { videoSnapshotId, channelTitle, segments: envelopeSegments };
+
+  // Placeholder Formula (SDD §7.7-adjacent, `FormulaStatus.DRAFT` — previously only
+  // used by Studio's compound-rule flow, now also the "waiting for manual import"
+  // marker here): created up front so it shows up in the Formula tab immediately,
+  // named after the video, with an obvious "not real yet" status badge.
+  const formula: FormulaArtifact = {
+    id: randomUUID(),
+    status: 'DRAFT',
+    origin: 'ANALYZED',
+    version: 1,
+    videoSnapshotId,
+    channelTitle,
+    rules: [],
+    includedArtifacts: [],
+    lineage: {},
+    warnings: ['Đang chờ import kết quả từ phiên PTY tương tác — mở phiên, chạy xong, bấm "Import kết quả" trên trang này.'],
+    createdAt: new Date().toISOString(),
+  };
+  await saveFormula(formula, dataDir);
+
+  const workDir = manualAnalyzeDir(dataDir, formula.id);
+  await mkdir(join(workDir, 'input'), { recursive: true });
+  await mkdir(join(workDir, 'out'), { recursive: true });
+  await writeFile(join(workDir, 'input', 'envelope.json'), JSON.stringify(envelope, null, 2), 'utf8');
+  const promptContent = `${buildAnalyzePrompt().trimEnd()}\n\n---\n\n${MANUAL_STANDING_POINTER}\n`;
+  await writeFile(join(workDir, 'prompt.md'), promptContent, 'utf8');
+
+  let launchSpec: AgentLaunchSpec;
+  try {
+    launchSpec = await agents.prepareLaunch(templateId, workDir);
+  } catch (err) {
+    return { status: 'FAILED', reason: err instanceof Error ? err.message : String(err) };
+  }
+
+  return {
+    status: 'STARTED',
+    formulaId: formula.id,
+    launchSpec,
+    initialMessage: 'Read prompt.md and input/envelope.json in this directory, follow the instructions in prompt.md, then write your result to out/result.json.',
+  };
+}
+
+export interface ImportFormulaDiscoveryResultParams {
+  formulaId: string;
+}
+
+export type ImportFormulaDiscoveryResult =
+  | { status: 'IMPORTED'; formula: FormulaArtifact }
+  | { status: 'NOT_DRAFT'; reason: string }
+  | { status: 'NO_OUTPUT'; reason: string }
+  | { status: 'INVALID'; reason: string };
+
+/**
+ * Reads `out/result.json` from the scratch dir the interactive session was pointed
+ * at, validates it with the SAME grounding gate the automatic pipeline path uses
+ * (`validateAnalysis`), and finalizes the placeholder Formula in place — SAME `id`,
+ * so any link the user already has to this Formula's page keeps working, and the
+ * Formula tab does not end up with a duplicate entry.
+ */
+export async function importFormulaDiscoveryResult(
+  deps: { spy: SpyService; dataDir: string },
+  params: ImportFormulaDiscoveryResultParams,
+): Promise<ImportFormulaDiscoveryResult> {
+  const { spy, dataDir } = deps;
+  const { formulaId } = params;
+
+  const draft = await getFormula(formulaId, dataDir);
+  if (!draft) return { status: 'NOT_DRAFT', reason: 'Formula không tồn tại' };
+  if (draft.status !== 'DRAFT') {
+    return { status: 'NOT_DRAFT', reason: 'Formula này đã import rồi (không còn ở trạng thái DRAFT)' };
+  }
+  const videoSnapshotId = draft.videoSnapshotId;
+  if (!videoSnapshotId) return { status: 'NOT_DRAFT', reason: 'Formula thiếu videoSnapshotId' };
+
+  const workDir = manualAnalyzeDir(dataDir, formulaId);
+  let raw: string;
+  try {
+    raw = await readFile(join(workDir, 'out', 'result.json'), 'utf8');
+  } catch {
+    return { status: 'NO_OUTPUT', reason: 'Chưa thấy out/result.json trong thư mục làm việc — phiên đã ghi kết quả chưa?' };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { status: 'INVALID', reason: 'out/result.json không phải JSON hợp lệ' };
+  }
+
+  const { segments } = spy.getTranscript(videoSnapshotId, 0, TRANSCRIPT_FETCH_LIMIT);
+  const segmentsById = new Map(segments.map((s) => [s.id, { text: s.text }]));
+  const rules = (parsed as { rules?: unknown }).rules;
+  const analysis: AnalysisArtifact = {
+    videoSnapshotId,
+    channelTitle: draft.channelTitle ?? '',
+    rules: Array.isArray(rules) ? (rules as AnalysisRule[]) : [],
+    createdAt: new Date().toISOString(),
+  };
+  const validation = validateAnalysis(analysis, segmentsById);
+  if (!validation.ok) {
+    return { status: 'INVALID', reason: validation.reason };
+  }
+
+  const artifactHash = createHash('sha256').update(raw).digest('hex');
+  const finalized: FormulaArtifact = {
+    ...draft,
+    status: 'TRIAL',
+    rules: analysis.rules,
+    includedArtifacts: [{ videoSnapshotId, analysisArtifactHash: artifactHash }],
+    warnings: ['LOW_SAMPLE: Formula built from 1 video — TRIAL only, not statistically validated'],
+  };
+  await saveFormula(finalized, dataDir);
+  return { status: 'IMPORTED', formula: finalized };
 }

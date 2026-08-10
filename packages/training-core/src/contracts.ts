@@ -158,11 +158,30 @@ export interface CritiquePattern {
   draftEvidence: CritiqueEvidence[];
 }
 
+/**
+ * One prior round's negative pattern, re-checked against THIS round's draft (added
+ * 2026-08-10 — closes the "does anyone verify a flagged issue actually got fixed"
+ * gap: CRITIQUE previously had no memory of what earlier rounds found, so a
+ * recurring issue could silently go unmentioned forever). Deliberately "light":
+ * `status`/`note` are self-reported, NOT grounded/validated like `CritiquePattern`
+ * evidence — same trust level as REFINE's `changeLog`. Only the COVERAGE is
+ * enforced (one entry per prior negative pattern id), not the correctness of the
+ * status itself.
+ */
+export interface RegressionCheckEntry {
+  patternId: string;
+  status: 'fixed' | 'still-present' | 'partial';
+  note: string;
+}
+
 /** The `CRITIQUE`-stage artifact (SDD §12a stage table). Grading is qualitative
  * pattern-matching, not a numeric score (user: "tạo tiêu chí chấm đơn giản thôi"). */
 export interface CritiqueArtifact {
   positivePatterns: CritiquePattern[];
   negativePatterns: CritiquePattern[];
+  /** Present from round 2 onward when the previous round had negative patterns;
+   * absent/omitted on round 1 (nothing to check yet). See `RegressionCheckEntry`. */
+  regressionCheck?: RegressionCheckEntry[];
 }
 
 /** The `DRAFT`-stage artifact (SDD §12a stage table). `appliedRules` is a

@@ -294,7 +294,10 @@ export class DiscoveryService {
 
     let created = 0;
     let excluded = 0;
-    const scored: Array<{ channelId: string; title: string | null; market: string; fitScore: number; subscriberCount: number | null }> = [];
+    const scored: Array<{
+      channelId: string; title: string | null; market: string; fitScore: number;
+      subscriberCount: number | null; channelAgeDays: number | null;
+    }> = [];
 
     for (const batch of batches) {
       this.quota.consume('channels.list');
@@ -307,9 +310,14 @@ export class DiscoveryService {
           {
             channelId,
             title: channel?.title ?? null,
+            description: channel?.description ?? null,
             subscriberCount: channel?.subscriberCount ?? null,
             videoCount: channel?.videoCount ?? null,
             viewCount: channel?.viewCount ?? null,
+            // publishedAt + country giờ mới thực sự tới được scoreChannelFit,
+            // nếu không thì uploadRecency (15đ) và languageMatch (10đ) chết cứng.
+            publishedAt: channel?.publishedAt ?? null,
+            country: channel?.country ?? null,
           },
           niche,
           market,
@@ -324,9 +332,12 @@ export class DiscoveryService {
           market: meta.market || market?.id || null,
           discoveredVia: meta.via,
           discoveredFrom: meta.from,
+          description: channel?.description ?? null,
           subscriberCount: channel?.subscriberCount ?? null,
           videoCount: channel?.videoCount ?? null,
           viewCount: channel?.viewCount ?? null,
+          publishedAt: channel?.publishedAt ?? null,
+          country: channel?.country ?? null,
           fitScore: fit.score,
           fitReasons: fit.reasons,
         });
@@ -337,6 +348,9 @@ export class DiscoveryService {
           market: meta.market || market?.id || '',
           fitScore: fit.score,
           subscriberCount: channel?.subscriberCount ?? null,
+          channelAgeDays: channel?.publishedAt
+            ? Math.round((Date.now() - Date.parse(channel.publishedAt)) / 86_400_000)
+            : null,
         });
       }
     }

@@ -17,15 +17,17 @@
  * `trainingRoot()/studio-sessions`, re-read and re-saved around each mutation, so
  * there is no in-memory registry that can desync from disk.
  *
- * Scope note: this file owns session state + pool + merge. Dispatching the LLM turns
- * (SYNTHESIZE, and the DRAFT/CRITIQUE test-write) lives in `studio-turns.ts` so the
- * pure state handling here stays testable without a scheduler.
+ * Scope note: this file owns session state + pool + merge. Dispatching the SYNTHESIZE
+ * LLM turn (P3 — one merged-statement proposal per cluster) lives in
+ * `studio-synthesize.ts` so the pure state handling here stays testable without a
+ * scheduler; the later DRAFT/CRITIQUE test-write (P4) will follow the same split.
  */
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   clusterRules,
+  detectTopicLeak,
   normalizeFormula,
   sourceVideoCount,
   validateCompoundRule,
@@ -69,6 +71,11 @@ export interface RuleProposal {
   decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
   /** Set when the human rewrote the statement instead of taking the LLM's wording. */
   edited?: boolean;
+  /** Set when what the human submitted is verbatim one of the cluster's original
+   * source statements — i.e. "keep the original", not an edit. Distinguished so the
+   * committed rule reports `CARRIED` rather than mislabelling the decision as
+   * `HUMAN_EDITED`; see `applyProposalDecision`. */
+  keptOriginal?: boolean;
 }
 
 export interface StudioSession {
@@ -79,6 +86,20 @@ export interface StudioSession {
   proposals: RuleProposal[];
   /** Latest assembled compound Formula; rebuilt whenever decisions change. */
   compound: FormulaArtifact | null;
+  /**
+   * SYNTHESIZE dispatch state (P3, `studio-synthesize.ts`). Deliberately tracks only
+   * the MOST RECENT attempt, not a full history — mirrors how `TrainingLabRound`
+   * tracks one round's status rather than an audit log. The UI polls
+   * `GET .../sessions/:id` and reads this to know when to stop showing "đang ghép…"
+   * (`RUNNING` -> `IDLE`/`FAILED`) and re-render `proposals`, without a separate
+   * status endpoint.
+   */
+  synthesizeStatus: 'IDLE' | 'RUNNING' | 'FAILED';
+  /** Doubles as the SYNTHESIZE stage's `attempt` (turn_key input) — incremented on
+   * every dispatch so re-running SYNTHESIZE after picking more rules gets a fresh
+   * turn_key instead of idempotently re-attaching to a settled one. */
+  synthesizeAttempt: number;
+  synthesizeError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -106,9 +127,19 @@ export async function saveStudioSession(session: StudioSession, dataDir?: string
   await writeFile(sessionPath(session.id, dataDir), `${JSON.stringify(session, null, 2)}\n`, 'utf8');
 }
 
+/** Fields added after a session may have been created (P3's `synthesize*` trio) get
+ * defaults spread in BEFORE the parsed data, so an old on-disk session (from P2, or
+ * any session written before this field existed) still reads as valid state instead
+ * of `undefined` leaking into the UI/dispatch code — same "read-time migration, no
+ * rewrite pass" precedent as `normalizeFormula` in training-core, just inline since
+ * it is one small object spread rather than a legacy-shape remap. */
 export async function getStudioSession(id: string, dataDir?: string): Promise<StudioSession | null> {
   try {
-    return JSON.parse(await readFile(sessionPath(id, dataDir), 'utf8')) as StudioSession;
+    // Cast to `Partial` (not the full type) so TS does not flag the defaults below as
+    // dead/redundant — an on-disk file written before these fields existed really can
+    // lack them at runtime, even though the parsed value's static type claims otherwise.
+    const raw = JSON.parse(await readFile(sessionPath(id, dataDir), 'utf8')) as Partial<StudioSession>;
+    return { synthesizeStatus: 'IDLE', synthesizeAttempt: 0, ...raw } as StudioSession;
   } catch {
     return null;
   }
@@ -140,7 +171,7 @@ export async function listStudioSessions(dataDir?: string): Promise<StudioSessio
       // skip corrupt
     }
   }
-  summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
   return summaries;
 }
 
@@ -153,11 +184,23 @@ export async function createStudioSession(genre: string, dataDir?: string): Prom
     clusters: [],
     proposals: [],
     compound: null,
+    synthesizeStatus: 'IDLE',
+    synthesizeAttempt: 0,
     createdAt: now,
     updatedAt: now,
   };
   await saveStudioSession(session, dataDir);
   return session;
+}
+
+/** Xoá phiên Studio. Compound Formula đã promote (nếu có) nằm riêng trong formulas/ — không xoá theo. */
+export async function deleteStudioSession(id: string, dataDir?: string): Promise<boolean> {
+  try {
+    await unlink(sessionPath(id, dataDir));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -219,7 +262,12 @@ export async function listRulePool(
       });
     }
   }
-  pool.sort((a, b) => Date.parse(b.formulaCreatedAt) - Date.parse(a.formulaCreatedAt));
+  pool.sort(
+    (a, b) =>
+      Date.parse(b.formulaCreatedAt) - Date.parse(a.formulaCreatedAt) ||
+      a.formulaId.localeCompare(b.formulaId) ||
+      a.ruleId.localeCompare(b.ruleId),
+  );
   return pool;
 }
 
@@ -276,7 +324,10 @@ export async function recomputeClusters(session: StudioSession, dataDir?: string
   return session;
 }
 
-function sourceOf(rule: PickedRule): RuleSource {
+/** Exported so `studio-synthesize.ts` can build a proposal's `sources` from a
+ * cluster's `members` the same way — the app derives provenance, never the LLM
+ * (see that file's doc comment). */
+export function sourceOf(rule: PickedRule): RuleSource {
   return {
     videoSnapshotId: rule.videoSnapshotId,
     channelTitle: rule.channelTitle,
@@ -287,12 +338,20 @@ function sourceOf(rule: PickedRule): RuleSource {
 }
 
 /**
- * Turns accepted proposals — plus every `SINGLE` cluster, carried through unchanged —
- * into the session's compound Formula.
+ * Turns accepted proposals into the session's compound Formula.
  *
- * A `SINGLE` cluster needs no LLM and no human wording decision: nothing resembled it,
- * so it enters the compound as `CARRIED` with its original statement. Only `SIMILAR`
- * clusters require a proposal, because only those involve a real merge judgment.
+ * 2026-08-10 design change (user, real data): a `SINGLE` cluster used to skip the LLM
+ * entirely and get carried through verbatim as `CARRIED` — but "nothing else
+ * resembled it" said nothing about whether its wording was already generic. Real
+ * rules showed video-specific nouns and quoted phrases ("khái niệm tài chính ('thuế ở
+ * lại thành phố')") baked straight into a `SINGLE` statement, which a writer on an
+ * unrelated topic cannot use as-is. So EVERY cluster — `SINGLE` and `SIMILAR` alike —
+ * now needs an accepted proposal (SYNTHESIZE, P3) before it enters the compound.
+ * `CARRIED` stays a valid `CompoundRuleOrigin` in the contract for a human-initiated
+ * "keep the original wording" choice, but nothing in this file produces it anymore —
+ * no proposal decision here currently offers that as a distinct path from
+ * `HUMAN_EDITED` (typing the original text back in has the same effect, just labeled
+ * differently). Flagged as a judgment call, not silently dropped.
  *
  * The result is an ordinary `FormulaArtifact` with `origin: 'COMPOUND'` — the same
  * type the Writer pins and the Formula list shows, not a parallel shape.
@@ -305,21 +364,8 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
   const rules: CompoundRule[] = [];
 
   for (const cluster of session.clusters) {
-    if (cluster.kind === 'SINGLE') {
-      const only = cluster.members[0]!;
-      rules.push({
-        // Content-derived like the cluster id it comes from, so a rule keeps its
-        // identity across re-clustering (see `RuleCluster.id`).
-        id: `${cluster.id}-carried`,
-        statement: only.statement,
-        evidence: only.evidence,
-        sources: [sourceOf(only)],
-        mergeOrigin: 'CARRIED',
-      });
-      continue;
-    }
     const accepted = session.proposals.find((p) => p.clusterId === cluster.id && p.decision === 'ACCEPTED');
-    if (!accepted) continue; // still pending or rejected — not in the compound yet
+    if (!accepted) continue; // still pending, rejected, or never synthesized — not in the compound yet
     rules.push({
       id: accepted.id,
       statement: accepted.statement,
@@ -327,7 +373,7 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
       // is what keeps it grounded and what the lean CRITIQUE envelope ships.
       evidence: accepted.sources.flatMap((s) => s.evidence),
       sources: accepted.sources,
-      mergeOrigin: accepted.edited ? 'HUMAN_EDITED' : 'SYNTHESIZED',
+      mergeOrigin: accepted.keptOriginal ? 'CARRIED' : accepted.edited ? 'HUMAN_EDITED' : 'SYNTHESIZED',
     });
   }
 
@@ -348,13 +394,56 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
     rules,
     includedArtifacts: [],
     lineage: { studioSessionId: session.id },
+    // Guarded on `rules.length > 0` (fixed 2026-08-10): with SINGLE clusters no
+    // longer auto-carried, an empty-so-far compound is now the common in-progress
+    // state, and `sourceVideoCount([]) === 0 < 2` would otherwise spuriously claim
+    // "every rule came from one video" about a compound that has no rules at all.
     warnings:
-      sourceVideoCount(rules) < 2
+      rules.length > 0 && sourceVideoCount(rules) < 2
         ? ['SINGLE_SOURCE: every rule came from one video — this is not yet a cross-video Formula']
         : [],
     createdAt: new Date().toISOString(),
   };
   void dataDir;
+  return session;
+}
+
+/**
+ * The human gate (ADR-13): applies one decision to one pending (or previously
+ * decided — a human can change their mind) proposal. Pure state mutation, no I/O —
+ * the HTTP route (or a test) is responsible for `rebuildCompound` + `saveStudioSession`
+ * afterward, same division as `session.picks` mutation in `http.ts`.
+ *
+ * `statement`, when provided, overwrites the LLM's wording. It then marks the rule
+ * either `HUMAN_EDITED` or — if what the human submitted is character-for-character
+ * one of the cluster's ORIGINAL source statements — `CARRIED`.
+ *
+ * That one equality check exists for a specific reason, not as cleverness: the whole
+ * point of SYNTHESIZE is to genericize, and an LLM can genericize a rule into
+ * something worse. The human's escape hatch is to put the original wording back. That
+ * is a "keep the original" decision, not an edit, and labelling it `HUMAN_EDITED`
+ * would quietly misreport what happened — while `CARRIED` (which exists in
+ * `CompoundRuleOrigin`) would otherwise have no code path at all and rot as a dead
+ * enum value. Restoring the original is the only case where equality carries
+ * unambiguous intent, so it is the only case inferred; any other text is an edit.
+ */
+export function applyProposalDecision(
+  session: StudioSession,
+  proposalId: string,
+  decision: 'ACCEPTED' | 'REJECTED',
+  statement?: string,
+): StudioSession {
+  const proposal = session.proposals.find((p) => p.id === proposalId);
+  if (!proposal) throw new Error('proposal không tồn tại');
+  proposal.decision = decision;
+  if (typeof statement === 'string' && statement.trim().length > 0) {
+    const next = statement.trim();
+    const cluster = session.clusters.find((c) => c.id === proposal.clusterId);
+    const isOriginal = (cluster?.members ?? []).some((m) => m.statement.trim() === next);
+    proposal.statement = next;
+    proposal.edited = !isOriginal;
+    proposal.keptOriginal = isOriginal;
+  }
   return session;
 }
 
@@ -366,6 +455,19 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
 export async function promoteCompound(session: StudioSession, dataDir?: string): Promise<StudioSession> {
   if (!session.compound) throw new Error('no compound Formula to promote');
   if (session.compound.rules.length === 0) throw new Error('compound Formula has no rules');
+
+  // Advisory topic-leak scan (training-core's `writer-view.ts`, 2026-08-10) — a
+  // last-look net, not a gate: SYNTHESIZE is asked to genericize every statement, but
+  // an LLM can still miss one, and a human accepting/editing a proposal has no reason
+  // to re-derive this check by eye. `detectTopicLeak` never blocks — same "advisory,
+  // never throws" contract its own doc comment states — so a rule that still smells
+  // like one specific video is promoted anyway, just visibly flagged for the human
+  // (and whoever picks this compound Formula later) to judge.
+  const leakWarnings = session.compound.rules.flatMap((rule) =>
+    detectTopicLeak(rule.statement).map((leak) => `TOPIC_LEAK: rule "${rule.id}" còn dính "${leak.excerpt}"`),
+  );
+
+  session.compound.warnings = [...session.compound.warnings, ...leakWarnings];
   session.compound.status = 'TRIAL';
   await saveFormula(session.compound, dataDir);
   return session;

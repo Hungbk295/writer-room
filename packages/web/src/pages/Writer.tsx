@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, type WriterPack, type WriterPackSummary } from '../api.ts';
 import { href } from '../router.ts';
+import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 
 export function WriterPage() {
   const [packs, setPacks] = useState<WriterPackSummary[]>([]);
@@ -16,13 +17,9 @@ export function WriterPage() {
   }, [refresh]);
 
   const remove = async (id: string) => {
-    if (!confirm('Xoá pack này?')) return;
-    try {
-      await api.deleteWriterPack(id);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    setError(null);
+    await api.deleteWriterPack(id);
+    setPacks((prev) => prev.filter((p) => p.id !== id));
   };
 
   return (
@@ -61,13 +58,14 @@ export function WriterPage() {
                     )}
                   </div>
                 </div>
-                <div class="row" style={{ gap: '0.5rem' }}>
+                <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
                   <a class="btn secondary" href={href({ name: 'writer-pack', id: pack.id })}>
                     Xem
                   </a>
-                  <button class="btn danger" type="button" onClick={() => void remove(pack.id)}>
-                    Xoá
-                  </button>
+                  <DeleteButton
+                    title={pack.title || pack.channelTitle || 'pack'}
+                    onDelete={() => remove(pack.id)}
+                  />
                 </div>
               </li>
             ))}

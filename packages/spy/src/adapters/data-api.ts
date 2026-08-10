@@ -44,10 +44,15 @@ export interface VideoStatistics {
 export interface ChannelStatistics {
   channelId: string;
   title: string | null;
+  description: string | null;
   subscriberCount: number | null;
   videoCount: number | null;
   viewCount: number | null;
   uploadsPlaylistId: string | null;
+  /** Ngày tạo kênh (snippet.publishedAt) — dùng để tính tuổi kênh. */
+  publishedAt: string | null;
+  /** ISO 3166-1 alpha-2 (snippet.country) — nhiều kênh không khai báo. */
+  country: string | null;
 }
 
 export interface PlaylistVideoItem {
@@ -133,6 +138,7 @@ interface ApiItem {
     tags?: string[];
     channelId?: string;
     channelTitle?: string;
+    country?: string;
     resourceId?: { videoId?: string };
     position?: number;
     thumbnails?: {
@@ -288,10 +294,16 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
         result.set(id, {
           channelId: id,
           title: item.snippet?.title ?? null,
+          description: item.snippet?.description ?? null,
           subscriberCount: parseCount(item.statistics?.subscriberCount),
           videoCount: parseCount(item.statistics?.videoCount),
           viewCount: parseCount(item.statistics?.viewCount),
           uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
+          // snippet.publishedAt và snippet.country vốn ĐÃ có trong response
+          // (part=snippet) nhưng trước đây bị vứt đi, khiến uploadRecency và
+          // languageMatch trong scoreChannelFit không bao giờ được điểm.
+          publishedAt: item.snippet?.publishedAt ?? null,
+          country: item.snippet?.country ?? null,
         });
       }
     }
@@ -313,10 +325,13 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
     return {
       channelId: id,
       title: item.snippet?.title ?? null,
+      description: item.snippet?.description ?? null,
       subscriberCount: parseCount(item.statistics?.subscriberCount),
       videoCount: parseCount(item.statistics?.videoCount),
       viewCount: parseCount(item.statistics?.viewCount),
       uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
+      publishedAt: item.snippet?.publishedAt ?? null,
+      country: item.snippet?.country ?? null,
     };
   }
 

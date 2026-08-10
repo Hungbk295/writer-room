@@ -167,6 +167,110 @@ describe('LaneScheduler — commit rule + clone lifecycle', () => {
   });
 });
 
+describe('LaneScheduler — content-retry on validateContent rejection (2026-08-10)', () => {
+  /** Drives a dispatch through however many rounds it actually takes (1 + retries),
+   * completing every new `spawnTurn` with the stub agent until `onItemSettled`
+   * finally fires — unlike `dispatchAndSettle` above, which assumes exactly one
+   * round. Every round reuses the SAME `itemRunDir` (retries keep the same
+   * `attempt`), so one stub invocation per round against that same dir is correct. */
+  async function dispatchThroughRetries(
+    h: AgentHarness,
+    scheduler: LaneScheduler,
+    params: DispatchItemParams,
+    mode: string,
+  ): Promise<{ settled: ItemSettledResult; rounds: number; itemRunDir: string }> {
+    const handled = new Set<number>();
+    let rounds = 0;
+    let settled: ItemSettledResult | undefined;
+    const unsubSettled = scheduler.onItemSettled((r) => {
+      if (r.itemId === params.itemId) settled = r;
+    });
+    const events: TeamEvent[] = [];
+    const unsubEvents = h.subscribe((e) => events.push(e));
+
+    const dispatch = await scheduler.dispatchItem(params);
+    if (dispatch.status !== 'RUNNING' || dispatch.turnId === undefined) {
+      unsubEvents(); unsubSettled();
+      throw new Error(`expected RUNNING, got ${dispatch.status} (${dispatch.reason ?? ''})`);
+    }
+
+    for (let guard = 0; guard < 20 && !settled; guard++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const spawn = events.find((e) => e.kind === 'spawnTurn' && !handled.has(e.turnId));
+      if (spawn && spawn.kind === 'spawnTurn') {
+        handled.add(spawn.turnId);
+        rounds += 1;
+        const stub = await runStubAgent(dispatch.itemRunDir, mode);
+        h.workflow.turnComplete(spawn.turnId, { exitCode: stub.exitCode });
+      }
+    }
+    unsubEvents(); unsubSettled();
+    if (!settled) throw new Error('never settled within guard rounds');
+    return { settled, rounds, itemRunDir: dispatch.itemRunDir };
+  }
+
+  test('rejects once then accepts: auto-retries with correction, COMMITTED, exactly one onItemSettled', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    let calls = 0;
+    const params = baseParams({
+      itemId: 'item-retry-ok',
+      validateContent: () => {
+        calls += 1;
+        if (calls === 1) return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: 'quote not found in transcript' };
+        return { ok: true };
+      },
+    });
+    const { settled, rounds, itemRunDir } = await dispatchThroughRetries(harness, scheduler, params, 'ok');
+
+    expect(rounds).toBe(2); // 1 rejected + 1 corrected retry
+    expect(calls).toBe(2);
+    expect(settled.outcome).toBe('COMMITTED');
+
+    // The FIRST attempt's own ledger row is terminal/FAILED (accurate bookkeeping)...
+    const rows = harness.pipeline.ledger.all().filter((r) => r.itemId === 'item-retry-ok');
+    expect(rows.some((r) => r.outcome === 'FAILED' && r.errorCode === 'AGENT_UNGROUNDED')).toBe(true);
+    // ...but only the retry's COMMITTED becomes the final artifact.
+    expect(await exists(join(itemRunDir, 'item-manifest.json'))).toBe(true);
+  });
+
+  test('exhausts retries (maxContentRetries: 1) then FAILs for real — exactly one onItemSettled', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    let calls = 0;
+    const params = baseParams({
+      itemId: 'item-retry-exhausted',
+      maxContentRetries: 1,
+      validateContent: () => {
+        calls += 1;
+        return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: `still wrong (call ${calls})` };
+      },
+    });
+    const { settled, rounds } = await dispatchThroughRetries(harness, scheduler, params, 'ok');
+
+    expect(rounds).toBe(2); // 1 original + 1 retry (maxContentRetries: 1), then give up
+    expect(calls).toBe(2);
+    expect(settled.outcome).toBe('FAILED');
+    expect(settled.errorCode).toBe('AGENT_UNGROUNDED');
+  });
+
+  test('maxContentRetries: 0 preserves the old fail-immediately behavior', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    let calls = 0;
+    const params = baseParams({
+      itemId: 'item-retry-disabled',
+      maxContentRetries: 0,
+      validateContent: () => {
+        calls += 1;
+        return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: 'nope' };
+      },
+    });
+    const { settled, rounds } = await dispatchThroughRetries(harness, scheduler, params, 'ok');
+
+    expect(rounds).toBe(1);
+    expect(calls).toBe(1);
+    expect(settled.outcome).toBe('FAILED');
+  });
+});
+
 describe('LaneScheduler — lane admission (GAP-3 / backpressure)', () => {
   test('two different items dispatch concurrently under maxParallel=2: distinct turns/clones, no merge', async () => {
     const scheduler = new LaneScheduler({

@@ -104,6 +104,29 @@ describe('SpyStore', () => {
     expect(count).toBe(1);
     expect(store.getOperation(op.operation.id)?.status).toBe('interrupted');
   });
+
+  test('deleteSpyRun removes run and snapshots', async () => {
+    await setupStore();
+    const op = store.createOrGetOperation({
+      kind: 'acquire_video',
+      ownerSubject: 'test',
+      idempotencyKey: 'key-delete-run-1234',
+      request: {},
+    });
+    const run = store.createSpyRun({
+      operationId: op.operation.id,
+      kind: 'video',
+      canonicalSource: 'https://www.youtube.com/watch?v=AAAAAAAAAAA',
+      sourceIdentity: 'youtube:video:AAAAAAAAAAA',
+      config: {},
+    });
+    store.insertVideoSnapshot(sampleSnapshot(run.id));
+    expect(store.listVideoSnapshots(run.id)).toHaveLength(1);
+    expect(store.deleteSpyRun(run.id)).toBe(true);
+    expect(store.getSpyRun(run.id)).toBeNull();
+    expect(store.listVideoSnapshots(run.id)).toHaveLength(0);
+    expect(store.deleteSpyRun(run.id)).toBe(false);
+  });
 });
 
 describe('video transcript upsert', () => {

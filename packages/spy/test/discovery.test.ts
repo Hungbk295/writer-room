@@ -43,17 +43,24 @@ class FakeDataApi implements YouTubeDataApiPort {
     return new Map();
   }
 
+  /** Ngày tạo kênh giả lập — mặc định 2 năm trước. */
+  channelPublishedAt = new Date(Date.now() - 730 * 86_400_000).toISOString();
+  channelCountry: string | null = 'VN';
+
   async fetchChannelStatistics(channelIds: readonly string[]): Promise<Map<string, ChannelStatistics>> {
     this.channelStatCalls.push([...channelIds]);
     const map = new Map<string, ChannelStatistics>();
     channelIds.forEach((channelId, index) => {
       map.set(channelId, {
         channelId,
-        title: `Kênh ${channelId}`,
+        title: `Kênh ${channelId} vũ trụ`,
+        description: 'giải thích khoa học và vũ trụ',
         subscriberCount: 10_000 * (index + 1),
         videoCount: 120,
         viewCount: 5_000_000,
         uploadsPlaylistId: `UU${channelId.slice(2)}`,
+        publishedAt: this.channelPublishedAt,
+        country: this.channelCountry,
       });
     });
     return map;
@@ -458,6 +465,136 @@ describe('Corpus search — 0 quota', () => {
   });
 });
 
+describe('Kênh: ngày tạo + country (trước đây bị API trả về rồi vứt đi)', () => {
+  test('publishedAt và country tới được candidate và ghi điểm fit', async () => {
+    const api = new FakeDataApi();
+    api.hitsPerSearch = [hit('UCaaaaaaaaaaaaaaaaaaaaaa', 'v1')];
+    const spy = await spyWithNiche(api);
+    await spy.discoverChannels({ maxQueries: 1, marketId: 'vi' });
+
+    const candidate = spy.listCandidates({}).candidates[0]!;
+    expect(candidate.publishedAt).toBe(api.channelPublishedAt);
+    expect(candidate.country).toBe('VN');
+
+    const reasons = candidate.fitReasons as Array<{ factor: string; points: number }>;
+    // Hai factor này trước đây luôn 0 vì dữ liệu không bao giờ tới nơi.
+    expect(reasons.find((r) => r.factor === 'uploadRecency')?.points).toBeGreaterThan(0);
+    expect(reasons.find((r) => r.factor === 'languageMatch')?.points).toBeGreaterThan(0);
+  });
+
+  test('country khác market thì không được điểm languageMatch', async () => {
+    const api = new FakeDataApi();
+    api.channelCountry = 'US';
+    api.hitsPerSearch = [hit('UCbbbbbbbbbbbbbbbbbbbbbb', 'v2')];
+    const spy = await spyWithNiche(api);
+    await spy.discoverChannels({ maxQueries: 1, marketId: 'vi' });
+    const reasons = spy.listCandidates({}).candidates[0]!.fitReasons as Array<{ factor: string; points: number }>;
+    expect(reasons.find((r) => r.factor === 'languageMatch')?.points).toBe(0);
+  });
+});
+
+describe('spy_channel_momentum', () => {
+  function seedRun(store: SpyStore, sourceIdentity: string, key: string) {
+    const op = store.createOrGetOperation({
+      kind: 'acquire_channel', ownerSubject: 'test', idempotencyKey: key, request: {},
+    });
+    return store.createSpyRun({
+      operationId: op.operation.id, kind: 'channel',
+      canonicalSource: `https://www.youtube.com/channel/${sourceIdentity}`, sourceIdentity, config: {},
+    });
+  }
+  function seedVideo(store: SpyStore, runId: string, id: string, viewCount: number, daysAgo: number) {
+    store.insertVideoSnapshot({
+      id: randomUUID(), spyRunId: runId, sourceVideoId: id,
+      canonicalUrl: `https://www.youtube.com/watch?v=${id}`,
+      title: `Video ${id}`, channelTitle: 'Kênh test', rank: 1,
+      viewCount, likeCount: 10, commentCount: 2, durationSec: 600,
+      publishedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+      tags: [], transcriptStatus: 'ok', transcriptSource: 'manual',
+      frameStatus: 'skipped', thumbnail: null, createdAt: new Date().toISOString(),
+    } as VideoSnapshot);
+  }
+
+  test('tách video trong cửa sổ và ngoài cửa sổ, tính momentum ratio', async () => {
+    const spy = await newSpy();
+    const run = seedRun(spy.store, 'youtube:channel:/channel/ucmomentum00000000000', 'run-mom');
+    seedVideo(spy.store, run.id, 'VIDnew11111', 40_000, 5);
+    seedVideo(spy.store, run.id, 'VIDnew22222', 60_000, 15);
+    seedVideo(spy.store, run.id, 'VIDold11111', 10_000, 200);
+    seedVideo(spy.store, run.id, 'VIDold22222', 10_000, 300);
+
+    const result = spy.channelMomentum('UCmomentum00000000000', 30);
+    expect(result.recent.videoCount).toBe(2);
+    expect(result.recent.totalViews).toBe(100_000);
+    expect(result.older.videoCount).toBe(2);
+    expect(result.momentumRatio).toBe(5); // median 50k mới / 10k cũ
+    expect(result.dormant).toBe(false);
+    expect(result.uploadsPerWeek).toBeGreaterThan(0);
+  });
+
+  test('kênh chững được đánh dấu dormant', async () => {
+    const spy = await newSpy();
+    const run = seedRun(spy.store, 'youtube:channel:/channel/ucdormant000000000000', 'run-dorm');
+    seedVideo(spy.store, run.id, 'VIDdorm1111', 5_000, 120);
+    const result = spy.channelMomentum('UCdormant000000000000', 30);
+    expect(result.dormant).toBe(true);
+    expect(result.recent.videoCount).toBe(0);
+    // Mẫu quá nhỏ phải cảnh báo thay vì trả số như thật.
+    expect(result.sampleWarning).toContain('quá ít');
+  });
+
+  test('kênh chưa quét thì báo not_found chứ không trả số 0 giả', async () => {
+    const spy = await newSpy();
+    expect(() => spy.channelMomentum('UCchuaquet0000000000000')).toThrow(/Chưa quét/);
+  });
+});
+
+describe('Corpus: view/sub và outlier', () => {
+  test('join sub từ candidate và outlier từ metrics, lọc được theo cả hai', async () => {
+    const api = new FakeDataApi();
+    api.hitsPerSearch = [hit('UCjoin00000000000000000', 'v1')];
+    const spy = await spyWithNiche(api);
+    await spy.discoverChannels({ maxQueries: 1, marketId: 'vi' }); // tạo candidate 10.000 sub
+
+    const op = spy.store.createOrGetOperation({
+      kind: 'acquire_channel', ownerSubject: 'test', idempotencyKey: 'run-join', request: {},
+    });
+    const run = spy.store.createSpyRun({
+      operationId: op.operation.id, kind: 'channel',
+      canonicalSource: 'x', sourceIdentity: 'youtube:channel:/channel/ucjoin00000000000000000', config: {},
+    });
+    for (const [id, views] of [['VIDhigh1111', 50_000], ['VIDlow11111', 500]] as const) {
+      spy.store.insertVideoSnapshot({
+        id: randomUUID(), spyRunId: run.id, sourceVideoId: id,
+        canonicalUrl: 'x', title: `Video ${id}`, channelTitle: 'K', rank: 1,
+        viewCount: views, likeCount: 1, commentCount: 1, durationSec: 600,
+        publishedAt: '2026-06-01T00:00:00.000Z', tags: [],
+        transcriptStatus: 'ok', transcriptSource: 'manual', frameStatus: 'skipped',
+        thumbnail: null, createdAt: new Date().toISOString(),
+      } as VideoSnapshot);
+    }
+    spy.store.saveMetrics({
+      scope: 'video', scopeId: 'VIDhigh1111', spyRunId: run.id,
+      payload: { performance: { outlier: { outlierScore: { value: 4.2, method: 'deterministic' } } } },
+    });
+
+    const all = spy.corpusVideos({});
+    const high = all.videos.find((v) => v.sourceVideoId === 'VIDhigh1111')!;
+    expect(high.subscriberCount).toBe(10_000);
+    expect(high.viewPerSub).toBe(5);
+    expect(high.outlierScore).toBe(4.2);
+
+    // Video không có metrics thì outlierScore null, không phải 0.
+    expect(all.videos.find((v) => v.sourceVideoId === 'VIDlow11111')?.outlierScore).toBeNull();
+
+    expect(spy.corpusVideos({ minOutlierScore: 2 }).count).toBe(1);
+    expect(spy.corpusVideos({ minViewPerSub: 1 }).count).toBe(1);
+    expect(spy.corpusVideos({ minViewPerSub: 99 }).count).toBe(0);
+    // Khi bật filter enrichment thì phải báo đã quét bao nhiêu dòng.
+    expect(spy.corpusVideos({ minOutlierScore: 2 }).scanned).toBe(2);
+  });
+});
+
 describe('Đăng ký tool', () => {
   test('12 tool discovery mới đều có mặt', async () => {
     const spy = await newSpy();
@@ -466,7 +603,7 @@ describe('Đăng ký tool', () => {
       'spy_quota_status', 'spy_niche_get', 'spy_niche_set', 'spy_niche_score_fit',
       'spy_discover_channels', 'spy_discover_videos', 'spy_expand_graph',
       'spy_candidates_list', 'spy_candidates_decide', 'spy_scan_candidates',
-      'spy_corpus_videos', 'spy_corpus_channels',
+      'spy_corpus_videos', 'spy_corpus_channels', 'spy_channel_momentum',
     ]) {
       expect(names).toContain(expected);
     }

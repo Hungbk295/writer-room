@@ -45,11 +45,17 @@ type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
  * populated it before now, so `store.resumeRef(agentId)` (daemon-side) always found
  * nothing and every turn ran fresh regardless of clone-id reuse.
  *
- * Both CLIs print their session id as plain text near the very start of output —
- * verified for real against the actual binaries, not guessed:
+ * All four CLIs print their session id as plain text near the very start (or, for
+ * grok/agy, the very end) of output — verified for real against the actual binaries,
+ * not guessed:
  *  - Claude Code (`--output-format stream-json`): a JSON line containing
  *    `"session_id":"<uuid>"` (present on effectively every emitted event).
  *  - Codex (`codex exec` / `codex exec resume`): a banner line `session id: <uuid>`.
+ *  - Grok (`--output-format json`, added 2026-08-10): a single JSON object at the
+ *    end of output containing `"sessionId":"<uuid>"` (camelCase — a DIFFERENT key
+ *    name from Claude's `session_id`, needs its own pattern).
+ *  - Agy (`--output-format json`, added 2026-08-10): a single JSON object
+ *    containing `"conversation_id":"<uuid>"`.
  * First match wins; extraction is opportunistic (checked on the first available
  * snapshot right after launch, then again on every heartbeat poll until found) since
  * the ring buffer may not have flushed anything in the first instant after spawn.
@@ -57,6 +63,8 @@ type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
 const SESSION_ID_PATTERNS = [
   /"session_id"\s*:\s*"([0-9a-fA-F-]{8,})"/,
   /^session id:\s*([0-9a-fA-F-]{8,})/m,
+  /"sessionId"\s*:\s*"([0-9a-fA-F-]{8,})"/,
+  /"conversation_id"\s*:\s*"([0-9a-fA-F-]{8,})"/,
 ];
 
 function decodeSnapshotText(data: string): string {

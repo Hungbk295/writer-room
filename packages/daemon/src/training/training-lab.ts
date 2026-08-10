@@ -50,16 +50,21 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SpyService } from '@writer-room/spy';
 import {
+  toWriterFormula,
   validateAnalysis,
   validateCritique,
   type AnalysisArtifact,
   type AnalysisRule,
   type CritiqueArtifact,
+  type CritiquePattern,
   type DraftArtifact,
   type FormulaArtifact,
 } from '@writer-room/training-core';
+import { DEFAULT_AGENT_IDS, type DefaultAgentId } from '../agents/defaults.ts';
 import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
 import { getTrainingLabRun, saveFormula, saveTrainingLabRun } from './storage.ts';
+
+export { DEFAULT_AGENT_IDS, type DefaultAgentId };
 
 /** Training Lab stage ids (SDD §12a stage table) — new `stage: string` values; no
  * code elsewhere in the pipeline layer hardcodes an enum of allowed stages. */
@@ -78,8 +83,8 @@ export const DEFAULT_MAX_ROUNDS = 3;
 const TRANSCRIPT_FETCH_LIMIT = 2000;
 
 /** SDD §5.5 turn_key inputs — bump manually if a stage's prompt template changes. */
-const DRAFT_PROMPT_VERSION = 'training-lab-draft-v1';
-const CRITIQUE_PROMPT_VERSION = 'training-lab-critique-v2';
+const DRAFT_PROMPT_VERSION = 'training-lab-draft-v2';
+const CRITIQUE_PROMPT_VERSION = 'training-lab-critique-v3';
 const REFINE_PROMPT_VERSION = 'training-lab-refine-v2';
 
 /** Formula versions are plain `FormulaArtifact`s now (2026-08-10 unification):
@@ -96,6 +101,13 @@ export interface TrainingLabRound {
   critique: CritiqueArtifact | null;
   critiqueArtifactHash: string | null;
   formulaVersionOut: FormulaVersion | null;
+  /** Agent's own free-text justification for each rule change this round (added
+   * 2026-08-10 — previously the REFINE agent produced this per its prompt
+   * instruction but the settle-listener parsed and discarded it, so the UI had no
+   * way to answer "which pattern caused this rule to change". Not validated/grounded
+   * like evidence — plain trust-the-agent text, same caveat as the REFINE prompt's
+   * own instruction to reference pattern ids. */
+  changeLog: string[] | null;
   status: 'DRAFTING' | 'CRITIQUING' | 'REFINING' | 'DONE' | 'FAILED';
   errorCode?: string;
 }
@@ -109,6 +121,15 @@ export interface TrainingLabRun {
   rounds: TrainingLabRound[];
   createdAt: string;
   updatedAt: string;
+  /** Which of the 4 default agents (`DEFAULT_AGENT_IDS`) plays each role, chosen at
+   * start time (2026-08-10, user: "cần có thêm setup chọn loại agent cho agent 1 và
+   * agent 2"). Persisted on the run (not passed per-dispatch) because every round
+   * after the first is driven by `handleTrainingLabSettle`, which only has the
+   * persisted `TrainingLabRun` to read from, never the original HTTP call's params.
+   * `draftAgent` = "agent 2" (viết, DRAFT stage). `critiqueAgent` = "agent 1" (chấm +
+   * căn chỉnh, CRITIQUE+REFINE stages — same agent for both, per `CRITIQUE_REFINE_SESSION_GROUP`). */
+  draftAgent: DefaultAgentId;
+  critiqueAgent: DefaultAgentId;
 }
 
 interface EnvelopeSegment {
@@ -127,7 +148,19 @@ interface TrainingLabDeps {
 
 // ── Prompts ───────────────────────────────────────────────────────────────
 
-function buildDraftPrompt(formulaVersionIn: FormulaVersion, previousCritique: CritiqueArtifact | null): string {
+function buildDraftPrompt(
+  formulaVersionIn: FormulaVersion,
+  previousCritique: CritiqueArtifact | null,
+  targetWordCount: number,
+): string {
+  // `toWriterFormula` is the ONE place that defines "what does a writer agent see
+  // of a Formula" (`@writer-room/training-core/writer-view.ts`) — same projection
+  // the Writer pipeline itself uses. DRAFT is a writer agent (it composes a NEW
+  // script from the rules, same as Writer), so it gets the same evidence-stripped
+  // view, not raw `formulaVersionIn.rules` with their (single-video) evidence.
+  const writerFormula = toWriterFormula(formulaVersionIn);
+  const minWords = Math.round(targetWordCount * 0.7);
+  const maxWords = Math.round(targetWordCount * 1.3);
   const lines: string[] = [
     '# Training Lab — DRAFT stage (one video, one round)',
     '',
@@ -139,9 +172,18 @@ function buildDraftPrompt(formulaVersionIn: FormulaVersion, previousCritique: Cr
     "your choice) that applies as many of `formulaVersionIn.rules` as genuinely fit.",
     'Do not force a rule that does not make sense for your chosen topic.',
     '',
+    `## Length target: ~${targetWordCount} words (acceptable range: ${minWords}-${maxWords})`,
+    '',
+    "This matches the ACTUAL word count of the real video this Formula was extracted",
+    'from. A script far shorter than this cannot honestly apply structural rules like',
+    '"sustains a multi-part structure through Phần năm" or "includes a multi-beat cold',
+    'open" — there simply is not enough room. Write a FULL script at this length, not',
+    'an outline or a summary. This is checked programmatically: a script far under the',
+    'minimum will be rejected and you will be asked to expand it.',
+    '',
     '## Formula rules to apply',
     '',
-    ...formulaVersionIn.rules.map((r) => `- **${r.id}**: ${r.statement}`),
+    ...writerFormula.rules.map((r) => `- **${r.id}**: ${r.statement}`),
   ];
 
   if (previousCritique && previousCritique.negativePatterns.length > 0) {
@@ -176,14 +218,19 @@ function buildDraftPrompt(formulaVersionIn: FormulaVersion, previousCritique: Cr
   return lines.join('\n');
 }
 
-function buildCritiquePrompt(): string {
-  return [
+function buildCritiquePrompt(previousNegativePatterns: CritiquePattern[]): string {
+  const lines = [
     '# Training Lab — CRITIQUE stage (one video, one round)',
     '',
     'Read `input/envelope.json` in your working directory. It contains:',
     "- `transcript`: the ORIGINAL video's transcript segments, each with a unique `id` and `text`.",
     '- `formulaVersionIn`: the Formula rules the draft below was supposed to apply.',
     "- `draft`: the draft script produced this round (`title`, `script`, and its self-reported `appliedRules`).",
+  ];
+  if (previousNegativePatterns.length > 0) {
+    lines.push("- `previousNegativePatterns`: issues flagged in the PREVIOUS round's draft.");
+  }
+  lines.push(
     '',
     "Compare the draft against the REAL transcript's actual style — do not trust",
     '`draft.appliedRules` at face value. Identify:',
@@ -194,6 +241,24 @@ function buildCritiquePrompt(): string {
     '',
     'Write every `description` in the SAME language as the transcript.',
     '',
+  );
+  if (previousNegativePatterns.length > 0) {
+    lines.push(
+      "## Regression check (previous round's issues)",
+      '',
+      'For EACH item in `previousNegativePatterns` below, add one entry to a',
+      '`regressionCheck` array reporting whether THIS round\'s draft fixed it:',
+      '`{ "patternId": "...", "status": "fixed" | "still-present" | "partial", "note": "..." }`.',
+      '`note` is a short free-text explanation (same language as the transcript). This is',
+      'NOT graded against evidence — just your honest read of whether the issue recurs.',
+      'Every id below MUST have exactly one `regressionCheck` entry, or the critique is',
+      'rejected.',
+      '',
+      ...previousNegativePatterns.map((p) => `- **${p.id}**: ${p.description}`),
+      '',
+    );
+  }
+  lines.push(
     'For EVERY pattern (positive or negative), you MUST cite evidence on BOTH sides:',
     '- `sourceEvidence`: at least one `{ "segmentIds": ["..."], "quote": "..." }`.',
     '  `segmentIds` is one or more segment ids, IN TRANSCRIPT ORDER — use more than one',
@@ -217,10 +282,14 @@ function buildCritiquePrompt(): string {
     '  "positivePatterns": [ { "id": "p1", "ruleId": "rule-1", "description": "...",',
     '    "sourceEvidence": [ { "segmentIds": ["..."], "quote": "..." } ],',
     '    "draftEvidence": [ { "quote": "..." } ] } ],',
-    '  "negativePatterns": [ ]',
+    '  "negativePatterns": [ ]' + (previousNegativePatterns.length > 0 ? ',' : ''),
+    ...(previousNegativePatterns.length > 0
+      ? ['  "regressionCheck": [ { "patternId": "...", "status": "fixed", "note": "..." } ]']
+      : []),
     '}',
     '```',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function buildRefinePrompt(): string {
@@ -369,7 +438,24 @@ async function handleDispatchFailure(
  * just "is this even shaped like a draft" so garbage can't silently propagate into
  * CRITIQUE's envelope and produce a confusing downstream failure two stages later.
  */
-function validateDraftShape(parsed: unknown): { ok: true } | { ok: false; errorCode: string; reason: string } {
+/**
+ * `targetWordCount` check added 2026-08-10 (user: "agent viết bài đang quá ngắn...
+ * kể cả tôi đọc lại cũng k đánh giá được") — real runs showed drafts at 15-40% of
+ * the source video's actual word count (no length guidance existed before this),
+ * too short for CRITIQUE — or a human — to meaningfully judge whether the draft
+ * sustains the source's structure/pacing at the same scale. Only checks a MINIMUM
+ * — a HARD 70% of target floor (user: "tôi yêu cầu cứng luôn, bài viết phải đạt
+ * ít nhất 70% so với script gốc") — deliberately no maximum here, since a
+ * longer-than-target script is not the failure mode anyone has observed or
+ * complained about. This
+ * reuses `LaneScheduler`'s new content-retry (2026-08-10): a too-short draft is
+ * rejected with the actual word count in `reason`, and the agent gets a chance to
+ * expand and resubmit instead of the round failing outright.
+ */
+function validateDraftShape(
+  parsed: unknown,
+  targetWordCount: number,
+): { ok: true } | { ok: false; errorCode: string; reason: string } {
   const p = parsed as Partial<DraftArtifact> | null;
   if (!p || typeof p !== 'object') {
     return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'draft output is not an object' };
@@ -380,6 +466,18 @@ function validateDraftShape(parsed: unknown): { ok: true } | { ok: false; errorC
   if (typeof p.script !== 'string' || !p.script.trim()) {
     return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'draft.script missing or empty' };
   }
+  const wordCount = p.script.trim().split(/\s+/).length;
+  // Hard floor at 70% of target (user: "tôi yêu cầu cứng luôn, bài viết phải đạt
+  // ít nhất 70% so với script gốc", 2026-08-10) — tightened from an initial 50%.
+  const minWords = Math.round(targetWordCount * 0.7);
+  if (wordCount < minWords) {
+    return {
+      ok: false,
+      errorCode: 'AGENT_SCHEMA',
+      reason: `draft.script is only ${wordCount} words — target is ~${targetWordCount} `
+        + `(minimum ${minWords}). Expand it into a full script, not an outline.`,
+    };
+  }
   return { ok: true };
 }
 
@@ -388,9 +486,10 @@ function validateDraftShape(parsed: unknown): { ok: true } | { ok: false; errorC
  * `cloneAgentId`), this keeps the SAME clone id round over round, which is what lets
  * `TeamWorkflow`'s existing `store.resumeRef(agentId)` find and resume the prior
  * round's session (verified for real against codex-cli 0.147.0 — see
- * `docs/plans/agent-harness-architecture.md` §5.8; Grok's adapter does not wire
- * `resumeSessionRef` yet, see `dispatchDraftRound` below — a stable identity is still
- * useful there for the turnBridge single-pane-per-agent fix, §12a "Session identity").
+ * `docs/plans/agent-harness-architecture.md` §5.8; grok and agy adapters ALSO wire
+ * `resumeSessionRef` as of 2026-08-10 — see `adapters.ts`'s grok/agy
+ * `buildHeadlessTurn`, verified by hand against both installed binaries: real
+ * `--resume`/`--conversation` context resume, not just a stable pane identity).
  * "agent 2 viết bài mỗi turn không cần fresh context" — the DRAFT/writer role. */
 const DRAFT_SESSION_GROUP = 'draft';
 
@@ -403,33 +502,46 @@ const DRAFT_SESSION_GROUP = 'draft';
  * conceptual agent (the analyst who already has the transcript), just two stages. */
 const CRITIQUE_REFINE_SESSION_GROUP = 'critique-refine';
 
+/** Source-video word count, clamped to a range an agent can realistically write in
+ * one turn (2026-08-10 length-target fix — see `validateDraftShape`'s doc comment).
+ * Floor of 600 covers very short clips; ceiling of 4000 keeps very long videos
+ * (up to `TRANSCRIPT_FETCH_LIMIT`'s ~2.2h) from demanding an impractically long
+ * single-turn write. Rounded to the nearest 50 for a cleaner prompt number. */
+function draftTargetWordCount(transcriptWordCount: number): number {
+  const clamped = Math.min(4000, Math.max(600, transcriptWordCount));
+  return Math.round(clamped / 50) * 50;
+}
+
 async function dispatchDraftRound(
   deps: TrainingLabDeps,
   run: TrainingLabRun,
   round: TrainingLabRound,
   previousCritique: CritiqueArtifact | null,
 ): Promise<void> {
+  const { envelopeSegments } = fetchTranscriptSegments(deps.spy, run.videoSnapshotId);
+  const transcriptWordCount = envelopeSegments.reduce((sum, s) => sum + s.text.trim().split(/\s+/).length, 0);
+  const targetWordCount = draftTargetWordCount(transcriptWordCount);
+
   const envelope = { formulaVersionIn: round.formulaVersionIn, previousCritique: previousCritique ?? null };
   const dispatch = await deps.scheduler.dispatchItem({
     batchId: run.id,
     itemId: run.videoSnapshotId,
     stage: DRAFT_STAGE,
     attempt: round.round,
-    // Swapped codex -> grok 2026-08-10: Claude/Codex headless turns were repeatedly
-    // hitting the (still-unresolved) heartbeat/stall watchdog bug. Grok Build CLI is a
-    // separate binary/session lineage, unaffected by that bug, and its adapter
-    // (`agents/adapters.ts`) is already wired for headless turns. Note: the grok
-    // adapter does NOT wire `resumeSessionRef` into its CLI args (no `resume` flag
-    // support built yet), so DRAFT still gets a stable clone id/agent identity across
-    // rounds via `sessionGroup` below, but each round's turn currently starts fresh at
-    // the CLI level rather than truly resuming a prior session.
-    templateId: 'grok',
-    promptMarkdown: buildDraftPrompt(round.formulaVersionIn, previousCritique),
+    // User-selectable per run (2026-08-10, "agent 2") — default suggested by the UI
+    // is `grok` (Claude/Codex headless turns were repeatedly hitting the
+    // still-unresolved heartbeat/stall watchdog bug; grok is a separate binary/
+    // session lineage unaffected by it), but any of the 4 default agents works: all
+    // now have real session resume wired (`adapters.ts`), so combined with
+    // `sessionGroup` below, DRAFT genuinely resumes its prior round's context
+    // regardless of which one is picked.
+    templateId: run.draftAgent,
+    promptMarkdown: buildDraftPrompt(round.formulaVersionIn, previousCritique, targetWordCount),
     envelope,
     inputHashes: [envelopeHash(envelope)],
     promptVersion: DRAFT_PROMPT_VERSION,
     sessionGroup: DRAFT_SESSION_GROUP,
-    validateContent: validateDraftShape,
+    validateContent: (parsed) => validateDraftShape(parsed, targetWordCount),
   });
   await handleDispatchFailure(deps, run, round, dispatch);
 }
@@ -442,7 +554,19 @@ async function dispatchCritiqueRound(
   const { envelopeSegments, segmentsById } = fetchTranscriptSegments(deps.spy, run.videoSnapshotId);
   const draft = round.draft;
   if (!draft) throw new Error('[training-lab] dispatchCritiqueRound called before round.draft was set');
-  const envelope = { transcript: envelopeSegments, formulaVersionIn: round.formulaVersionIn, draft };
+  // "Gate" fix (2026-08-10, user: "khi agent 1 check thì cũng k có gate để verify là
+  // đã sửa đúng chưa") — the previous round's negative patterns, so THIS round's
+  // CRITIQUE can be asked "did the new draft actually fix these" instead of grading
+  // from a blank slate every time (grok has no real memory of a prior round's
+  // critique — see `DRAFT_SESSION_GROUP`'s doc comment — so this has to be passed
+  // explicitly, not assumed to be "remembered").
+  const previousRound = run.rounds.find((r) => r.round === round.round - 1);
+  const previousNegativePatterns = previousRound?.critique?.negativePatterns ?? [];
+  const previousNegativePatternIds = previousNegativePatterns.map((p) => p.id);
+  const envelope = {
+    transcript: envelopeSegments, formulaVersionIn: round.formulaVersionIn, draft,
+    ...(previousNegativePatterns.length > 0 ? { previousNegativePatterns } : {}),
+  };
   const draftScript = draft.script;
 
   const dispatch = await deps.scheduler.dispatchItem({
@@ -450,12 +574,12 @@ async function dispatchCritiqueRound(
     itemId: run.videoSnapshotId,
     stage: CRITIQUE_STAGE,
     attempt: round.round,
-    // Swapped claude -> grok 2026-08-10, same reason as DRAFT above (stall bug
-    // workaround). Distinct clone identity from DRAFT's grok clone is preserved
-    // automatically: `cloneAgentId`'s `sessionGroup` hash differs per group name
-    // (`draft` vs `critique-refine`) — see `agent-pool.ts`.
-    templateId: 'grok',
-    promptMarkdown: buildCritiquePrompt(),
+    // User-selectable per run (2026-08-10, "agent 1") — see DRAFT dispatch above for
+    // rationale. Distinct clone identity from DRAFT's clone is preserved automatically
+    // even when both roles pick the SAME agent id: `cloneAgentId`'s `sessionGroup`
+    // hash differs per group name (`draft` vs `critique-refine`) — see `agent-pool.ts`.
+    templateId: run.critiqueAgent,
+    promptMarkdown: buildCritiquePrompt(previousNegativePatterns),
     envelope,
     inputHashes: [envelopeHash(envelope)],
     promptVersion: CRITIQUE_PROMPT_VERSION,
@@ -465,8 +589,9 @@ async function dispatchCritiqueRound(
       const critique: CritiqueArtifact = {
         positivePatterns: Array.isArray(p.positivePatterns) ? p.positivePatterns : [],
         negativePatterns: Array.isArray(p.negativePatterns) ? p.negativePatterns : [],
+        regressionCheck: Array.isArray(p.regressionCheck) ? p.regressionCheck : undefined,
       };
-      return validateCritique(critique, segmentsById, draftScript);
+      return validateCritique(critique, segmentsById, draftScript, previousNegativePatternIds);
     },
   });
   await handleDispatchFailure(deps, run, round, dispatch);
@@ -487,8 +612,8 @@ async function dispatchRefineRound(
     itemId: run.videoSnapshotId,
     stage: REFINE_STAGE,
     attempt: round.round,
-    // Swapped claude -> grok 2026-08-10 — see CRITIQUE dispatch above for rationale.
-    templateId: 'grok',
+    // Same agent as CRITIQUE (user-selectable "agent 1") — see CRITIQUE dispatch above.
+    templateId: run.critiqueAgent,
     promptMarkdown: buildRefinePrompt(),
     envelope,
     inputHashes: [envelopeHash(envelope)],
@@ -518,9 +643,14 @@ async function dispatchRefineRound(
 
 export async function startTrainingLabRun(
   deps: TrainingLabDeps,
-  params: { videoSnapshotId: string; startingFormula: FormulaArtifact },
+  params: {
+    videoSnapshotId: string;
+    startingFormula: FormulaArtifact;
+    draftAgent: DefaultAgentId;
+    critiqueAgent: DefaultAgentId;
+  },
 ): Promise<TrainingLabRun> {
-  const { videoSnapshotId, startingFormula } = params;
+  const { videoSnapshotId, startingFormula, draftAgent, critiqueAgent } = params;
   const v1: FormulaVersion = { ...startingFormula };
   const now = new Date().toISOString();
   const channelTitle = startingFormula.channelTitle ?? '';
@@ -533,6 +663,7 @@ export async function startTrainingLabRun(
     critique: null,
     critiqueArtifactHash: null,
     formulaVersionOut: null,
+    changeLog: null,
     status: 'DRAFTING',
   };
 
@@ -545,6 +676,8 @@ export async function startTrainingLabRun(
     rounds: [round1],
     createdAt: now,
     updatedAt: now,
+    draftAgent,
+    critiqueAgent,
   };
 
   await saveTrainingLabRun(run, deps.dataDir);
@@ -618,6 +751,7 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
       const parsed = await readCommittedArtifact<{ rules: AnalysisRule[]; changeLog?: string[] }>(deps.dataDir, event);
       const formulaVersionOut = buildRefinedVersion(round.formulaVersionIn, parsed.rules, run.id);
       round.formulaVersionOut = formulaVersionOut;
+      round.changeLog = Array.isArray(parsed.changeLog) ? parsed.changeLog : null;
       round.status = 'DONE';
       // 2026-08-10: a refined version is saved to the SHARED Formula store, not only
       // inside this run's log. Before this, every improvement the Training Lab made
@@ -635,6 +769,7 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
           critique: null,
           critiqueArtifactHash: null,
           formulaVersionOut: null,
+          changeLog: null,
           status: 'DRAFTING',
         };
         run.rounds.push(nextRound);

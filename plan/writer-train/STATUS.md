@@ -4,7 +4,7 @@
 |-------|-------|
 | Agent | writer-train |
 | Status | active |
-| Current plan | [`HANDOFF.md`](./HANDOFF.md) · phase M2/M2.5: [`PHASES-M2-STUDIO.md`](./PHASES-M2-STUDIO.md) |
+| Current plan | [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md) · baseline: [`PHASES-M2-STUDIO.md`](./PHASES-M2-STUDIO.md) |
 | Last commit | — |
 | Last sync check | — |
 | Updated | 2026-08-09 |
@@ -20,12 +20,14 @@ Lane Training của SDD 002 + execution layer dùng chung (M0 → M3).
 | M1 — Formula Discovery 1 video | **done 2026-08-09** — full flow demo Claude(sonnet)→Codex(terra high) chạy thật thành công, xem "Demo full flow" bên dưới |
 | M1.5 — Training Lab (calibration loop, mới thêm) | **backend+UI done 2026-08-09, E2E thật 1/3 vòng thành công** — xem "Training Lab" bên dưới |
 | M2 — Batch training (N video song song) | **thiết kế xong 2026-08-10, chưa code** — chỉ còn phần *thực thi*: N video → N Formula độc lập, **không gộp gì cả**. SDD §6.1a. Chia phase: P0 (batch-lite) + P6 (dashboard đầy đủ). |
-| M2.5 — Formula Studio (mới, user-directed 2026-08-10) | **P1+P2 done, E2E thật xanh** — kho rule + chọn + gom nhóm + promote, 194/194 test. **Kiến trúc Formula đã hợp nhất (ADR-14)**. P3 (LLM ghép chữ) → P5 chưa làm. Xem `PHASES-M2-STUDIO.md`. |
+| M2.5 — Formula Studio (mới, user-directed 2026-08-10) | **P1+P2+P3 done, 232/232 test xanh** (P2 có E2E thật; **P3 chưa E2E thật**). P4–P5 cũ superseded: Formula nguồn không còn được phép đi thẳng vào Writer. |
+| M2.6 — Formula Migration to Writer | **planned 2026-08-10, đã rút gọn** — Bước 0 chạy P3 thật → Bước 1 contract/boundary → Bước 2 cổng rò rỉ + human duyệt. **Transfer test bắt buộc đã BỎ** (agent viết không thấy nguồn ⇒ kiểm formula là đủ; critic không chấm được chất lượng). ADR-FM1 confirmed; FM2/FM3 chờ. |
 | M3 — Resilience | chưa bắt đầu |
 
 ## Notes / blockers
 
 - ADR-2, ADR-8, ADR-9, ADR-10 đã được user xác nhận 2026-08-09. **ADR-5 + ADR-13 xác nhận 2026-08-10.**
+- **Đổi hướng Writer Formula 2026-08-10 (ADR-FM1):** Formula `ANALYZED`/`REFINED` của video chỉ dùng cho Training. Xóa evidence bằng projection không đủ generic hóa. Chỉ Formula mới sinh từ quy trình migration đầy đủ mới được vào Writer. Plan: [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md).
 - **Đổi hướng quan trọng 2026-08-10 (ADR-5):** channel **không** phải trục gom Formula. User: "1 kênh có nhiều formula… merge cần human chọn rồi mới dùng thuật toán/call llm. Nó là phép thử không thể auto được." Nên: bản thiết kế `PER_CHANNEL_COMPARE`/`comparison-report` viết sáng cùng ngày đã **bị bỏ hẳn** (không phải hoãn). Formula per-video là đơn vị nguyên tử; gộp thành Formula **theo thể loại content** diễn ra trong Formula Studio (M2.5) do human lái.
 ### Hợp nhất kiến trúc Formula (2026-08-10, ADR-14) — review phát hiện 4 lỗi thật
 
@@ -45,6 +47,21 @@ Backend `studio.ts` (session store, kho rule, cluster, merge, promote) + 6 route
 **E2E thật trên daemon đang chạy, xác nhận đủ chuỗi:** tạo phiên → chọn 3 rule → gom nhóm → compound `DRAFT` → promote → `TRIAL` `origin: COMPOUND` ghi vào store chung, hiện cạnh formula ANALYZED trong `/api/training/formulas`, và **không** lọt ngược vào kho rule (pool chỉ còn `ANALYZED`). Cảnh báo `SINGLE_SOURCE` bắn đúng khi mọi rule cùng một video. Dedup version chạy đúng: mặc định 8 rule, bật "cả bản cũ" ra 15. Dữ liệu test đã dọn sạch sau khi xong.
 
 **Giới hạn thật của cluster, phát hiện khi E2E — chưa xử lý:** hai rule *cùng nghĩa* nhưng một viết tiếng Việt, một viết tiếng Anh thì **không gom được** (độ trùng token = 0). Formula `9a88a60d` (09-08) có statement tiếng Anh, `0fcb21c0` (10-08) tiếng Việt. Prompt ANALYZE **đã có** ràng buộc "cùng ngôn ngữ với transcript" (`orchestrator.ts:85`) nên formula mới không dính, nhưng formula cũ thì có. Rộng hơn: gom theo chữ chỉ bắt được rule *diễn đạt giống nhau*, không bắt được diễn đạt khác mà cùng ý.
+
+### P3 done — SYNTHESIZE + duyệt đề xuất (2026-08-10, làm bởi 2 teammate song song)
+
+- `training-core/writer-view.ts` (mới): `toWriterFormula()` chiếu Formula sang góc nhìn writer (chỉ `{id, statement}`, bỏ evidence/sources/segmentIds) + `detectTopicLeak()` advisory. Ráp vào `buildDraftPrompt` để chỉ còn MỘT nơi định nghĩa "writer thấy gì". **ADR-15** ghi quyết định này vào SDD.
+- `daemon/training/studio-synthesize.ts` (mới): MỘT turn LLM cho tất cả cụm, envelope chỉ có statement (không transcript/evidence). Prompt ép generic hoá, áp dụng cả cụm `SINGLE`. `sources` do app tự dẫn xuất từ cluster members, **không** lấy từ LLM.
+- `rebuildCompound` đổi: cụm `SINGLE` **không** còn tự động `CARRIED` — mọi cụm đều cần proposal + human duyệt. `promoteCompound` chạy `detectTopicLeak`, thêm cảnh báo `TOPIC_LEAK`, không chặn.
+- UI: nút "Ghép bằng LLM" + poll 2s, danh sách proposal với Duyệt / Sửa rồi duyệt / Loại.
+
+**3 lỗi tôi tự tìm được khi kiểm chứng lại, teammate không thấy:**
+
+1. **Flaky thật, 1/4 lần fail** (không phải flake `preflight` đã biết): hai session tạo cùng mili-giây → `updatedAt` bằng nhau → sort ổn định giữ nguyên thứ tự `readdir` = thứ tự filesystem, không tất định. Là bug của tôi từ P2. Đã thêm tiebreak theo `id` cho **cả 4 chỗ sort** (`listFormulas`, `listTrainingLabRuns`, `listStudioSessions`, `listRulePool` — chỗ cuối tie là chuyện thường vì mọi rule cùng formula chia sẻ một timestamp). Viết lại test cho đúng bản chất: khẳng định **thứ tự bất biến giữa 2 lần đọc**, thay vì khẳng định "b đứng đầu" — điều dữ liệu không bảo đảm được. 6/6 lần xanh sau khi sửa.
+2. **`toWriterFormula` không tự chuẩn hoá** → Formula shape cũ (vẫn nằm trên đĩa thật) trả `label: ''`, tức im lặng giao cho agent viết một Formula mất nhãn ngữ cảnh. Đã cho gọi `normalizeFormula` trước + test hồi quy dùng shape cũ thật.
+3. **`CARRIED` thành code chết** — teammate báo cáo trung thực là không còn đường nào sinh ra nó. Đã khôi phục bằng cách nhỏ nhất (không thêm nút thứ tư): nếu human dán lại đúng nguyên văn câu gốc thì đó là "giữ nguyên" chứ không phải "sửa" → `CARRIED`. Đây là lối thoát khi LLM generic hoá làm rule tệ đi.
+
+**Chưa kiểm chứng được (cố ý):** chưa dispatch turn thật nào, **không tiêu token**. Chất lượng generic hoá thực tế của prompt — LLM có thực sự bỏ được chủ đề/chữ nguyên văn không, có trả đúng một entry mỗi clusterId không — **chỉ E2E thật mới biết**. UI cũng mới chỉ `tsc` + `vite build`, chưa bấm thật.
 
 - Studio tái dùng nguyên `dispatchItem` + vòng DRAFT/CRITIQUE của Training Lab. 1 thay đổi contract thật sự cần: `CritiqueEvidence` thêm `videoSnapshotId` để critique cite được nhiều video nguồn. Kèm ràng buộc envelope: critique bản compound **chỉ gửi các đoạn evidence đã cite**, không gửi full transcript — trực tiếp phòng lỗi `AGENT_NO_OUTPUT` ~96KB đã gặp thật ở vòng 2 Training Lab.
 - **ADR-8 quyết định cuối:** hoàn tất `turnBridge` (P-DEF-1b) phía Tauri client, dùng lại Rust PTY sẵn có. **Không xây daemon-side Turn Runner** — user đã bỏ hẳn hướng này, không giữ làm phương án dự phòng. Đóng app Tauri = batch tạm dừng (CON-13), chấp nhận đánh đổi.

@@ -29,6 +29,7 @@ import {
   type SamplingPolicy,
   type SpyConfig,
   type StartedOp,
+  type VideoSpyInput,
 } from './schema.ts';
 
 export * from './errors.ts';
@@ -210,6 +211,27 @@ export class SpyService {
 
   channelSpy(input: ChannelSpyInput, ownerSubject = 'local'): StartedOp {
     return this.acquisition.channelSpy(input, ownerSubject);
+  }
+
+  videoSpy(input: VideoSpyInput, ownerSubject = 'local'): StartedOp {
+    return this.acquisition.videoSpy(input, ownerSubject);
+  }
+
+  /** Xoá spy run (huỷ operation đang chạy nếu cần). */
+  deleteSpyRun(spyRunId: string): boolean {
+    const run = this.store.getSpyRun(spyRunId);
+    if (!run) return false;
+    if (run.status === 'queued' || run.status === 'running') {
+      const opId = this.store.getSpyRunOperationId(spyRunId);
+      if (opId) {
+        try {
+          this.operations.cancel(opId);
+        } catch {
+          // operation có thể đã xong / không còn controller — vẫn xoá dữ liệu
+        }
+      }
+    }
+    return this.store.deleteSpyRun(spyRunId);
   }
 
   getStatus(opId: string): Operation {
@@ -772,7 +794,83 @@ export class SpyService {
   // Corpus search — 0 quota, chạy trên dữ liệu đã quét
   // ---------------------------------------------------------------------------
 
-  corpusVideos(filter: Parameters<SpyStore['searchCorpusVideos']>[0] & { transcriptQuery?: string } = {}) {
+  /**
+   * Đà tăng trưởng của một kênh — thay cho "growth 30 ngày" của vidIQ mà không
+   * cần time-series. Đọc từ corpus đã quét nên KHÔNG tốn quota.
+   *
+   * Khác biệt cần biết: đây là đà theo VIEW TÍCH LUỸ của video đăng gần đây,
+   * không phải tăng trưởng subscriber. Sub growth bắt buộc phải có chuỗi thời
+   * gian và không lấy ngược quá khứ được.
+   */
+  channelMomentum(channelId: string, windowDays = 30) {
+    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+    const all = this.store.searchCorpusVideos({ channelIds: [channelId], limit: 1_000, orderBy: 'published_at' });
+    if (all.length === 0) {
+      throw new AppError('not_found', `Chưa quét kênh ${channelId} — chạy spy_scan_candidates trước`);
+    }
+    const recent = all.filter((video) => (video.publishedAt ?? '') >= since);
+    const older = all.filter((video) => (video.publishedAt ?? '') < since);
+
+    const candidate = this.store.listCandidates({ limit: 1 }).find((row) => row.channelId === channelId)
+      ?? this.store.listCandidates({ limit: 500 }).find((row) => row.channelId === channelId);
+    const subscriberCount = candidate?.subscriberCount ?? null;
+
+    const sum = (rows: typeof all) => rows.reduce((total, video) => total + video.viewCount, 0);
+    const med = (rows: typeof all) => {
+      if (rows.length === 0) return 0;
+      const sorted = rows.map((video) => video.viewCount).sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+    };
+
+    // Nhịp đăng: khoảng cách trung vị giữa các lần đăng liên tiếp.
+    const dates = all
+      .map((video) => (video.publishedAt ? Date.parse(video.publishedAt) : NaN))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const gaps: number[] = [];
+    for (let i = 1; i < dates.length; i += 1) gaps.push((dates[i]! - dates[i - 1]!) / 86_400_000);
+    gaps.sort((a, b) => a - b);
+    const uploadIntervalDays = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : null;
+
+    const recentMedian = med(recent);
+    const olderMedian = med(older);
+    return {
+      channelId,
+      windowDays,
+      corpusSize: all.length,
+      sampleWarning: all.length < 8
+        ? `Chỉ có ${all.length} video trong corpus — quá ít để kết luận, quét sâu hơn trước`
+        : null,
+      recent: {
+        videoCount: recent.length,
+        totalViews: sum(recent),
+        medianViews: recentMedian,
+        viewsPerDay: Math.round(sum(recent) / windowDays),
+      },
+      older: { videoCount: older.length, medianViews: olderMedian },
+      /** >1 = video mới đang ăn hơn video cũ. */
+      momentumRatio: olderMedian > 0 ? Math.round((recentMedian / olderMedian) * 100) / 100 : null,
+      uploadIntervalDays,
+      uploadsPerWeek: uploadIntervalDays && uploadIntervalDays > 0
+        ? Math.round((7 / uploadIntervalDays) * 10) / 10
+        : null,
+      /** Kênh chững: 0 video mới trong cửa sổ. */
+      dormant: recent.length === 0,
+      subscriberCount,
+      viewPerSubMedian: subscriberCount ? Math.round((med(all) / subscriberCount) * 1000) / 1000 : null,
+      channelAgeDays: candidate?.publishedAt
+        ? Math.round((Date.now() - Date.parse(candidate.publishedAt)) / 86_400_000)
+        : null,
+      note: 'Đà theo view tích luỹ của video đăng gần đây — KHÔNG phải tăng trưởng subscriber (cần time-series, không hồi tố được).',
+    };
+  }
+
+  corpusVideos(filter: Parameters<SpyStore['searchCorpusVideos']>[0] & {
+    transcriptQuery?: string;
+    minOutlierScore?: number;
+    minViewPerSub?: number;
+  } = {}) {
     let effective = filter;
     if (filter.transcriptQuery) {
       const hits = this.store.searchTranscriptFts({ query: filter.transcriptQuery, limit: 500 });
@@ -785,12 +883,53 @@ export class SpyService {
         : ids;
       effective = { ...filter, sourceVideoIds: merged };
     }
-    const videos = this.store.searchCorpusVideos(effective);
+    // Lọc theo outlier / view-per-sub phải làm SAU khi join, nên khi có các
+    // filter đó ta quét rộng hơn rồi cắt — và báo lại `scanned` để biết có khả
+    // năng bị cắt cụt hay không, thay vì im lặng trả thiếu.
+    const enrichFilters = filter.minOutlierScore !== undefined || filter.minViewPerSub !== undefined;
+    const wantLimit = effective.limit ?? 50;
+    const rows = this.store.searchCorpusVideos(
+      enrichFilters ? { ...effective, limit: 2_000, cursor: 0 } : effective,
+    );
+
+    // Sub theo kênh: candidate giữ channelId gốc, còn corpus dùng sourceIdentity
+    // viết thường — khớp bằng cách dò chuỗi con.
+    const candidates = this.store.listCandidates({ limit: 1_000 });
+    const subsByChannelKey = (channelKey: string): number | null => {
+      const lower = channelKey.toLowerCase();
+      const match = candidates.find((row) => lower.includes(row.channelId.toLowerCase()));
+      return match?.subscriberCount ?? null;
+    };
+    const metricsByVideo = this.store.getLatestMetricsBatch('video', rows.map((row) => row.sourceVideoId));
+
+    let enriched = rows.map((row) => {
+      const subscriberCount = subsByChannelKey(row.channelKey);
+      const payload = metricsByVideo.get(row.sourceVideoId) as
+        { performance?: { outlier?: { outlierScore?: unknown } } } | undefined;
+      const { score } = readMetricNumber(payload?.performance?.outlier?.outlierScore);
+      return {
+        ...row,
+        subscriberCount,
+        viewPerSub: subscriberCount ? Math.round((row.viewCount / subscriberCount) * 1000) / 1000 : null,
+        outlierScore: score,
+      };
+    });
+
+    if (filter.minOutlierScore !== undefined) {
+      enriched = enriched.filter((row) => row.outlierScore !== null && row.outlierScore >= filter.minOutlierScore!);
+    }
+    if (filter.minViewPerSub !== undefined) {
+      enriched = enriched.filter((row) => row.viewPerSub !== null && row.viewPerSub >= filter.minViewPerSub!);
+    }
+    const page = enrichFilters ? enriched.slice(0, wantLimit) : enriched;
+
     return {
-      count: videos.length,
-      videos,
+      count: page.length,
+      videos: page,
+      scanned: enrichFilters ? rows.length : null,
+      truncated: enrichFilters && rows.length >= 2_000,
       transcriptMatches: filter.transcriptQuery ? (effective.sourceVideoIds?.length ?? 0) : null,
-      note: 'Tìm trong corpus đã quét — không tốn quota API.',
+      note: 'Tìm trong corpus đã quét — không tốn quota API. outlierScore chỉ có ở video thuộc kênh đã quét đủ mẫu.',
     };
   }
 

@@ -860,7 +860,7 @@ the system retries by itself.
 | `BATCH_BUDGET_EXHAUSTED` | scoped budget spent | scheduler | batch `NEEDS_ATTENTION` | "Hết budget của batch" | Cấp thêm budget | no |
 | `INPUT_MISSING_TRANSCRIPT` | no transcript | preflight | `BLOCKED` | "Video chưa có transcript" | nút "Tải transcript" (gọi Spy) | no |
 | `INPUT_NO_CHANNEL` | channel unresolved | preflight | `BLOCKED` | "Chưa xác định được channel" | chọn channel thủ công | no |
-| `STUDIO_RULE_UNGROUNDED` | synthesized compound rule has empty `provenance[]` | Studio validator (§12b) | proposal rejected | "Rule ghép không truy được về video nguồn" | tổng hợp lại / sửa tay | no |
+| `STUDIO_RULE_UNGROUNDED` | synthesized compound rule has empty `sources[]` | Studio validator (§12b) | proposal rejected | "Rule ghép không truy được về video nguồn" | tổng hợp lại / sửa tay | no |
 | `STUDIO_EVIDENCE_OUT_OF_SCOPE` | critique cites a `videoSnapshotId` outside the compound's provenance set | `validateCritique` (§12b) | `FAILED` (retryable) | "Agent trích dẫn video không nằm trong formula này" | Thử lại | no |
 | `STALE_ACTION` | checkpoint hash mismatch | API 409 | unchanged | "Trạng thái đã thay đổi — đã tải lại" | thao tác lại | auto-refresh |
 | `AGGREGATION_STALE` | included artifact changed | aggregator | Formula draft stale | "Nguồn đã đổi — cần tổng hợp lại" | Tổng hợp lại | no |
@@ -897,9 +897,11 @@ COMMIT_FORMULA(item):                  # per video — there is no cross-item ag
 STUDIO_MERGE(pickedRules[]):           # §12b — human-gated at both ends, never auto-invoked
 1. CLUSTER(pickedRules) — deterministic app code, no LLM: identical/near-identical → merge
    candidate; same facet + different tactic → conflict surfaced for a human decision; unique
-   → carried through unchanged.
-2. For each cluster the human approved for merging: one bounded LLM turn proposes merged
-   wording, carrying the union of source provenance. Empty provenance ⇒ STUDIO_RULE_UNGROUNDED.
+   → single-rule (`SINGLE`) cluster, not auto-carried (ADR-15).
+2. For every cluster the human approved for merging — including `SINGLE` — one bounded LLM
+   turn proposes generic wording, carrying the union of member `sources[]`. `CARRIED` results
+   only from an explicit human "keep original wording" choice on a proposal. Empty sources
+   ⇒ STUDIO_RULE_UNGROUNDED.
 3. Human accepts / edits / rejects each proposal individually; nothing commits without that.
 4. Emit FormulaArtifact { origin: COMPOUND, genre, rules, status: DRAFT }.
 5. Promotion to TRIAL is a separate explicit human action (ADR-6).
@@ -1280,12 +1282,18 @@ PICK     human ticks rules into the working set  ──────────�
 CLUSTER  app code groups the picked rules (no LLM):            │
            - identical / near-identical  → merge candidate      │
            - same facet, different tactic → conflict, human decides keep-both or pick-one
-           - unique                       → carried through as-is
+           - unique                       → single-rule (`SINGLE`) cluster — NOT special-cased
    ↓                                                           │
-SYNTHESIZE  per cluster the human approved for merging, ONE bounded LLM turn
-            rewrites it into a single rule. Every synthesized rule keeps
-            `provenance[]` = every (videoSnapshotId, sourceFormulaId, sourceRuleId,
-            evidence[]) it came from. No provenance ⇒ invalid output, same spirit as
+SYNTHESIZE  EVERY cluster the human approved for merging goes through this ONE bounded
+            LLM turn — including `SINGLE` clusters (changed 2026-08-10/P3, ADR-15). A
+            rule with only one source has nothing to abstract against, so leaving it
+            untouched by default would carry that video's topic baggage (verbatim
+            wording, its specific phrasing) straight into a Formula meant for the
+            Writer. `mergeOrigin: CARRIED` still exists, but only as an explicit human
+            choice per proposal ("giữ nguyên" — keep the original wording for this one),
+            never as CLUSTER's automatic default for a lone rule. Every synthesized rule
+            keeps `sources[]` = every (videoSnapshotId, sourceFormulaId, sourceRuleId,
+            evidence[]) it came from. No sources ⇒ invalid output, same spirit as
             AGENT_UNGROUNDED.
    ↓                                                           │
 REVIEW   human accepts / edits / rejects each proposed rule    │
@@ -1340,7 +1348,7 @@ A compound Formula is created under a user-named **genre** (e.g. "kể chuyện 
 "phân tích tin tức"). Genres are free-form user-created labels, not a fixed taxonomy — the whole
 point is that the user discovers the right genres by doing this, which is why the system must
 not ship a hardcoded list. A genre may draw rules from any channels; a channel may contribute to
-any number of genres. `channelTitle` survives only inside `provenance[]`, for audit and filtering.
+any number of genres. `channelTitle` survives only inside `sources[]`, for audit and filtering.
 
 ### Promotion
 
@@ -1348,6 +1356,15 @@ Promoting a compound Formula to `TRIAL` for a genre is an explicit human action,
 every other promotion in this system (ADR-6). `VALIDATED` remains unreachable in MVP code. A
 promoted compound Formula then appears in the Writer's Formula picker (§6.3) alongside per-video
 Formulas — from the Writer's point of view they are interchangeable, both hash-pinned per item.
+
+### Cái Writer thực sự nhận
+
+The Writer never reads a `FormulaArtifact` directly. It receives `toWriterFormula()`'s projection
+(ADR-15) — `{id, label, rules: [{id, statement}]}` — with no `evidence`, `sources`, `segmentIds`,
+`includedArtifacts`, or `lineage`, for a compound Formula exactly as for a per-video one. Evidence
+stays on the stored artifact because `CRITIQUE` still needs it: judging a draft against its real
+source(s) is the whole point of §12a/§12b's grounding rule, and that check has nothing to do with
+what the Writer itself is allowed to see.
 
 ### Cluster identity is content-derived, not positional
 
@@ -1542,6 +1559,15 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
   - Migration: `normalizeFormula()` upgrades legacy files on read; no rewrite pass, old files stay readable.
   - User confirmed: 2026-08-10.
 
+- [x] **ADR-15 — A Formula has two views on one artifact: source-derived (evidence-bearing, legitimately topic-bound) for training/critique, and a generic, evidence-free projection for the Writer.**
+  - Rationale (user, 2026-08-10): *"khi đã có formula và dùng cho writer => formula là độc lập, k cần transcript gốc nữa… có 2 loại formula: 1 là formula dùng cho writer, 2 là formula gốc suy ra từ script gốc. formula cho writer phải generic nhất có thể."* Training/`CRITIQUE` needs the full artifact — evidence, verbatim quotes, timestamps — because that is exactly what proves a rule is grounded in a real video (§8.1, §12a). A Writer building a NEW script on a NEW topic needs the opposite: rule statements only, as generic as possible, because anything tied to the source video's specific wording or timestamps either drags the new content back toward the old topic or forces copying the source's catchphrases.
+  - The two kinds map onto the existing `origin` discriminator (§8.2, ADR-14) — no new Formula type was needed: `ANALYZED`/`REFINED` are source-derived and legitimately topic-bound; `COMPOUND` is the writer-facing kind and must be generic. `toWriterFormula()` (`training-core/writer-view.ts`) is a pure projection — `{id, label, rules: [{id, statement}]}`, no `evidence`/`sources`/`segmentIds`/`includedArtifacts`/`lineage` — applied the same way regardless of origin; see §12b "Cái Writer thực sự nhận".
+  - Two views, ONE store, deliberately. A second storage location for the writer-facing shape would reintroduce exactly the fragmentation ADR-14 just closed (refined versions trapped in `lab-runs/*.json`, compounds in `studio-sessions/*.json`, invisible to each other). The projection has nothing to persist and nothing to keep in sync — it is derived on every read from the one stored `FormulaArtifact`.
+  - Measured evidence, not hypothesis: on the user's real Formula `0fcb21c0` (8 rules, `ANALYZED`), 5 of 8 carry topic knowledge or verbatim source wording — the channel's own catchphrase ("tôi là sói tài chính"), a coined term ("thuế ở lại thành phố"), a video-specific timestamp ("giây thứ ~101"), and a literal section-number listing ("Phần một, Phần hai, Phần bốn"). Handing these to a Writer on a new topic either forces the script back toward finance or forces copying the source channel's catchphrase verbatim — a live violation of invariant D4 "Formula không chứa topic knowledge" (`docs/plans/writer-training-architecture-v2.md` §2), observed in real data, not hypothesised.
+  - Trade-off: making a `COMPOUND` Formula genuinely generic needs an LLM synthesis step plus human review (P3 SYNTHESIZE, §12b), so it costs more to produce than a copy-through merge would. Accepted: a topic-bound "formula" is really a template of one video, and a template that cannot transfer to a new topic is not useful to a Writer — genericizing it is the entire point of building a writer-facing Formula at all.
+  - Enforcement is advisory, deliberately: `detectTopicLeak()` (`training-core/writer-view.ts`) warns at review/promote time but never blocks — same trust level as a lint suggestion, not a validation gate. It catches three literal patterns only (a quoted verbatim string, a video-position number tied to `giây`/`phút`, a concrete ordinal listing like "Phần một, Phần hai"); it does NOT detect a bare topic noun like "khái niệm tài chính" — recognizing that requires understanding meaning, which is P3's LLM generalization job, not a regex's.
+  - User confirmed: 2026-08-10.
+
 ## Quality Requirements
 
 - **Executability:** a dispatched turn always reaches a settled state; no turn may end only by watchdog in the happy path (regression guard for GAP-1).
@@ -1614,8 +1640,8 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 | integration | SSE reconnect with cursor | no missed or duplicated events |
 | e2e (real Claude) | M0.5 walking skeleton | one real turn commits one real artifact |
 | e2e | 3 videos / 2 channels | 3 independent Formulas, no scope prompt, no merging attempted (ADR-5) |
-| unit | Studio clustering | identical rules cluster; same-facet-different-tactic flagged conflict, not auto-merged; unique rules carried through |
-| unit | compound rule validation | empty `provenance[]` → `STUDIO_RULE_UNGROUNDED`; synthesized rule keeps every source ref |
+| unit | Studio clustering | identical rules cluster; same-facet-different-tactic flagged conflict, not auto-merged; unique rules form `SINGLE` clusters and still go through SYNTHESIZE (ADR-15), not auto-carried |
+| unit | compound rule validation | empty `sources[]` → `STUDIO_RULE_UNGROUNDED`; synthesized rule keeps every source ref |
 | unit | compound critique grounding | `videoSnapshotId` outside the provenance set → `STUDIO_EVIDENCE_OUT_OF_SCOPE`; quote must match that video's cited segment |
 | integration | compound CRITIQUE envelope size | 5-video compound ships cited spans only, staying in the same size class as a 1-video Training Lab critique (regression guard for the observed ~96KB `AGENT_NO_OUTPUT`) |
 | e2e (real agents) | Studio session | pick rules from 3 videos → cluster → synthesize → accept → test-write → critique cites ≥2 source videos → promote to a genre `TRIAL` |

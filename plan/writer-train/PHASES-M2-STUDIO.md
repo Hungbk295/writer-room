@@ -9,7 +9,7 @@ File này chỉ là bảng theo dõi thi công — không lặp lại thiết k�
 | Field | Value |
 |---|---|
 | Thiết kế gốc | SDD §6.1a (batch), §12b (Studio), ADR-5, ADR-13 |
-| Trạng thái | **P1 + P2 done** (2026-08-10, E2E thật đã chạy) · P3→P5 chưa làm · P0 bỏ, P6 hoãn |
+| Trạng thái | **P1 + P2 + P3 done** (2026-08-10) · P2 có E2E thật; **P3 chưa E2E thật** (chưa tiêu token nào) · P4–P5 cũ **superseded** bởi [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md) · P0 bỏ, P6 hoãn |
 | Cập nhật | 2026-08-10 |
 
 ## 0. Đề xuất thứ tự — đọc trước
@@ -95,6 +95,8 @@ Nếu bạn muốn giữ đúng thứ tự M2 → M2.5, nói một câu, tôi đ
 
 ## P4 — Viết thử + chấm ở cấp compound (phần trả lời đúng câu hỏi của bạn)
 
+> **Superseded 2026-08-10:** Không tiếp tục P4 theo premise “compound Formula đã là Writer input”. Khả năng test-write được giữ lại và mở rộng thành FM5 trong [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md): test trên topic mới, source transcript bị loại khỏi author context, có static gates + human approval trước Writer-ready.
+
 **Mục tiêu:** *"dùng bản đó để thử viết bài mới, hay là được"* — trả lời bằng bài viết thật + chấm có bằng chứng.
 
 | Việc | File |
@@ -111,6 +113,8 @@ Nếu bạn muốn giữ đúng thứ tự M2 → M2.5, nói một câu, tôi đ
 ---
 
 ## P5 — Promote theo thể loại + nối vào Writer
+
+> **Superseded 2026-08-10:** Không promote `COMPOUND` thẳng thành Formula cho Writer. P5 được thay bằng FM6: chỉ immutable `WriterFormula { kind: 'WRITER', readiness: 'WRITER_READY' }` sau migration + transfer test + human approval mới vào Writer picker.
 
 | Việc | File |
 |---|---|

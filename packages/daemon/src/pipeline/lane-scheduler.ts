@@ -11,6 +11,7 @@
  * queue/backoff/poll loop is out of scope here — HANDOFF §4 places it at M2.
  */
 import type { Dirent } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { commitArtifact, turnKey as computeTurnKey } from '@writer-room/pipeline-core';
@@ -50,6 +51,16 @@ export interface DispatchItemParams {
    * before this field existed.
    */
   validateContent?: (parsed: unknown) => { ok: true } | { ok: false; errorCode: string; reason?: string };
+  /** Max automatic retries-with-correction on a Branch 4 `validateContent` rejection
+   * (added 2026-08-10, user: "trích k đúng thì bắt nó sửa lại là xong sao lại
+   * dừng" — a single bad citation used to kill the whole item immediately with no
+   * chance to fix it, even though every prompt already tells the agent citations
+   * are checked). Defaults to `DEFAULT_MAX_CONTENT_RETRIES`; set 0 to keep the old
+   * fail-immediately behavior for a specific caller. Does NOT apply to Branches
+   * 1-3/5 (exit code, missing output, bad JSON, sandbox violation) — those are
+   * process-level failures, not "content the agent can revise," so retrying them
+   * blindly would just mask a different class of bug. */
+  maxContentRetries?: number;
 }
 
 export interface DispatchItemResult {
@@ -80,6 +91,12 @@ interface TurnRegistryEntry {
   sandboxRoot: string;
   baselineFiles: Set<string>;
   validateContent?: DispatchItemParams['validateContent'];
+  /** The exact params this turn was dispatched with — kept so a Branch 4 rejection
+   * can rebuild a corrected retry (`retryWithCorrection`) without the caller having
+   * to resupply anything. */
+  params: DispatchItemParams;
+  maxContentRetries: number;
+  retriesUsed: number;
 }
 
 /** Placeholder scoped-budget defaults (SDD §5.4 — these are explicitly "placeholder
@@ -91,6 +108,10 @@ interface TurnRegistryEntry {
 const DEFAULT_MAX_PARALLEL = 3;
 const DEFAULT_MAX_TURNS = 40;
 const DEFAULT_MAX_DURATION_MINUTES = 120;
+
+/** Up to 3 total tries (1 original + 2 retries) before a Branch 4 rejection becomes
+ * a real FAILED — see `DispatchItemParams.maxContentRetries`'s doc comment. */
+const DEFAULT_MAX_CONTENT_RETRIES = 2;
 
 /** SDD §5.2 dispatch options table. */
 /** Bumped 2026-08-09 after a real M1 run stalled at exactly ~180.0s twice in a row on
@@ -204,6 +225,14 @@ export class LaneScheduler {
   }
 
   async dispatchItem(params: DispatchItemParams): Promise<DispatchItemResult> {
+    return this.dispatchItemInternal(params, 0);
+  }
+
+  /** `retriesUsed` is 0 for every real caller (`dispatchItem` above) — only
+   * `retryWithCorrection` passes a nonzero value, tracking how many automatic
+   * content-retries this logical (batchId, itemId, stage, attempt) has already
+   * burned through. */
+  private async dispatchItemInternal(params: DispatchItemParams, retriesUsed: number): Promise<DispatchItemResult> {
     const {
       batchId, itemId, stage, attempt, templateId, promptMarkdown, envelope, inputHashes, promptVersion,
     } = params;
@@ -295,6 +324,9 @@ export class LaneScheduler {
     this.turnRegistry.set(r.turnId, {
       turnKey: tk, batchId, itemId, stage, attempt, itemRunDir, cloneId, sandboxRoot, baselineFiles,
       validateContent: params.validateContent,
+      params,
+      maxContentRetries: params.maxContentRetries ?? DEFAULT_MAX_CONTENT_RETRIES,
+      retriesUsed,
     });
 
     return { turnId: r.turnId, itemRunDir, status: 'RUNNING' };
@@ -359,7 +391,21 @@ export class LaneScheduler {
           if (validation.reason) {
             console.error(`[pipeline] ${validation.errorCode} for ${entry.itemId}/${entry.stage}: ${validation.reason}`);
           }
-          fail(validation.errorCode);
+          // Mark THIS attempt's own ledger row terminal (accurate bookkeeping — it
+          // really was rejected) but do NOT `publish` yet: publishing tells every
+          // `onItemSettled` listener (Training Lab, the ANALYZE aggregator) that
+          // this (item, stage, attempt) is fully done, and a retry may still turn it
+          // into a COMMITTED. Only the LAST attempt (success, or retries exhausted)
+          // publishes — see `retryWithCorrection` below.
+          this.deps.ledger.updateStatus(entry.turnKey, { status: 'terminal', outcome: 'FAILED', errorCode: validation.errorCode });
+          if (entry.retriesUsed < entry.maxContentRetries) {
+            await this.retryWithCorrection(entry, validation.errorCode, validation.reason);
+            return;
+          }
+          this.publish({
+            batchId: entry.batchId, itemId: entry.itemId, stage: entry.stage, attempt: entry.attempt,
+            outcome: 'FAILED', errorCode: validation.errorCode,
+          });
           return;
         }
       }
@@ -398,6 +444,62 @@ export class LaneScheduler {
     } catch (err) {
       // Defensive: never let a bug in the commit path leave the ledger stuck non-terminal.
       fail(`AGENT_INTERNAL:${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Re-dispatches the SAME logical (batchId, itemId, stage, attempt) with the
+   * rejection reason appended to the prompt, asking the agent to fix its own
+   * mistake and resubmit (2026-08-10 — see `DispatchItemParams.maxContentRetries`).
+   *
+   * Deliberately reuses `attempt` (so `itemRunDir` — and therefore `out/result.json`
+   * — is the SAME directory the rejected attempt just wrote to; the agent is being
+   * asked to fix ITS OWN file, not start from a blank slate) and reuses
+   * `sessionGroup` if the caller set one (so `cloneAgentId` — `agent-pool.ts` —
+   * produces the SAME clone id, which is what lets the underlying CLI session
+   * genuinely resume and see its own prior mistake in context, for adapters with
+   * real session resume wired). `inputHashes` gets one new deterministic entry per
+   * retry purely so `computeTurnKey` produces a FRESH turn_key — without that, Step
+   * 2's idempotent re-attach would treat this as "already dispatched, still
+   * running" and never actually spawn a new turn.
+   */
+  private async retryWithCorrection(
+    entry: TurnRegistryEntry,
+    errorCode: string,
+    reason: string | undefined,
+  ): Promise<void> {
+    const retryNum = entry.retriesUsed + 1;
+    console.error(
+      `[pipeline] retrying ${entry.itemId}/${entry.stage} attempt ${entry.attempt} `
+      + `(content-retry ${retryNum}/${entry.maxContentRetries})`,
+    );
+    const correction = [
+      '',
+      '---',
+      '',
+      `RETRY ${retryNum}: your previous submission for this exact task was REJECTED:`,
+      reason ? `"${reason}"` : '(no further detail available)',
+      '',
+      'Fix this specific problem and resubmit — every quote must be an EXACT verbatim',
+      'substring of the source text you were given. Do not paraphrase, summarize, or invent.',
+    ].join('\n');
+    const retryParams: DispatchItemParams = {
+      ...entry.params,
+      promptMarkdown: `${entry.params.promptMarkdown}\n${correction}`,
+      inputHashes: [
+        ...entry.params.inputHashes,
+        createHash('sha256').update(`content-retry-${retryNum}`).digest('hex'),
+      ],
+    };
+    const dispatch = await this.dispatchItemInternal(retryParams, retryNum);
+    if (dispatch.status !== 'RUNNING') {
+      // Could not even start the retry turn (lane busy, agent unavailable) — there
+      // is no in-flight turn left that will ever settle this attempt, so publish
+      // the ORIGINAL rejection now rather than leaving the item silently stuck.
+      this.publish({
+        batchId: entry.batchId, itemId: entry.itemId, stage: entry.stage, attempt: entry.attempt,
+        outcome: 'FAILED', errorCode,
+      });
     }
   }
 

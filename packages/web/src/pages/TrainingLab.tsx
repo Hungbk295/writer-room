@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'preact/hooks';
 import {
   api,
+  DEFAULT_AGENT_OPTIONS,
   type CritiqueArtifact,
   type CritiquePattern,
+  type DefaultAgentId,
   type TrainingLabRound,
   type TrainingLabRun,
   type TrainingLabRunSummary,
@@ -11,6 +13,11 @@ import { href } from '../router.ts';
 import { useTrainingLabRunPoll } from '../hooks.ts';
 import { RuleList } from './Training.tsx';
 import { describeErrorCode } from '../features/training/FormulaDiscoveryAction.tsx';
+import { DeleteButton } from '../components/ui/DeleteButton.tsx';
+
+function agentLabel(id: DefaultAgentId): string {
+  return DEFAULT_AGENT_OPTIONS.find((o) => o.id === id)?.label ?? id;
+}
 
 /** Same badge convention as `Training.tsx`'s `statusBadgeClass` (SDD §7.7 spirit) —
  * applied here to `TrainingLabRun.status` (`RUNNING`/`DONE`/`FAILED`), a different
@@ -36,11 +43,20 @@ export function TrainingLabPage() {
   const [runs, setRuns] = useState<TrainingLabRunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const refresh = async () => {
+    const data = await api.listTrainingLabRuns();
+    setRuns(data.runs);
+  };
+
   useEffect(() => {
-    void api.listTrainingLabRuns()
-      .then((d) => setRuns(d.runs))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    void refresh().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  const remove = async (id: string) => {
+    setError(null);
+    await api.deleteTrainingLabRun(id);
+    setRuns((prev) => prev.filter((r) => r.id !== id));
+  };
 
   return (
     <div>
@@ -63,28 +79,42 @@ export function TrainingLabPage() {
           </div>
         ) : (
           <ul class="list">
-            {runs.map((run) => (
-              <li
-                key={run.id}
-                style={{ cursor: 'pointer' }}
-                onClick={() => { location.hash = href({ name: 'training-lab-run', id: run.id }); }}
-              >
-                <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                  <a
-                    href={href({ name: 'training-lab-run', id: run.id })}
-                    onClick={(e) => e.stopPropagation()}
+            {runs.map((run) => {
+              const label = run.channelTitle || run.videoSnapshotId;
+              return (
+                <li key={run.id} class="pack-row">
+                  <div
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => { location.hash = href({ name: 'training-lab-run', id: run.id }); }}
                   >
-                    <strong>{run.channelTitle || run.videoSnapshotId}</strong>
-                  </a>
-                  <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
-                </div>
-                <div class="meta">
-                  <span>video: {run.videoSnapshotId}</span>
-                  <span>{run.roundCount} / tối đa 3 vòng</span>
-                  <span>{new Date(run.updatedAt).toLocaleString()}</span>
-                </div>
-              </li>
-            ))}
+                    <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <a
+                        href={href({ name: 'training-lab-run', id: run.id })}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <strong>{label}</strong>
+                      </a>
+                      <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
+                    </div>
+                    <div class="meta">
+                      <span>video: {run.videoSnapshotId}</span>
+                      <span>{run.roundCount} / tối đa 3 vòng</span>
+                      <span>agent 1: {agentLabel(run.critiqueAgent)} · agent 2: {agentLabel(run.draftAgent)}</span>
+                      <span>{new Date(run.updatedAt).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
+                    <a class="btn secondary" href={href({ name: 'training-lab-run', id: run.id })}>
+                      Mở
+                    </a>
+                    <DeleteButton
+                      title={label}
+                      onDelete={() => remove(run.id)}
+                    />
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
@@ -151,21 +181,47 @@ function PatternList({ patterns, tone }: { patterns: CritiquePattern[]; tone: 'o
 /** Part 3 of the round — "chấm điểm" per the user's own words, split into two
  * clearly separated lists (positive/negative), never a numeric score (SDD §12a:
  * "Grading is qualitative pattern-matching, not a numeric score"). */
+const REGRESSION_STATUS_CHIP: Record<string, string> = {
+  fixed: 'chip ok',
+  'still-present': 'chip bad',
+  partial: 'chip warn',
+};
+
 function CritiqueView({ critique }: { critique: CritiqueArtifact }) {
   return (
-    <div class="training-detail-grid">
-      <div>
-        <span class="chip ok">Positive patterns ({critique.positivePatterns.length})</span>
-        <div style={{ marginTop: '0.5rem' }}>
-          <PatternList patterns={critique.positivePatterns} tone="ok" />
+    <div>
+      <div class="training-detail-grid">
+        <div>
+          <span class="chip ok">Positive patterns ({critique.positivePatterns.length})</span>
+          <div style={{ marginTop: '0.5rem' }}>
+            <PatternList patterns={critique.positivePatterns} tone="ok" />
+          </div>
+        </div>
+        <div>
+          <span class="chip bad">Negative patterns ({critique.negativePatterns.length})</span>
+          <div style={{ marginTop: '0.5rem' }}>
+            <PatternList patterns={critique.negativePatterns} tone="bad" />
+          </div>
         </div>
       </div>
-      <div>
-        <span class="chip bad">Negative patterns ({critique.negativePatterns.length})</span>
-        <div style={{ marginTop: '0.5rem' }}>
-          <PatternList patterns={critique.negativePatterns} tone="bad" />
+      {critique.regressionCheck && critique.regressionCheck.length > 0 && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <p class="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.82rem' }}>
+            Đối chiếu với issue vòng trước (agent tự báo cáo, chưa được kiểm chứng):
+          </p>
+          <ul class="list">
+            {critique.regressionCheck.map((r) => (
+              <li key={r.patternId}>
+                <span class={REGRESSION_STATUS_CHIP[r.status] ?? 'chip'}>{r.status}</span>
+                <span style={{ marginLeft: '0.5rem', fontSize: '0.85rem' }}>{r.note}</span>
+                <div class="meta" style={{ marginTop: '0.15rem' }}>
+                  <span class="muted">pattern: {r.patternId}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -229,6 +285,18 @@ function RoundBlock({ round }: { round: TrainingLabRound }) {
                 Phiên bản v{round.formulaVersionOut.version} (từ v{round.formulaVersionIn.version})
               </p>
               <RuleList rules={round.formulaVersionOut.rules} />
+              {round.changeLog && round.changeLog.length > 0 && (
+                <div style={{ marginTop: '0.75rem' }}>
+                  <p class="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.82rem' }}>
+                    Lý do thay đổi (agent tự giải thích, chưa được kiểm chứng):
+                  </p>
+                  <ul class="list">
+                    {round.changeLog.map((line, i) => (
+                      <li key={i} style={{ fontSize: '0.85rem' }}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </>
           ) : (
             <p class="muted">Đang tinh chỉnh…</p>
@@ -277,7 +345,8 @@ export function TrainingLabRunPage({ id }: { id: string }) {
             <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
           </div>
           <p class="page-lead" style={{ marginBottom: 0 }}>
-            Vòng {latestRound ? latestRound.round : 0}/{run.maxRounds} · video: {run.videoSnapshotId} · cập nhật{' '}
+            Vòng {latestRound ? latestRound.round : 0}/{run.maxRounds} · video: {run.videoSnapshotId} ·
+            agent 1: {agentLabel(run.critiqueAgent)} · agent 2: {agentLabel(run.draftAgent)} · cập nhật{' '}
             {new Date(run.updatedAt).toLocaleString()}
           </p>
         </div>

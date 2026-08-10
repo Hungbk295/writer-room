@@ -237,6 +237,16 @@ export const channelSpyInputSchema = z.object({
 
 export type ChannelSpyInput = z.infer<typeof channelSpyInputSchema>;
 
+/** Spy đúng một video từ URL watch/shorts/youtu.be. */
+export const videoSpyInputSchema = z.object({
+  url: nonEmpty,
+  /** metadata | transcript — default transcript. */
+  depth: harvestDepthSchema.default('transcript'),
+  idempotencyKey: z.string().min(8).max(200),
+}).strict();
+
+export type VideoSpyInput = z.infer<typeof videoSpyInputSchema>;
+
 export const transcriptFetchInputSchema = z.object({
   videoIds: z.array(nonEmpty).min(1).max(100).optional(),
   channelId: z.string().optional(),

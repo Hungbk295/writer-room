@@ -181,8 +181,22 @@ const agy: AgentAdapter = {
       ? `${agent.prompt.trim()}\n\n---\n\n${ctx.turnPrompt}`
       : ctx.turnPrompt;
     const baseArgs = agent.args.length > 0 ? [...agent.args] : [...AGY_DEFAULT_ARGS];
+    // `--output-format stream-json` + `--conversation <id>` (real session resume,
+    // added 2026-08-10, verified by hand against the installed `agy` binary):
+    // plain-mode output has no machine-parseable session marker, but non-streaming
+    // `--output-format json` buffers EVERYTHING and prints exactly one blob at
+    // process exit — a real Training Lab run showed this as a totally blank PTY pane
+    // for the turn's whole duration (user: "grok agent mở ra nhưng lại không có UI
+    // gì cả", same root cause for agy). `stream-json` instead emits one JSON line per
+    // event as the agent works (`init`/`step_update`/`result`), giving live visible
+    // progress AND still includes `"conversation_id":"<uuid>"` on every line —
+    // confirmed the SAME id is echoed back on every turn and `--conversation <id>`
+    // genuinely resumes (verified: a follow-up turn correctly recalled a fact from
+    // turn 1, `cache_read_tokens` nonzero on the resumed turn). Captured client-side
+    // by `turnBridge`'s `SESSION_ID_PATTERNS` (`conversation_id` pattern).
+    const resumeArgs = ctx.resumeSessionRef ? ['--conversation', ctx.resumeSessionRef] : [];
     // Flags first; --print consumes the next argument as the prompt (dna-spy).
-    const spec = baseSpec(agent, ctx, [...baseArgs, '--print', prompt], 'headless-turn');
+    const spec = baseSpec(agent, ctx, [...baseArgs, '--output-format', 'stream-json', ...resumeArgs, '--print', prompt], 'headless-turn');
     if (ctx.mcp) {
       spec.warnings.push('Agy headless: prompt embedded; MCP optional for assignment');
     }
@@ -262,7 +276,27 @@ const grok: AgentAdapter = {
     // stdout and exits". `--permission-mode bypassPermissions` mirrors codex's
     // `--dangerously-bypass-approvals-and-sandbox` — pipeline turns run unattended,
     // no human present to approve tool calls.
-    const args = [...cleaned, '--permission-mode', 'bypassPermissions', '--single', prompt];
+    //
+    // `--output-format streaming-json` + `-r/--resume <id>` (real session resume,
+    // added 2026-08-10, verified by hand against grok-cli 1.0.0): the default `plain`
+    // format prints only the model's final text, no machine-parseable session
+    // marker. Non-streaming `--output-format json` DOES include a session marker but
+    // buffers the ENTIRE response and prints exactly one JSON blob at process exit —
+    // a real Training Lab run showed this as a totally blank PTY pane for the turn's
+    // whole duration (user: "grok agent mở ra nhưng lại không có UI gì cả").
+    // `streaming-json` instead emits one JSON line per event as the agent works
+    // (`thought`/`text`/`usage`/`end`), giving live visible progress AND still ends
+    // with `{"type":"end", "sessionId":"<uuid>", ...}` — confirmed the SAME id is
+    // echoed back every turn, tool calls (file reads/writes) still work under this
+    // format, and `--resume <id>` genuinely resumes (verified: a follow-up turn
+    // recalled a fact from turn 1; input_tokens dropped from 24445 to 1140 with
+    // cache_read_input_tokens 29696 on the resumed turn). Captured client-side by
+    // `turnBridge`'s `SESSION_ID_PATTERNS`.
+    const resumeArgs = ctx.resumeSessionRef ? ['--resume', ctx.resumeSessionRef] : [];
+    const args = [
+      ...cleaned, '--permission-mode', 'bypassPermissions', '--output-format', 'streaming-json',
+      ...resumeArgs, '--single', prompt,
+    ];
     const spec = baseSpec(agent, ctx, args, 'headless-turn');
     spec.warnings.push('Grok headless: assignment/messages embedded in prompt; MCP from .grok/config.toml if present');
     return spec;

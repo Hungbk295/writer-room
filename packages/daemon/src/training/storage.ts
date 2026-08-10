@@ -3,7 +3,7 @@
  * `packages/daemon/src/writer-packs.ts`'s file-storage idiom exactly (directory
  * scan, sorted by createdAt desc) rather than inventing a different scheme.
  */
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { normalizeFormula, sourceVideoCount, type FormulaArtifact } from '@writer-room/training-core';
 import { ensureDir, trainingRoot } from '../paths.ts';
@@ -88,8 +88,18 @@ export async function listFormulas(dataDir?: string): Promise<FormulaSummary[]> 
       // skip corrupt
     }
   }
-  summaries.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  summaries.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || a.id.localeCompare(b.id));
   return summaries;
+}
+
+/** Xoá file Formula. Không đụng lineage/version history của bản khác. */
+export async function deleteFormula(id: string, dataDir?: string): Promise<boolean> {
+  try {
+    await unlink(formulaPath(id, dataDir));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -107,6 +117,8 @@ export interface TrainingLabRunSummary {
   roundCount: number;
   createdAt: string;
   updatedAt: string;
+  draftAgent: TrainingLabRun['draftAgent'];
+  critiqueAgent: TrainingLabRun['critiqueAgent'];
 }
 
 function labRunsDir(dataDir?: string): string {
@@ -125,7 +137,9 @@ export async function saveTrainingLabRun(run: TrainingLabRun, dataDir?: string):
 export async function getTrainingLabRun(id: string, dataDir?: string): Promise<TrainingLabRun | null> {
   try {
     const raw = await readFile(labRunPath(id, dataDir), 'utf8');
-    return JSON.parse(raw) as TrainingLabRun;
+    const run = JSON.parse(raw) as TrainingLabRun;
+    // Backfill for runs saved before 2026-08-10 (agent choice was hardcoded to grok).
+    return { ...run, draftAgent: run.draftAgent ?? 'grok', critiqueAgent: run.critiqueAgent ?? 'grok' };
   } catch {
     return null;
   }
@@ -154,11 +168,25 @@ export async function listTrainingLabRuns(dataDir?: string): Promise<TrainingLab
         roundCount: run.rounds.length,
         createdAt: run.createdAt,
         updatedAt: run.updatedAt,
+        // Older runs (before 2026-08-10) have no draftAgent/critiqueAgent on disk —
+        // they were always dispatched as grok, so that is the correct label for them.
+        draftAgent: run.draftAgent ?? 'grok',
+        critiqueAgent: run.critiqueAgent ?? 'grok',
       });
     } catch {
       // skip corrupt
     }
   }
-  summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  summaries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
   return summaries;
+}
+
+/** Xoá file Training Lab run. Settle event sau đó sẽ no-op nếu run đã mất. */
+export async function deleteTrainingLabRun(id: string, dataDir?: string): Promise<boolean> {
+  try {
+    await unlink(labRunPath(id, dataDir));
+    return true;
+  } catch {
+    return false;
+  }
 }

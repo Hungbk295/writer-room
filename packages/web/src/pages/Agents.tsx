@@ -198,10 +198,18 @@ export function AgentsPage() {
     try {
       // Re-prepare so MCP token/config is fresh (dna-spy: prepareLaunch then launchTab).
       const spec = await api.prepareLaunch(preview.agentId);
-      if (spec.args.includes('--mcp-config')) {
+      const agent = agents.find((x) => x.id === preview.agentId);
+      // `--mcp-config` is Claude Code's OWN, correct flag for MCP server config
+      // (`adapters.ts`'s `claudeCode.buildInteractive`) — only grok/agy/codex/gemini
+      // adapters must never see it (their adapters explicitly strip/never add it; see
+      // e.g. grok's "Grok does NOT accept --mcp-config" doc comment). This guard was
+      // written generically for "any agent" and was blocking every real Claude launch
+      // with a false "adapter still passes --mcp-config" error (found 2026-08-10) —
+      // scoped to non-claude-code adapters now, where the flag really would mean a
+      // stale/broken adapter.
+      if (agent?.adapter !== 'claude-code' && spec.args.includes('--mcp-config')) {
         throw new Error(`Launch blocked: adapter still passes --mcp-config (${spec.args.join(' ')}). Restart daemon.`);
       }
-      const agent = agents.find((x) => x.id === preview.agentId);
       // dna-spy passes spec.env as-is (PATH only). Terminal layer forces TERM.
       await terminals.launchTab({
         executable: spec.executable,

@@ -101,6 +101,21 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       }, context.subject),
     }),
     wrap({
+      name: 'spy_video_start',
+      description: 'Spy đúng một video YouTube từ URL (watch/shorts/youtu.be). depth: metadata|transcript.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 8_192,
+      handler: (args, context) => spy.videoSpy({
+        url: text(args['url'], 'url'),
+        depth: args['depth'] === 'metadata' || args['depth'] === 'transcript'
+          ? args['depth']
+          : 'transcript',
+        idempotencyKey: typeof args['idempotency_key'] === 'string'
+          ? args['idempotency_key']
+          : `mcp-video-${randomUUID()}`,
+      }, context.subject),
+    }),
+    wrap({
       name: 'spy_get_status',
       description: 'Đọc trạng thái operation.',
       requiredScopes: ['spy.read'],
@@ -520,6 +535,8 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
         publishedBefore: typeof args['published_before'] === 'string' ? args['published_before'] : undefined,
         hasTranscript: typeof args['has_transcript'] === 'boolean' ? args['has_transcript'] : undefined,
+        minOutlierScore: typeof args['min_outlier_score'] === 'number' ? args['min_outlier_score'] : undefined,
+        minViewPerSub: typeof args['min_view_per_sub'] === 'number' ? args['min_view_per_sub'] : undefined,
         orderBy: typeof args['order_by'] === 'string'
           ? args['order_by'] as 'views' | 'velocity' | 'published_at' | 'duration' | 'engagement'
           : 'velocity',
@@ -527,6 +544,16 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         limit: integer(args['limit'], 50, 1, 200),
         cursor: integer(args['cursor'], 0, 0, 100_000),
       }),
+    }),
+    wrap({
+      name: 'spy_channel_momentum',
+      description: 'Đà tăng trưởng của một kênh đã quét: video/view trong N ngày gần nhất, nhịp đăng, momentum ratio, view/sub, tuổi kênh. 0 quota. KHÔNG phải tăng trưởng subscriber.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: (args) => spy.channelMomentum(
+        text(args['channel_id'], 'channel_id'),
+        integer(args['window_days'], 30, 1, 365),
+      ),
     }),
     wrap({
       name: 'spy_corpus_channels',

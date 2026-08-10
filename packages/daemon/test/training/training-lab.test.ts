@@ -44,6 +44,18 @@ function itemRunDir(batchId: string, itemId: string, stage: string, attempt: num
   return join(dir, 'workspaces', 'pipeline', batchId, itemId, 'attempts', String(attempt), stage);
 }
 
+/** DRAFT's minimum-length check (2026-08-10, `validateDraftShape`) requires a HARD
+ * 70% of the target word count, and the smallest possible target (a very short
+ * seeded fixture transcript) is still clamped to a 600-word floor
+ * (`draftTargetWordCount`) — so every fixture draft script needs ≥420 words. Test
+ * fixtures only care about a short QUOTABLE snippet for CRITIQUE's `draftEvidence`
+ * assertions; pad with filler ahead of the real content so the whole thing clears
+ * the floor (with margin) without changing what's quotable. */
+function padScript(realContent: string): string {
+  const filler = Array.from({ length: 500 }, (_, i) => `filler${i}`).join(' ');
+  return `${filler} ${realContent}`;
+}
+
 async function waitUntil<T>(
   fn: () => Promise<T> | T,
   predicate: (value: T) => boolean,
@@ -67,6 +79,30 @@ async function waitForLedgerRow(
     ),
     (r) => r !== undefined,
   );
+  return row!;
+}
+
+/** Same idea as `waitForLedgerRow`, but for the NEXT ledger row for a given
+ * (batchId, itemId, stage, attempt) not already in `seenTurnIds` — added
+ * 2026-08-10 alongside `LaneScheduler`'s automatic content-retry
+ * (`retryWithCorrection`): a retry keeps the SAME `attempt` (it is the same
+ * logical round, just resubmitted), so it lands a NEW row with a DIFFERENT
+ * `turnId` rather than a new `attempt` number. Excludes the WHOLE set of
+ * previously-seen turnIds (not just the immediately-prior one) — with 2+ retries
+ * there can be an older, already-terminal row that also isn't the most recent one,
+ * and `.find()` would otherwise latch onto that stale row instead of waiting for
+ * the genuinely new one. */
+async function waitForRetryLedgerRow(
+  batchId: string, itemId: string, stage: string, attempt: number, seenTurnIds: Set<string>,
+): Promise<PipelineLedgerRow> {
+  const row = await waitUntil(
+    () => harness.pipeline.ledger.all().find((r) =>
+      r.batchId === batchId && r.itemId === itemId && r.stage === stage && r.attempt === attempt
+      && !seenTurnIds.has(r.turnId)
+    ),
+    (r) => r !== undefined,
+  );
+  seenTurnIds.add(row!.turnId);
   return row!;
 }
 
@@ -117,7 +153,7 @@ describe('startTrainingLabRun — happy path', () => {
 
     const run = await startTrainingLabRun(
       { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
-      { videoSnapshotId, startingFormula },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
     );
     expect(run.status).toBe('RUNNING');
     expect(run.rounds.length).toBe(1);
@@ -129,7 +165,7 @@ describe('startTrainingLabRun — happy path', () => {
     const refineAgentIds = new Set<string>();
 
     for (let round = 1; round <= 3; round++) {
-      const draftScript = `Round ${round} script. It contains a specific detail worth quoting here.`;
+      const draftScript = padScript(`Round ${round} script. It contains a specific detail worth quoting here.`);
       const draftEvidenceQuote = 'specific detail worth quoting';
 
       // DRAFT
@@ -220,17 +256,35 @@ describe('startTrainingLabRun — happy path', () => {
 });
 
 describe('startTrainingLabRun — CRITIQUE grounding rejection', () => {
-  test('an ungrounded draftEvidence quote fails the round and stops the run', async () => {
+  /** Same ungrounded `draftEvidence` quote every round — used to prove that even
+   * with `LaneScheduler`'s automatic content-retry (2026-08-10, `DEFAULT_MAX_
+   * CONTENT_RETRIES = 2`), a genuinely-bad citation the agent never fixes still
+   * ultimately fails the round after retries are exhausted, not silently forever. */
+  function badCritiqueResult(sourceQuote: string, segmentId: string): string {
+    return JSON.stringify({
+      positivePatterns: [
+        {
+          id: 'p1',
+          description: 'Claims a match that is not actually in the draft.',
+          sourceEvidence: [{ segmentIds: [segmentId], quote: sourceQuote }],
+          draftEvidence: [{ quote: 'this exact sentence never appears in the draft script' }],
+        },
+      ],
+      negativePatterns: [],
+    });
+  }
+
+  test('an ungrounded draftEvidence quote survives retries then fails the round and stops the run', async () => {
     const { videoSnapshotId, segments } = await seedVideo(spy);
     const sourceQuote = segments[0]!.text.slice(0, 20);
     const startingFormula = makeStartingFormula(videoSnapshotId, segments[0]!.id, sourceQuote);
 
     const run = await startTrainingLabRun(
       { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
-      { videoSnapshotId, startingFormula },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
     );
 
-    const draftScript = 'Round 1 script with only this real content in it.';
+    const draftScript = padScript('Round 1 script with only this real content in it.');
     const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
     await Bun.write(
       join(itemRunDir(run.id, videoSnapshotId, 'draft', 1), 'out', 'result.json'),
@@ -240,27 +294,37 @@ describe('startTrainingLabRun — CRITIQUE grounding rejection', () => {
     harness.workflow.turnComplete(Number(draftRow.turnId), { exitCode: 0 });
     await draftSettled;
 
-    const critiqueRow = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', 1);
-    await Bun.write(
-      join(itemRunDir(run.id, videoSnapshotId, 'critique', 1), 'out', 'result.json'),
-      JSON.stringify({
-        positivePatterns: [
-          {
-            id: 'p1',
-            description: 'Claims a match that is not actually in the draft.',
-            sourceEvidence: [{ segmentIds: [segments[0]!.id], quote: sourceQuote }],
-            draftEvidence: [{ quote: 'this exact sentence never appears in the draft script' }],
-          },
-        ],
-        negativePatterns: [],
-      }),
-    );
+    const critiqueDir = join(itemRunDir(run.id, videoSnapshotId, 'critique', 1), 'out', 'result.json');
     const critiqueSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'critique', 1);
-    harness.workflow.turnComplete(Number(critiqueRow.turnId), { exitCode: 0 });
+
+    const seenTurnIds = new Set<string>();
+
+    // Round 1 (original) — bad quote, rejected, auto-retried by the scheduler.
+    let row = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', 1);
+    seenTurnIds.add(row.turnId);
+    await Bun.write(critiqueDir, badCritiqueResult(sourceQuote, segments[0]!.id));
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: 0 });
+
+    // Retry 1/2 — still bad, rejected, auto-retried again.
+    row = await waitForRetryLedgerRow(run.id, videoSnapshotId, 'critique', 1, seenTurnIds);
+    await Bun.write(critiqueDir, badCritiqueResult(sourceQuote, segments[0]!.id));
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: 0 });
+
+    // Retry 2/2 — still bad; retries now exhausted, this is the FINAL settle.
+    row = await waitForRetryLedgerRow(run.id, videoSnapshotId, 'critique', 1, seenTurnIds);
+    await Bun.write(critiqueDir, badCritiqueResult(sourceQuote, segments[0]!.id));
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: 0 });
 
     const settled = await critiqueSettled;
     expect(settled.outcome).toBe('FAILED');
     expect(settled.errorCode).toBe('AGENT_UNGROUNDED');
+
+    // Exactly 3 ledger rows for this round's critique stage (original + 2 retries),
+    // all FAILED — proving the retry loop ran and did not silently drop attempts.
+    const critiqueRows = harness.pipeline.ledger.all()
+      .filter((r) => r.batchId === run.id && r.itemId === videoSnapshotId && r.stage === 'critique' && r.attempt === 1);
+    expect(critiqueRows.length).toBe(3);
+    expect(critiqueRows.every((r) => r.outcome === 'FAILED' && r.errorCode === 'AGENT_UNGROUNDED')).toBe(true);
 
     const finalRun = await waitUntil(
       () => getTrainingLabRun(run.id, dir),
@@ -274,6 +338,65 @@ describe('startTrainingLabRun — CRITIQUE grounding rejection', () => {
     const refineRows = harness.pipeline.ledger.all().filter((r) => r.batchId === run.id && r.stage === 'refine');
     expect(refineRows.length).toBe(0);
   });
+
+  test('an ungrounded draftEvidence quote fixed on retry lets the round proceed to REFINE', async () => {
+    const { videoSnapshotId, segments } = await seedVideo(spy);
+    const sourceQuote = segments[0]!.text.slice(0, 20);
+    const startingFormula = makeStartingFormula(videoSnapshotId, segments[0]!.id, sourceQuote);
+
+    const run = await startTrainingLabRun(
+      { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
+    );
+
+    const draftScript = padScript('Round 1 script with only this real content in it.');
+    const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
+    await Bun.write(
+      join(itemRunDir(run.id, videoSnapshotId, 'draft', 1), 'out', 'result.json'),
+      JSON.stringify({ title: 'Round 1 title', script: draftScript, appliedRules: ['rule-1'] }),
+    );
+    const draftSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'draft', 1);
+    harness.workflow.turnComplete(Number(draftRow.turnId), { exitCode: 0 });
+    await draftSettled;
+
+    const critiqueDir = join(itemRunDir(run.id, videoSnapshotId, 'critique', 1), 'out', 'result.json');
+    const critiqueSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'critique', 1);
+
+    // Round 1 (original) — bad quote, rejected, auto-retried.
+    const originalRow = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', 1);
+    await Bun.write(critiqueDir, badCritiqueResult(sourceQuote, segments[0]!.id));
+    harness.workflow.turnComplete(Number(originalRow.turnId), { exitCode: 0 });
+
+    // Retry 1/2 — agent fixes its own mistake this time: real draft-side quote.
+    const retryRow = await waitForRetryLedgerRow(run.id, videoSnapshotId, 'critique', 1, new Set([originalRow.turnId]));
+    await Bun.write(critiqueDir, JSON.stringify({
+      positivePatterns: [
+        {
+          id: 'p1',
+          description: 'Draft genuinely echoes the source opening.',
+          sourceEvidence: [{ segmentIds: [segments[0]!.id], quote: sourceQuote }],
+          draftEvidence: [{ quote: draftScript.slice(0, 20) }],
+        },
+      ],
+      negativePatterns: [],
+    }));
+    harness.workflow.turnComplete(Number(retryRow.turnId), { exitCode: 0 });
+
+    const settled = await critiqueSettled;
+    expect(settled.outcome).toBe('COMMITTED');
+
+    // Exactly 2 ledger rows (1 rejected original + 1 corrected retry that committed).
+    const critiqueRows = harness.pipeline.ledger.all()
+      .filter((r) => r.batchId === run.id && r.itemId === videoSnapshotId && r.stage === 'critique' && r.attempt === 1);
+    expect(critiqueRows.length).toBe(2);
+    expect(critiqueRows.filter((r) => r.outcome === 'FAILED').length).toBe(1);
+    expect(critiqueRows.filter((r) => r.outcome === 'COMMITTED').length).toBe(1);
+
+    // The round proceeded past CRITIQUE into REFINE — proving downstream (training-lab.ts)
+    // only ever saw the ONE final settle event, not the intermediate rejection.
+    const refineRow = await waitForLedgerRow(run.id, videoSnapshotId, 'refine', 1);
+    expect(refineRow).toBeTruthy();
+  });
 });
 
 describe('startTrainingLabRun — DRAFT failure stops the run', () => {
@@ -284,7 +407,7 @@ describe('startTrainingLabRun — DRAFT failure stops the run', () => {
 
     const run = await startTrainingLabRun(
       { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
-      { videoSnapshotId, startingFormula },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
     );
 
     const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
@@ -316,10 +439,10 @@ describe('listTrainingLabRuns / getTrainingLabRun — round-trip', () => {
 
     const run = await startTrainingLabRun(
       { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
-      { videoSnapshotId, startingFormula },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
     );
 
-    const draftScript = 'Round 1 script with a quotable detail in it.';
+    const draftScript = padScript('Round 1 script with a quotable detail in it.');
     const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
     await Bun.write(
       join(itemRunDir(run.id, videoSnapshotId, 'draft', 1), 'out', 'result.json'),

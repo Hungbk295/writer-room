@@ -19,7 +19,7 @@ Canonical product hiện tại: **Spy-only** — xem root [`README.md`](../READM
 | Codex | [`codex/`](./codex/) | idle | — |
 | Claude | [`claude/`](./claude/) | idle | — |
 | Grok | [`grok/`](./grok/) | done → idle after ship | [`spy-only-tauri`](./grok/spy-only-tauri.md) |
-| writer-train | [`writer-train/`](./writer-train/) | active — M0/M0.5/M1/M1.5 done (E2E xác nhận) | [`HANDOFF.md`](./writer-train/HANDOFF.md) — lane Training + execution layer, SDD 002 M0→M3 + Training Lab §12a |
+| writer-train | [`writer-train/`](./writer-train/) | active — M0/M0.5/M1/M1.5 + Studio P1–P3 done; Formula migration planned | [`FORMULA-MIGRATION-TO-WRITER.md`](./writer-train/FORMULA-MIGRATION-TO-WRITER.md) — Training Formula → generic hoá → Writer-ready Formula. **§2 là hợp đồng bàn giao cho lane Writer** |
 
 ## Agent harness (portable)
 

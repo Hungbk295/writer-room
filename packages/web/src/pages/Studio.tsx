@@ -1,25 +1,39 @@
 /**
- * Formula Studio (SDD §12b, ADR-13) — browse rules across videos, pick them, and see
- * what overlaps.
+ * Formula Studio (SDD §12b, ADR-13) — browse rules across videos, pick them, see what
+ * overlaps, and (P3, added 2026-08-10) let an LLM propose one generic merged
+ * statement per cluster for a human to accept / edit-then-accept / reject.
  *
- * This is the P2 slice: everything on this screen is deterministic app code on the
- * daemon side. No model is called and no token is spent by anything here — the LLM
- * only enters at SYNTHESIZE (P3), which is why `SIMILAR` clusters currently show
- * "chờ bước ghép" instead of a merged rule.
+ * P2 (picking + clustering) stays fully token-free; P3 adds exactly one place that
+ * spends a token — the "Ghép bằng LLM" button — and even then only PROPOSES
+ * (ADR-13): nothing enters "Formula ghép" without an explicit human decision below.
  */
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   api,
   type PoolRule,
+  type RuleCluster,
+  type RuleProposal,
   type RuleRef,
   type StudioSession,
   type StudioSessionSummary,
 } from '../api.ts';
 import { href } from '../router.ts';
 import { originLabel, statusBadgeClass } from './Training.tsx';
+import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 
 function refKey(ref: RuleRef): string {
   return `${ref.formulaId}::${ref.ruleId}`;
+}
+
+/** `RuleProposal.decision`/`FormulaRule.mergeOrigin` share the same three-state shape
+ * conceptually (pending/accepted-as-is/accepted-edited) but are different enums at
+ * different stages of the pipeline (proposal vs. committed compound rule) — kept as
+ * two small local labels rather than one shared lookup, since forcing them into one
+ * table would need a translation layer for no real reuse (only 1-2 call sites each). */
+function mergeOriginLabel(origin: 'CARRIED' | 'SYNTHESIZED' | 'HUMAN_EDITED' | undefined): string {
+  if (origin === 'CARRIED') return 'giữ nguyên';
+  if (origin === 'HUMAN_EDITED') return 'đã sửa tay';
+  return 'đã ghép bằng LLM';
 }
 
 export function StudioListPage() {
@@ -49,6 +63,12 @@ export function StudioListPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function remove(id: string) {
+    setError(null);
+    await api.deleteStudioSession(id);
+    setSessions((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));
   }
 
   return (
@@ -90,17 +110,28 @@ export function StudioListPage() {
         {sessions && sessions.length > 0 && (
           <ul class="list">
             {sessions.map((s) => (
-              <li key={s.id}>
-                <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                  <a href={href({ name: 'studio-session', id: s.id })}><strong>{s.genre}</strong></a>
-                  <span class={s.status === 'EMPTY' ? 'chip' : statusBadgeClass(s.status)}>
-                    {s.status === 'EMPTY' ? 'chưa có rule' : s.status}
-                  </span>
+              <li key={s.id} class="pack-row">
+                <div>
+                  <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                    <a href={href({ name: 'studio-session', id: s.id })}><strong>{s.genre}</strong></a>
+                    <span class={s.status === 'EMPTY' ? 'chip' : statusBadgeClass(s.status)}>
+                      {s.status === 'EMPTY' ? 'chưa có rule' : s.status}
+                    </span>
+                  </div>
+                  <div class="meta">
+                    <span>{s.pickCount} rule đã chọn</span>
+                    <span>{s.ruleCount} rule trong bản ghép</span>
+                    <span>{new Date(s.updatedAt).toLocaleString()}</span>
+                  </div>
                 </div>
-                <div class="meta">
-                  <span>{s.pickCount} rule đã chọn</span>
-                  <span>{s.ruleCount} rule trong bản ghép</span>
-                  <span>{new Date(s.updatedAt).toLocaleString()}</span>
+                <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
+                  <a class="btn secondary" href={href({ name: 'studio-session', id: s.id })}>
+                    Mở
+                  </a>
+                  <DeleteButton
+                    title={s.genre}
+                    onDelete={() => remove(s.id)}
+                  />
                 </div>
               </li>
             ))}
@@ -118,10 +149,31 @@ export function StudioSessionPage({ id }: { id: string }) {
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [synthesizing, setSynthesizing] = useState(false);
+  // Which proposal is mid-edit ("Sửa rồi duyệt") and the textarea's live value —
+  // local-only until the user submits, so typing never round-trips to the server.
+  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
 
   useEffect(() => {
     void api.getStudioSession(id).then(setSession).catch((e) => setError(e.message));
   }, [id]);
+
+  // Poll while a SYNTHESIZE turn is in flight (P3) — the turn settles via the
+  // daemon's `onItemSettled` listener writing straight to the session file, so
+  // there is nothing to await on the client beyond "re-fetch until the status
+  // leaves RUNNING". Mirrors `FormulaDiscoveryAction.tsx`'s poll-for-status
+  // pattern, just polling the session itself instead of a separate status route
+  // (see `studio-synthesize.ts`'s doc comment for why no status route exists).
+  const sessionIdRef = useRef(id);
+  sessionIdRef.current = id;
+  useEffect(() => {
+    if (session?.synthesizeStatus !== 'RUNNING') return;
+    const timer = setInterval(() => {
+      void api.getStudioSession(sessionIdRef.current).then(setSession).catch((e) => setError(e.message));
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [session?.synthesizeStatus]);
 
   useEffect(() => {
     void api.listRulePool(showOlder).then((r) => setPool(r.rules)).catch((e) => setError(e.message));
@@ -173,6 +225,37 @@ export function StudioSessionPage({ id }: { id: string }) {
     }
   }
 
+  async function synthesize() {
+    if (!session || synthesizing || session.synthesizeStatus === 'RUNNING') return;
+    setSynthesizing(true);
+    setError(null);
+    try {
+      // Returns right away with `synthesizeStatus: 'RUNNING'`; the polling effect
+      // above takes over from here.
+      setSession(await api.synthesizeStudioProposals(session.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSynthesizing(false);
+    }
+  }
+
+  async function decide(proposal: RuleProposal, decision: 'ACCEPTED' | 'REJECTED', statement?: string) {
+    if (!session || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      // The server rebuilds the compound Formula right after applying the decision,
+      // so the response already reflects it — no separate rebuild round-trip needed.
+      setSession(await api.decideStudioProposal(session.id, proposal.id, decision, statement));
+      setEditingProposalId(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (error && !session) {
     return (
       <div>
@@ -185,6 +268,9 @@ export function StudioSessionPage({ id }: { id: string }) {
 
   const similar = session.clusters.filter((c) => c.kind === 'SIMILAR');
   const single = session.clusters.filter((c) => c.kind === 'SINGLE');
+  const proposalByCluster = new Map(session.proposals.map((p) => [p.clusterId, p]));
+  const pendingCount = session.proposals.filter((p) => p.decision === 'PENDING').length;
+  const unproposedCount = session.clusters.filter((c) => !proposalByCluster.has(c.id)).length;
 
   return (
     <div>
@@ -260,28 +346,103 @@ export function StudioSessionPage({ id }: { id: string }) {
       </section>
 
       <section class="panel" style={{ marginTop: '1rem' }}>
-        <h2>Nhóm trùng ({similar.length})</h2>
-        <p class="muted" style={{ marginTop: 0 }}>
-          Những rule nói gần giống nhau, đến từ các video khác nhau. Đây là chỗ cần một quyết định
-          ghép — bước ghép bằng LLM chưa làm (P3), nên hiện chỉ hiển thị.
+        <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ marginBottom: 0 }}>
+            Ghép bằng LLM ({similar.length} nhóm trùng · {single.length} rule riêng
+            {pendingCount > 0 && ` · ${pendingCount} chờ duyệt`})
+          </h2>
+          <button
+            class="btn"
+            onClick={() => void synthesize()}
+            disabled={session.clusters.length === 0 || synthesizing || session.synthesizeStatus === 'RUNNING'}
+          >
+            {session.synthesizeStatus === 'RUNNING' ? 'Đang ghép…' : 'Ghép bằng LLM'}
+          </button>
+        </div>
+        <p class="muted" style={{ marginTop: '0.25rem' }}>
+          LLM viết một câu chữ chung chung cho MỖI cụm — kể cả rule riêng (không còn tự động giữ
+          nguyên văn, vì nguyên văn hay dính chủ đề của video gốc). LLM chỉ đề xuất; không cái nào
+          vào "Formula ghép" bên dưới cho tới khi bạn Duyệt.
+          {unproposedCount > 0 && ` Còn ${unproposedCount} cụm chưa có đề xuất.`}
         </p>
-        {similar.length === 0 && <p class="muted">Chưa có nhóm trùng nào.</p>}
-        {similar.map((cluster) => (
-          <div key={cluster.id} class="panel" style={{ marginTop: '0.5rem', background: 'rgba(31,138,122,0.05)' }}>
-            <div class="row" style={{ justifyContent: 'space-between' }}>
-              <strong>{cluster.members.length} rule giống nhau</strong>
-              <span class="chip warn">chờ bước ghép</span>
-            </div>
-            <ul class="list" style={{ marginTop: '0.4rem' }}>
-              {cluster.members.map((m) => (
-                <li key={`${m.sourceFormulaId}-${m.sourceRuleId}`}>
-                  {m.statement}
-                  <div class="meta"><span>{m.channelTitle}</span></div>
+        {session.synthesizeStatus === 'FAILED' && (
+          <p class="error">Ghép thất bại: {session.synthesizeError ?? 'không rõ lý do'}</p>
+        )}
+        {session.clusters.length === 0 && (
+          <p class="muted">Chưa chọn rule nào ở "Kho rule" phía trên.</p>
+        )}
+        {session.clusters.length > 0 && (
+          <ul class="list" style={{ marginTop: '0.5rem' }}>
+            {session.clusters.map((cluster: RuleCluster) => {
+              const proposal = proposalByCluster.get(cluster.id);
+              return (
+                <li key={cluster.id}>
+                  <div class="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <strong>{cluster.kind === 'SIMILAR' ? `${cluster.members.length} rule giống nhau` : 'Rule riêng'}</strong>
+                    {!proposal && <span class="chip warn">chưa có đề xuất</span>}
+                    {proposal && proposal.decision === 'PENDING' && <span class="chip warn">chờ duyệt</span>}
+                    {proposal && proposal.decision === 'ACCEPTED' && <span class="chip ok">đã duyệt</span>}
+                    {proposal && proposal.decision === 'REJECTED' && <span class="chip">đã loại</span>}
+                  </div>
+                  <p class="meta" style={{ margin: '0.25rem 0' }}>Rule gốc:</p>
+                  <ul class="list">
+                    {cluster.members.map((m) => (
+                      <li key={`${m.sourceFormulaId}-${m.sourceRuleId}`}>
+                        {m.statement}
+                        <div class="meta"><span>{m.channelTitle}</span></div>
+                      </li>
+                    ))}
+                  </ul>
+                  {proposal && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      {editingProposalId === proposal.id ? (
+                        <div>
+                          <textarea
+                            style={{ width: '100%', minHeight: '3.5rem' }}
+                            value={editText}
+                            onInput={(e) => setEditText((e.target as HTMLTextAreaElement).value)}
+                          />
+                          <div class="row" style={{ gap: '0.5rem', marginTop: '0.35rem' }}>
+                            <button
+                              class="btn"
+                              disabled={saving || !editText.trim()}
+                              onClick={() => void decide(proposal, 'ACCEPTED', editText)}
+                            >
+                              Lưu và duyệt
+                            </button>
+                            <button class="btn secondary" disabled={saving} onClick={() => setEditingProposalId(null)}>
+                              Huỷ
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <strong>Đề xuất: </strong>{proposal.statement}
+                          {proposal.edited && <span class="chip" style={{ marginLeft: '0.4rem' }}>đã sửa tay</span>}
+                          <div class="row" style={{ gap: '0.5rem', marginTop: '0.35rem' }}>
+                            <button class="btn" disabled={saving} onClick={() => void decide(proposal, 'ACCEPTED')}>
+                              Duyệt
+                            </button>
+                            <button
+                              class="btn secondary"
+                              disabled={saving}
+                              onClick={() => { setEditingProposalId(proposal.id); setEditText(proposal.statement); }}
+                            >
+                              Sửa rồi duyệt
+                            </button>
+                            <button class="btn secondary" disabled={saving} onClick={() => void decide(proposal, 'REJECTED')}>
+                              Loại
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </li>
-              ))}
-            </ul>
-          </div>
-        ))}
+              );
+            })}
+          </ul>
+        )}
       </section>
 
       <section class="panel" style={{ marginTop: '1rem' }}>
@@ -297,8 +458,8 @@ export function StudioSessionPage({ id }: { id: string }) {
         </div>
         {!session.compound || session.compound.rules.length === 0 ? (
           <p class="muted" style={{ marginBottom: 0 }}>
-            Chưa có rule nào vào bản ghép. Rule không trùng với rule nào khác sẽ vào thẳng đây;
-            rule nằm trong nhóm trùng phải qua bước ghép trước.
+            Chưa có rule nào vào bản ghép. Duyệt ít nhất một đề xuất ở "Ghép bằng LLM" phía trên —
+            kể cả rule riêng giờ cũng phải qua một đề xuất trước khi vào đây.
           </p>
         ) : (
           <>
@@ -310,7 +471,7 @@ export function StudioSessionPage({ id }: { id: string }) {
                 <li key={rule.id}>
                   <strong>{rule.statement}</strong>
                   <div class="meta">
-                    <span>{rule.mergeOrigin === 'CARRIED' ? 'giữ nguyên' : 'đã ghép'}</span>
+                    <span>{mergeOriginLabel(rule.mergeOrigin)}</span>
                     <span>từ {(rule.sources ?? []).length} nguồn</span>
                   </div>
                   <div class="meta">

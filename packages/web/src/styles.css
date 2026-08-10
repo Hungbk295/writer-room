@@ -914,6 +914,17 @@ textarea { min-height: 140px; resize: vertical; }
   gap: 1rem;
 }
 
+/* Keep action buttons (Mở / Xoá) visible — long titles must not push them off-screen. */
+.pack-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pack-row > .row,
+.pack-row > .pack-row-actions {
+  flex: 0 0 auto;
+}
+
 .empty-state {
   display: grid;
   gap: 0.85rem;
