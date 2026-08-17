@@ -16,6 +16,8 @@ export {
   deleteWriterPack,
   getWriterPack,
   listWriterPacks,
+  mergeIntoWriterPack,
+  renameWriterPack,
 } from './writer-packs.ts';
 export { acquireLock, readLock, releaseLock } from './lock.ts';
 export { SPY_FEATURE, assertSpyEnabled } from './features.ts';

@@ -115,7 +115,13 @@ export class AcquisitionService {
   }
 
   channelSpy(raw: unknown, ownerSubject = 'local'): StartedOp {
-    const input = channelSpyInputSchema.parse(raw);
+    const parsedInput = channelSpyInputSchema.parse(raw);
+    // Latest comes directly from the uploads playlist (newest first), so scanning
+    // beyond the requested count is unnecessary. Keep this server-side so callers
+    // cannot accidentally spend quota on an ignored scanLimit.
+    const input: ChannelSpyInput = parsedInput.selectionMode === 'latest'
+      ? { ...parsedInput, scanLimit: parsedInput.topN }
+      : parsedInput;
     // Paste URL video vào Channel Spy → auto chuyển sang videoSpy (1 video).
     // Tránh lỗi "URL video đơn không hợp lệ cho Channel Spy" khi user dán nhầm / UI cũ.
     try {
@@ -203,6 +209,7 @@ export class AcquisitionService {
             topN: input.topN,
             minDurationSec: input.minDurationSec,
             rankBy: input.rankBy,
+            selectionMode: input.selectionMode,
           });
           // Fallback: if duration filter wiped the set, still capture topN by rank without duration gate.
           if (selected.length === 0 && enriched.length > 0) {
@@ -210,6 +217,7 @@ export class AcquisitionService {
               topN: input.topN,
               minDurationSec: 0,
               rankBy: input.rankBy,
+              selectionMode: input.selectionMode,
             });
           }
 

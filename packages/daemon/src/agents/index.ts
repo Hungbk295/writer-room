@@ -461,6 +461,51 @@ function realpathSafe(value: string): string {
   try { return realpathSync(value); } catch { return resolve(value); }
 }
 
+/**
+ * PTY-safe single-line representation of a task for interactive injection.
+ *
+ * Writer tasks are workspace paths (prompt.md / input/envelope.json / out/result.json),
+ * so embedding them verbatim is safe by construction; this normalizer is defense in
+ * depth for any task that contains newlines, tabs or control bytes — a stray ESC,
+ * NUL or CR in a pasted line can submit/cancel a TUI composer outside its intent.
+ */
+export function toSafeInteractiveText(value: string): string {
+  return value
+    // CRLF/CR/LF/tab → single space
+    .replace(/\r\n|\r|\n|\t/g, ' ')
+    // Every C0 + C1 control char (ESC \u001B, NUL \u0000, CR, DEL \u007F, C1 \u0080-\u009F) → space
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    // collapse whitespace runs
+    .replace(/ {2,}/g, ' ')
+    .trim();
+}
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+/** Truncate on a UTF-8 code-point boundary so a multi-byte char is never split. */
+function truncateUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
+  if (utf8Bytes(value) <= maxBytes) return { text: value, truncated: false };
+  let out = '';
+  let bytes = 0;
+  for (const ch of value) {
+    const len = Buffer.byteLength(ch, 'utf8');
+    if (bytes + len > maxBytes) break;
+    out += ch;
+    bytes += len;
+  }
+  return { text: out, truncated: true };
+}
+
+/** Marker telling the agent the embed was cut and where to find the full task. */
+const TRUNCATE_MARKER = '… [task truncated; call team_get_assignment for the full assignment]';
+
+/** 8 KiB for the embedded taskNote portion of an inject line. */
+export const TASK_INJECT_MAX_BYTES = 8 * 1024;
+/** 12 KiB for the entire injectText. */
+export const INJECT_TEXT_MAX_BYTES = 12 * 1024;
+
 export function buildInjectLine(
   agent: AgentDefinition,
   reason: TurnReason,
@@ -468,10 +513,27 @@ export function buildInjectLine(
   hasAssignment: boolean,
   orchestrated = false,
   interactiveTurnId?: number,
+  taskNote?: string,
 ): string {
   const completion = interactiveTurnId === undefined
     ? `gọi team_update_status (agentId "${agent.id}", status "idle").`
     : `sau khi ghi artifact, gọi team_turn_complete (agentId "${agent.id}", turnId ${interactiveTurnId}, status "done"); nếu không thể hoàn tất thì status "failed". Không gọi team_update_status để thay thế.`;
+  // Persistent interactive orchestrated assignment: embed the real task so the
+  // agent knows its target even if MCP team_get_assignment is unreachable. This
+  // branch requires a live turnId (interactive pane) — a headless orchestrated
+  // turn keeps the MCP wake line below, so that event payload is unchanged.
+  if (orchestrated && hasAssignment && interactiveTurnId !== undefined && taskNote?.trim()) {
+    const prefix = `[writer-room orchestrator · ${reason}] NHIỆM VỤ: `;
+    const suffix = ` Chỉ làm nhiệm vụ trên; không đọc chat cũ, không team_send_message, không mention agent khác. Khi xong, ${completion}`;
+    // Reserve the marker's own bytes so the WHOLE injectText stays ≤ 12 KiB, not
+    // just the task portion (plan §3.1 cap 3).
+    const taskBudget = Math.max(1, Math.min(
+      TASK_INJECT_MAX_BYTES,
+      INJECT_TEXT_MAX_BYTES - utf8Bytes(prefix) - utf8Bytes(suffix) - utf8Bytes(` ${TRUNCATE_MARKER}`),
+    ));
+    const { text, truncated } = truncateUtf8(toSafeInteractiveText(taskNote), taskBudget);
+    return `${prefix}${text}${truncated ? ` ${TRUNCATE_MARKER}` : ''}${suffix}`;
+  }
   if (hasAssignment) {
     if (orchestrated) {
       return `[writer-room orchestrator · ${reason}] Gọi team_get_assignment (agentId "${agent.id}") và CHỈ làm nhiệm vụ đó. Không đọc chat cũ, không team_send_message, không mention agent khác. Khi xong, ${completion}`;
@@ -504,7 +566,7 @@ export function buildTurnPrompt(
       '- Không đọc/diễn giải assignment cũ, không xử lý team chat cũ.',
       '- Không gọi team_send_message, không mention hay phân việc cho agent khác.',
       '- Không tự chuyển phase. Orchestrator sẽ kiểm artifact rồi giao đúng agent tiếp theo.',
-      '- Không gọi Bash, Task, Skill hoặc lệnh shell; chỉ dùng Read/Edit/Write trong workspace được giao.',
+      '- Chỉ dùng các công cụ filesystem thực sự có trong phiên để đọc input và ghi artifact được giao; không dùng network bên ngoài, agent phụ, hay truy cập ngoài workspace nhiệm vụ. Chỉ dùng MCP team_get_assignment/team_turn_complete khi assignment yêu cầu.',
       '- Khi artifact đã ghi xong, kết thúc turn.',
     );
     return lines.join('\n');

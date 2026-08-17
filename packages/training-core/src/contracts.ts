@@ -28,6 +28,13 @@ export interface Evidence {
 export interface AnalysisRule {
   id: string;
   statement: string;
+  /**
+   * Structural role when the rule describes a specific beat of the source video.
+   * Optional for backwards compatibility and for non-structural rules (voice,
+   * evidence use, pacing, etc.). New discovery/refinement runs hard-require at
+   * least one grounded `payoff` rule so a Formula cannot describe only the setup.
+   */
+  role?: 'hook' | 'setup' | 'escalation' | 'turn' | 'payoff' | 'cta' | 'outro';
   /** Zero-length is invalid — see `validateAnalysis`. */
   evidence: Evidence[];
 }
@@ -116,6 +123,17 @@ export interface FormulaArtifact {
   videoSnapshotId?: string;
   /** Display/filter label only, never a grouping key (ADR-5). */
   channelTitle?: string;
+  /**
+   * Original video title at creation (`ANALYZED`/`REFINED`). Frozen provenance for
+   * the "Nguồn" section — rename does not overwrite this.
+   */
+  videoTitle?: string;
+  /**
+   * Human-facing display name shown in lists and detail headers. Defaults to the
+   * video title at creation (not the channel); user can rename later. For
+   * `COMPOUND`, defaults to `genre` until renamed.
+   */
+  title?: string;
   /** `COMPOUND`: the user-named content genre (`thể loại`) this was distilled for. */
   genre?: string;
   includedArtifacts: IncludedArtifactRef[];

@@ -68,4 +68,13 @@ Second line`);
     ], { topN: 1, minDurationSec: 60, rankBy: 'velocity', now: new Date('2026-07-30') });
     expect(ranked[0]!.sourceVideoId).toBe('new');
   });
+
+  test('can select the latest videos independently of popularity', () => {
+    const selected = rankVideos([
+      { sourceVideoId: 'popular-old', viewCount: 1_000_000, durationSec: 100, publishedAt: '2020-01-01' },
+      { sourceVideoId: 'latest', viewCount: 1, durationSec: 100, publishedAt: '2026-07-29' },
+      { sourceVideoId: 'middle', viewCount: 100, durationSec: 100, publishedAt: '2025-07-29' },
+    ], { topN: 2, minDurationSec: 60, rankBy: 'velocity', selectionMode: 'latest' });
+    expect(selected.map((video) => video.sourceVideoId)).toEqual(['latest', 'middle']);
+  });
 });

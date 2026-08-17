@@ -33,7 +33,14 @@
  *     turn will simply never settle from this client's point of view.
  */
 import type { TeamEvent } from '@writer-room/shared/terminal';
-import { b64ToBytes, isTauri, onTermExit, termKill, termSnapshot } from '../../components/terminal/terminalApi.ts';
+import {
+  b64ToBytes,
+  isTauri,
+  onTermExit,
+  termKill,
+  termSnapshot,
+  termSubmitLineWithAutoRetry,
+} from '../../components/terminal/terminalApi.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
@@ -97,6 +104,8 @@ function extractSessionId(text: string): string | null {
  * for the rare case it is somehow still alive.
  */
 const paneByAgent = new Map<string, string>();
+/** Long-lived, writable PTYs used by opt-in orchestrated jobs such as Training Lab. */
+const interactivePaneByAgent = new Map<string, string>();
 
 async function closeExistingPanesForAgent(agentId: string): Promise<void> {
   const stale = new Set<string>();
@@ -115,6 +124,35 @@ async function closeExistingPanesForAgent(agentId: string): Promise<void> {
   }
 }
 
+function liveInteractivePaneForAgent(agentId: string): string | undefined {
+  const mapped = interactivePaneByAgent.get(agentId);
+  const tabs = terminals.getState().tabs;
+  if (mapped && tabs.some((tab) => tab.sessionId === mapped && tab.running && !tab.readOnly)) return mapped;
+  if (mapped) interactivePaneByAgent.delete(agentId);
+  const tab = tabs.find((candidate) => candidate.agentId === agentId && candidate.running && !candidate.readOnly);
+  if (tab) interactivePaneByAgent.set(agentId, tab.sessionId);
+  return tab?.sessionId;
+}
+
+function forgetInteractivePane(sessionId: string): void {
+  for (const [agentId, mapped] of interactivePaneByAgent) {
+    if (mapped === sessionId) interactivePaneByAgent.delete(agentId);
+  }
+}
+
+async function replaceInteractivePane(agentId: string): Promise<void> {
+  const sessionId = liveInteractivePaneForAgent(agentId);
+  if (!sessionId) return;
+  // Clear the routing first: terminal://exit from this deliberate replacement
+  // must not complete the next stage's turn.
+  forgetInteractivePane(sessionId);
+  try {
+    await terminals.closeTab(sessionId);
+  } catch (err) {
+    console.error('[turnBridge] closeTab failed while replacing interactive pane for', agentId, err);
+  }
+}
+
 function postJson(path: string, body: unknown): void {
   void fetch(path, {
     method: 'POST',
@@ -125,6 +163,14 @@ function postJson(path: string, body: unknown): void {
       if (!res.ok) console.error(`[turnBridge] POST ${path} failed`, res.status);
     })
     .catch((err) => console.error(`[turnBridge] POST ${path} failed`, err));
+}
+
+/** Claude Code takes longer than Codex to paint its first Ink composer. If input
+ * arrives while that composer is mounting, its text can appear but the Return
+ * event is ignored. Identify it from the launch spec rather than agent display
+ * names, which users can freely rename. */
+function isClaudeCodeExecutable(executable: string): boolean {
+  return /(?:^|[/\\])claude(?:\.exe)?$/i.test(executable.trim());
 }
 
 /**
@@ -149,6 +195,19 @@ export function startTurnBridge(): () => void {
   const heartbeatIntervals = new Map<number, ReturnType<typeof setInterval>>();
   // turnId -> CLI session id, once found in the pane's output (see extractSessionId).
   const sessionIdByTurn = new Map<number, string>();
+  // Interactive agents do not exit after every assignment. Route a PTY crash to
+  // whichever turn is currently using that pane; normal completion comes through
+  // MCP `team_turn_complete` and is observed as `turnSettled` below.
+  const interactiveTurnToSessionId = new Map<number, string>();
+  const interactiveSessionToTurnId = new Map<string, number>();
+  // One assignment gets one quiet-window Enter retry at most. Keep cancellation
+  // by turn so a later settle/replacement can never submit into a stale pane.
+  const interactiveEnterRetryCancels = new Map<number, () => void>();
+
+  function cancelInteractiveEnterRetry(turnId: number): void {
+    interactiveEnterRetryCancels.get(turnId)?.();
+    interactiveEnterRetryCancels.delete(turnId);
+  }
 
   function stopHeartbeat(turnId: number): void {
     const h = heartbeatIntervals.get(turnId);
@@ -182,12 +241,89 @@ export function startTurnBridge(): () => void {
     heartbeatIntervals.set(turnId, interval);
   }
 
+  function releaseInteractiveTurn(turnId: number): void {
+    cancelInteractiveEnterRetry(turnId);
+    const sessionId = interactiveTurnToSessionId.get(turnId);
+    if (!sessionId) return;
+    interactiveTurnToSessionId.delete(turnId);
+    if (interactiveSessionToTurnId.get(sessionId) === turnId) {
+      interactiveSessionToTurnId.delete(sessionId);
+    }
+    stopHeartbeat(turnId);
+    sessionIdByTurn.delete(turnId);
+    claimed.delete(turnId);
+  }
+
+  async function handleInteractiveSpawn(event: SpawnTurnEvent): Promise<void> {
+    if (claimed.has(event.turnId)) return;
+    claimed.add(event.turnId);
+    try {
+      if (event.restartInteractive) await replaceInteractivePane(event.agentId);
+      let sessionId = liveInteractivePaneForAgent(event.agentId);
+      const launched = !sessionId;
+      if (!sessionId) {
+        sessionId = await terminals.launchTab({
+          executable: event.spec.executable,
+          args: event.spec.args,
+          cwd: event.spec.cwd,
+          env: event.spec.env,
+          agentId: event.agentId,
+          // This is a real TUI: the agent completes each assignment through MCP,
+          // not by having the PTY process exit. Keep it writable like Formula
+          // Discovery so the operator can observe or steer it when necessary.
+          readOnly: false,
+          title: `${event.agentId} · PTY`,
+        });
+        interactivePaneByAgent.set(event.agentId, sessionId);
+      }
+      interactiveTurnToSessionId.set(event.turnId, sessionId);
+      interactiveSessionToTurnId.set(sessionId, event.turnId);
+      startHeartbeat(event.turnId, sessionId);
+
+      // A freshly-created TUI needs time to boot. A reused pane also needs a
+      // short hand-off: `team_turn_complete` is called from inside the prior
+      // response, so the daemon can emit the next assignment before Codex has
+      // painted a fresh composer. Injecting at 0 ms pastes text visibly but can
+      // lose Enter, leaving the agent apparently hung.
+      const claudeCode = isClaudeCodeExecutable(event.spec.executable);
+      const delayMs = launched
+        ? (claudeCode ? 2500 : 1200)
+        : (claudeCode ? 1400 : 800);
+      window.setTimeout(() => {
+        if (interactiveTurnToSessionId.get(event.turnId) !== sessionId) return;
+        void termSubmitLineWithAutoRetry(sessionId, event.injectText, {
+          isActive: () => interactiveTurnToSessionId.get(event.turnId) === sessionId,
+          onAutoRetry: () => {
+            console.info('[turnBridge] retried Enter after quiet PTY window for turn', event.turnId);
+          },
+          onRetryError: (err) => {
+            console.warn('[turnBridge] quiet-window Enter retry failed for turn', event.turnId, err);
+          },
+        }).then((cancelRetry) => {
+          if (interactiveTurnToSessionId.get(event.turnId) !== sessionId) {
+            cancelRetry();
+            return;
+          }
+          interactiveEnterRetryCancels.set(event.turnId, cancelRetry);
+        }).catch((err) => {
+          console.error('[turnBridge] interactive inject failed for turn', event.turnId, err);
+          releaseInteractiveTurn(event.turnId);
+          postJson('/api/team/turn/complete', { turnId: event.turnId, exitCode: -1 });
+        });
+      }, delayMs);
+    } catch (err) {
+      releaseInteractiveTurn(event.turnId);
+      console.error('[turnBridge] interactive launch failed for turn', event.turnId, err);
+      // Do not leave the scheduler's ledger non-terminal when a PTY cannot open.
+      postJson('/api/team/turn/complete', { turnId: event.turnId, exitCode: -1 });
+    }
+  }
+
   async function handleSpawnTurn(event: SpawnTurnEvent): Promise<void> {
-    // `interactiveRequired` marks the existing Board-loop "inject into an
-    // already-open pane" path (persistent-pane wake-up), not a pipeline
-    // turn. That path predates this bridge and is out of scope for a
-    // read-only pipeline bridge — skip entirely: don't launch, don't claim.
-    if (event.interactiveRequired) return;
+    if (event.interactiveRequired) {
+      await handleInteractiveSpawn(event);
+      return;
+    }
     if (claimed.has(event.turnId)) return; // already launched, defend against dup delivery
     claimed.add(event.turnId);
     try {
@@ -216,7 +352,8 @@ export function startTurnBridge(): () => void {
   }
 
   async function killOwnedTurn(turnId: number): Promise<void> {
-    const sessionId = turnIdToSessionId.get(turnId);
+    cancelInteractiveEnterRetry(turnId);
+    const sessionId = turnIdToSessionId.get(turnId) ?? interactiveTurnToSessionId.get(turnId);
     if (!sessionId) return; // not owned by this bridge instance
     try {
       await termKill(sessionId);
@@ -228,27 +365,35 @@ export function startTurnBridge(): () => void {
     }
   }
 
+  function ownsTurn(turnId: number): boolean {
+    return turnIdToSessionId.has(turnId) || interactiveTurnToSessionId.has(turnId);
+  }
+
   function handleEvent(event: TeamEvent): void {
     switch (event.kind) {
       case 'spawnTurn':
         void handleSpawnTurn(event);
         break;
       case 'turnTimeout':
-        if (turnIdToSessionId.has(event.turnId)) void killOwnedTurn(event.turnId);
+        if (ownsTurn(event.turnId)) void killOwnedTurn(event.turnId);
         break;
       case 'interrupt':
         for (const turnId of event.turnIds) {
-          if (turnIdToSessionId.has(turnId)) void killOwnedTurn(turnId);
+          if (ownsTurn(turnId)) void killOwnedTurn(turnId);
         }
         break;
       case 'message':
-      case 'turnSettled':
       case 'agentPaused':
       case 'guard':
       case 'stopAll':
         // Board-loop/UI concerns. The bridge REPORTS settlement via
         // turn/complete; it doesn't need to react to the daemon's own
         // settlement broadcast.
+        break;
+      case 'turnSettled':
+        // MCP settlement leaves the interactive CLI alive for its next stage;
+        // only release this turn's watchdog and routing, not the pane itself.
+        releaseInteractiveTurn(event.turnId);
         break;
       default:
         break;
@@ -276,14 +421,22 @@ export function startTurnBridge(): () => void {
 
   let unlistenExit: (() => void) | null = null;
   void onTermExit((e) => {
-    if (e.turnId == null || !claimed.has(e.turnId)) return;
-    claimed.delete(e.turnId);
-    stopHeartbeat(e.turnId);
-    turnIdToSessionId.delete(e.turnId);
-    const resumeSessionRef = sessionIdByTurn.get(e.turnId);
-    sessionIdByTurn.delete(e.turnId);
+    const interactiveTurnId = interactiveSessionToTurnId.get(e.sessionId);
+    const turnId = interactiveTurnId ?? e.turnId;
+    forgetInteractivePane(e.sessionId);
+    if (turnId == null || !claimed.has(turnId)) return;
+    claimed.delete(turnId);
+    cancelInteractiveEnterRetry(turnId);
+    stopHeartbeat(turnId);
+    turnIdToSessionId.delete(turnId);
+    if (interactiveTurnId !== undefined) {
+      interactiveTurnToSessionId.delete(turnId);
+      interactiveSessionToTurnId.delete(e.sessionId);
+    }
+    const resumeSessionRef = sessionIdByTurn.get(turnId);
+    sessionIdByTurn.delete(turnId);
     postJson('/api/team/turn/complete', {
-      turnId: e.turnId,
+      turnId,
       exitCode: e.exitCode ?? null,
       ...(resumeSessionRef ? { resumeSessionRef } : {}),
     });

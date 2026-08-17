@@ -221,6 +221,8 @@ export type OutlierExplanation = z.infer<typeof outlierExplanationSchema>;
 export const channelSpyInputSchema = z.object({
   url: nonEmpty,
   topN: z.number().int().min(1).max(20).default(5),
+  /** Which videos to capture after scanning the channel. */
+  selectionMode: z.enum(['popular', 'latest']).default('popular'),
   /** Default 60, hard ceiling 500 (harvest H-e). */
   scanLimit: z.number().int().min(1).max(500).default(60),
   rankBy: z.enum(['views', 'velocity']).default('velocity'),
@@ -292,6 +294,8 @@ export const operationKindSchema = z.enum([
   'acquire_video',
   'acquire_channel',
   'fetch_transcripts',
+  /** Writer Room: transcribe a hand-picked multi-video source pack. */
+  'build_source_pack',
   'normalize_transcripts',
   'analyze_hooks',
   'analyze_voice',

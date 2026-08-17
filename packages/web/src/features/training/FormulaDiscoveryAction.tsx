@@ -10,7 +10,7 @@ import {
 } from '../../api.ts';
 import { href } from '../../router.ts';
 import { useFormulaDiscoveryPoll } from '../../hooks.ts';
-import { termWrite } from '../../components/terminal/terminalApi.ts';
+import { termSubmitLineWithAutoRetry } from '../../components/terminal/terminalApi.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type Phase = 'idle' | 'preflighting' | 'blocked' | 'running' | 'done' | 'failed';
@@ -18,21 +18,35 @@ type Phase = 'idle' | 'preflighting' | 'blocked' | 'running' | 'done' | 'failed'
 /** Human-readable mapping for the grounding-validator / agent-turn error codes
  * `LaneScheduler`/`training-core` can produce (SDD §5.2 commit-rule branches).
  * Falls back to the raw code for anything not explicitly listed. */
-export function describeErrorCode(code: string | undefined): string {
+export function describeErrorCode(code: string | undefined, reason?: string | null): string {
+  let base: string;
   switch (code) {
     case 'AGENT_EXIT':
-      return 'AGENT_EXIT — agent thoát bất thường trước khi ghi kết quả';
+      base = 'AGENT_EXIT — agent thoát bất thường trước khi ghi kết quả';
+      break;
     case 'AGENT_NO_OUTPUT':
-      return 'AGENT_NO_OUTPUT — agent không ghi ra kết quả nào';
+      base = 'AGENT_NO_OUTPUT — agent không ghi ra kết quả nào';
+      break;
     case 'AGENT_SCHEMA':
-      return 'AGENT_SCHEMA — kết quả agent trả về sai định dạng mong đợi';
+      base = 'AGENT_SCHEMA — kết quả agent trả về sai định dạng mong đợi';
+      break;
+    case 'DRAFT_LENGTH':
+      base = 'DRAFT_LENGTH — độ dài script không nằm trong khoảng cho phép (nén ~25-45% so với video gốc)';
+      break;
     case 'AGENT_UNGROUNDED':
-      return 'AGENT_UNGROUNDED — agent trích dẫn không có trong transcript';
+      base = 'AGENT_UNGROUNDED — agent trích dẫn không có trong transcript';
+      break;
+    case 'AGENT_INCOMPLETE':
+      base = 'AGENT_INCOMPLETE — Formula thiếu payoff có bằng chứng';
+      break;
     case 'AGENT_SANDBOX_VIOLATION':
-      return 'AGENT_SANDBOX_VIOLATION — agent cố truy cập ngoài phạm vi cho phép';
+      base = 'AGENT_SANDBOX_VIOLATION — agent cố truy cập ngoài phạm vi cho phép';
+      break;
     default:
-      return code ? `Lỗi: ${code}` : 'Lỗi không xác định';
+      base = code ? `Lỗi: ${code}` : 'Lỗi không xác định';
   }
+  if (reason?.trim()) return `${base}\n${reason.trim()}`;
+  return base;
 }
 
 export function FormulaDiscoveryAction({ video }: { video: SpyVideoRow }) {
@@ -221,7 +235,15 @@ export function InteractiveFormulaDiscoveryAction({ video }: { video: SpyVideoRo
         // typed input — same precedent as the interactive-launch bugs found earlier
         // today, verified by hand: sending too early is silently swallowed.
         const message = result.initialMessage;
-        setTimeout(() => { void termWrite(sessionId, `${message}\r`); }, 1200);
+        setTimeout(() => {
+          void termSubmitLineWithAutoRetry(sessionId, message, {
+            onAutoRetry: () => console.info('[formula-discovery] retried Enter after quiet PTY window'),
+            onRetryError: (err) => console.warn('[formula-discovery] quiet-window Enter retry failed', err),
+          }).catch((err) => {
+            setError(err instanceof Error ? err.message : 'Không gửi được nhiệm vụ vào PTY');
+            setPhase('failed');
+          });
+        }, 1200);
       }
       setFormulaId(result.formulaId);
       setPhase('started');

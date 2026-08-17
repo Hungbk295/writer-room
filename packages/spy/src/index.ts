@@ -605,6 +605,35 @@ export class SpyService {
     };
   }
 
+  /**
+   * Lightweight keyword search for Writer Room's Source Pack explorer.
+   *
+   * This intentionally bypasses niche discovery and the YouTube Data API. The
+   * editor is choosing concrete reference videos, so yt-dlp's `ytsearch` is
+   * enough; it keeps Writer Room usable without an API key and does not add
+   * keyword intelligence or channel analysis to the workflow.
+   */
+  async searchVideosForSourcePack(query: string, maxResults = 20) {
+    const q = query.trim();
+    if (!q) throw new AppError('invalid_input', 'Từ khoá tìm video không được rỗng');
+    if (!this.youtube.searchVideos) {
+      throw new AppError('capability_missing', 'yt-dlp adapter không hỗ trợ tìm video');
+    }
+    const videos = await this.youtube.searchVideos(q, Math.max(1, Math.min(maxResults, 50)));
+    return videos.map((video) => {
+      return {
+        videoId: video.sourceVideoId,
+        title: video.title,
+        channelTitle: video.channelTitle,
+        canonicalUrl: video.canonicalUrl,
+        thumbnailUrl: video.thumbnailUrl,
+        viewCount: video.viewCount,
+        durationSec: video.durationSec,
+        publishedAt: video.publishedAt,
+      };
+    });
+  }
+
   async videoComments(input: {
     videoId?: string;
     channelId?: string;
@@ -778,6 +807,7 @@ export class SpyService {
       const op = this.channelSpy({
         url: `https://www.youtube.com/channel/${channelId}`,
         topN: 5,
+        selectionMode: 'popular',
         scanLimit,
         rankBy: 'velocity',
         minDurationSec: 60,
@@ -1003,6 +1033,8 @@ export class SpyService {
     limit?: number;
     orderBy?: 'velocity' | 'views' | 'published_at';
     preferNormalized?: boolean;
+    /** Default 0.5 — half of each video transcript. */
+    transcriptFraction?: number;
     maxCharsPerVideo?: number;
   }) {
     return buildSourcePack(this.store, options);

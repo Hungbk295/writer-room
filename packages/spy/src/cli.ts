@@ -128,6 +128,7 @@ async function main(): Promise<void> {
     : spy.channelSpy({
       url,
       topN,
+      selectionMode: 'popular',
       scanLimit,
       depth,
       rankBy: 'velocity',

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hiếu TV Taste RAG Miner"
+  short_description: "Mine editorial taste from Hiếu TV transcripts"
+  default_prompt: "Use $hieutv-taste-rag-miner to ingest these Hiếu TV transcripts into a searchable editorial Taste RAG."

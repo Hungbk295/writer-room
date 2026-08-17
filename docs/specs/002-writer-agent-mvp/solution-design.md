@@ -159,9 +159,14 @@ flowchart LR
     X --> FSO
     FSO --> B
     T --> F[TRIAL Formula]
-    F --> W
+    F -.->|superseded 2026-08-11, see note| W
     B --> FS[Versioned Workspace]
 ```
+
+> **Superseded 2026-08-11:** the `F --> W` edge above (Formula feeding Writer directly) no
+> longer exists. A separate migration step (human-approved, in the Studio) turns Formula output
+> into a `WRITER_READY_PROFILE`, which is what `W` actually consumes
+> (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1–§2, FM1).
 
 #### Interface Specifications
 
@@ -175,6 +180,7 @@ flowchart LR
 | Formula Commit | One successful item's ANALYZE hash | One per-video Formula + provenance manifest |
 | Formula Studio | Human-picked rule refs across videos, genre name | Clusters → LLM proposals → human-accepted compound Formula (§12b) |
 | Writer Input | A Formula ref (per-video or compound), one or more titles, per-title Curated Pack | Independent Writer items |
+| | **Superseded 2026-08-11:** Writer Input is a `WRITER_READY_PROFILE` ref, never a Formula ref (plan §1, FM1). | |
 
 **Outbound interfaces**
 
@@ -224,7 +230,7 @@ build graph as a known failure mode).
 - **Fencing:** every dispatch carries `(itemId, stage, attempt)`; output written by a superseded attempt is discarded, never committed.
 - **Formula Discovery:** analyze each video independently, then aggregate a user-selected set into a `TRIAL` Formula.
 - **Multi-channel:** require an explicit scope—single-channel Formula, per-channel comparison, or cross-channel shared patterns.
-- **Writer:** each title is an independent Writer item using a selected Formula and its own Curated Pack.
+- **Writer:** each title is an independent Writer item using a selected Formula and its own Curated Pack. **Superseded 2026-08-11:** "selected Formula" → a pinned `WRITER_READY_PROFILE`; no Formula (any origin) is Writer input (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, FM1).
 - **Safety:** configurable per-item execution budgets prevent loops; they never impose a batch-size limit.
 
 ## Building Block View
@@ -377,7 +383,7 @@ revision; unchanged item analyses may be reused by input hash.
 | POST | `/api/batches/:batchId/actions/:action` | `pause` \| `resume` \| `stop` \| `retry-failed` \| `continue-with-successes` |
 | POST | `/api/training/batches/:batchId/formulas` | Commit the per-video Formula for each successful item; returns N Formulas, one per video, never merged (§6.1a, ADR-5) |
 | — | Formula Studio endpoints (`/api/studio/*`) | Merging/compounding lives entirely here, human-driven — see §12b |
-| POST | `/api/writer/batches` | Create one-title or multi-title Writer batch; each item independently pins its own `formulaVersionId` (§6.3) |
+| POST | `/api/writer/batches` | Create one-title or multi-title Writer batch; each item independently pins its own `formulaVersionId` (§6.3). **Superseded 2026-08-11:** pins a `WRITER_READY_PROFILE` version id, not a `formulaVersionId` (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, FM1). |
 | POST | `/api/writer/items/:itemId/actions/:action` | `select-thesis` \| `lock-brief` \| `approve` \| `reject` \| `export` |
 | GET | `/api/writer/items/:itemId/export` | Download the export bundle |
 | GET | `/api/batches/:batchId/events?cursor=N` | SSE with monotonic cursor, replay from cursor, and item correlation |
@@ -414,7 +420,9 @@ FormulaArtifact                          # L1 — the atomic unit (§12b), produ
   # REFINED (Training Lab) and COMPOUND (Studio) are the SAME type — see §8.2/ADR-14
 
 WriterItem
-  formulaRef: { formulaId, contentHash }   # any origin — the Writer does not care which
+  formulaRef: { formulaId, contentHash }   # SUPERSEDED 2026-08-11: this is a profileRef to a
+                                          # WRITER_READY_PROFILE; a Formula of any origin is
+                                          # training-only and never reaches the Writer (plan §1)
                                           # pinned per item, not per batch (§6.3) — a batch may
                                           # write several titles in parallel, each against a
                                           # different Formula (per-video or compound)
@@ -794,6 +802,13 @@ are not" from "finished". The dashboard header and the app's nav badge both surf
 
 ### 6.3 Primary Flow B: Write one or many scripts
 
+> **Superseded 2026-08-11:** point 1 below — the Formula picker offering every `origin`
+> (`ANALYZED`/`REFINED`/`COMPOUND`) interchangeably as Writer input — no longer holds. Per
+> `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, any `VIDEO_FORMULA` (any origin,
+> including `COMPOUND`) is training-only and hard-fails in Writer. Writer accepts only a
+> separately migrated, human-approved `WRITER_READY_PROFILE`, pinned by version, in its own
+> store. The rest of this section (item isolation, human gates, stage machine) is unaffected.
+
 1. User adds one or more title items. Each item independently pins its own Formula (status shown
    inline: `TRIAL` badge) and its own Curated Pack — **not** one Formula for the whole batch. The
    picker offers every origin interchangeably (§8.2): a per-video (`ANALYZED`/`REFINED`) or a
@@ -940,6 +955,7 @@ waiting, what I can do about it.
 | **Studio — Proposals** | `/studio/sessions/:id/proposals` | LLM-worded merged rules, each accept/edit/reject | pending, accepted, edited, rejected |
 | **Studio — Trials** | `/studio/sessions/:id/trials` | test-write rounds: draft + two-sided critique + human verdict | none yet, drafting, critiquing, ready-to-judge |
 | **Studio — Compound Formula** | `/studio/compounds/:id` | genre Formula, rules with provenance, promote action | DRAFT, TRIAL badge, source video count |
+| | | **Superseded 2026-08-11:** compound output is training-only; the writer-facing artifact is a separate `WRITER_READY_PROFILE` (own store/type) produced by migration + human approval. No "Use in Writer" action on any training Formula (plan §1, §2.4). | |
 | Writer Export | `/writer/items/:id/export` | bundle + exclusions | ready, blocked by unapproved |
 | Agents Health | existing `/agents` + a pipeline card | binaries, live clones vs `maxParallel`, guard headroom | ok, degraded, unavailable |
 
@@ -1028,7 +1044,9 @@ it is explicitly labelled as a debug action that does not feed the pipeline.
 - Every destructive action (Stop batch, Skip, Reject) names its exact consequence and what is
   preserved.
 - A `TRIAL` Formula shows its badge everywhere it appears, including inside Writer item
-  headers (ADR-6 trade-off).
+  headers (ADR-6 trade-off). **Superseded 2026-08-11:** a Writer item header shows its pinned
+  `WRITER_READY_PROFILE`'s `readiness` (`TRIAL`/`VALIDATED`), not a Formula's `TRIAL` badge —
+  no Formula is ever inside a Writer item (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §2.2).
 - Partial exports carry a visible exclusion list in the UI and inside the export manifest.
 
 ---
@@ -1073,6 +1091,12 @@ Two rules make this load-bearing rather than cosmetic:
    Studio pool reads every `ANALYZED`/`REFINED` Formula uniformly (it skips `COMPOUND`, whose
    rules are already merged output — re-merging them would double-count provenance).
 
+> **Superseded 2026-08-11:** rule 1's "the Writer could not use" and rule 2's "the Writer pins
+> any Formula by id + hash" both describe a Writer↔Formula relationship that no longer exists.
+> The Writer never pins any `FormulaArtifact`; it pins a `WRITER_READY_PROFILE` from a separate
+> store (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, FM1). Both rules stay accurate
+> for the Studio's rule pool, which is training-side and unaffected.
+
 The replaced `scope` field (`SINGLE_CHANNEL`/`PER_CHANNEL_COMPARE`/`CROSS_CHANNEL_SHARED`) and
 `channelGroups[]` described the channel-grouping design ADR-5 rejected. `channelGroups` also
 could not express the real invariant — an `ANALYZED` Formula is about exactly **one** video —
@@ -1081,6 +1105,14 @@ by `normalizeFormula()`; no rewrite pass over the data directory is needed.
 
 `VALIDATED` is unreachable in MVP code at every origin, not merely unused. Promotion to `TRIAL`
 is always an explicit human action (ADR-6).
+
+> **Superseded premise 2026-08-11:** at the time this section was written, a promoted
+> `COMPOUND` Formula was treated as Writer-ready (§12b, ADR-13, ADR-15). That is no longer
+> true. Per `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, all three origins above are
+> `VIDEO_FORMULA` — training-only, hard fail in Writer. Writer input is a separate artifact,
+> `WRITER_READY_PROFILE`, in its own store/type, produced by human-approved migration, not by
+> any of the three origins here. The one-type-one-store description above still accurately
+> describes the training-side Formula.
 
 ### 8.3 Curated Pack v1 (GAP-14)
 
@@ -1155,10 +1187,10 @@ the UI offers "Nâng cấp pack này" rather than failing silently.
 | M1 | Formula Discovery single | One video produces a reviewable, provenance-linked `TRIAL` Formula |
 | **M1.5** | **Training Lab — calibration loop (post-M1 addition, user-directed 2026-08-09)** | A video's Formula is round-tripped through a draft→critique→refine loop (max 3 rounds) and produces a version history the user can inspect and promote. See §12a. |
 | M2 | Batch training (any `N`, any channels) | Arbitrary `N` videos run in parallel and produce `N` independent per-video Formulas — clones + reaping, partial success, item retry, per-item preflight, batch dashboard. **No aggregation of any kind** (§6.1a, ADR-5) |
-| **M2.5** | **Formula Studio — merge + test-write (user-directed 2026-08-10)** | A human picks rules across several per-video Formulas, the app clusters them, an LLM words the merges, the human accepts, and the resulting compound Formula is test-written and critiqued in the same session — then promoted to `TRIAL` for a named genre. See §12b. |
+| **M2.5** | **Formula Studio — merge + test-write (user-directed 2026-08-10)** | A human picks rules across several per-video Formulas, the app clusters them, an LLM words the merges, the human accepts, and the resulting compound Formula is test-written and critiqued in the same session — then promoted to `TRIAL` for a named genre. See §12b. **Superseded 2026-08-11:** a compound Formula is `VIDEO_FORMULA`, training-only — it is never writer-ready. `TRIAL` is now a state of `WRITER_READY_PROFILE`, reached only through Studio migration + human approval (plan §2.4, FM1). |
 | M3 | Resilience | Kill the daemon mid-batch, kill an agent process, pull the network: every item recovers to a correct state with no duplicate commit and no orphan process |
-| M4 | Writer single + batch UI | One or many titles complete independently through human approval and selective export, including the review queue; each title pins its own Formula — per-video or compound — so one batch can span several Formulas in parallel (§6.3) |
-| M5 | Pilot and evaluation | User runs any chosen volume; metrics accumulate per item and Formula version |
+| M4 | Writer single + batch UI | One or many titles complete independently through human approval and selective export, including the review queue; each title pins its own Formula — per-video or compound — so one batch can span several Formulas in parallel (§6.3) **Superseded 2026-08-11:** a title pins a `WRITER_READY_PROFILE`, never a per-video or compound Formula (plan §1, FM1). One batch spanning several profiles still holds. |
+| M5 | Pilot and evaluation | User runs any chosen volume; metrics accumulate per item and Formula version. **Superseded 2026-08-11:** for Writer items, metrics accumulate per item and `WRITER_READY_PROFILE` version, not Formula version — a Writer item never pins a Formula (plan §1, FM1). |
 
 No milestone requires exactly 3, 8, or any other fixed number of videos/titles.
 
@@ -1240,6 +1272,17 @@ run, opens to show every round with all four sections the user asked for — the
 Formula version — plus the run's overall status and round count.
 
 ## 12b. Formula Studio — human-curated merge + test-write (ADR-5, ADR-13)
+
+> **Superseded premise 2026-08-11:** this section's BROWSE→PICK→CLUSTER→SYNTHESIZE→REVIEW loop
+> still describes how the Studio merges rules across videos, and stays valid Training-side
+> machinery. What no longer holds: a promoted `COMPOUND` Formula is **not** Writer-ready and
+> does not appear in the Writer's Formula picker (see "Promotion" below); test-write judging is
+> not a release gate; and the projection described in "Cái Writer thực sự nhận" below is not
+> writer-facing — `toWriterFormula()` is renamed `toTrainingDraftView()` (type `WriterFormula` →
+> `TrainingDraftView`, file `writer-view.ts` → `draft-view.ts`) and stays in use inside Training
+> Lab's `DRAFT` stage; it was never deleted. Per `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md`
+> §1–§2 (FM1), turning Studio output into actual Writer input requires a separate migration step
+> that produces a `WRITER_READY_PROFILE`.
 
 > User, 2026-08-10: *"quá trình merge formula t cần diễn ra theo kiểu human chọn rồi mới
 > dùng thuật toán / call llm rồi merge. Nó là phép thử không thể auto được… vấn đề là dùng
@@ -1353,11 +1396,25 @@ any number of genres. `channelTitle` survives only inside `sources[]`, for audit
 ### Promotion
 
 Promoting a compound Formula to `TRIAL` for a genre is an explicit human action, exactly like
-every other promotion in this system (ADR-6). `VALIDATED` remains unreachable in MVP code. A
-promoted compound Formula then appears in the Writer's Formula picker (§6.3) alongside per-video
-Formulas — from the Writer's point of view they are interchangeable, both hash-pinned per item.
+every other promotion in this system (ADR-6). `VALIDATED` remains unreachable in MVP code.
+
+> **Superseded 2026-08-11:** the rest of this paragraph — that a promoted compound Formula then
+> appears in the Writer's Formula picker (§6.3) alongside per-video Formulas — no longer holds.
+> Promotion to `TRIAL` here still only produces a `VIDEO_FORMULA` (training-only). Reaching the
+> Writer requires the separate migration step in `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md`
+> §2.4 (Studio), which produces a `WRITER_READY_PROFILE`.
 
 ### Cái Writer thực sự nhận
+
+> **Superseded 2026-08-11:** despite the heading, this subsection does not describe what the
+> Writer receives — the Writer never reads any projection of `FormulaArtifact` at all; it reads
+> a separately migrated, human-approved `WRITER_READY_PROFILE` from its own store
+> (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1–§2). `toWriterFormula()`/`WriterFormula`
+> (ADR-15) are **not** deleted — they are renamed `toTrainingDraftView()`/`TrainingDraftView`
+> (`training-core/draft-view.ts`, was `writer-view.ts`) and remain in real use inside Training
+> Lab's `DRAFT` stage (`training-lab.ts`). What is dropped is only the belief that this
+> evidence-stripped projection is sufficient to be Writer-ready — it is not; it stays a
+> Training-internal view. Kept below for history, with the old name.
 
 The Writer never reads a `FormulaArtifact` directly. It receives `toWriterFormula()`'s projection
 (ADR-15) — `{id, label, rules: [{id, statement}]}` — with no `evidence`, `sources`, `segmentIds`,
@@ -1393,9 +1450,14 @@ training/studio-sessions/{id}.json # session log: genre, picks[], clusters[], pr
 ```
 
 A session's compound Formula is held **in the session** while it is `DRAFT` and is written to
-the shared store only on promotion — so an in-progress merge never shows up in the Writer's
-Formula picker. See §8.2 for the `FormulaArtifact`/`FormulaRule`/`RuleSource` shapes; the Studio
-introduces no Formula type of its own (ADR-14).
+the shared store only on promotion — so an in-progress merge never shows up in the rule pool or
+in downstream listings. See §8.2 for the `FormulaArtifact`/`FormulaRule`/`RuleSource` shapes; the
+Studio introduces no Formula type of its own (ADR-14).
+
+> **Superseded 2026-08-11:** the sentence above originally ended "...shows up in the Writer's
+> Formula picker" — there is no such thing anymore. Promotion here still only produces a
+> `VIDEO_FORMULA` (training-only); reaching the Writer needs the separate migration in
+> `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §2.4, producing a `WRITER_READY_PROFILE`.
 
 ```ts
 interface RuleProposal {
@@ -1475,7 +1537,7 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 
 - HTTP/SSE connects Web and Daemon; typed calls connect daemon components.
 - Batch summary is derived, not independently mutated.
-- Formula artifacts reference Training artifacts by hash; Writer references a specific Formula version.
+- Formula artifacts reference Training artifacts by hash; Writer references a specific Formula version. **Superseded 2026-08-11:** Writer references a specific `WRITER_READY_PROFILE` version, never a Formula version (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, FM1).
 - Adding future agents or raising `maxParallel` changes roster configuration, not pipeline state contracts.
 
 ## Architecture Decisions
@@ -1510,6 +1572,7 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 - [x] **ADR-6 — A small dataset may publish a `TRIAL` Formula, never an automatically `VALIDATED` Formula.**
   - Rationale: the user must be able to test a Formula from three videos while retaining honest confidence labels.
   - Trade-off: downstream Writer results must display the Formula status.
+  - **Superseded 2026-08-11:** no Writer result displays a Formula status anymore — a Writer item displays its pinned `WRITER_READY_PROFILE`'s `readiness` (`TRIAL`/`VALIDATED`, §2.2) instead (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1).
   - User confirmed: 2026-08-09.
 
 - [ ] **ADR-7 — Writer structural citations are a hard gate; semantic support is advisory until human approval.**
@@ -1550,6 +1613,7 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
   - Trade-off: building a genre Formula is manual work with no one-click path, and the Studio is a genuinely new surface (rule pool browser, cluster view, proposal review, trial history) rather than a variation on the batch dashboard. Accepted deliberately — this is the product's core intellectual loop, not a utility screen.
   - Consequence for contracts: `CritiqueEvidence` gains `videoSnapshotId` so critique grounding survives across multiple source videos, and the compound `CRITIQUE` envelope ships cited evidence spans instead of full transcripts (a direct response to the observed ~96KB `AGENT_NO_OUTPUT` failure, §12b).
   - User confirmed: 2026-08-10.
+  - **Superseded 2026-08-11:** the merge mechanics above (human picks, deterministic clustering, LLM wording, human accept) still describe Studio behavior. What changed: test-writing a promoted compound Formula is no longer the release/quality gate (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §5 cuts mandatory transfer-test/LLM release scoring), and a promoted `COMPOUND` Formula stays training-only — it does not become Writer input by promotion. Reaching Writer requires the separate migration in the plan file's §2.4 (FM1), producing a `WRITER_READY_PROFILE`.
 
 - [x] **ADR-14 — One Formula type in one store, discriminated by `origin`; a process log references its Formula rather than containing it.**
   - Rationale: an architecture review on 2026-08-10 found the two mechanisms that *improve* a Formula were both dead ends. `saveFormula` had exactly one caller (`aggregator.ts`), so Training Lab's refined versions lived only inside `lab-runs/*.json` and the Studio's compound Formulas only inside `studio-sessions/*.json` — invisible to the Studio's rule pool and unusable by the Writer. Refining a Formula to v2 and then being unable to merge from v2 is the defect this closes.
@@ -1567,6 +1631,39 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
   - Trade-off: making a `COMPOUND` Formula genuinely generic needs an LLM synthesis step plus human review (P3 SYNTHESIZE, §12b), so it costs more to produce than a copy-through merge would. Accepted: a topic-bound "formula" is really a template of one video, and a template that cannot transfer to a new topic is not useful to a Writer — genericizing it is the entire point of building a writer-facing Formula at all.
   - Enforcement is advisory, deliberately: `detectTopicLeak()` (`training-core/writer-view.ts`) warns at review/promote time but never blocks — same trust level as a lint suggestion, not a validation gate. It catches three literal patterns only (a quoted verbatim string, a video-position number tied to `giây`/`phút`, a concrete ordinal listing like "Phần một, Phần hai"); it does NOT detect a bare topic noun like "khái niệm tài chính" — recognizing that requires understanding meaning, which is P3's LLM generalization job, not a regex's.
   - User confirmed: 2026-08-10.
+  - **Superseded 2026-08-11:** the `{id, label, rules: [{id, statement}]}` projection described here is **not** Writer input anymore, but it is not deleted either — `toWriterFormula()`/`WriterFormula` are renamed `toTrainingDraftView()`/`TrainingDraftView` (`training-core/draft-view.ts`, was `writer-view.ts`) and stay in real use inside Training Lab's `DRAFT` stage (`training-lab.ts`), which is why it could not be deleted (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1 names this exact correction). What is actually dropped is the *product* belief that this evidence-stripped projection is sufficient to count as Writer-ready. Writer input is a separately migrated, human-approved `WRITER_READY_PROFILE` in its own store/type, with no runtime import from the Formula store. `detectTopicLeak()` is kept, reused by the new migration's leak check (plan §2.4). See the plan file §1–§2 (FM1).
+
+- [x] **ADR-16 — Profile guidance is a scored post-draft rubric, not a mandatory drafting checklist.**
+  - Rationale: exposing a long list of positive rules to the author encourages visible rule compliance, formulaic prose, and continual rule expansion. The drafting agent therefore receives only the editorial promise, anti-patterns, and the small CORE subset. The full Profile is evaluated after drafting as checkpoints.
+  - Scoring: applicable editorial decisions and Profile guidelines receive `PASS`/`PARTIAL`/`MISS`; irrelevant OPTIONAL guidance receives `NA` and leaves the denominator. Clear anti-pattern violations subtract points. Application code computes the percentage; the reviewer cannot choose its own score. A piece passes at 70% and no single missed positive checkpoint is a hard failure.
+  - Repair budget: one targeted repair is allowed when the first review scores below threshold, followed by one fresh review. Repair receives only missed/partial checkpoints and violated anti-patterns, not the full rubric. A second score below threshold ends in `WRITER_QUALITY_THRESHOLD` with the latest draft preserved for inspection.
+  - Whole-piece shape is reviewed explicitly: numbered sections that merely cover Profile concepts, interchangeable taxonomy blocks, repeated conclusions under new labels, and excessive coined labels count as formulaic/checklist behavior even when every individual sentence is readable.
+  - Hard gates remain narrow: schema, requested-title alignment, length band, source-host identity leak, grounded review quotes, and reviewer-confirmed fabrication of facts/case details outside the Source Pack. Creative choices are never rejected by a single positive style rule; factual invention cannot be offset by style points.
+  - Trade-off: reviewer scoring is subjective and may vary, but the rubric is auditable and the computed percentage is deterministic. This is preferred to making every style guideline a generation constraint.
+  - User confirmed: 2026-08-12.
+
+- [x] **ADR-17 — Every persistent Formula/Training card exposes a compact, copyable ID.**
+  - Rationale: a title or rule sentence can change and can repeat; an ID lets the user point to the exact Formula, Training run, round, cluster, proposal, or rule that needs checking.
+  - Display rule: show short IDs on the card to keep dense review screens readable; hover reveals and one click copies the complete value. Copying the badge never triggers the surrounding card action.
+  - Identity rule: use the stored entity ID whenever one exists. A nested item with no stored ID uses a documented reference made from its parent ID and local key (for example `<run-id>:round:2` or `<formula-id>::<rule-id>`). These references are UI-only and do not change stored contracts.
+  - Consequence: this is a shared UI component and CSS convention across Formula, Training Lab, and Formula Studio; no API or storage migration is required.
+  - User confirmed: 2026-08-12.
+
+- [x] **ADR-18 — Studio owns the Profile library; Writer only consumes a pinned Profile.**
+  - Rationale: Formula is training material, while a `WRITER_READY_PROFILE` is the human-reviewed product made from that material. The place that selects, generalizes, and publishes the guidance is Studio, so searching and inspecting Profiles belongs there too. Showing Profiles only inside Writer's dropdown hides their contents and provenance.
+  - UI boundary: Studio exposes a searchable Profile library and a detail page with Profile/guideline IDs, anti-pattern references, and links back to source Formulas. Writer keeps its picker but links the selected or pinned Profile back to its Studio detail page.
+  - Storage boundary stays unchanged: Profiles remain in their separate Profile store so a training Formula cannot accidentally enter a Writer run. “In Studio” describes product ownership and navigation, not storing Profiles inside Studio session JSON.
+  - Legacy limitation: older/manual Profiles may have rule-level provenance but no originating Studio session ID; the detail page states this instead of inventing lineage.
+  - User confirmed: 2026-08-12.
+
+- [x] **ADR-19 — Writer planning produces a video-packaging contract before prose; video effectiveness remains a soft post-draft score.**
+  - Rationale: a plan containing only hook/angle/depth/ending decisions can produce natural essay prose while still failing as a memorable YouTube video. In the observed run `7d626c50-a84f-45d6-8a9f-63de4ba570c8`, the planner repeatedly described rule avoidance but never selected one audience-memory anchor, an advancing sequence of discoveries, deliberate omissions, or a closing action. The resulting draft restated lifestyle inflation through several adjacent branches without increasing the viewer's understanding.
+  - Contract: `writer-plan` must emit `videoPlan` beside 2–4 Taste-retrieval decisions. `videoPlan` contains one `coreInsight`, one `memoryAnchor` (`name | equation | contrast | image`), 2–8 advancing `progression` beats (`newInformation`, character/argument change, and `visualAnchor`), an `endingPayoff` that resolves the opening and leaves one audience self-check/action, and a bounded `cutList`. This is persisted on the Writer run and shown in the run UI.
+  - Draft boundary: the contract controls compression and progression, not prose form. The draft must not expose field names, mechanically turn beats into headings, coin a new term when a plain equation/contrast/image is clearer, or reintroduce cut-list branches merely because they exist in the Source Pack.
+  - Review boundary: three `VIDEO_EFFECT` checkpoints ask whether the core can be retold in one sentence, each major part adds a new discovery, and the ending settles the opening promise with one concrete self-check/action. They are weighted soft checkpoints under ADR-16, never hard gates. Factual fabrication remains a separate blocking anti-pattern.
+  - Profile boundary: this capability is not encoded as a new collection of Profile rules. The existing memory-anchor guideline is generalized beyond coined labels, and the existing reflective-ending guideline gains an `avoidWhen` for titles that promise diagnosis/calculation/action. This keeps reusable taste in Profile while title-specific packaging remains in the plan.
+  - Trade-off: the plan artifact becomes larger and validation is stricter, adding a small planning cost. In return, the draft receives explicit selection pressure and the user can inspect why a video should be memorable before spending a drafting turn.
+  - User confirmed: 2026-08-13.
 
 ## Quality Requirements
 
@@ -1581,6 +1678,7 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 - **Liveness:** no user-visible state may remain unexplained for more than one poll interval; every non-terminal item shows a reason string.
 - **Performance:** non-agent API operations target p95 below 300 ms locally.
 - **Usability:** every failed/human-wait item exposes its reason, its log, and its next actions.
+- **Video packaging:** every new Writer plan exposes one memory anchor, an auditable information progression, deliberate omissions, and an ending payoff; review scores their realized effect without turning any single style choice into a hard gate.
 
 ## Acceptance Criteria
 
@@ -1617,7 +1715,9 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 
 **Writer**
 
-- [ ] WHEN a Writer batch is created, THE SYSTEM SHALL bind a Formula version and a separate Curated Pack to each title item.
+- [ ] WHEN a Writer batch is created, THE SYSTEM SHALL bind a Formula version and a separate Curated Pack to each title item. **Superseded 2026-08-11:** binds a `WRITER_READY_PROFILE` version, not a Formula version — no Formula is ever bound to a Writer item (`plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md` §1, FM1).
+- [ ] WHEN a new Writer plan commits, THE SYSTEM SHALL persist one valid `videoPlan` containing a core insight, one memory anchor, 2–8 advancing beats, an ending payoff, and a cut list before dispatching the draft.
+- [ ] WHEN the Writer draft is reviewed, THE SYSTEM SHALL score memorability, information progression, and ending payoff as `VIDEO_EFFECT` checkpoints and SHALL NOT treat any of those three style outcomes as a hard gate.
 - [ ] WHEN Claude completes an item artifact, THE SYSTEM SHALL validate and commit it before advancing that item.
 - [ ] WHEN Codex reviews, THE SYSTEM SHALL provide fresh context for that item only.
 - [ ] WHEN an item awaits a human decision, THE SYSTEM SHALL reap its agent clone so other items continue.
@@ -1643,6 +1743,8 @@ GET  /api/studio/rule-pool?channel=&video=&facet=&q=   # browse every L1 rule fo
 | unit | Studio clustering | identical rules cluster; same-facet-different-tactic flagged conflict, not auto-merged; unique rules form `SINGLE` clusters and still go through SYNTHESIZE (ADR-15), not auto-carried |
 | unit | compound rule validation | empty `sources[]` → `STUDIO_RULE_UNGROUNDED`; synthesized rule keeps every source ref |
 | unit | compound critique grounding | `videoSnapshotId` outside the provenance set → `STUDIO_EVIDENCE_OUT_OF_SCOPE`; quote must match that video's cited segment |
+| unit | Writer video plan validation | missing anchor/payoff, non-advancing beat shape, or more than eight beats/cuts → `AGENT_SCHEMA`; valid contract persists into draft/review envelopes |
+| unit | Writer video-effect rubric | exactly three non-blocking `VIDEO_EFFECT` checkpoints are scored beside editorial decisions and Profile guidance |
 | integration | compound CRITIQUE envelope size | 5-video compound ships cited spans only, staying in the same size class as a 1-video Training Lab critique (regression guard for the observed ~96KB `AGENT_NO_OUTPUT`) |
 | e2e (real agents) | Studio session | pick rules from 3 videos → cluster → synthesize → accept → test-write → critique cites ≥2 source videos → promote to a genre `TRIAL` |
 | e2e | Writer batch of 3 titles | review queue, per-item approval, selective export with exclusion list |

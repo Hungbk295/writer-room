@@ -18,13 +18,27 @@ export interface FormulaSummary {
   status: FormulaArtifact['status'];
   origin: FormulaArtifact['origin'];
   version: number;
-  /** `ANALYZED`/`REFINED`: the one video's channel. `COMPOUND`: the genre. */
+  /**
+   * Display name: user `title` if set, else video title (ANALYZED/REFINED) or genre
+   * (COMPOUND) — never prefers channel name over video title.
+   */
   label: string;
   /** Distinct source videos behind it — 1 for ANALYZED/REFINED, N for COMPOUND. */
   videoCount: number;
   ruleCount: number;
   createdAt: string;
   sourceBatchId?: string;
+  title?: string;
+  videoTitle?: string;
+  channelTitle?: string;
+  videoSnapshotId?: string;
+}
+
+/** Prefer user rename → video title → genre/channel. Channel is last resort. */
+export function formulaDisplayLabel(formula: FormulaArtifact): string {
+  if (formula.title?.trim()) return formula.title.trim();
+  if (formula.origin === 'COMPOUND') return formula.genre?.trim() || 'Compound';
+  return formula.videoTitle?.trim() || formula.channelTitle?.trim() || 'Formula';
 }
 
 /**
@@ -78,11 +92,15 @@ export async function listFormulas(dataDir?: string): Promise<FormulaSummary[]> 
         status: formula.status,
         origin: formula.origin,
         version: formula.version,
-        label: formula.origin === 'COMPOUND' ? (formula.genre ?? 'Compound') : (formula.channelTitle ?? 'Formula'),
+        label: formulaDisplayLabel(formula),
         videoCount: formula.origin === 'COMPOUND' ? sourceVideoCount(formula.rules) : 1,
         ruleCount: formula.rules.length,
         createdAt: formula.createdAt,
         ...(formula.sourceBatchId ? { sourceBatchId: formula.sourceBatchId } : {}),
+        ...(formula.title ? { title: formula.title } : {}),
+        ...(formula.videoTitle ? { videoTitle: formula.videoTitle } : {}),
+        ...(formula.channelTitle ? { channelTitle: formula.channelTitle } : {}),
+        ...(formula.videoSnapshotId ? { videoSnapshotId: formula.videoSnapshotId } : {}),
       });
     } catch {
       // skip corrupt
@@ -100,6 +118,24 @@ export async function deleteFormula(id: string, dataDir?: string): Promise<boole
   } catch {
     return false;
   }
+}
+
+/**
+ * Đổi tên hiển thị (`title`). Không đụng `videoTitle` / `channelTitle` / provenance.
+ * Trả formula đã lưu, hoặc `null` nếu id không tồn tại.
+ */
+export async function renameFormula(
+  id: string,
+  title: string,
+  dataDir?: string,
+): Promise<FormulaArtifact | null> {
+  const next = title.trim();
+  if (!next) throw new Error('Tên formula không được rỗng');
+  const formula = await getFormula(id, dataDir);
+  if (!formula) return null;
+  formula.title = next;
+  await saveFormula(formula, dataDir);
+  return formula;
 }
 
 /**
@@ -138,8 +174,18 @@ export async function getTrainingLabRun(id: string, dataDir?: string): Promise<T
   try {
     const raw = await readFile(labRunPath(id, dataDir), 'utf8');
     const run = JSON.parse(raw) as TrainingLabRun;
-    // Backfill for runs saved before 2026-08-10 (agent choice was hardcoded to grok).
-    return { ...run, draftAgent: run.draftAgent ?? 'grok', critiqueAgent: run.critiqueAgent ?? 'grok' };
+    // Backfill for runs saved before 2026-08-10 (agent choice was hardcoded to grok)
+    // and before 2026-08-14 (forced-choice REFINE fields on each round).
+    return {
+      ...run,
+      draftAgent: run.draftAgent ?? 'grok',
+      critiqueAgent: run.critiqueAgent ?? 'grok',
+      rounds: (run.rounds ?? []).map((round) => ({
+        ...round,
+        ruleChanges: round.ruleChanges ?? null,
+        notARuleProblem: round.notARuleProblem ?? null,
+      })),
+    };
   } catch {
     return null;
   }

@@ -1,0 +1,236 @@
+Right now, there is an entire industry built around one problem.
+Companies charge a monthly fee for software that does one job.
+Make AI writing sound less like AI.
+Search it yourself.
+Dozens of tools all promising the same thing.
+Here is what nobody tells you.
+The thing they are selling isn't magic.
+It's two measurable patterns in how a model writes.
+And once you know what those patterns are,
+you can build the fix yourself for free,
+using two tools sitting in your Google account right now.
+First, predictability.
+A language model always reaches for the most likely next word.
+Detectors measure exactly that.
+How predictable your word choices are.
+Low predictability, high suspicion.
+Second, and this one matters more.
+Burstiness.
+Read a few paragraphs of AI writing out loud.
+Every sentence lands in roughly the same length.
+Human writing doesn't do that.
+We write three words, then we write 40.
+We interrupt ourselves.
+So the fix isn't a secret algorithm.
+It's teaching a system to target those two things on purpose.
+Here's how that system gets built.
+Start in notebook LM.
+Create a new notebook.
+What goes in are style sources.
+Writing that already sounds like you.
+Your own blog posts.
+An old script.
+An email you were proud of.
+If you don't have any of that yet,
+a short story you love works just as well.
+As long as it's public domain,
+or something you hold the rights to.
+For this build,
+I'm using five ohenery stories.
+Clean prose.
+And a very distinct rhythm,
+which makes the next step easy to see working.
+Now the first prompt.
+Copy prompt one and paste it in.
+Every prompt and every file in this build
+is in the pinned comment,
+free to download.
+What comes back is not a summary of what the writing says.
+It's a breakdown of how it's written.
+Sentence rhythm.
+Favorite transitions.
+Vocabulary.
+Punctuation habits.
+That's your voice profile.
+And it's good.
+But right now it's sitting inside a chat window.
+So copy that output,
+paste it into a document,
+and save it as a PDF.
+That file becomes the specification
+your system matches against every time from now on.
+But a voice profile on its own has a gap in it.
+It knows how you sound.
+It has no idea who you're talking to.
+Stay in notebook LM and open deep research.
+Paste prompt two.
+Then fill in the two blanks,
+your niche and your target audience.
+This is the part that answers who you're writing for,
+what they already know,
+and what words they actually use.
+Give it a few minutes.
+When the research finishes,
+you'll see an import option.
+Do not click it.
+Instead, click top sources.
+Unselect all of them.
+Import the research report only.
+Open it.
+Copy it.
+Paste it into a document,
+save it as a PDF.
+Built once used forever.
+Now over to Gemini.
+Click the Settings icon,
+then Gems,
+then under the Gem Manager,
+create a new gem.
+Call this one writer.
+Paste the description into the description box,
+and the instructions into the instructions box.
+Then the Knowledge Files.
+5 PDFs.
+The human versus AI explainer.
+Why AI writing sounds the way it does,
+and what human writing does differently.
+For Bidden Patterns.
+This one matters more than people expect,
+because it's about statistical patterns,
+not banned words.
+Negative examples.
+Bad, robotic AI writing.
+Each one followed by exactly what's wrong with it.
+The gem reads these only to recognize those patterns and avoid them.
+Then your niche and audience profile,
+and your voice profile.
+Save the gem.
+You now have a writer.
+If this just saved you an afternoon of work,
+hit subscribe.
+I drop one of these workflows every week.
+Give it an idea,
+or paste in a rough AI draft you want repaired,
+and it returns a full piece.
+Matched to your voice,
+grounded in your niche.
+Sounds finished, doesn't it?
+Here's where I have to be honest with you.
+I tested this for days,
+and every single time,
+the model that wrote the draft,
+would also tell me the draft was excellent.
+It graded its own homework.
+It found loopholes in its own rules,
+without even trying.
+Hiding a banned pattern behind a few extra words,
+then telling me with complete confidence
+that the pattern was gone.
+That's not a flaw in this tool.
+That's what happens anytime you ask a system to check its own work.
+So the fix isn't a stricter rule.
+It's a second reviewer,
+with no reason to defend the first draft.
+Create a new gem,
+call it auditor.
+Give it the description,
+and the exact instructions from the PDF.
+For knowledge,
+your voice profile,
+negative examples,
+forbidden patterns,
+and the self-audit rubric.
+The rubric in the pinned comment looks for reasons to fail,
+checks every rule against evidence,
+and stops the moment a hard gate breaks.
+Save it.
+Now the test.
+I open the writer,
+and hand it a full story that was originally written by AI.
+Use the pro model here if you have it.
+The difference in output is visible.
+The story comes back,
+I copy it,
+and I paste it into the auditor.
+Most people get the next part wrong,
+and it quietly ruins the whole system.
+A finished draft goes into a brand new chat.
+Never the conversation that wrote it.
+Two hard gates run first.
+No invented facts.
+No repeated three-part patterns,
+including the dressed up ones.
+Fail either gate,
+and the draft goes straight back.
+No score needed.
+Clear both,
+and six weighted checks run.
+Sentence rhythm.
+Specific detail over generic filler.
+How often it leans on flowery language.
+Word choice,
+tone,
+and whether it still sounds like you.
+One number out of a hundred.
+First pass,
+70% needs revision.
+Let me look at why.
+And this is the part that makes it usable.
+It doesn't just score the draft.
+It names the exact lines that failed.
+I copy that evaluation,
+and paste it back into the writer.
+Into the same conversation that wrote the story.
+It repairs only those lines,
+and hands me a new version.
+Back to the auditor,
+fresh chat,
+second pass,
+80% minor revision.
+That verdict means
+publishable,
+with small fixes left.
+Right,
+check,
+fix,
+check again.
+That loop is the entire system.
+Now the harder test.
+No source story this time.
+Just an idea.
+A watch repairman.
+A customer who keeps returning the same watch
+already repaired several times
+with a different excuse at every visit.
+Nothing else.
+No plot.
+No ending.
+The system built the whole story from scratch,
+including a twist I never wrote.
+And the auditor still sent it back for revision.
+Same loop.
+Right,
+check,
+fix,
+check again.
+One story built from a source.
+One built from nothing but a sentence.
+Both came out sounding like a person wrote them,
+because at every step,
+something was actually checking.
+Build your voice profile once,
+and reuse it for every script,
+every post,
+every idea you'll ever write.
+And when the auditor tells you something failed,
+trust it.
+That's not the tool being difficult.
+That's the only part of this build
+that keeps it honest.
+Both gem instruction sets,
+all five knowledge files,
+and both notebook LM prompts
+are in the pinned comment.
+Free.
+No email required.
+See you in the next one.

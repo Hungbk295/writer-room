@@ -39,7 +39,7 @@ import { ANALYZE_STAGE } from './aggregator.ts';
 import { preflightVideo, type PreflightResult } from './preflight.ts';
 
 /** SDD §5.5 turn_key inputs — bump manually if the ANALYZE prompt template changes. */
-const PROMPT_VERSION = 'training-analyze-v2';
+const PROMPT_VERSION = 'training-analyze-v3-payoff-gate';
 
 /**
  * Generous single-page transcript fetch limit (M1 simplification, documented
@@ -81,10 +81,20 @@ function buildAnalyzePrompt(): string {
     'transcript as a list of `segments`, each with a unique `id`, `index`, `startSec`,',
     '`endSec`, and `text`.',
     '',
-    'Extract 3 to 8 concrete, evidence-backed style/content patterns from this video —',
+    'Extract 4 to 10 concrete, evidence-backed style/content patterns from this video —',
     'observations about hooks, structure, pacing, recurring phrases, argument style, or',
     'anything else genuinely observable in the transcript. Do not force a fixed set of',
     'categories; only report patterns the transcript actually supports.',
+    '',
+    '## Required payoff coverage',
+    '',
+    'At least ONE rule must explain the video\'s payoff: how it resolves the tension,',
+    'delivers the promise/open loop, crystallizes the takeaway, or lands the emotional',
+    'or practical reward for the viewer. Mark that rule with `"role": "payoff"` and',
+    'cite evidence from the actual payoff/closing beat — not from the opening promise.',
+    'A CTA, channel sign-off, or disclaimer alone is NOT a payoff. If payoff and CTA',
+    'are adjacent, describe the payoff separately. This requirement is checked by code;',
+    'a result with no `role: "payoff"` rule is rejected.',
     '',
     'Write every `statement` in the SAME language as the transcript\'s `text` (e.g. if',
     'the transcript is Vietnamese, write the statement in Vietnamese, not English).',
@@ -103,7 +113,7 @@ function buildAnalyzePrompt(): string {
     'Write your result as JSON to `out/result.json` in exactly this shape:',
     '',
     '```json',
-    '{ "rules": [ { "id": "rule-1", "statement": "...", "evidence": [ { "segmentIds": ["..."], "quote": "..." } ] } ] }',
+    '{ "rules": [ { "id": "rule-1", "statement": "...", "role": "payoff", "evidence": [ { "segmentIds": ["..."], "quote": "..." } ] } ] }',
     '```',
   ].join('\n');
 }
@@ -157,7 +167,7 @@ export async function runFormulaDiscovery(
         rules: Array.isArray(rules) ? (rules as AnalysisRule[]) : [],
         createdAt: new Date().toISOString(),
       };
-      return validateAnalysis(analysis, segmentsById);
+      return validateAnalysis(analysis, segmentsById, { requirePayoff: true });
     },
   });
 
@@ -194,7 +204,9 @@ export async function runFormulaDiscovery(
  * rather than imported since this path deliberately does NOT depend on the
  * pipeline module (no ledger, no turn_key, nothing pipeline-shaped here). */
 const MANUAL_STANDING_POINTER =
-  'Write your result to out/result.json. Do not write anywhere else. Reply "done" when the file exists.';
+  'Write your result to out/result.json. Do not write anywhere else. If out/result.json '
+  + 'already exists from a rejected attempt, overwrite it with a corrected version. '
+  + 'Reply "done" only after the corrected file is written.';
 
 function manualAnalyzeDir(dataDir: string, formulaId: string): string {
   return join(dataDir, 'workspaces', 'manual-analyze', formulaId);
@@ -231,6 +243,9 @@ export async function startInteractiveFormulaDiscovery(
     return { status: 'BLOCKED', blockers: preflight.blockers };
   }
   const channelTitle = preflight.channelTitle ?? '';
+  // Display name = video title (not channel). Channel is provenance/filter only.
+  const snapshot = spy.store.getVideoSnapshot(videoSnapshotId);
+  const videoTitle = snapshot?.title?.trim() || undefined;
 
   const { segments } = spy.getTranscript(videoSnapshotId, 0, TRANSCRIPT_FETCH_LIMIT);
   const envelopeSegments: EnvelopeSegment[] = segments.map((s) => ({
@@ -249,6 +264,7 @@ export async function startInteractiveFormulaDiscovery(
     version: 1,
     videoSnapshotId,
     channelTitle,
+    ...(videoTitle ? { videoTitle, title: videoTitle } : {}),
     rules: [],
     includedArtifacts: [],
     lineage: {},
@@ -335,7 +351,9 @@ export async function importFormulaDiscoveryResult(
     rules: Array.isArray(rules) ? (rules as AnalysisRule[]) : [],
     createdAt: new Date().toISOString(),
   };
-  const validation = validateAnalysis(analysis, segmentsById);
+  // Interactive import must enforce the same completeness gate as the automatic
+  // ANALYZE path; otherwise the manual route could still persist payoff-less Formulas.
+  const validation = validateAnalysis(analysis, segmentsById, { requirePayoff: true });
   if (!validation.ok) {
     return { status: 'INVALID', reason: validation.reason };
   }

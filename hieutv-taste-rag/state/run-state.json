@@ -1,0 +1,19 @@
+{
+  "last_run_at": "2026-08-12T03:13:25Z",
+  "pipeline_version": "1.0.0",
+  "status": "corpus_consolidated_indexing_skipped_by_request",
+  "run_type": "corpus_consolidation",
+  "sources_inspected": 30,
+  "accepted_cases_inspected": 229,
+  "quarantined": 0,
+  "rejected": 0,
+  "candidate_events_before": 463,
+  "candidate_events_after": 458,
+  "candidate_slugs_before": 407,
+  "candidate_slugs_after": 393,
+  "principles_promoted": 5,
+  "patterns_promoted": 3,
+  "input_hashes_verified": 30,
+  "input_hashes_changed": 0,
+  "qmd_status": "not_run_by_user_instruction"
+}

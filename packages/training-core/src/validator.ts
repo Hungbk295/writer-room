@@ -19,7 +19,12 @@ import type {
 
 export type ValidateAnalysisResult =
   | { ok: true }
-  | { ok: false; errorCode: 'AGENT_UNGROUNDED'; reason: string };
+  | { ok: false; errorCode: 'AGENT_UNGROUNDED' | 'AGENT_INCOMPLETE'; reason: string };
+
+export interface ValidateAnalysisOptions {
+  /** Reject an otherwise grounded rule set that never captures the video's payoff. */
+  requirePayoff?: boolean;
+}
 
 /**
  * Multi-segment grounding check shared by `validateAnalysis`/`validateCritique`/
@@ -64,6 +69,7 @@ function groundQuoteInSegments(
 export function validateAnalysis(
   analysis: AnalysisArtifact,
   segmentsById: Map<string, { text: string }>,
+  options: ValidateAnalysisOptions = {},
 ): ValidateAnalysisResult {
   if (!Array.isArray(analysis.rules) || analysis.rules.length === 0) {
     return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: 'analysis has zero rules — nothing extracted is not useful output' };
@@ -82,6 +88,14 @@ export function validateAnalysis(
         return { ok: false, errorCode: 'AGENT_UNGROUNDED', reason: `rule "${rule.id}" ${failure}` };
       }
     }
+  }
+
+  if (options.requirePayoff && !analysis.rules.some((rule) => rule.role === 'payoff')) {
+    return {
+      ok: false,
+      errorCode: 'AGENT_INCOMPLETE',
+      reason: 'formula has no rule with role "payoff" — capture how the video resolves or delivers its promise, with grounded evidence from that beat',
+    };
   }
 
   return { ok: true };

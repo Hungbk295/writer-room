@@ -84,6 +84,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       handler: (args, context) => spy.channelSpy({
         url: text(args['url'], 'url'),
         topN: integer(args['top_n'], 5, 1, 20),
+        selectionMode: args['selection_mode'] === 'latest' ? 'latest' : 'popular',
         scanLimit: integer(args['scan_limit'], 60, 1, 500),
         rankBy: args['rank_by'] === 'views' ? 'views' : 'velocity',
         minDurationSec: integer(args['min_duration_sec'], 60, 0, 7200),

@@ -24,6 +24,8 @@ Nguồn theo chủ đề
 
 Hai lane chỉ gặp nhau tại **Formula Package đã publish**. Training không quyết định nội dung của một bài cụ thể; Writer không được tự sửa Formula đang dùng.
 
+> **Superseded premise 2026-08-11:** "Formula Package đã publish" ở trên **không còn** là thứ Writer nhận trực tiếp. Theo `plan/writer-train/FORMULA-MIGRATION-TO-WRITER.md`: Formula (mọi origin, kể cả compound) là **training-only**, hard fail nếu vào Writer. Writer chỉ nhận `WRITER_READY_PROFILE` — một artifact riêng, migrate + human duyệt từ Formula, nhẹ hơn nhiều so với FormulaLoop release gate mô tả ở §7/§14/§15 dưới đây (không cần train/dev/final-holdout, không cần fingerprint gate, không cần mandatory transfer-test §15.1). Lane A (Formula Training/FormulaLoop) dưới đây vẫn là tài liệu lịch sử hợp lệ cho phần đã build; chỉ đường nối "Formula release → Writer input" bị thay bằng bước migration nhẹ ở plan file.
+
 ---
 
 ## 1. Mục tiêu và phạm vi

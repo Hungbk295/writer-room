@@ -21,6 +21,19 @@ export interface Health {
   uptimeMs: number;
 }
 
+export type JobNotificationKind = 'training-lab' | 'writer' | 'writer-v2';
+
+/** Persisted only when a whole job reaches DONE — never for stage progress or failures. */
+export interface JobDoneNotification {
+  id: string;
+  kind: JobNotificationKind;
+  jobId: string;
+  title: string;
+  detail: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
 export interface AgentDefinition {
   id: string;
   name: string;
@@ -86,6 +99,10 @@ export interface SpyRunSummary {
   createdAt: string;
   completedAt: string | null;
   videoCount?: number;
+  /** Channel name or the individual video title, resolved by the server. */
+  displayTitle?: string;
+  /** Present for standalone video runs. */
+  thumbnailUrl?: string | null;
 }
 
 export interface SpyVideoRow {
@@ -159,6 +176,329 @@ export interface WriterPack extends WriterPackSummary {
   videoIds: string[];
 }
 
+/** Persisted shortlist behind the simple Source Pack Explorer. */
+export interface SourcePackVideoPick {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  canonicalUrl: string;
+  thumbnailUrl?: string | null;
+  viewCount: number;
+  durationSec: number;
+  publishedAt: string | null;
+}
+
+export interface SourcePackSession {
+  id: string;
+  name: string;
+  picks: SourcePackVideoPick[];
+  lastWriterPackId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourcePackSessionSummary {
+  id: string;
+  name: string;
+  pickCount: number;
+  lastWriterPackId?: string;
+  updatedAt: string;
+}
+
+// ── Writer profiles / runs / taste (FM2) ─────────────────────────────────
+
+export type TasteDecisionType =
+  | 'OPENING'
+  | 'ANGLE'
+  | 'TRANSITION'
+  | 'DEPTH'
+  | 'TONE'
+  | 'ENDING'
+  | 'CUT';
+
+export interface WriterProfileSummary {
+  id: string;
+  version: number;
+  label: string;
+  readiness: 'TRIAL' | 'VALIDATED';
+  guidelineCount: number;
+  createdAt: string;
+}
+
+export interface WriterReadyProfile {
+  kind: 'WRITER_READY_PROFILE';
+  id: string;
+  version: number;
+  label: string;
+  readiness: 'TRIAL' | 'VALIDATED';
+  scope: { language: string; genre?: string; contentModes: string[] };
+  editorialPromise?: string;
+  guidelines: Array<{
+    id: string;
+    instruction: string;
+    when?: string;
+    avoidWhen?: string;
+    priority: 'CORE' | 'OPTIONAL';
+    sourceRuleIds: string[];
+  }>;
+  antiPatterns: string[];
+  createdAt: string;
+}
+
+export interface WriterRunSummary {
+  id: string;
+  status: 'RUNNING' | 'DONE' | 'FAILED' | 'EDITED';
+  phase?: 'PLANNING' | 'RETRIEVING' | 'DRAFTING' | 'REVIEWING' | 'REFINING' | 'DONE' | 'FAILED';
+  brief: string;
+  requestedTitle?: string;
+  targetWords?: number;
+  packTitle: string;
+  profileLabel: string;
+  profileId: string;
+  agentId: string;
+  createdAt: string;
+  updatedAt: string;
+  hasDraft: boolean;
+  editCount: number;
+  decisionCount?: number;
+}
+
+// ── Write Loop v2 (STUDY → WRITE → gate → editor → repair → gate) ──────────
+
+export interface GeneralPackSummary {
+  path: string;
+  version: number | null;
+  title: string;
+  wordCount: number;
+  hash: string;
+}
+
+export interface WriterV2LedgerEntry {
+  fact: string;
+  videoId?: string;
+  quote: string;
+}
+
+export interface WriterV2StudyArtifact {
+  coverageMap: Array<{ videoId: string; mainClaim: string; angle: string }>;
+  gap: string;
+  outline: WriterVideoPlan;
+  factsLedger: WriterV2LedgerEntry[];
+}
+
+export interface GateViolation {
+  code: string;
+  detail: string;
+  quote?: string;
+}
+
+export interface GateResult {
+  passed: boolean;
+  violations: GateViolation[];
+}
+
+export interface EditorDefect {
+  quote: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  note: string;
+}
+
+export type WriterV2Phase = 'STUDY' | 'WRITE' | 'GATE' | 'EDIT_REVIEW' | 'REPAIR' | 'DONE' | 'FAILED';
+
+export interface WriterRunV2 {
+  id: string;
+  status: 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
+  phase: WriterV2Phase;
+  brief: string;
+  requestedTitle?: string;
+  targetWords?: number;
+  audience?: string;
+  packId: string;
+  packTitle: string;
+  generalPackPath: string;
+  generalPackHash: string;
+  generalPackVersion: number | null;
+  formulaId: string;
+  formulaVersion: number;
+  formulaHash: string;
+  agentId: string;
+  editorAgentId: string;
+  study: WriterV2StudyArtifact | null;
+  draft: {
+    title: string;
+    script: string;
+    outlineChanges: string[];
+    beatAnchors: string[];
+    coinedLabels?: string[];
+  } | null;
+  gateResults: GateResult[];
+  editorDefects: EditorDefect[] | null;
+  finalScript: string | null;
+  repairAttempted?: boolean;
+  createdAt: string;
+  updatedAt: string;
+  errorCode?: string;
+  errorReason?: string;
+}
+
+export interface WriterRunV2Summary {
+  id: string;
+  status: WriterRunV2['status'];
+  phase: WriterV2Phase;
+  brief: string;
+  requestedTitle?: string;
+  targetWords?: number;
+  packId: string;
+  packTitle: string;
+  generalPackPath: string;
+  formulaId: string;
+  formulaVersion: number;
+  agentId: string;
+  editorAgentId: string;
+  createdAt: string;
+  updatedAt: string;
+  hasScript: boolean;
+  gateViolationCount: number;
+  defectCount: number;
+}
+
+export interface WriterEditRecord {
+  id: string;
+  decisionType: TasteDecisionType;
+  before: string;
+  after: string;
+  reason?: string;
+  situation: string;
+  tasteCaseId: string;
+  createdAt: string;
+}
+
+export interface TastePrecedent {
+  path: string;
+  title: string;
+  score: number;
+  decisionType?: string;
+  excerpt: string;
+  source: 'qmd' | 'filesystem';
+}
+
+export interface WriterEditorialDecision {
+  id: string;
+  decisionType: string;
+  situation: string;
+  geometryTags: string[];
+  audience?: string;
+  rhetoricalNeed?: string;
+  epistemicRisk?: string;
+  query?: { intent: string; lex: string; vec: string; hyde: string };
+  structuredQuery?: string;
+  precedents: TastePrecedent[];
+  retrieveWarnings: string[];
+}
+
+export interface WriterVideoPlan {
+  coreInsight: string;
+  memoryAnchor: {
+    kind: 'name' | 'equation' | 'contrast' | 'image';
+    value: string;
+  };
+  progression: Array<{
+    beat: string;
+    newInformation: string;
+    characterOrArgumentChange: string;
+    visualAnchor: string;
+  }>;
+  endingPayoff: {
+    resolvesOpening: string;
+    audienceCanDo: string;
+  };
+  cutList: string[];
+}
+
+export interface WriterQualityCheckpointDefinition {
+  refId: string;
+  kind: 'EDITORIAL_DECISION' | 'VIDEO_EFFECT' | 'PROFILE_GUIDELINE';
+  label: string;
+  instruction: string;
+  weight: number;
+  optional: boolean;
+}
+
+export interface WriterQualityReview {
+  round: number;
+  score: number;
+  threshold: number;
+  passed: boolean;
+  hardGateViolations?: string[];
+  summary?: string;
+  checkpoints: Array<{
+    refId: string;
+    status: 'PASS' | 'PARTIAL' | 'MISS' | 'NA';
+    note: string;
+    evidenceQuote?: string;
+  }>;
+  antiPatterns: Array<{
+    refId: string;
+    violated: boolean;
+    note: string;
+    evidenceQuote?: string;
+  }>;
+}
+
+export interface WriterRun {
+  id: string;
+  status: 'RUNNING' | 'DONE' | 'FAILED' | 'EDITED';
+  phase?: 'PLANNING' | 'RETRIEVING' | 'DRAFTING' | 'REVIEWING' | 'REFINING' | 'DONE' | 'FAILED';
+  brief: string;
+  requestedTitle?: string;
+  targetWords?: number;
+  packId: string;
+  packTitle: string;
+  profileId: string;
+  profileVersion: number;
+  profileLabel: string;
+  profileHash: string;
+  agentId: string;
+  editorialDecisions?: WriterEditorialDecision[];
+  videoPlan?: WriterVideoPlan | null;
+  draft: { title: string; script: string } | null;
+  draftArtifactHash: string | null;
+  currentScript: string | null;
+  currentTitle: string | null;
+  edits: WriterEditRecord[];
+  tastePrecedents?: TastePrecedent[];
+  tasteRagWarnings?: string[];
+  qualityChecklist?: WriterQualityCheckpointDefinition[];
+  qualityThreshold?: number;
+  qualityReviews?: WriterQualityReview[];
+  refineArtifactHash?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  errorCode?: string;
+  errorReason?: string;
+}
+
+export interface TasteDecisionCase {
+  id: string;
+  decisionType: TasteDecisionType;
+  situation: string;
+  before: string;
+  after: string;
+  reason?: string;
+  evidenceStatus: 'OBSERVED' | 'INFERRED' | 'SYNTHETIC';
+  humanValidated: boolean;
+  writerRunId?: string;
+  createdAt: string;
+}
+
+export interface TasteCaseSummary {
+  id: string;
+  decisionType: TasteDecisionType;
+  situation: string;
+  writerRunId?: string;
+  createdAt: string;
+}
+
 // ── Training (M1 Formula Discovery) — mirrors `@writer-room/training-core`'s
 // `FormulaArtifact`/`AnalysisRule`/`Evidence` and daemon's `PreflightResult`/
 // `RunFormulaDiscoveryResult` exactly, not divergent field names.
@@ -213,12 +553,16 @@ export interface FormulaSummary {
   status: 'DRAFT' | 'TRIAL' | 'VALIDATED';
   origin: FormulaOrigin;
   version: number;
-  /** Channel title for ANALYZED/REFINED, genre for COMPOUND. */
+  /** Display name: rename → video title → genre/channel. */
   label: string;
   videoCount: number;
   ruleCount: number;
   createdAt: string;
   sourceBatchId?: string;
+  title?: string;
+  videoTitle?: string;
+  channelTitle?: string;
+  videoSnapshotId?: string;
 }
 
 export interface FormulaEvidence {
@@ -231,6 +575,7 @@ export interface FormulaEvidence {
 export interface FormulaRule {
   id: string;
   statement: string;
+  role?: 'hook' | 'setup' | 'escalation' | 'turn' | 'payoff' | 'cta' | 'outro';
   evidence: FormulaEvidence[];
   /** COMPOUND only — where this merged rule came from. */
   sources?: RuleSource[];
@@ -269,6 +614,10 @@ export interface Formula {
   /** ANALYZED / REFINED only. */
   videoSnapshotId?: string;
   channelTitle?: string;
+  /** Original video title at creation (ANALYZED/REFINED). */
+  videoTitle?: string;
+  /** Human display name (rename target). Defaults to video title. */
+  title?: string;
   /** COMPOUND only. */
   genre?: string;
   includedArtifacts: FormulaIncludedArtifactRef[];
@@ -322,6 +671,29 @@ export interface CritiqueArtifact {
   regressionCheck?: RegressionCheckEntry[];
 }
 
+/** One decision REFINE made about the rule set (Write Loop v2 Phase 1.3). */
+export interface TrainingLabRuleChange {
+  ruleId: string;
+  action: 'edit' | 'add' | 'remove' | 'narrow';
+  statement: string;
+  sourcePatternIds: string[];
+}
+
+/** A negative pattern REFINE attributes to execution, not to a rule. */
+export interface TrainingLabNotARuleProblem {
+  patternId: string;
+  reason: string;
+}
+
+/** End-of-run per-rule read-out the human merges from (Write Loop v2 Phase 1.4). */
+export interface TrainingLabRuleVerdict {
+  ruleId: string;
+  statement: string;
+  exercised: number;
+  hurtCount: number;
+  verdict: 'KEEP' | 'SUSPECT' | 'DROP_BEFORE_MERGE';
+}
+
 export interface TrainingLabRound {
   round: number;
   formulaVersionIn: FormulaVersion;
@@ -331,8 +703,13 @@ export interface TrainingLabRound {
   critiqueArtifactHash: string | null;
   formulaVersionOut: FormulaVersion | null;
   changeLog: string[] | null;
+  /** Write Loop v2: forced-choice REFINE output. Null on rounds refined before it. */
+  ruleChanges: TrainingLabRuleChange[] | null;
+  notARuleProblem: TrainingLabNotARuleProblem[] | null;
   status: 'DRAFTING' | 'CRITIQUING' | 'REFINING' | 'DONE' | 'FAILED';
   errorCode?: string;
+  /** Validator detail when the stage failed (e.g. draft word count vs target). */
+  errorReason?: string;
 }
 
 /** The 4 default agents (`DEFAULT_AGENT_IDS`, `packages/daemon/src/agents/defaults.ts`)
@@ -357,6 +734,8 @@ export interface TrainingLabRun {
   updatedAt: string;
   draftAgent: DefaultAgentId;
   critiqueAgent: DefaultAgentId;
+  /** Present once the run reaches DONE. */
+  ruleVerdicts?: TrainingLabRuleVerdict[];
 }
 
 export interface TrainingLabRunSummary {
@@ -384,6 +763,8 @@ export interface PoolRule extends RuleRef {
   formulaOrigin: FormulaOrigin;
   videoSnapshotId: string;
   channelTitle: string;
+  formulaTitle: string;
+  videoTitle?: string;
   statement: string;
   evidenceCount: number;
   formulaCreatedAt: string;
@@ -407,15 +788,24 @@ export interface RuleCluster {
 export interface RuleProposal {
   id: string;
   clusterId: string;
-  statement: string;
+  /** Structured guideline text (FM1). Prefer this over legacy `statement`. */
+  instruction?: string;
+  /** Legacy bare-string field — older sessions / UI fallback. */
+  statement?: string;
+  when?: string;
+  avoidWhen?: string;
+  priority?: 'CORE' | 'OPTIONAL';
   sources: RuleSource[];
   decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
   edited?: boolean;
+  keptOriginal?: boolean;
 }
 
 export interface StudioSession {
   id: string;
   genre: string;
+  /** L1 Formulas scoped as sources — rule pool is limited to these. */
+  sourceFormulaIds: string[];
   picks: RuleRef[];
   clusters: RuleCluster[];
   proposals: RuleProposal[];
@@ -440,6 +830,9 @@ export interface StudioSessionSummary {
 
 export const api = {
   health: () => request<Health>('/api/health'),
+  listJobNotifications: () => request<{ notifications: JobDoneNotification[] }>('/api/notifications'),
+  markJobNotificationRead: (id: string) =>
+    request<JobDoneNotification>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }),
 
   listSpyRuns: () => request<{ runs: SpyRunSummary[] }>('/api/spy/runs'),
   getSpyRun: (id: string) => request<{
@@ -454,6 +847,7 @@ export const api = {
     url: string;
     depth?: string;
     topN?: number;
+    selectionMode?: 'popular' | 'latest';
     scanLimit?: number;
   }) => request<SpyStarted>('/api/spy/channel', { method: 'POST', body: JSON.stringify(body) }),
 
@@ -474,7 +868,13 @@ export const api = {
 
   exportSourcePack: (
     spyRunId: string,
-    opts: { limit?: number; videoIds?: string[] } = {},
+    opts: {
+      limit?: number;
+      videoIds?: string[];
+      /** Fraction of each video transcript (default 0.5). */
+      transcriptFraction?: number;
+      maxCharsPerVideo?: number;
+    } = {},
   ) =>
     request<{
       markdown: string;
@@ -525,8 +925,113 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
+  /** Append Spy export into an existing pack (dedupe by videoId). */
+  mergeWriterPack: (
+    id: string,
+    body: {
+      markdown: string;
+      videoIds?: string[];
+      spyRunId?: string;
+      channelTitle?: string;
+      warnings?: string[];
+    },
+  ) =>
+    request<WriterPack>(`/api/writer/packs/${encodeURIComponent(id)}/merge`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  renameWriterPack: (id: string, title: string) =>
+    request<WriterPack>(`/api/writer/packs/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
   deleteWriterPack: (id: string) =>
     request<{ ok: boolean }>(`/api/writer/packs/${id}`, { method: 'DELETE' }),
+
+  listSourcePackSessions: () =>
+    request<{ sessions: SourcePackSessionSummary[] }>('/api/writer/source-pack-sessions'),
+  getSourcePackSession: (id: string) =>
+    request<SourcePackSession>(`/api/writer/source-pack-sessions/${encodeURIComponent(id)}`),
+  createSourcePackSession: (name?: string) =>
+    request<SourcePackSession>('/api/writer/source-pack-sessions', {
+      method: 'POST',
+      body: JSON.stringify(name ? { name } : {}),
+    }),
+  saveSourcePackSession: (id: string, body: { name?: string; picks?: SourcePackVideoPick[] }) =>
+    request<SourcePackSession>(`/api/writer/source-pack-sessions/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteSourcePackSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/writer/source-pack-sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  searchSourcePackVideos: (query: string) =>
+    request<{ videos: SourcePackVideoPick[] }>('/api/writer/source-pack-search', {
+      method: 'POST',
+      body: JSON.stringify({ query }),
+    }),
+  buildSourcePack: (sessionId: string) =>
+    request<{ operationId: string; status: string }>(
+      `/api/writer/source-pack-sessions/${encodeURIComponent(sessionId)}/build`,
+      { method: 'POST' },
+    ),
+
+  // Writer profiles (read-only; Studio publishes) + runs + taste capture (FM2)
+  listWriterProfiles: () => request<{ profiles: WriterProfileSummary[] }>('/api/writer/profiles'),
+  getWriterProfile: (id: string) =>
+    request<WriterReadyProfile>(`/api/writer/profiles/${encodeURIComponent(id)}`),
+  /** Thin TRIAL profile so Writer works before Studio migrate finishes. */
+  seedTrialProfile: (label?: string) =>
+    request<WriterReadyProfile>('/api/writer/profiles/seed-trial', {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    }),
+  listWriterRuns: () => request<{ runs: WriterRunSummary[] }>('/api/writer/runs'),
+  getWriterRun: (id: string) =>
+    request<WriterRun>(`/api/writer/runs/${encodeURIComponent(id)}`),
+  startWriterRun: (body: {
+    brief: string;
+    title?: string;
+    targetWords?: number;
+    packId: string;
+    profileId: string;
+    agentId?: string;
+  }) =>
+    request<WriterRun>('/api/writer/runs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteWriterRun: (id: string) =>
+    request<{ ok: boolean }>(`/api/writer/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ── Write Loop v2 ────────────────────────────────────────────────────────
+  listGeneralPacks: () => request<{ packs: GeneralPackSummary[] }>('/api/writer/general-packs'),
+  getGeneralPack: (path: string) =>
+    request<GeneralPackSummary & { markdown: string }>(
+      `/api/writer/general-packs/${encodeURIComponent(path)}`,
+    ),
+  listWriterRunsV2: () => request<{ runs: WriterRunV2Summary[] }>('/api/writer/v2/runs'),
+  getWriterRunV2: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}`),
+  startWriterRunV2: (body: {
+    brief: string;
+    title?: string;
+    audience?: string;
+    targetWords?: number;
+    packId: string;
+    generalPack: string;
+    formulaId: string;
+    agentId?: string;
+    editorAgentId?: string;
+  }) =>
+    request<WriterRunV2>('/api/writer/v2/runs', { method: 'POST', body: JSON.stringify(body) }),
+  /** Resume only a failed WRITE after STUDY succeeded; it creates WRITE attempt 2. */
+  continueWriterRunV2: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}/continue`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  deleteWriterRunV2: (id: string) =>
+    request<{ ok: boolean }>(`/api/writer/v2/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listAgents: () =>
     request<{ agents: AgentDefinition[]; guards: Record<string, number>; defaults?: string[] }>('/api/agents'),
@@ -603,18 +1108,31 @@ export const api = {
   listFormulas: () => request<{ formulas: FormulaSummary[] }>('/api/training/formulas'),
   deleteFormula: (id: string) =>
     request<{ ok: boolean }>(`/api/training/formulas/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  renameFormula: (id: string, title: string) =>
+    request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
 
   // ── Formula Studio (SDD §12b) — all deterministic, no token spent ──
-  listRulePool: (includeOlderVersions = false) =>
-    request<{ rules: PoolRule[] }>(
-      `/api/studio/rule-pool${includeOlderVersions ? '?includeOlderVersions=true' : ''}`,
-    ),
+  listRulePool: (includeOlderVersions = false, formulaIds?: string[]) => {
+    const params = new URLSearchParams();
+    if (includeOlderVersions) params.set('includeOlderVersions', 'true');
+    if (formulaIds && formulaIds.length > 0) params.set('formulaIds', formulaIds.join(','));
+    const qs = params.toString();
+    return request<{ rules: PoolRule[] }>(`/api/studio/rule-pool${qs ? `?${qs}` : ''}`);
+  },
   listStudioSessions: () => request<{ sessions: StudioSessionSummary[] }>('/api/studio/sessions'),
   getStudioSession: (id: string) => request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}`),
   createStudioSession: (genre: string) =>
     request<StudioSession>('/api/studio/sessions', { method: 'POST', body: JSON.stringify({ genre }) }),
   deleteStudioSession: (id: string) =>
     request<{ ok: boolean }>(`/api/studio/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setStudioSources: (id: string, formulaIds: string[]) =>
+    request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/sources`, {
+      method: 'POST',
+      body: JSON.stringify({ formulaIds }),
+    }),
   setStudioPicks: (id: string, picks: RuleRef[]) =>
     request<StudioSession>(`/api/studio/sessions/${encodeURIComponent(id)}/picks`, {
       method: 'POST',
@@ -634,10 +1152,16 @@ export const api = {
     ),
   getFormula: (id: string) => request<Formula>(`/api/training/formulas/${encodeURIComponent(id)}`),
 
-  startTrainingLabRun: (formulaId: string, draftAgent: DefaultAgentId, critiqueAgent: DefaultAgentId) =>
+  startTrainingLabRun: (
+    formulaId: string,
+    draftAgent: DefaultAgentId,
+    critiqueAgent: DefaultAgentId,
+    /** Write Loop v2: 2 by default, 1 allowed. Omit to take the server default. */
+    maxRounds?: number,
+  ) =>
     request<TrainingLabRun>('/api/training/lab/start', {
       method: 'POST',
-      body: JSON.stringify({ formulaId, draftAgent, critiqueAgent }),
+      body: JSON.stringify({ formulaId, draftAgent, critiqueAgent, ...(maxRounds ? { maxRounds } : {}) }),
     }),
   listTrainingLabRuns: () => request<{ runs: TrainingLabRunSummary[] }>('/api/training/lab/runs'),
   getTrainingLabRun: (id: string) =>

@@ -3,6 +3,7 @@ import {
   api,
   formatDuration,
   type SpyVideoRow,
+  type WriterPackSummary,
 } from '../api.ts';
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
@@ -37,6 +38,9 @@ export function SpyRunPage({ id }: { id: string }) {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterTab, setFilterTab] = useState<'all' | 'ready' | 'missing'>('all');
+  /** Empty = create new pack; otherwise merge into this Writer pack id. */
+  const [mergeTargetId, setMergeTargetId] = useState('');
+  const [writerPacks, setWriterPacks] = useState<WriterPackSummary[]>([]);
 
   const selectVideo = (videoId: string) => {
     setActiveId(videoId);
@@ -59,6 +63,12 @@ export function SpyRunPage({ id }: { id: string }) {
   useEffect(() => {
     void reload().catch((err) => setError(err.message));
   }, [reload]);
+
+  useEffect(() => {
+    void api.listWriterPacks()
+      .then((data) => setWriterPacks(data.packs))
+      .catch(() => setWriterPacks([]));
+  }, []);
 
   const { operation } = useOperationPoll(operationId, async (op) => {
     setBusy(false);
@@ -144,24 +154,35 @@ export function SpyRunPage({ id }: { id: string }) {
     setError(null);
     setNotice(null);
     try {
+      // 50% transcript per video (daemon default); explicit for clarity at the call site.
       const opts = selectedReadyIds.length > 0
-        ? { videoIds: selectedReadyIds }
-        : { limit: 5 };
+        ? { videoIds: selectedReadyIds, transcriptFraction: 0.5 }
+        : { limit: 5, transcriptFraction: 0.5 };
       const result = await api.exportSourcePack(id, opts);
       setPackPreview(result.markdown);
       setMeta({ wordCount: result.wordCount, warnings: result.warnings });
 
       if (toWriter) {
-        const pack = await api.createWriterPack({
-          title: result.channelTitle || source,
+        const payload = {
           markdown: result.markdown,
           videoIds: result.videoIds,
           spyRunId: id,
           channelTitle: result.channelTitle,
-          wordCount: result.wordCount,
           warnings: result.warnings,
-        });
-        setNotice(`Đã gửi Writer (${result.videoIds.length} video).`);
+        };
+        const pack = mergeTargetId
+          ? await api.mergeWriterPack(mergeTargetId, payload)
+          : await api.createWriterPack({
+            title: result.channelTitle || source,
+            wordCount: result.wordCount,
+            ...payload,
+          });
+        const label = pack.title || pack.channelTitle || pack.id.slice(0, 8);
+        setNotice(
+          mergeTargetId
+            ? `Đã merge ${result.videoIds.length} video vào pack “${label}” (${pack.videoIds.length} video tổng).`
+            : `Đã tạo pack Writer “${label}” (${result.videoIds.length} video).`,
+        );
         location.hash = href({ name: 'writer-pack', id: pack.id }).slice(1);
       }
     } catch (err) {
@@ -420,7 +441,25 @@ export function SpyRunPage({ id }: { id: string }) {
             <span class="muted">· tổng {meta.wordCount} từ</span>
           )}
         </div>
-        <div class="row" style={{ gap: '0.6rem' }}>
+        <div class="row" style={{ gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <label class="field" style={{ margin: 0, minWidth: '14rem' }}>
+            <span class="muted" style={{ fontSize: '0.8rem' }}>Gửi Writer →</span>
+            <select
+              value={mergeTargetId}
+              onChange={(e) => setMergeTargetId((e.target as HTMLSelectElement).value)}
+              disabled={busy}
+              title="Tạo pack mới hoặc merge vào pack có sẵn (multi-channel)"
+            >
+              <option value="">Tạo pack mới</option>
+              {writerPacks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  Merge → {p.title || p.channelTitle || p.id.slice(0, 8)}
+                  {' · '}
+                  {p.videoCount} video
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             class="btn secondary"
             type="button"
@@ -435,7 +474,7 @@ export function SpyRunPage({ id }: { id: string }) {
             disabled={busy || (selectedReadyIds.length === 0 && readyCount === 0)}
             onClick={() => void exportPack(true)}
           >
-            🚀 Gửi sang Writer
+            {mergeTargetId ? '🔗 Merge vào pack' : '🚀 Gửi sang Writer'}
           </button>
         </div>
       </div>

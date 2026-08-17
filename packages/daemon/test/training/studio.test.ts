@@ -8,17 +8,21 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FormulaArtifact } from '@writer-room/training-core';
+import { getProfile } from '../../src/training/profile-store.ts';
 import { getFormula, listFormulas, saveFormula } from '../../src/training/storage.ts';
 import {
   applyProposalDecision,
+  classifyPick,
   createStudioSession,
   getStudioSession,
   listRulePool,
   listStudioSessions,
   promoteCompound,
+  publishProfile,
   rebuildCompound,
   recomputeClusters,
   saveStudioSession,
+  setSourceFormulas,
 } from '../../src/training/studio.ts';
 
 let dir: string;
@@ -58,7 +62,14 @@ describe('listRulePool', () => {
   test('flattens rules across Formulas, newest first', async () => {
     await saveFormula(formula({ id: 'f1', videoSnapshotId: 'v1' }), dir);
     await saveFormula(
-      formula({ id: 'f2', videoSnapshotId: 'v2', channelTitle: 'Kênh Khác', createdAt: '2026-08-10T01:00:00.000Z' }),
+      formula({
+        id: 'f2',
+        videoSnapshotId: 'v2',
+        channelTitle: 'Kênh Khác',
+        videoTitle: 'Video Khác',
+        title: 'Video Khác',
+        createdAt: '2026-08-10T01:00:00.000Z',
+      }),
       dir,
     );
 
@@ -66,7 +77,20 @@ describe('listRulePool', () => {
     expect(pool).toHaveLength(2);
     expect(pool[0]!.videoSnapshotId).toBe('v2');
     expect(pool[0]!.channelTitle).toBe('Kênh Khác');
+    expect(pool[0]!.formulaTitle).toBe('Video Khác');
     expect(pool[0]!.evidenceCount).toBe(1);
+  });
+
+  test('formulaIds scopes the pool to selected sources only', async () => {
+    await saveFormula(formula({ id: 'f1', videoSnapshotId: 'v1' }), dir);
+    await saveFormula(
+      formula({ id: 'f2', videoSnapshotId: 'v2', channelTitle: 'Kênh Khác', createdAt: '2026-08-10T01:00:00.000Z' }),
+      dir,
+    );
+
+    const pool = await listRulePool(dir, { formulaIds: ['f1'] });
+    expect(pool).toHaveLength(1);
+    expect(pool[0]!.formulaId).toBe('f1');
   });
 
   test('shows only the latest version per video by default', async () => {
@@ -140,6 +164,56 @@ describe('listRulePool', () => {
     expect(pool[0]!.videoSnapshotId).toBe('v-old');
     expect(pool[0]!.channelTitle).toBe('Kênh Cũ');
     expect(pool[0]!.formulaOrigin).toBe('ANALYZED');
+  });
+});
+
+describe('setSourceFormulas', () => {
+  test('scopes session and drops picks outside the new source set', async () => {
+    await saveFormula(formula({ id: 'f1', videoSnapshotId: 'v1' }), dir);
+    await saveFormula(
+      formula({
+        id: 'f2',
+        videoSnapshotId: 'v2',
+        channelTitle: 'Kênh Khác',
+        rules: [
+          {
+            id: 'rule-9',
+            statement: 'Khác hẳn',
+            evidence: [{ segmentIds: ['seg-9'], quote: 'quote khác' }],
+          },
+        ],
+      }),
+      dir,
+    );
+
+    const session = await createStudioSession('soi-tc', dir);
+    expect(session.sourceFormulaIds).toEqual([]);
+
+    await setSourceFormulas(session, ['f1', 'f2'], dir);
+    session.picks = [
+      { formulaId: 'f1', ruleId: 'rule-1' },
+      { formulaId: 'f2', ruleId: 'rule-9' },
+    ];
+    await recomputeClusters(session, dir);
+    expect(session.picks).toHaveLength(2);
+
+    await setSourceFormulas(session, ['f1'], dir);
+    expect(session.sourceFormulaIds).toEqual(['f1']);
+    expect(session.picks).toEqual([{ formulaId: 'f1', ruleId: 'rule-1' }]);
+  });
+
+  test('rejects COMPOUND as a source', async () => {
+    await saveFormula(
+      formula({
+        id: 'compound-1',
+        videoSnapshotId: 'v1',
+        origin: 'COMPOUND',
+        genre: 'x',
+      }),
+      dir,
+    );
+    const session = await createStudioSession('g', dir);
+    await expect(setSourceFormulas(session, ['compound-1'], dir)).rejects.toThrow(/COMPOUND/);
   });
 });
 
@@ -229,7 +303,8 @@ describe('session + merge', () => {
       {
         id: 'p-single',
         clusterId: cluster.id,
-        statement: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+        instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+        priority: 'OPTIONAL',
         sources: cluster.members.map((m) => ({
           videoSnapshotId: m.videoSnapshotId,
           channelTitle: m.channelTitle,
@@ -264,7 +339,8 @@ describe('session + merge', () => {
       {
         id: 'p-1',
         clusterId: cluster.id,
-        statement: 'Mở bài bằng câu chuyện cá nhân có số liệu cụ thể',
+        instruction: 'Mở bài bằng câu chuyện cá nhân có số liệu cụ thể',
+        priority: 'OPTIONAL',
         sources: cluster.members.map((m) => ({
           videoSnapshotId: m.videoSnapshotId,
           channelTitle: m.channelTitle,
@@ -329,7 +405,8 @@ describe('session + merge', () => {
       {
         id: 'p-single',
         clusterId: cluster.id,
-        statement: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+        instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+        priority: 'OPTIONAL',
         sources: cluster.members.map((m) => ({
           videoSnapshotId: m.videoSnapshotId,
           channelTitle: m.channelTitle,
@@ -357,7 +434,8 @@ describe('session + merge', () => {
     session.proposals = [{
       id: 'p-single',
       clusterId: cluster.id,
-      statement: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+      instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+      priority: 'OPTIONAL',
       sources: cluster.members.map((m) => ({
         videoSnapshotId: m.videoSnapshotId,
         channelTitle: m.channelTitle,
@@ -393,7 +471,8 @@ describe('session + merge', () => {
     session.proposals = [{
       id: 'p-single',
       clusterId: cluster.id,
-      statement: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+      instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên',
+      priority: 'OPTIONAL',
       sources: cluster.members.map((m) => ({
         videoSnapshotId: m.videoSnapshotId,
         channelTitle: m.channelTitle,
@@ -525,7 +604,8 @@ describe('applyProposalDecision', () => {
     session.proposals = [{
       id: 'p-1',
       clusterId: cluster.id,
-      statement: 'Mở bài bằng một câu chuyện cá nhân, kèm số liệu',
+      instruction: 'Mở bài bằng một câu chuyện cá nhân, kèm số liệu',
+      priority: 'OPTIONAL',
       sources: cluster.members.map((m) => ({
         videoSnapshotId: m.videoSnapshotId,
         channelTitle: m.channelTitle,
@@ -538,7 +618,7 @@ describe('applyProposalDecision', () => {
     return { session, proposalId: 'p-1' };
   }
 
-  test('ACCEPTED with no statement keeps the LLM wording — rebuild yields a SYNTHESIZED rule', async () => {
+  test('ACCEPTED with no edit keeps the LLM wording — rebuild yields a SYNTHESIZED rule', async () => {
     const { session, proposalId } = await seedPendingProposal();
     applyProposalDecision(session, proposalId, 'ACCEPTED');
     await rebuildCompound(session, dir);
@@ -555,10 +635,10 @@ describe('applyProposalDecision', () => {
    * must report `CARRIED` — otherwise `CARRIED` has no code path at all and rots as a
    * dead enum value, and the badge misreports what the human actually decided.
    */
-  test('ACCEPTED with a statement equal to the original source wording yields CARRIED, not HUMAN_EDITED', async () => {
+  test('ACCEPTED with an instruction equal to the original source wording yields CARRIED, not HUMAN_EDITED', async () => {
     const { session, proposalId } = await seedPendingProposal();
     const original = session.clusters[0]!.members[0]!.statement;
-    applyProposalDecision(session, proposalId, 'ACCEPTED', original);
+    applyProposalDecision(session, proposalId, 'ACCEPTED', { instruction: original });
     await rebuildCompound(session, dir);
 
     expect(session.proposals[0]!.keptOriginal).toBe(true);
@@ -567,9 +647,11 @@ describe('applyProposalDecision', () => {
     expect(session.compound!.rules[0]!.statement).toBe(original);
   });
 
-  test('ACCEPTED with a statement marks edited — rebuild yields a HUMAN_EDITED rule with the new wording', async () => {
+  test('ACCEPTED with an instruction marks edited — rebuild yields a HUMAN_EDITED rule with the new wording', async () => {
     const { session, proposalId } = await seedPendingProposal();
-    applyProposalDecision(session, proposalId, 'ACCEPTED', 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể');
+    applyProposalDecision(session, proposalId, 'ACCEPTED', {
+      instruction: 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể',
+    });
     await rebuildCompound(session, dir);
 
     expect(session.proposals[0]!.edited).toBe(true);
@@ -617,7 +699,8 @@ describe('promoteCompound — topic-leak warnings (advisory only)', () => {
       id: 'p-1',
       clusterId: cluster.id,
       // Deliberately still leaks a verbatim quote — proves promote does not block on it.
-      statement: 'Đặt tên ẩn dụ riêng cho một khái niệm tài chính ("thuế ở lại thành phố") rồi lặp lại',
+      instruction: 'Đặt tên ẩn dụ riêng cho một khái niệm tài chính ("thuế ở lại thành phố") rồi lặp lại',
+      priority: 'OPTIONAL',
       sources: cluster.members.map((m) => ({
         videoSnapshotId: m.videoSnapshotId,
         channelTitle: m.channelTitle,
@@ -632,5 +715,249 @@ describe('promoteCompound — topic-leak warnings (advisory only)', () => {
     const promoted = await promoteCompound(session, dir);
     expect(promoted.compound!.status).toBe('TRIAL'); // not blocked
     expect(promoted.compound!.warnings.some((w) => w.startsWith('TOPIC_LEAK:') && w.includes('thuế ở lại thành phố'))).toBe(true);
+  });
+});
+
+describe('classifyPick', () => {
+  test('tags an already-picked rule and it round-trips to disk', async () => {
+    await saveFormula(formula({ id: 'f1', videoSnapshotId: 'v1' }), dir);
+    const session = await createStudioSession('thể loại A', dir);
+    session.picks = [{ formulaId: 'f1', ruleId: 'rule-1' }];
+
+    classifyPick(session, { formulaId: 'f1', ruleId: 'rule-1' }, 'PROFILE');
+    await saveStudioSession(session, dir);
+
+    const reloaded = await getStudioSession(session.id, dir);
+    expect(reloaded!.picks[0]!.classification).toBe('PROFILE');
+  });
+
+  test('a ref that was never picked into the session is refused, never silently ignored', async () => {
+    const session = await createStudioSession('thể loại A', dir);
+    session.picks = [{ formulaId: 'f1', ruleId: 'rule-1' }];
+    expect(() => classifyPick(session, { formulaId: 'f1', ruleId: 'khong-ton-tai' }, 'PROFILE')).toThrow();
+  });
+});
+
+describe('publishProfile', () => {
+  /** Seeds a session with ONE formula's ONE rule, picked + classified PROFILE, and
+   * an ACCEPTED proposal — the thin path (§2.5: 1 formula -> 1 profile), cluster
+   * size 1 throughout. */
+  async function seedPublishableSession(): Promise<{
+    session: Awaited<ReturnType<typeof createStudioSession>>;
+  }> {
+    await saveFormula(
+      formula({
+        id: 'f1',
+        videoSnapshotId: 'v1',
+        rules: [
+          {
+            id: 'rule-1',
+            statement: 'Mở bài bằng một câu chuyện cá nhân có số liệu cụ thể',
+            evidence: [{ segmentIds: ['seg-1'], quote: 'hồi đó tôi kiếm được 3 triệu' }],
+          },
+        ],
+      }),
+      dir,
+    );
+    const session = await createStudioSession('thể loại A', dir);
+    session.picks = [{ formulaId: 'f1', ruleId: 'rule-1' }];
+    await recomputeClusters(session, dir);
+    expect(session.clusters).toHaveLength(1);
+    expect(session.clusters[0]!.kind).toBe('SINGLE'); // thin path: cluster size 1
+
+    classifyPick(session, { formulaId: 'f1', ruleId: 'rule-1' }, 'PROFILE');
+    const cluster = session.clusters[0]!;
+    session.proposals = [
+      {
+        id: 'p-1',
+        clusterId: cluster.id,
+        instruction: 'Mở bài bằng một trải nghiệm cá nhân gắn với một con số cụ thể',
+        when: 'Chủ đề có sẵn một câu chuyện/case cá nhân đáng kể',
+        avoidWhen: 'Chủ đề thuần lý thuyết, không có case cụ thể',
+        priority: 'CORE',
+        sources: cluster.members.map((m) => ({
+          videoSnapshotId: m.videoSnapshotId,
+          channelTitle: m.channelTitle,
+          sourceFormulaId: m.sourceFormulaId,
+          sourceRuleId: m.sourceRuleId,
+          evidence: m.evidence,
+        })),
+        decision: 'ACCEPTED',
+      },
+    ];
+    return { session };
+  }
+
+  test('thin path (1 formula -> 1 profile): publishes an immutable TRIAL profile with full guideline shape + provenance', async () => {
+    const { session } = await seedPublishableSession();
+
+    const result = await publishProfile(
+      session,
+      {
+        label: 'Kể chuyện tài chính cá nhân',
+        scope: { language: 'vi', genre: 'tài chính cá nhân', contentModes: ['short-form'] },
+        editorialPromise: 'Luôn mở bằng một trải nghiệm thật',
+        antiPatterns: ['Hài hước ép buộc'],
+      },
+      dir,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.profile.kind).toBe('WRITER_READY_PROFILE');
+    expect(result.profile.readiness).toBe('TRIAL'); // ADR-FM13: always TRIAL, never auto-VALIDATED
+    expect(result.profile.version).toBe(1);
+    expect(result.profile.label).toBe('Kể chuyện tài chính cá nhân');
+    expect(result.profile.guidelines).toHaveLength(1);
+    const guideline = result.profile.guidelines[0]!;
+    expect(guideline.instruction).toBe('Mở bài bằng một trải nghiệm cá nhân gắn với một con số cụ thể');
+    expect(guideline.when).toBe('Chủ đề có sẵn một câu chuyện/case cá nhân đáng kể');
+    expect(guideline.avoidWhen).toBe('Chủ đề thuần lý thuyết, không có case cụ thể');
+    expect(guideline.priority).toBe('CORE');
+    expect(guideline.sourceRuleIds).toEqual(['f1:rule-1']);
+
+    // Immutable + persisted: a fresh read from the store shows the same content.
+    const stored = await getProfile(result.profile.id, dir);
+    expect(stored).toEqual(result.profile);
+  });
+
+  test('no ACCEPTED + PROFILE-classified proposal at all -> PROFILE_EMPTY, nothing written', async () => {
+    const session = await createStudioSession('thể loại A', dir);
+    const result = await publishProfile(
+      session,
+      { label: 'Rỗng', scope: { language: 'vi', contentModes: [] } },
+      dir,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('PROFILE_EMPTY');
+  });
+
+  test('an ACCEPTED proposal whose pick was classified something other than PROFILE is excluded, not published', async () => {
+    const { session } = await seedPublishableSession();
+    // Re-classify the only pick as TASTE instead of PROFILE — the accepted proposal
+    // now has zero PROFILE-classified members behind it.
+    classifyPick(session, { formulaId: 'f1', ruleId: 'rule-1' }, 'TASTE');
+
+    const result = await publishProfile(
+      session,
+      { label: 'Không đủ điều kiện', scope: { language: 'vi', contentModes: [] } },
+      dir,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('PROFILE_EMPTY');
+  });
+
+  test('a cluster with mixed classification (one PROFILE member, one not) is excluded entirely', async () => {
+    await saveFormula(
+      formula({
+        id: 'f1',
+        videoSnapshotId: 'v1',
+        rules: [
+          {
+            id: 'rule-1',
+            statement: 'Mở bài bằng một câu chuyện cá nhân có số liệu cụ thể',
+            evidence: [{ segmentIds: ['seg-1'], quote: 'hồi đó tôi kiếm được 3 triệu' }],
+          },
+        ],
+      }),
+      dir,
+    );
+    await saveFormula(
+      formula({
+        id: 'f2',
+        videoSnapshotId: 'v2',
+        channelTitle: 'Kênh Khác',
+        rules: [
+          {
+            id: 'rule-9',
+            statement: 'Mở bài bằng câu chuyện cá nhân kèm số liệu cụ thể',
+            evidence: [{ segmentIds: ['seg-7'], quote: 'lương tôi 45 triệu' }],
+          },
+        ],
+      }),
+      dir,
+    );
+    const session = await createStudioSession('thể loại A', dir);
+    session.picks = [
+      { formulaId: 'f1', ruleId: 'rule-1' },
+      { formulaId: 'f2', ruleId: 'rule-9' },
+    ];
+    await recomputeClusters(session, dir);
+    expect(session.clusters).toHaveLength(1); // SIMILAR — both statements near-duplicate
+    const cluster = session.clusters[0]!;
+
+    // Only ONE of the two members is classified PROFILE.
+    classifyPick(session, { formulaId: 'f1', ruleId: 'rule-1' }, 'PROFILE');
+    classifyPick(session, { formulaId: 'f2', ruleId: 'rule-9' }, 'SOURCE_ONLY');
+
+    session.proposals = [
+      {
+        id: 'p-1',
+        clusterId: cluster.id,
+        instruction: 'Mở bài bằng một trải nghiệm cá nhân gắn với một con số cụ thể',
+        priority: 'OPTIONAL',
+        sources: cluster.members.map((m) => ({
+          videoSnapshotId: m.videoSnapshotId,
+          channelTitle: m.channelTitle,
+          sourceFormulaId: m.sourceFormulaId,
+          sourceRuleId: m.sourceRuleId,
+          evidence: m.evidence,
+        })),
+        decision: 'ACCEPTED',
+      },
+    ];
+
+    const result = await publishProfile(
+      session,
+      { label: 'Không đủ điều kiện', scope: { language: 'vi', contentModes: [] } },
+      dir,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('PROFILE_EMPTY');
+  });
+
+  /**
+   * The gate case (plan §2.4 "Leak check chặn"): unlike `promoteCompound`'s
+   * advisory-only scan, a leaking guideline must BLOCK publish outright — a Profile
+   * is what the Writer actually reads, so nothing leaking gets through silently.
+   */
+  test('a leaking instruction blocks publish (PROFILE_LEAK_DETECTED) — nothing is written to the profile store', async () => {
+    const { session } = await seedPublishableSession();
+    // Overwrite the accepted proposal's instruction with one that still leaks a
+    // verbatim source quote — proves publish (unlike promote) blocks on it.
+    session.proposals[0]!.instruction =
+      'Đặt tên ẩn dụ riêng cho một khái niệm tài chính ("thuế ở lại thành phố") rồi lặp lại';
+
+    const result = await publishProfile(
+      session,
+      { label: 'Dính leak', scope: { language: 'vi', contentModes: [] } },
+      dir,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok || result.errorCode !== 'PROFILE_LEAK_DETECTED') throw new Error('expected PROFILE_LEAK_DETECTED');
+    expect(result.leaks.length).toBeGreaterThan(0);
+    expect(result.leaks[0]!.kind).toBe('VERBATIM_QUOTE');
+
+    // Nothing should have landed in the profile store — a blocked publish must not
+    // leave a partial artifact behind.
+    const { listProfiles } = await import('../../src/training/profile-store.ts');
+    expect(await listProfiles(dir)).toEqual([]);
+  });
+
+  test('a leak in `when`/`avoidWhen` also blocks publish, not just `instruction`', async () => {
+    const { session } = await seedPublishableSession();
+    session.proposals[0]!.when = 'Chỉ áp dụng khi kể lại câu "thuế ở lại thành phố"';
+
+    const result = await publishProfile(
+      session,
+      { label: 'Dính leak ở when', scope: { language: 'vi', contentModes: [] } },
+      dir,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('PROFILE_LEAK_DETECTED');
   });
 });

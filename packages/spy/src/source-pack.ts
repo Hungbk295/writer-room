@@ -11,7 +11,16 @@ export interface SourcePackOptions {
   orderBy?: 'velocity' | 'views' | 'published_at';
   /** Prefer normalized text when available. Default true. */
   preferNormalized?: boolean;
-  /** Max chars per video transcript body. Default 12_000. */
+  /**
+   * Fraction of each video's full transcript to include (0–1). Default **0.5**
+   * (50% per input video). Replaces the old fixed 12k-char default so long
+   * videos scale fairly instead of always cutting at the same absolute length.
+   */
+  transcriptFraction?: number;
+  /**
+   * Optional hard cap in chars after applying `transcriptFraction`. Omit to
+   * use only the fraction (recommended). Kept for callers that need a budget.
+   */
   maxCharsPerVideo?: number;
 }
 
@@ -40,31 +49,75 @@ function sortVideos(
   });
 }
 
+/** Resolve per-video char budget: fraction of full length, then optional hard cap. */
+export function perVideoCharBudget(
+  fullLength: number,
+  opts: { transcriptFraction?: number; maxCharsPerVideo?: number },
+): number {
+  const fraction = opts.transcriptFraction ?? 0.5;
+  const clamped = Math.min(1, Math.max(0, fraction));
+  // At least 1 char when source is non-empty so empty-string edge stays empty.
+  let budget = fullLength <= 0 ? 0 : Math.max(1, Math.ceil(fullLength * clamped));
+  if (typeof opts.maxCharsPerVideo === 'number' && opts.maxCharsPerVideo > 0) {
+    budget = Math.min(budget, opts.maxCharsPerVideo);
+  }
+  return budget;
+}
+
+function clipTranscript(
+  full: string,
+  budget: number,
+): { text: string; truncated: boolean; fullLength: number } {
+  const fullLength = full.length;
+  if (fullLength === 0) return { text: '', truncated: false, fullLength: 0 };
+  if (fullLength <= budget) return { text: full, truncated: false, fullLength };
+  return {
+    text: `${full.slice(0, budget)}\n…[truncated ${(Math.round((budget / fullLength) * 100))}% of ${fullLength} chars]`,
+    truncated: true,
+    fullLength,
+  };
+}
+
 function transcriptBody(
   store: SpyStore,
   video: VideoSnapshot,
   preferNormalized: boolean,
-  maxChars: number,
-): { text: string; source: string; normalized: boolean } {
+  opts: { transcriptFraction?: number; maxCharsPerVideo?: number },
+): { text: string; source: string; normalized: boolean; truncated: boolean; fullLength: number } {
   if (preferNormalized) {
     const record = store.getVideoTranscript(video.sourceVideoId);
     if (record?.normalizedText?.trim()) {
-      const text = record.normalizedText.length > maxChars
-        ? `${record.normalizedText.slice(0, maxChars)}\n…[truncated]`
-        : record.normalizedText;
-      return { text, source: record.source, normalized: true };
+      const full = record.normalizedText;
+      const budget = perVideoCharBudget(full.length, opts);
+      const clipped = clipTranscript(full, budget);
+      return {
+        text: clipped.text,
+        source: record.source,
+        normalized: true,
+        truncated: clipped.truncated,
+        fullLength: clipped.fullLength,
+      };
     }
   }
   const segments = store.listTranscriptSegments(video.id, 0, 100_000);
   if (segments.length === 0) {
-    return { text: '', source: video.transcriptSource ?? 'missing', normalized: false };
+    return {
+      text: '',
+      source: video.transcriptSource ?? 'missing',
+      normalized: false,
+      truncated: false,
+      fullLength: 0,
+    };
   }
-  let joined = segments.map((s) => s.text).join(' ');
-  if (joined.length > maxChars) joined = `${joined.slice(0, maxChars)}\n…[truncated]`;
+  const full = segments.map((s) => s.text).join(' ');
+  const budget = perVideoCharBudget(full.length, opts);
+  const clipped = clipTranscript(full, budget);
   return {
-    text: joined,
+    text: clipped.text,
     source: video.transcriptSource ?? segments[0]?.source ?? 'unknown',
     normalized: false,
+    truncated: clipped.truncated,
+    fullLength: clipped.fullLength,
   };
 }
 
@@ -85,7 +138,11 @@ export function buildSourcePack(store: SpyStore, options: SourcePackOptions): So
     throw new AppError('invalid_input', 'limit phải là số nguyên >= 1');
   }
   const preferNormalized = options.preferNormalized !== false;
-  const maxChars = options.maxCharsPerVideo ?? 12_000;
+  const fraction = options.transcriptFraction ?? 0.5;
+  const clipOpts = {
+    transcriptFraction: fraction,
+    maxCharsPerVideo: options.maxCharsPerVideo,
+  };
 
   let selected: VideoSnapshot[];
   if (options.videoIds?.length) {
@@ -114,15 +171,23 @@ export function buildSourcePack(store: SpyStore, options: SourcePackOptions): So
     `- Source: ${run.canonicalSource}`,
     `- Generated: ${new Date().toISOString()}`,
     `- Videos included: ${selected.length}`,
+    `- Transcript budget: ${Math.round(fraction * 100)}% of each video` +
+      (options.maxCharsPerVideo ? ` (hard cap ${options.maxCharsPerVideo} chars)` : ''),
     '',
   ];
 
   const includedIds: string[] = [];
   for (const video of selected) {
     includedIds.push(video.sourceVideoId);
-    const body = transcriptBody(store, video, preferNormalized, maxChars);
+    const body = transcriptBody(store, video, preferNormalized, clipOpts);
     if (!body.text) {
       warnings.push(`${video.sourceVideoId}: không có transcript`);
+    }
+    if (body.truncated) {
+      warnings.push(
+        `${video.sourceVideoId}: transcript cắt còn ~${Math.round(fraction * 100)}% ` +
+          `(${body.text.replace(/\n…\[truncated.*$/, '').length}/${body.fullLength} chars)`,
+      );
     }
     if (video.transcriptSource === 'auto') {
       warnings.push(`${video.sourceVideoId}: auto-caption — cân nhắc spy_transcript_normalize`);
@@ -134,7 +199,12 @@ export function buildSourcePack(store: SpyStore, options: SourcePackOptions): So
     parts.push(`- views: ${video.viewCount}`);
     parts.push(`- publishedAt: ${video.publishedAt ?? 'unknown'}`);
     parts.push(`- durationSec: ${Math.round(video.durationSec)}`);
-    parts.push(`- transcriptSource: ${body.source}${body.normalized ? ' (normalized)' : ''}`);
+    parts.push(
+      `- transcriptSource: ${body.source}${body.normalized ? ' (normalized)' : ''}` +
+        (body.fullLength
+          ? ` · ${body.truncated ? `~${Math.round(fraction * 100)}% of` : 'full'} ${body.fullLength} chars`
+          : ''),
+    );
     parts.push('');
     parts.push('### Transcript');
     parts.push('');

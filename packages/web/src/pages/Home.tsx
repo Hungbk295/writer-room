@@ -1,6 +1,7 @@
 import type { Route } from '../router.ts';
 import { href } from '../router.ts';
 import { TerminalToggleButton } from '../components/terminal/TerminalDrawer.tsx';
+import { JobNotificationCenter } from '../components/JobNotificationCenter.tsx';
 
 export function Home() {
   return (
@@ -47,9 +48,12 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
       <nav class="nav">
         <a class={is(['home'])} href={href({ name: 'home' })}>Home</a>
         <a class={is(['spy', 'spy-run'])} href={href({ name: 'spy' })}>Spy</a>
-        <a class={is(['writer', 'writer-pack'])} href={href({ name: 'writer' })}>
+        <a class={is(['writer', 'writer-pack', 'writer-run'])} href={href({ name: 'writer' })}>
           Writer
           {writerCount > 0 && <span class="nav-badge">{writerCount}</span>}
+        </a>
+        <a class={is(['writer-v2', 'writer-v2-run'])} href={href({ name: 'writer-v2' })}>
+          Writer v2
         </a>
         <a class={is(['training-formulas', 'training-formula'])} href={href({ name: 'training-formulas' })}>
           Formula
@@ -57,11 +61,12 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
         <a class={is(['training-lab', 'training-lab-run'])} href={href({ name: 'training-lab' })}>
           Training Lab
         </a>
-        <a class={is(['studio', 'studio-session'])} href={href({ name: 'studio' })}>
+        <a class={is(['studio', 'studio-session', 'studio-profiles', 'studio-profile'])} href={href({ name: 'studio' })}>
           Studio
         </a>
         <a class={is(['agents'])} href={href({ name: 'agents' })}>Agents</a>
         <a class={is(['settings'])} href={href({ name: 'settings' })}>Settings</a>
+        <JobNotificationCenter />
         {/* Always-visible show/hide — same role as dna-spy sidebar "🖥 Terminal" */}
         <TerminalToggleButton />
       </nav>

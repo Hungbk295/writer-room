@@ -1,352 +1,336 @@
-> **Agent:** writer-train
-> **Status:** planned
-> **Owns:** `packages/training-core/**`, `packages/daemon/src/training/**`, `packages/daemon/test/training/**`, `packages/web/src/pages/{Training,TrainingLab,Studio}.tsx`, Formula routes/types trong `packages/daemon/src/http.ts` + `packages/web/src/api.ts`
-> **Does not touch:** Writer Runtime (`writer-core`, `packages/daemon/src/writer/**`), Curated Pack, `packages/daemon/src/team/**`, `src-tauri/**`, Spy domain
-> **Depends on:** M1, M1.5, Studio P1–P3 (đã xong); dùng lại `pipeline-core` + `LaneScheduler`
+> **Trạng thái:** simplified 2026-08-11 — user chốt: agent đã đủ viết bài tốt; hệ thống chỉ thêm nhất quán series + human taste
+> **Rev 2026-08-11b:** boundary bằng tách store (FM0 gộp vào FM1); Taste đơn vị = cặp sửa + `decisionType`; capture tách khỏi retrieve; merge nhiều video xuống FM4
+> **Phạm vi:** Formula lifecycle, profile migration, Taste memory, ranh giới Training / Studio / Writer
+> **Không làm:** thay Source Pack; biến Taste thành factual KB; pipeline Writer nhiều phase chỉ để “nâng chất lượng prose”
 
-# Formula Migration to Writer
+# Formula → Writer — nhất quán series + human taste
 
-Sản xuất **Writer Formula đủ điều kiện đưa cho Writer**. Formula có thể được migrate từ một hoặc nhiều Training Formula; không mặc định mọi output đều là compound. Không bao gồm việc Writer viết bài.
+## 0. Premise
 
----
+Agent viết đã đủ để ra **một bài tốt**. Không xây thêm quy trình phức tạp để “dạy viết”.
 
-## 0. Ranh giới hai lane
+Hai việc hệ thống thực sự cần:
 
-User chốt 2026-08-10: công việc chia làm hai capability lane độc lập. Executor cụ thể được cấu hình lúc chạy, không nằm trong domain plan.
-
-| | Formula Migration lane | Writer lane |
-|---|---|---|
-| Sản phẩm | Một **Writer Formula** generic, bất biến | Bài viết hoàn chỉnh |
-| Câu hỏi trả lời | "Viết **như thế nào**" | "Viết **cái gì**" |
-| Nguồn | Transcript video → rule phong cách | Curated Pack → dữ kiện |
-| Kết thúc ở | Formula được human duyệt, `readiness: WRITER_READY` | Bài được duyệt + export |
-
-**Hai lane gặp nhau tại đúng một chỗ: `WriterFormulaInput` ở §2.** Ngoài chỗ đó ra, không lane nào cần biết lane kia làm gì.
-
----
-
-## 1. Vì sao Formula của Training không dùng thẳng cho Writer được
-
-Đây là quyết định gốc (ADR-FM1, user xác nhận 2026-08-10) và là lý do tồn tại của toàn bộ plan này.
-
-Bằng chứng đo được trên Formula thật `0fcb21c0` — **5/8 rule** dính chủ đề hoặc chữ nguyên văn của đúng một video:
-
-```
-rule-1  "trì hoãn chào hỏi tới giây thứ ~101"          → mốc thời gian của riêng video đó
-rule-3  "Phần một, Phần hai, Phần bốn"                  → đánh số của riêng video đó
-rule-4  "khái niệm tài chính ('thuế ở lại thành phố')"  → chủ đề + cụm từ tự chế
-rule-6  "'Nếu nhìn... anh... hơn trước'"                → chữ nguyên văn
-rule-7  "'tôi là sói tài chính'"                        → câu nhận diện thương hiệu kênh
-```
-
-Đưa nguyên bộ này cho Writer viết chủ đề mới thì rule 4-7 hoặc ép nội dung quay về tài chính, hoặc ép chép câu cửa miệng của kênh.
-
-**Premise cũ đã bị bác bỏ và cần ghi lại để không ai lặp lại:** “Writer nối được với bất kỳ Formula nào, chỉ cần bỏ evidence khi gửi”. Sai. **Bỏ evidence không làm một rule trở nên generic** — rule “tôi là sói tài chính” bỏ evidence đi thì vẫn là “tôi là sói tài chính”. Formula phải được **viết lại**, không phải chỉ lọc trường.
-
-Hệ quả:
-1. `ANALYZED`/`REFINED` là **Training Formula** — không bao giờ xuất hiện trong Writer picker.
-2. Formula cũ **không tự động** nâng cấp. Giữ nguyên để audit, mặc định không đủ điều kiện.
-3. `COMPOUND` đã promote theo flow P2/P3 cũ → phân loại `MIGRATION_REQUIRED`, không tự thành Writer Formula.
-
----
-
-## 2. HỢP ĐỒNG BÀN GIAO — Writer lane đọc phần này
-
-Đây là toàn bộ thứ lane Writer cần biết về Formula. Writer plan có thể dùng contract này ngay, không phụ thuộc người hoặc model nào implement Formula Migration lane.
-
-### 2.1 Writer nhận cái gì
-
-```ts
-interface WriterFormulaInput {
-  id: string;
-  version: number;
-  label: string;                 // tên thể loại, vd "kể chuyện tài chính cá nhân"
-  rules: Array<{
-    id: string;
-    instruction: string;         // phải làm gì
-    appliesWhen: string[];       // khi nào rule này hữu ích
-    avoidWhen: string[];         // khi nào KHÔNG dùng
-    antiPatterns: string[];      // dấu hiệu áp dụng máy móc / quá tay
-  }>;
-}
-```
-
-### 2.2 Ba bảo đảm
-
-1. **Không có dữ liệu nguồn.** Không transcript, không evidence, không quote, không tên video/kênh, không `sourceFormulaId`, không lineage. Bản đầy đủ vẫn giữ provenance để audit, nhưng **projection thì sạch**.
-2. **Rule là policy có điều kiện, không phải checklist.** `avoidWhen` tồn tại nghĩa là Writer **không được** nhồi đủ mọi rule vào mọi bài. Nhồi đủ rule là lỗi, không phải thành tích.
-3. **Formula chỉ nói cách viết, không cung cấp dữ kiện.** Mọi fact trong bài phải đến từ Curated Pack của lane Writer. Formula không bao giờ là nguồn của một con số.
-
-### 2.3 API
-
-```text
-GET /api/formulas?kind=writer&readiness=ready     → chỉ trả Writer Formula đã duyệt
-GET /api/formulas/{id}                            → bản đầy đủ (có provenance, để audit)
-```
-
-Truyền một Training Formula vào Writer boundary → **hard fail `FORMULA_TRAINING_ONLY`**, không im lặng chiếu. Đây là chủ ý: im lặng chiếu chính là cách một rule dính chủ đề lọt vào bài viết mà không ai biết.
-
-### 2.4 Ba việc thuộc lane Writer, không phải lane này
-
-- **Curated Pack (ADR-12, đang `Pending`)** — pack hiện tại là khối markdown **không có claim id**, nên `CITATION_GATE` không có gì để kiểm (GAP-14). Đây là chặn thật của lane Writer và cần quyết sớm, vì cổng trích dẫn nằm giữa luồng viết.
-- **ADR-7** — trích dẫn cấu trúc là cổng cứng, kiểm ngữ nghĩa chỉ là tư vấn. Nghĩa là MVP **không được tuyên bố là chống bịa tự động**.
-- Thesis / Brief / Architecture / Draft / Review / Approve / Export.
-
-**Lưu ý tránh trùng lặp:** plan cũ có nhắc `MigrationTestPack`. Khái niệm đó **đã bỏ** (xem §4) — đừng dựng một khái niệm pack thứ hai song song với Curated Pack.
-
----
-
-## 3. Kế hoạch thi công của lane này
-
-### Bước 0 — chạy P3 thật một lần (điều kiện tiên quyết)
-
-P3 (generic hoá bằng LLM) **đã code xong, 232/232 test xanh, nhưng chưa chạy thật lần nào**. Chưa biết LLM có generic hoá được không mà xây tiếp là xây trên cát.
-
-Cần: tạo thêm 2-3 Formula từ **các video khác nhau** (hiện chỉ có 2 Formula cùng 1 video, không có cụm trùng thật để ghép). Rồi mở `#/studio` → chọn rule → "Ghép bằng LLM" → xem câu chữ đề xuất có bỏ được "tài chính", "thuế ở lại thành phố", "tôi là sói tài chính" không.
-
-Kết quả quyết định Bước 1 có phải sửa prompt không.
-
-### Bước 1 — contract + boundary
-
-Đây là thứ lane Writer đang chờ, làm trước.
-
-- Phân biệt `TrainingFormula` / `WriterFormula` bằng discriminant, **một registry duy nhất** (không tách store — xem ADR-14, đã sửa đúng lỗi đó rồi).
-- `toWriterFormulaInput()` chỉ nhận `readiness: WRITER_READY`; Training Formula → `FORMULA_TRAINING_ONLY`.
-- Training Lab vẫn viết thử được với Training Formula, nhưng qua projector **tên khác**, không gọi là Writer input.
-- Nâng rule từ một câu `statement` → 4 trường `instruction/appliesWhen/avoidWhen/antiPatterns`. Đây là sửa prompt SYNTHESIZE, không phải làm lại P3.
-- Formula tab tách hai view; Training Formula mang badge `TRAINING ONLY`.
-
-**DoD:** không origin Training/legacy nào lọt qua Writer boundary — chứng minh bằng unit test.
-
-### Bước 2 — cổng rò rỉ + human duyệt
-
-- Cổng rò rỉ **tất định, 0 token**: quét formula tìm chữ nguyên văn trong ngoặc kép, mốc thời gian, thứ tự phần cụ thể. `detectTopicLeak` đã có và đã bắt được 5/8 rule thật.
-- Finding phải được `FIXED` hoặc human `WAIVED` kèm lý do — không cho qua khi còn finding chưa xử lý.
-- Human bấm duyệt → sinh Writer Formula **bất biến**, `readiness: WRITER_READY`. Sửa rule sau đó tạo version mới và làm bản duyệt cũ stale.
-
-**DoD:** một Writer Formula được tạo từ Training Formula với đủ vết truy ngược; đưa thẳng Formula nguồn vào Writer vẫn `FORMULA_TRAINING_ONLY`.
-
----
-
-## 4. Đã cắt khỏi plan — và vì sao (đừng thêm lại nếu chưa đọc phần này)
-
-### 4.1 Transfer test bắt buộc (viết bài thử rồi cho critic chấm) — **BỎ**
-
-Lý do, theo thứ tự quan trọng:
-
-1. **Agent viết không được thấy transcript nguồn** (chính plan quy định). Vậy bài viết **không thể** chứa catchphrase của video nguồn — trừ khi thứ đó nằm sẵn trong rule. Nên **kiểm thẳng formula là đủ để phát hiện rò rỉ; không cần viết bài nào.** Viết một bài thử tốn 2-4 lượt LLM để tìm ra thứ mà một hàm regex đọc formula đã tìm xong.
-2. **Critic không chấm được chất lượng.** Không có bản chuẩn để đối chiếu. Một LLM phán "bài này tốt" không dựa vào tiêu chuẩn nào — trái nguyên tắc "model rẻ không được là người ký duy nhất".
-3. **Bài thật đầu tiên chính là transfer test**, trên chủ đề user thực sự quan tâm, do người có thể đánh giá thật đánh giá.
-
-Giữ lại dưới dạng **nút "viết thử" tuỳ chọn** — là công cụ để user xem formula ra bài kiểu gì, **không phải cổng**, và người chấm là user đọc.
-
-### 4.2 Đo "formula có làm bài tốt hơn không" — tách ra, không thuộc plan này
-
-Cách trung thực duy nhất là **so mù**: cùng chủ đề, hai bản có/không formula, user chọn mà không biết bản nào là bản nào, lặp ~20 chủ đề (SDD v2 §15.1: thắng ≥15/20 mới GO). Nó trả lời "hướng này có đáng theo không" — **một lần**, không phải chạy mỗi lần migrate. Đừng nhầm với việc kiểm từng formula.
-
-### 4.3 Hoãn (bổ sung sau khi luồng chính chạy tốt, theo đúng chỉ thị user)
-
-| Bỏ/hoãn | Lý do |
+| Mục tiêu | Cơ chế |
 |---|---|
-| Portability analysis artifact (Gate B cũ) | Trùng phần lớn với chính bước generic hoá của P3 |
-| `refinementMap` rule lineage ở Training Lab | Provenance trỏ `(formulaId, ruleId)` mà mỗi version formula bất biến có id riêng → ref luôn giải được. Là chuyện truy vết đẹp hơn, không phải lỗi đúng/sai |
-| `migration-lint-report.json` đầy đủ | Cổng rò rỉ ở Bước 2 đã đủ cho luồng chính |
-| 11 mã lỗi, 9 trạng thái, conflict workflow | Chính là "lan man vào handle lỗi" mà user yêu cầu tránh |
-| 8 phase FM0–FM7 | Rút còn 2 bước + 1 điều kiện tiên quyết |
-
----
-
-## 5. Rủi ro đã biết
-
-- **P3 chưa chạy thật.** Toàn bộ chất lượng generic hoá phụ thuộc một prompt chưa từng gặp dữ liệu thật. Đây là rủi ro lớn nhất và là lý do Bước 0 tồn tại.
-- **Gom cụm không bắc cầu được qua ngôn ngữ.** Hai rule cùng nghĩa nhưng một tiếng Việt một tiếng Anh thì độ trùng token = 0, không bao giờ gom. Formula `9a88a60d` (09-08) có statement tiếng Anh. Prompt ANALYZE đã có ràng buộc ngôn ngữ nên formula mới không dính, nhưng dữ liệu cũ thì có.
-- **`detectTopicLeak` cố ý hẹp.** Bắt được chữ trong ngoặc kép, mốc `giây/phút`, danh sách "Phần một, Phần hai". **Không** bắt được danh từ chủ đề trần như "khái niệm tài chính" — đó là việc của bước generic hoá bằng LLM. Đừng mô tả cổng này như thể nó đầy đủ.
-- **Nguyên liệu chưa đủ để E2E.** Hiện có 2 Formula, cùng 1 video, 0 compound.
-
----
-
-## 6. ADR còn treo
-
-- [x] **ADR-FM1 — Hard separation.** Formula của video chỉ dùng trong Training; Writer chỉ nhận Formula đã migrate. *User confirmed 2026-08-10.*
-- [ ] **ADR-FM2 — Một registry, hai kind có phân biệt kiểu.** Giữ một nơi lưu nhưng không dùng một type dễ dãi cho cả hai. *Khuyến nghị: duyệt — tránh phân mảnh store (lỗi ADR-14 vừa sửa) mà vẫn có ranh giới cứng.*
-- [ ] **ADR-FM3 — Số nguồn.** Migration bắt đầu từ 1 hoặc nhiều Training Formula; một nguồn vẫn được nhưng mang cảnh báo `LOW_SOURCE_DIVERSITY` và không được gọi là validated. *Khuyến nghị: duyệt — không ép merge cơ học, đồng thời trung thực về độ mạnh bằng chứng.*
-- [ ] **ADR-FM4 (cũ: transfer test bắt buộc) — RÚT.** Xem §4.1.
-
-### ADR bổ sung từ editorial review
-
-- [ ] **ADR-FM5 — Generic trong phạm vi, không generic vô hạn.** Mỗi Writer Formula khai báo `genre`, `language`, `contentModes` và `domain` nếu có. Migration phải loại dấu vết của video/kênh nguồn, nhưng được giữ từ vựng chuyên môn thuộc phạm vi đã khai báo. *Khuyến nghị: duyệt — nếu ép bỏ mọi topic noun, Formula “kể chuyện tài chính cá nhân” sẽ mất chính thứ làm nó phù hợp với tài chính.*
-- [ ] **ADR-FM6 — Editorial contract tối thiểu.** Writer Formula thêm formula-level `editorialPromise`; mỗi rule thêm `editorialFunction`, `audienceEffect` và `priority`. *Khuyến nghị: duyệt — bốn trường instruction/applies/avoid/anti-pattern mô tả cách dùng, nhưng chưa nói rule tồn tại để tạo hiệu ứng gì.*
-- [ ] **ADR-FM7 — Eligibility khác validation.** `WRITER_READY + TRIAL` nghĩa là được phép dùng có cảnh báo, không có nghĩa Formula đã chứng minh làm bài tốt hơn. Chỉ blind evaluation nhiều topic mới được gắn `VALIDATED`. *Khuyến nghị: duyệt — giữ đúng lý do transfer test bắt buộc đã bị rút ở §4.1 mà không biến “ready” thành tuyên bố chất lượng quá mức.*
-
-Khi FM2/FM3 được xác nhận: cập nhật SDD 002 §6.3 và ADR-15 (hiện còn ghi "picker offers every origin interchangeably" — **đã sai** sau ADR-FM1).
-
----
-
-## 7. Validation
-
-```bash
-bun test packages/spy packages/daemon packages/pipeline-core packages/training-core
-bun run typecheck
-bun run ui:build
-```
-
-**Bẫy đã biết:** `preflight.test.ts` gọi một agent CLI `--version` thật nên có thể flake khi chạy song song 20+ file — chạy lại riêng để xác nhận, đừng "sửa" nó. Và **daemon không tự restart khi tắt/mở app Tauri** — phải tự kill process cũ (HANDOFF §6).
-
----
-
-## 8. Editorial contract — bảo toàn cái hay khi generic hoá
-
-### 8.1 Tension trung tâm
-
-Migration có hai cách thất bại đối nghịch:
+| **Nhất quán series** (voice, tone, anti-pattern lặp lại) | `WRITER_READY_PROFILE` — guardrail nhẹ, đã generic |
+| **Human taste** (trong tình huống này chọn hướng nào) | Taste memory — case quyết định thật của người, retrieve khi hữu ích |
 
 ```text
-Quá gần nguồn                              Quá generic
-→ copy topic/catchphrase/cấu trúc cũ      → rule đúng nhưng vô dụng
-→ không chuyển được sang bài mới          → Formula mất cá tính
+Truth        = Source Pack (bài này được nói gì, evidence nào)
+Consistency  = WRITER_READY_PROFILE (series nghe giống một voice)
+Taste        = human decision memory (ưu tiên editorial khi có lựa chọn)
+Writing      = agent (đã đủ năng lực prose)
 ```
 
-Ví dụ:
+Không kỳ vọng Formula/profile “làm bài hay hơn” theo nghĩa prose skill. Profile chỉ giữ series không lệch giọng. Taste chỉ giúp không quên preference đã chốt.
 
-| Source rule | Generic sai | Generic đúng hơn |
+---
+
+## 1. Ba artifact — không thêm concept
+
+| Artifact | Vai trò | Writer? |
 |---|---|---|
-| “Trì hoãn câu ‘tôi là sói tài chính’ tới giây 101” | “Tạo hook hấp dẫn” | “Hoãn phần tự giới thiệu cho tới sau khi tension đầu tiên đã được thiết lập; không để branding cắt đứt hook” |
-| “Gọi chi phí sống ở thành phố là ‘thuế ở lại thành phố’” | “Dùng ẩn dụ” | “Đặt một nhãn ẩn dụ ngắn cho lực cản trung tâm rồi tái sử dụng nó như motif; tránh lấy lại nhãn riêng của nguồn” |
+| `VIDEO_FORMULA` (`ANALYZED` / `REFINED` / legacy `COMPOUND`) | Quan sát có evidence từ video; Training only | **Không — hard fail** |
+| `WRITER_READY_PROFILE` | Voice/style đã migrate + human duyệt | **Có** (pin version/hash) |
+| `TASTE_DECISION_CASE` | Tình huống → options → human chọn → lý do/boundary | **Retrieve hỗ trợ**, không lệnh |
 
-Mục tiêu không phải làm câu rule áp dụng được cho mọi nội dung trên đời. Mục tiêu là:
+Không có runtime concept thứ ba tên `Writer Formula`. `toWriterFormula()` strip evidence **không đủ**: rule vẫn dính topic/timestamp/catchphrase trong câu (vd. formula `0fcb21c0`). Phải migrate + duyệt, không chỉ chiếu projection.
 
-> **Loại bỏ payload của video nguồn, giữ lại technique và audience effect trong phạm vi Formula đã khai báo.**
+`toWriterFormula()` → **đổi tên `toTrainingDraftView()`**, type `WriterFormula` → `TrainingDraftView`, file `writer-view.ts` → `draft-view.ts`.
 
-### 8.2 Formula promise khác audience promise của một bài
+Không xoá: projection này có consumer thật ở `training-lab.ts:161` (DRAFT stage — dựng cái mà draft agent nhìn thấy), và đó là việc **hợp lệ bên trong Training**. Thứ phải giết là *product concept* "Writer Formula" — tức niềm tin rằng strip evidence là đủ để writer-ready — chứ không phải bản thân projection. Tên cũ chính là thứ gây nhầm.
 
-Để không trộn Formula với Story Brief:
+`detectTopicLeak()` đi cùng sang file mới, giữ nguyên — leak gate cần.
 
-- `audiencePromise` của **một bài**: người xem bài này sẽ hiểu/thay đổi niềm tin gì — thuộc lane Writer.
-- `editorialPromise` của **một Formula**: khi dùng đúng phạm vi, Formula tạo ra trải nghiệm đọc/xem kiểu gì — thuộc lane migration.
+### Boundary bằng cấu trúc, không bằng runtime guard
 
-Ví dụ `editorialPromise`:
+Writer **chưa tồn tại** trong code. Nên không retrofit guard vào API đã có; xây đúng ngay từ đầu:
 
-> “Biến một vấn đề tài chính trừu tượng thành câu chuyện có nhân vật, lực cản được đặt tên và ba lần reveal tăng dần; giọng gần gũi nhưng không làm nhẹ bằng chứng.”
+- Profile nằm ở **store riêng, thư mục riêng, type riêng** — không phải một `kind` field trong formula store.
+- Writer **không import gì** từ formula store. Không có đường để formula source-bound đi vào.
+- `FORMULA_TRAINING_ONLY` chỉ là hard fail phòng thủ cho đường cũ (`promoteCompound` gắn nhãn writer-ready), không phải cơ chế chính.
 
-`editorialPromise` là tiêu chuẩn để human quyết định các rule có đang cùng tạo một style hay chỉ là một túi mẹo rời rạc.
+Lý do tách store: `WriterReadyProfile` (guidelines, không evidence) khác hình dạng hẳn `FormulaArtifact` (rules + quote + segmentIds). Union một store đẻ ra type rẽ nhánh khắp nơi, và boundary do hệ thống chặn rẻ hơn boundary do `if` chặn.
 
-### 8.3 Editorial Analyst làm gì trong migration
+---
 
-`Editorial Analyst` là một capability role, không bind với agent/model cụ thể. Role này không promote và không thay deterministic gate.
+## 2. `WRITER_READY_PROFILE` — đủ mỏng để giữ series
 
-#### Trước SYNTHESIZE — Migration Brief
+### 2.1 Mục đích
 
-Editorial Analyst đề xuất một brief ngắn để human duyệt:
+- Giọng nhận diện được qua nhiều bài
+- Tone theo ngữ cảnh (không một skeleton cố định)
+- Anti-pattern AI / lệch series đã biết
+- Không encode checklist viết đầy đủ
 
-```ts
-interface FormulaMigrationBrief {
-  genre: string;
-  language: string;
-  contentModes: string[];
-  domain?: string;
-  editorialPromise: string;
-  preserve: string[];       // technique/effect phải giữ
-  remove: string[];         // catchphrase/topic payload/identity phải bỏ
-  nonGoals: string[];       // Formula không cố trở thành gì
-}
-```
-
-Brief không tự sinh Formula và không quyết định rule nào được giữ. Nó chỉ cho P3/human một chuẩn chung để tránh generic hoá mỗi rule theo một hướng khác nhau.
-
-#### Sau SYNTHESIZE — challenge từng proposal
-
-Editorial Analyst trả lời năm câu hỏi cho từng proposal:
-
-1. Bỏ tên riêng/chủ đề nguồn xong, rule còn đủ cụ thể để một writer thực hiện không?
-2. Rule giữ **audience effect** hay chỉ thay vài danh từ bằng từ chung chung?
-3. `appliesWhen` và `avoidWhen` có ngăn việc áp dụng máy móc không?
-4. Còn brand voice/catchphrase/cấu trúc chỉ hợp đúng video nguồn không?
-5. Rule có trùng hoặc mâu thuẫn với rule khác trong cùng Formula không?
-
-Kết quả là advisory note nằm ngay cạnh proposal. Human vẫn là người Accept/Edit/Reject.
-
-### 8.4 Contract editorial đề xuất
-
-Nếu ADR-FM5/FM6 được duyệt, mở rộng handoff §2.1 như sau:
+### 2.2 Shape tối thiểu
 
 ```ts
-interface WriterFormulaInput {
+interface WriterReadyProfile {
+  kind: 'WRITER_READY_PROFILE';
   id: string;
   version: number;
   label: string;
-  scope: {
-    genre: string;
-    language: string;
-    contentModes: string[];
-    domain?: string;
-  };
-  editorialPromise: string;
-  rules: Array<{
+  readiness: 'TRIAL' | 'VALIDATED'; // TRIAL = đủ sạch để thử, không = đã chứng minh hay hơn
+  scope: { language: string; genre?: string; contentModes: string[] };
+  editorialPromise?: string;
+  guidelines: Array<{
     id: string;
-    editorialFunction:
-      | 'HOOK'
-      | 'TENSION'
-      | 'REVEAL'
-      | 'EVIDENCE'
-      | 'TRANSITION'
-      | 'VOICE'
-      | 'CLOSE';
-    audienceEffect: string;
-    priority: 'CORE' | 'OPTIONAL';
     instruction: string;
-    appliesWhen: string[];
-    avoidWhen: string[];
-    antiPatterns: string[];
+    when?: string;   // optional, free text
+    avoidWhen?: string;
+    priority: 'CORE' | 'OPTIONAL';
+    sourceRuleIds: string[];  // provenance: rule gốc trong VIDEO_FORMULA
   }>;
+  antiPatterns: string[];
 }
 ```
 
-`priority` không có nghĩa CORE phải nhồi vào mọi bài. Nó chỉ nói rule nào định nghĩa identity của Formula; `appliesWhen/avoidWhen` vẫn thắng trong một bài cụ thể.
+Một list `guidelines` là đủ. Không bắt buộc năm bucket (voice/tone/tendencies/explanation/…). CORE nên ít — hướng dẫn: **≤ 8 CORE**; thừa thì OPTIONAL hoặc cắt.
 
-### 8.5 Phân biệt source leak với domain scope
+`sourceRuleIds` là field **không tái tạo được** sau khi migrate xong — không có nó thì sau này nhìn guideline không biết vì sao nó ở đó, muốn re-migrate cũng chịu. Một field, không phải scope creep.
 
-| Loại | Xử lý | Ví dụ |
+**`VALIDATED` do human tự đánh dấu** sau khi dùng qua vài bài. Không có gate tự động — transfer test và LLM score đều đã cắt (§5), nên không tồn tại đường tự động nào tới `VALIDATED`. Mọi profile mới publish đều là `TRIAL`.
+
+### 2.3 Giữ / bỏ
+
+**Giữ:** voice ổn định, tone có điều kiện, nhịp/chuyển ý xu hướng, ranh giới giải thích, diction ưa/ghét, anti-pattern (forced humor, fake specificity, hook nhồi…).
+
+**Bỏ:** số hook bắt buộc, % cảm xúc, average sentence length, skeleton mọi bài, catchphrase/greeting kênh, fact/số/ví dụ video nguồn, “phải dùng hết rule”.
+
+### 2.4 Migration (Studio)
+
+Human-driven, LLM chỉ đề xuất wording:
+
+```text
+Chọn observation/rule từ VIDEO_FORMULA
+  → PROFILE | TASTE | SOURCE_ONLY | REJECT
+  → (profile) generic hóa + leak check
+  → human Accept/Edit/Reject
+  → publish immutable WRITER_READY_PROFILE version
+```
+
+Leak check chặn: tên kênh/video, catchphrase, timestamp, example/số/claim nguồn, instruction chỉ hiểu khi biết video gốc. Domain vocab đúng `scope` (vd. tài chính cá nhân) **không** tự động là leak.
+
+Legacy: compound/`ANALYZED` trên đĩa = training-only cho tới khi migrate. Không auto-promote.
+
+### 2.5 Merge nhiều video **không** nằm trên critical path
+
+Đường đi đầu tiên là **1 formula thật → 1 profile TRIAL**. Đường đó không cần rule pool nhiều video, không cần clustering, không cần compound merge.
+
+Đúng với dữ liệu đang có: 2 formula của **cùng 1 video** — clustering trên đó vô nghĩa. Hệ quả:
+
+- Blocker "phải chạy P3 SYNTHESIZE thật trước" **biến mất**. FM1 không chờ có thêm video.
+- Điều kiện `LOW_SOURCE_DIVERSITY` (cảnh báo migrate từ 1 nguồn) **bỏ** — một-nguồn giờ là đường đi chính thức, không phải trường hợp cần cảnh báo.
+- Studio P2/P3 đã build **không phí**: bước generic hoá của FM1 chính là `studio-synthesize.ts`, đổi cluster size N→1 và đổi output từ `statement` sang `{instruction, when, avoidWhen, priority}`.
+- Merge nhiều video → **FM4**, khi đã có đủ dữ liệu thật.
+
+---
+
+## 3. Taste — memory của human, không phải bộ não
+
+### 3.1 Đơn vị lưu = **cặp sửa**, không phải bộ phương án
+
+Không lưu chunk transcript. Lưu can thiệp thật của human:
+
+```text
+Situation (decisionType) → before → after → Reason? → Boundary / khi nào không áp
+```
+
+```ts
+interface TasteDecisionCase {
+  id: string;
+  decisionType: 'OPENING' | 'ANGLE' | 'TRANSITION' | 'DEPTH' | 'TONE' | 'ENDING' | 'CUT';
+  situation: string;
+  before: string;             // agent viết
+  after: string;              // human sửa thành
+  options?: Array<{ id: string; description: string; status: 'CHOSEN' | 'REJECTED' }>;
+  reason?: string;
+  boundary?: string;
+  doNotTransfer?: string[];
+  evidenceStatus: 'OBSERVED' | 'INFERRED' | 'SYNTHETIC';
+  humanValidated: boolean;
+}
+```
+
+**Vì sao cặp sửa, không phải `options[]`:** §3.2 nguyên tắc 3 đã bỏ blind divergence bắt buộc — mà divergence là thứ duy nhất sinh options đáng tin. Luồng thật là *agent viết một hướng → human sửa*: chỉ có before và after. Ép điền `options[]` thì hoặc bắt agent đẻ N phương án (đúng bằng cái vừa cắt), hoặc suy ngược phương án bị loại từ diff (= `INFERRED`, bị cấm trình bày như ý human).
+
+Nên `options?` là **optional**, dùng cho trường hợp hiếm mà agent có đưa lựa chọn thật (chọn góc bài — đưa 3 góc là tự nhiên, một lượt, không phải state machine).
+
+**`decisionType` là enum đóng** để retrieve theo *loại quyết định*, không theo *chủ đề*. Không có nó, similarity trên `situation` free text sẽ khớp "tiết kiệm tiền" thay vì "cách mở bài" — đúng rủi ro topic-search ở §9, và §9 chỉ giảm hậu quả chứ không chạm nguyên nhân.
+
+`reason?` optional chấp nhận được: 5 lần sửa "cắt trạng từ" là preference rõ ràng kể cả khi không ai viết lý do. Nhưng **hỏi ngay lúc sửa** — hỏi sau thì không ai điền.
+
+- `OBSERVED` = human thật sự chọn/sửa. Cặp sửa luôn `OBSERVED`.
+- `INFERRED` = hệ thống suy luận — không được trình bày như ý human.
+- **Không mine case từ transcript.** Nhìn script cuối không thấy phương án bị loại, nên mọi case mined đều là suy diễn kèm rejected bịa — loại dữ liệu bẩn nhất cho một store nhỏ. Bắt đầu **rỗng**. Cần thì thêm ở FM4.
+
+Canonical có thể là Markdown + index rebuild được (QMD/vector). Index không phải nguồn sự thật.
+
+### 3.2 Runtime — nhẹ
+
+```text
+Brief + Source Pack + Profile
+        ↓
+Agent đề xuất hướng / viết (agent đã đủ)
+        ↓
+(Optional) lấy vài Taste case gần tình huống — để so, không để copy
+        ↓
+Human chốt / sửa
+        ↓
+Ghi decision case mới
+```
+
+Nguyên tắc:
+
+1. Taste **hỗ trợ**, không `must follow`. Reject hết precedent là hành vi đúng.
+2. Không dump RAG vào mọi prompt. Chỉ khi đang có lựa chọn editorial (angle, cách mở, có/không story…).
+3. Không bắt buộc multi-phase “Blind Divergence 4–8 → Compare matrix → …”. Agent nghĩ trước hoặc song song với gợi ý đều được; **không** thiết kế hệ thống quanh việc chống anchoring bằng state machine nặng.
+4. Fact chỉ từ Source Pack. Taste/Profile không cấp số liệu bài hiện tại.
+
+**Capture trước, retrieve sau.** §3.1 tự nói signal dài hạn đến từ decision khi vận hành — mà hiện có **0 bài đã viết**, tức 0 case. Retrieve trên 0–3 case tệ hơn không retrieve: nó nổi lên precedent lạc đề và dạy human thói quen bỏ qua gợi ý. Capture thì làm ngay (rẻ, và quyết định không log là mất vĩnh viễn). Bật retrieve khi có **~15–20 case thật** → tách thành FM3.
+
+Promotion principle (khi sau này cần): cùng preference lặp lại vài context + human duyệt → candidate bổ sung profile. **Một edit không auto-sửa profile đang active.**
+
+---
+
+## 4. Training Lab & Studio — giữ đúng việc
+
+| Surface | Việc | Không còn là |
 |---|---|---|
-| Source-specific | Loại hoặc rewrite bắt buộc | tên kênh, catchphrase, timestamp, nhân vật riêng, con số của video |
-| Domain-specific nhưng đúng scope | Được giữ | “dòng tiền”, “lãi kép” trong Formula có `domain: personal-finance` |
-| Genre-specific | Được giữ | reveal tăng dần trong Formula storytelling |
-| Generic nhưng rỗng | Reject/rewrite | “mở đầu hấp dẫn”, “kể chuyện tự nhiên”, “dùng bằng chứng phù hợp” |
-| Portable technique | Giữ | “đặt tên lực cản trung tâm và dùng lại như motif” |
+| **Formula / Training** | Khai thác observation + evidence từ video | Input Writer |
+| **Training Lab** | Thử / soi choice nếu hữu ích | Release gate; LLM score = quality proof; auto-refine promote |
+| **Studio** | Migrate → Profile và/hoặc Taste case; human duyệt | Merge xong là Writer-ready |
+| **Writer** | Profile + Source Pack + (optional) Taste; human chốt | Tuân thủ formula dài |
 
-Vì vậy `detectTopicLeak` không được hard-block chỉ vì thấy một domain noun. Finding phải được đối chiếu với `scope`: “Sói Tài Chính” là source identity; “tài chính cá nhân” có thể là scope hợp lệ.
+Formula tab: hai view — Training only vs Writer-ready profiles. Không nút “Use in Writer” trên training formula.
 
-### 8.6 Formula-level coherence gate — nhẹ, không thêm workflow lớn
+---
 
-Một tập rule tốt riêng lẻ vẫn có thể tạo Formula tệ nếu chúng kéo bài theo các hướng khác nhau. Trước human approve, UI cần một review panel duy nhất:
+## 5. Việc đã cắt (không đưa lại nếu không có evidence mới)
 
-- `editorialPromise` có được ít nhất một CORE rule thực hiện không?
-- Hai CORE rule có mâu thuẫn trực tiếp không?
-- Có rule nào chỉ là phiên bản mơ hồ hơn của rule khác không?
-- Formula có quá nhiều CORE rule khiến Writer không còn quyền thích nghi không?
-- Mọi rule có editorial function và audience effect đọc được không?
+| Cắt | Vì sao |
+|---|---|
+| Giant Writer Formula / checklist đầy đủ | Agent đã viết được; checklist máy móc |
+| `Writer Formula` + `Writer Profile` hai concept | Một runtime artifact: profile |
+| Per-video / compound thẳng vào Writer | Source leak cấu trúc |
+| Pipeline Writer nhiều phase bắt buộc (blind 4–8, stage retrieval table, diagnose 6 lớp…) | Overkill so với mục tiêu nhất quán + taste |
+| Mandatory transfer-test / LLM numeric release score | Tốn kém; tối ưu theo rubric; model tự chấm mình |
+| Auto-refine Formula từ critic | Học preference model, không phải human |
+| Bắt buộc dùng mọi guideline | Prose đồng phục, predictable |
+| Formula/Taste làm factual source | Phá Truth boundary |
+| Auto-promote mọi human edit lên profile | Một decision ≠ principle ổn định |
+| Schema guideline 5 bucket + appliesWhen[] phức tạp | Free text `when` / `avoidWhen` đủ lúc đầu |
+| `options[]` bắt buộc trong Taste case | Nguồn sinh options (divergence) đã cắt → chỉ còn bịa hoặc `INFERRED` |
+| Mine Taste case từ transcript | Không thấy được phương án bị loại → rejected bịa; bắt đầu rỗng |
+| Retrieve Taste trong milestone đầu | 0 case; retrieve trên store rỗng dạy human ignore gợi ý |
+| Tên `toWriterFormula` / `WriterFormula` | Ám chỉ strip evidence là writer-ready. Đổi tên `toTrainingDraftView`; logic vẫn dùng trong Training Lab |
+| `LOW_SOURCE_DIVERSITY` warning | Một-nguồn là đường đi chính thức, không phải bất thường |
 
-Không tạo state machine/conflict subsystem mới. Panel chỉ sinh advisory findings; human phải Resolve/Edit/Waive trước approve, dùng cùng cơ chế finding của Bước 2.
+---
 
-### 8.7 Không khôi phục transfer test bắt buộc
+## 6. Implementation
 
-Editorial review này **không** đảo quyết định ở §4.1:
+FM0 cũ (boundary + tên) **gộp vào FM1**: Writer chưa tồn tại nên không có gì để retrofit, boundary do tách store bảo đảm (§1), phần còn lại chỉ là xoá dead code + sửa docs.
 
-- “Viết thử” vẫn là nút tùy chọn để user cảm nhận output.
-- Một bài thử không chứng minh Formula làm nội dung tốt hơn.
-- `WRITER_READY + TRIAL` chỉ có nghĩa contract sạch, source leak đã xử lý và human cho phép dùng.
-- `VALIDATED` chỉ đến từ blind evaluation trên nhiều topic theo §4.2.
+### FM1 — Profile mỏng, dùng được ngay
 
-Điều phải tránh trong UI copy:
+- Store riêng cho `WRITER_READY_PROFILE`; type riêng; Writer không import formula store.
+- Rename `toWriterFormula()` → `toTrainingDraftView()`, `writer-view.ts` → `draft-view.ts`; cập nhật `training-lab.ts` + test. Giữ nguyên hành vi và `detectTopicLeak()`.
+- `promoteCompound()` không được gắn nhãn writer-ready; `ANALYZED`/`REFINED`/`COMPOUND` → `FORMULA_TRAINING_ONLY`.
+- Studio: classify `PROFILE | TASTE | SOURCE_ONLY | REJECT`.
+- Generic hoá (tái dùng `studio-synthesize.ts`, cluster size 1) + leak check + human approve → immutable profile version, luôn `TRIAL`.
+- Mỗi guideline mang `sourceRuleIds`.
+- Tab/list: Training formulas vs Writer-ready profiles. Không nút "Use in Writer" trên training formula.
+- Sửa SDD/docs còn cho per-video formula vào Writer (§10).
 
-- Không ghi “đã kiểm chứng hiệu quả” sau khi migrate.
-- Không gọi một Formula một nguồn là “công thức chung đã được chứng minh”.
-- Hiển thị rõ `TRIAL`, source diversity và số lần Formula đã được dùng/đánh giá.
+**Thin path:** 1 formula thật → 1 profile TRIAL (≤8 CORE + antiPatterns). Không cần merge nhiều video (§2.5).
 
-### 8.8 Acceptance criteria của editorial layer
+**DoD:** một profile sạch (không topic/catchphrase/timestamp), có provenance; không đường nào đưa formula source-bound vào Writer.
 
-- [ ] WHEN migration begins, THE SYSTEM SHALL require a human-approved scope and `editorialPromise` before SYNTHESIZE.
-- [ ] WHEN a proposed rule becomes source-independent but non-actionable, THE SYSTEM SHALL flag it as `GENERIC_BUT_EMPTY` for human review.
-- [ ] WHEN a term belongs to the declared domain rather than the source video's identity, THE SYSTEM SHALL allow a scoped human decision instead of treating the term as an automatic leak.
-- [ ] WHEN a Writer Formula is approved, EVERY rule SHALL state its editorial function, audience effect, priority, application conditions, and anti-patterns.
-- [ ] WHEN CORE rules contradict or fail to support the Formula's editorial promise, THE SYSTEM SHALL block approval until the finding is resolved or explicitly waived.
-- [ ] WHEN a Formula is merely Writer-ready, THE UI SHALL label it `TRIAL` and SHALL NOT imply measured quality improvement.
+### FM2 — Taste capture (chưa retrieve)
+
+- Khi human sửa output trên Writer (hoặc Studio): ghi case `{decisionType, situation, before, after, reason?}`.
+- Hỏi `reason` **ngay tại thời điểm sửa**, optional, một ô text.
+- Store rỗng lúc đầu — không mine từ transcript.
+- Không retrieve, không auto-mutate profile.
+
+**DoD:** một bài chạy với Source Pack + profile pinned; mỗi lần human sửa sinh một case `OBSERVED`; fact không lấy từ Formula/Taste.
+
+### FM3 — Taste retrieve (mở khi có ~15–20 case)
+
+- Retrieve top vài case **trong cùng `decisionType`**, sau khi agent đã đề xuất hướng.
+- UI "precedents gợi ý", bỏ qua được, không authority.
+- Promote lên profile chỉ khi human chủ động và preference đã lặp lại.
+
+**DoD:** gợi ý xuất hiện đúng loại quyết định; reject hết precedent vẫn là luồng hợp lệ.
+
+### FM4 — sau, khi có dữ liệu thật
+
+Merge nhiều video (rule pool + clustering + compound) khi có ≥3 formula từ video khác nhau. Mine Taste case bootstrap nếu lúc đó vẫn thấy cần.
+
+Eval sau (không chặn ship): leak rate, human edit distance / acceptance, retrieval có ích hay bị ignore — **không** gộp thành writing score giả.
+
+---
+
+## 7. Acceptance
+
+- [ ] Training formula không qua Writer API; Writer không import formula store.
+- [ ] Writer chỉ nhận pinned `WRITER_READY_PROFILE`.
+- [ ] Profile không chứa transcript, quote, catchphrase, timestamp, example/source identity.
+- [ ] Mỗi guideline có `sourceRuleIds`; profile mới publish luôn `TRIAL`.
+- [ ] Profile = consistency series, không phải quality proof / factual source.
+- [ ] Taste case ghi `before`/`after` + `decisionType`; `options` optional; inferred ≠ human intent.
+- [ ] Taste gợi ý được bỏ qua; không authority.
+- [ ] Source Pack = factual input bài hiện tại.
+- [ ] Human decision → case mới; không tự sửa profile active.
+
+---
+
+## 8. ADR đã chốt
+
+- [x] **ADR-FM1** — Per-video/compound chỉ Training; Writer chỉ material đã migrate. *(2026-08-10)*
+- [x] **ADR-FM2** — Hai trạng thái: `VIDEO_FORMULA` vs `WRITER_READY_PROFILE`. *(2026-08-11)*
+- [x] **ADR-FM3** — Không runtime “Writer Formula” riêng. *(2026-08-11)*
+- [x] **ADR-FM4** — Profile cố ý nhẹ; consistency series, không encode hết năng lực viết. *(2026-08-11)*
+- [x] **ADR-FM5** — Taste = decision memory có context/options/boundary; support không phải authority. *(2026-08-11)*
+- [x] **ADR-FM6** — Human ops là signal dài hạn; mined case chỉ bootstrap. *(2026-08-11)*
+- [x] **ADR-FM7** — Không auto-mutate profile; promote thận trọng. *(2026-08-11)*
+- [x] **ADR-FM8** — Truth / Taste / Style tách; Source Pack không thay thế. *(2026-08-11)*
+- [x] **ADR-FM9** — Agent đã đủ viết bài; hệ thống chỉ thêm consistency + human taste — không phình pipeline “nâng prose”. *(2026-08-11, simplified)*
+
+- [x] **ADR-FM10** — Profile ở store/type riêng; boundary Writer↔Formula do cấu trúc bảo đảm, không do runtime guard. *(2026-08-11)*
+- [x] **ADR-FM11** — Đơn vị Taste là **cặp sửa** (`before`/`after`) + `decisionType` enum đóng; `options` optional. Hệ quả trực tiếp của việc cắt blind divergence. *(2026-08-11)*
+- [x] **ADR-FM12** — Capture Taste trước, retrieve sau (~15–20 case). Không mine case từ transcript. *(2026-08-11)*
+- [x] **ADR-FM13** — `VALIDATED` chỉ do human đánh dấu thủ công; không tồn tại gate tự động. *(2026-08-11)*
+- [x] **ADR-FM14** — Merge nhiều video không nằm trên critical path; thin path 1 formula → 1 profile. *(2026-08-11)*
+
+*(ADR-FM10 **cũ** — blind divergence state machine bắt buộc — **bỏ**, và số FM10 được cấp lại cho decision ở trên. Không thiết kế runtime quanh chống anchoring bằng nhiều phase; thứ tự "agent đề xuất trước, retrieve sau" ở §3.2 đã đủ.)*
+
+> ⚠️ Số hiệu ADR-FM2/FM3 từng mang nội dung khác trong bản 2026-08-10. Trích dẫn cũ theo số có thể sai — đối chiếu nội dung, đừng tin số.
+
+---
+
+## 9. Rủi ro còn lại
+
+| Rủi ro | Xử lý mỏng |
+|---|---|
+| Profile lại phình checklist | ≤8 CORE; reject advice rỗng |
+| Source leak sau generic hóa | Leak gate + human duyệt |
+| Taste thành topic-search / copy | `decisionType` enum đóng — retrieve theo loại quyết định, không theo chủ đề; cho phép ignore |
+| Docs/code cũ vẫn cho formula vào Writer | Tách store (FM1) + regression |
+| Compound TRIAL cũ bị nhầm Writer-ready | Training-only badge; migrate tường minh |
+| Agent baseline hoá ra chưa đủ tốt | Câu trả lời **không phải** profile dài hơn — mà Source Pack / brief tốt hơn. Không kéo checklist quay lại (§5). |
+
+---
+
+## 10. Docs conflict
+
+Trong FM1, đồng bộ premise cũ:
+
+1. `docs/specs/002-writer-agent-mvp/solution-design.md` §6.3, §8.2, §12b, ADR-13/15 — còn cho per-video/compound / `toWriterFormula` như Writer input đủ.
+2. `docs/plans/writer-training-architecture-v2.md` — nặng Formula release.
+3. `plan/writer-train/PHASES-M2-STUDIO.md` — P4/P5 superseded; trỏ file này.
+
+**File này** là decision source cho Formula → Writer + Taste cho tới khi SDD được revise. Lịch sử Training implementation vẫn hợp lệ; chỉ premise “formula (kể cả compound) = Writer input” và “pipeline Writer nhiều phase để nâng chất” bị thay.

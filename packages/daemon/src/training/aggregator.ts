@@ -84,6 +84,12 @@ export async function aggregateSingleVideoFormula(
     videoSnapshotId: event.itemId,
     analysisArtifactHash: event.artifactHash,
   }, event.batchId);
+  // Display name = video title (not channel). Channel stays as filter/provenance only.
+  const videoTitle = snapshot?.title?.trim() || undefined;
+  if (videoTitle) {
+    formula.videoTitle = videoTitle;
+    formula.title = videoTitle;
+  }
   await saveFormula(formula, deps.dataDir);
 }
 

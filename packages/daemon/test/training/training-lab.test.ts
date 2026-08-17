@@ -14,10 +14,18 @@ import { join } from 'node:path';
 import { SpyService } from '@writer-room/spy';
 import { formulaFromSingleAnalysis, type FormulaArtifact } from '@writer-room/training-core';
 import { createAgentHarness, type AgentHarness } from '../../src/harness.ts';
+import { listJobNotifications } from '../../src/notifications.ts';
 import type { ItemSettledResult, LaneScheduler } from '../../src/pipeline/lane-scheduler.ts';
 import type { PipelineLedgerRow } from '../../src/pipeline/ledger.ts';
 import { getTrainingLabRun, listTrainingLabRuns } from '../../src/training/storage.ts';
-import { registerTrainingLabSettleListener, startTrainingLabRun } from '../../src/training/training-lab.ts';
+import {
+  continueTrainingLabFromSalvagedDraft,
+  computeRuleVerdicts,
+  registerTrainingLabSettleListener,
+  startTrainingLabRun,
+  validateRefineForcedChoice,
+  type TrainingLabRound,
+} from '../../src/training/training-lab.ts';
 import { seedVideo } from './fixtures.ts';
 
 let dir: string;
@@ -44,15 +52,12 @@ function itemRunDir(batchId: string, itemId: string, stage: string, attempt: num
   return join(dir, 'workspaces', 'pipeline', batchId, itemId, 'attempts', String(attempt), stage);
 }
 
-/** DRAFT's minimum-length check (2026-08-10, `validateDraftShape`) requires a HARD
- * 70% of the target word count, and the smallest possible target (a very short
- * seeded fixture transcript) is still clamped to a 600-word floor
- * (`draftTargetWordCount`) — so every fixture draft script needs ≥420 words. Test
- * fixtures only care about a short QUOTABLE snippet for CRITIQUE's `draftEvidence`
- * assertions; pad with filler ahead of the real content so the whole thing clears
- * the floor (with margin) without changing what's quotable. */
+/** DRAFT's length band is absolute since Write Loop v2 Phase 1: 800-1500 words,
+ * independent of how long the source video is. Test fixtures only care about a short
+ * QUOTABLE snippet for CRITIQUE's `draftEvidence` assertions; pad with a FIXED amount
+ * of filler ahead of the real content so the whole thing lands mid-band. */
 function padScript(realContent: string): string {
-  const filler = Array.from({ length: 500 }, (_, i) => `filler${i}`).join(' ');
+  const filler = Array.from({ length: 1000 }, (_, i) => `filler${i}`).join(' ');
   return `${filler} ${realContent}`;
 }
 
@@ -138,7 +143,7 @@ function makeStartingFormula(videoSnapshotId: string, segmentId: string, quote: 
 }
 
 describe('startTrainingLabRun — happy path', () => {
-  test('a 3-round run where every DRAFT/CRITIQUE/REFINE settles cleanly reaches DONE', async () => {
+  test('a default (2-round) run where every DRAFT/CRITIQUE/REFINE settles cleanly reaches DONE', async () => {
     const { videoSnapshotId, segments } = await seedVideo(spy);
     const sourceQuote = segments[0]!.text.slice(0, 20);
     const startingFormula = makeStartingFormula(videoSnapshotId, segments[0]!.id, sourceQuote);
@@ -147,8 +152,16 @@ describe('startTrainingLabRun — happy path', () => {
     // chạy ở 2 session thôi") — track which clone/agent id every dispatched turn used;
     // matched back to a stage below via each stage's ledger row `turnId`.
     const turnIdToAgentId = new Map<number, string>();
+    const turnIdToLaunch = new Map<number, { mode: string; interactiveRequired?: boolean; forceHeadless: boolean }>();
     const unsub = harness.subscribe((e) => {
-      if (e.kind === 'spawnTurn') turnIdToAgentId.set(e.turnId, e.agentId);
+      if (e.kind === 'spawnTurn') {
+        turnIdToAgentId.set(e.turnId, e.agentId);
+        turnIdToLaunch.set(e.turnId, {
+          mode: e.spec.mode,
+          interactiveRequired: e.interactiveRequired,
+          forceHeadless: e.forceHeadless,
+        });
+      }
     });
 
     const run = await startTrainingLabRun(
@@ -156,6 +169,8 @@ describe('startTrainingLabRun — happy path', () => {
       { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
     );
     expect(run.status).toBe('RUNNING');
+    // Write Loop v2 Phase 1: the lab stops at 2 rounds unless told otherwise.
+    expect(run.maxRounds).toBe(2);
     expect(run.rounds.length).toBe(1);
     expect(run.rounds[0]!.formulaVersionIn.version).toBe(1);
     expect(run.rounds[0]!.formulaVersionIn.lineage.parentFormulaId).toBeUndefined();
@@ -164,24 +179,33 @@ describe('startTrainingLabRun — happy path', () => {
     const critiqueAgentIds = new Set<string>();
     const refineAgentIds = new Set<string>();
 
-    for (let round = 1; round <= 3; round++) {
+    for (let round = 1; round <= 2; round++) {
       const draftScript = padScript(`Round ${round} script. It contains a specific detail worth quoting here.`);
       const draftEvidenceQuote = 'specific detail worth quoting';
 
       // DRAFT
       const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', round);
-      draftAgentIds.add(turnIdToAgentId.get(Number(draftRow.turnId))!);
+      const draftTurnId = Number(draftRow.turnId);
+      const draftAgentId = turnIdToAgentId.get(draftTurnId)!;
+      draftAgentIds.add(draftAgentId);
+      // Training Lab must use the same live-PTY + message/MCP-completion route as
+      // Interactive Formula Discovery, not a one-shot `codex exec` turn.
+      expect(turnIdToLaunch.get(draftTurnId)).toEqual({
+        mode: 'interactive', interactiveRequired: true, forceHeadless: false,
+      });
       await Bun.write(
         join(itemRunDir(run.id, videoSnapshotId, 'draft', round), 'out', 'result.json'),
         JSON.stringify({ title: `Round ${round} title`, script: draftScript, appliedRules: ['rule-1'] }),
       );
       const draftSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'draft', round);
-      harness.workflow.turnComplete(Number(draftRow.turnId), { exitCode: 0 });
+      harness.workflow.completeInteractiveTurn(draftTurnId, draftAgentId, 'done');
       await draftSettled;
 
       // CRITIQUE
       const critiqueRow = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', round);
-      critiqueAgentIds.add(turnIdToAgentId.get(Number(critiqueRow.turnId))!);
+      const critiqueTurnId = Number(critiqueRow.turnId);
+      const critiqueAgentId = turnIdToAgentId.get(critiqueTurnId)!;
+      critiqueAgentIds.add(critiqueAgentId);
       await Bun.write(
         join(itemRunDir(run.id, videoSnapshotId, 'critique', round), 'out', 'result.json'),
         JSON.stringify({
@@ -198,18 +222,21 @@ describe('startTrainingLabRun — happy path', () => {
         }),
       );
       const critiqueSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'critique', round);
-      harness.workflow.turnComplete(Number(critiqueRow.turnId), { exitCode: 0 });
+      harness.workflow.completeInteractiveTurn(critiqueTurnId, critiqueAgentId, 'done');
       await critiqueSettled;
 
       // REFINE
       const refineRow = await waitForLedgerRow(run.id, videoSnapshotId, 'refine', round);
-      refineAgentIds.add(turnIdToAgentId.get(Number(refineRow.turnId))!);
+      const refineTurnId = Number(refineRow.turnId);
+      const refineAgentId = turnIdToAgentId.get(refineTurnId)!;
+      refineAgentIds.add(refineAgentId);
       await Bun.write(
         join(itemRunDir(run.id, videoSnapshotId, 'refine', round), 'out', 'result.json'),
         JSON.stringify({
           rules: [
             {
               id: 'rule-1',
+              role: 'payoff',
               statement: `Opens with a direct question to the viewer (round ${round} refinement).`,
               evidence: [{ segmentIds: [segments[0]!.id], quote: sourceQuote }],
             },
@@ -218,15 +245,15 @@ describe('startTrainingLabRun — happy path', () => {
         }),
       );
       const refineSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'refine', round);
-      harness.workflow.turnComplete(Number(refineRow.turnId), { exitCode: 0 });
+      harness.workflow.completeInteractiveTurn(refineTurnId, refineAgentId, 'done');
       await refineSettled;
     }
     unsub();
 
-    // §12a session identity: exactly 2 total agent identities across all 9 turns —
-    // one stable for DRAFT across all 3 rounds, one stable and SHARED by CRITIQUE and
-    // REFINE across all 3 rounds (added 2026-08-10; previously CRITIQUE/REFINE only
-    // shared an identity WITHIN one round, giving 4 total across a 3-round run).
+    // §12a session identity: exactly 2 total agent identities across all 6 turns —
+    // one stable for DRAFT across every round, one stable and SHARED by CRITIQUE and
+    // REFINE across every round (added 2026-08-10; previously CRITIQUE/REFINE only
+    // shared an identity WITHIN one round, giving one identity per round).
     expect(draftAgentIds.size).toBe(1);
     expect(critiqueAgentIds.size).toBe(1);
     expect(refineAgentIds.size).toBe(1);
@@ -238,20 +265,205 @@ describe('startTrainingLabRun — happy path', () => {
       (r) => r?.status === 'DONE',
     );
     expect(finalRun).not.toBeNull();
-    expect(finalRun!.rounds.length).toBe(3);
+    expect(finalRun!.rounds.length).toBe(2);
 
-    for (let i = 0; i < 3; i++) {
+    // One durable alert is emitted only after the last REFINE has completed the run.
+    expect(await listJobNotifications(dir)).toEqual([
+      expect.objectContaining({ kind: 'training-lab', jobId: run.id, readAt: null }),
+    ]);
+
+    for (let i = 0; i < 2; i++) {
       const round = finalRun!.rounds[i]!;
       expect(round.status).toBe('DONE');
       expect(round.formulaVersionOut).not.toBeNull();
-      expect(round.formulaVersionOut!.version).toBe(i + 2); // v1 -> round1 out v2, round2 out v3, round3 out v4
+      expect(round.formulaVersionOut!.version).toBe(i + 2); // v1 -> round1 out v2, round2 out v3
       expect(round.formulaVersionOut!.status).toBe('TRIAL');
       expect(round.formulaVersionOut!.lineage.parentFormulaId).toBe(round.formulaVersionIn.id);
       expect(round.formulaVersionOut!.origin).toBe('REFINED');
-      if (i < 2) {
+      if (i < 1) {
         expect(finalRun!.rounds[i + 1]!.formulaVersionIn).toEqual(round.formulaVersionOut!);
       }
     }
+
+    // Write Loop v2 Phase 1.4: the merge read-out exists and covers every rule.
+    expect(finalRun!.ruleVerdicts).toBeTruthy();
+    const verdict = finalRun!.ruleVerdicts!.find((v) => v.ruleId === 'rule-1');
+    expect(verdict).toBeTruthy();
+    expect(verdict!.exercised).toBe(2);
+    expect(verdict!.hurtCount).toBe(0);
+    expect(verdict!.verdict).toBe('KEEP');
+  });
+
+  test('maxRounds: 1 stops after one round', async () => {
+    const { videoSnapshotId, segments } = await seedVideo(spy);
+    const sourceQuote = segments[0]!.text.slice(0, 20);
+    const startingFormula = makeStartingFormula(videoSnapshotId, segments[0]!.id, sourceQuote);
+
+    const run = await startTrainingLabRun(
+      { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok', maxRounds: 1 },
+    );
+    expect(run.maxRounds).toBe(1);
+
+    const draftScript = padScript('Round 1 script. It contains a specific detail worth quoting here.');
+    const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
+    await Bun.write(
+      join(itemRunDir(run.id, videoSnapshotId, 'draft', 1), 'out', 'result.json'),
+      JSON.stringify({ title: 'Round 1', script: draftScript, appliedRules: [] }),
+    );
+    const draftSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'draft', 1);
+    harness.workflow.turnComplete(Number(draftRow.turnId), { exitCode: 0 });
+    await draftSettled;
+
+    const critiqueRow = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', 1);
+    await Bun.write(
+      join(itemRunDir(run.id, videoSnapshotId, 'critique', 1), 'out', 'result.json'),
+      JSON.stringify({
+        positivePatterns: [{
+          id: 'p1',
+          ruleId: 'rule-1',
+          description: 'Matches the source opening.',
+          sourceEvidence: [{ segmentIds: [segments[0]!.id], quote: sourceQuote }],
+          draftEvidence: [{ quote: 'specific detail worth quoting' }],
+        }],
+        negativePatterns: [],
+      }),
+    );
+    const critiqueSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'critique', 1);
+    harness.workflow.turnComplete(Number(critiqueRow.turnId), { exitCode: 0 });
+    await critiqueSettled;
+
+    const refineRow = await waitForLedgerRow(run.id, videoSnapshotId, 'refine', 1);
+    await Bun.write(
+      join(itemRunDir(run.id, videoSnapshotId, 'refine', 1), 'out', 'result.json'),
+      JSON.stringify({
+        rules: [{
+          id: 'rule-1',
+          role: 'payoff',
+          statement: 'Opens with a direct question to the viewer.',
+          evidence: [{ segmentIds: [segments[0]!.id], quote: sourceQuote }],
+        }],
+        changeLog: ['kept rule-1'],
+      }),
+    );
+    const refineSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'refine', 1);
+    harness.workflow.turnComplete(Number(refineRow.turnId), { exitCode: 0 });
+    await refineSettled;
+
+    const finalRun = await waitUntil(() => getTrainingLabRun(run.id, dir), (r) => r?.status === 'DONE');
+    expect(finalRun!.rounds.length).toBe(1);
+    // The draft never claimed rule-1 — a rule no draft executes is not a rule yet.
+    expect(finalRun!.ruleVerdicts!.find((v) => v.ruleId === 'rule-1')!.verdict).toBe('DROP_BEFORE_MERGE');
+  });
+});
+
+describe('REFINE forced choice (Write Loop v2 Phase 1.3)', () => {
+  test('an untouched negative pattern is rejected', () => {
+    const result = validateRefineForcedChoice(
+      { rules: [], changeLog: ['nothing to change'] },
+      ['n1', 'n2'],
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errorCode).toBe('REFINE_UNDECIDED');
+      expect(result.reason).toContain('n1');
+      expect(result.reason).toContain('n2');
+    }
+  });
+
+  test('a pattern may be answered by a rule change OR by notARuleProblem', () => {
+    const result = validateRefineForcedChoice(
+      {
+        rules: [],
+        ruleChanges: [
+          { ruleId: 'rule-3', action: 'narrow', statement: 'chỉ áp dụng khi có số liệu', sourcePatternIds: ['n1'] },
+        ],
+        notARuleProblem: [{ patternId: 'n2', reason: 'lỗi thi hành của draft, rule đúng' }],
+      },
+      ['n1', 'n2'],
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test('coverage cannot be faked with an invented pattern id', () => {
+    const result = validateRefineForcedChoice(
+      {
+        rules: [],
+        ruleChanges: [{ ruleId: 'rule-3', action: 'edit', statement: 'x', sourcePatternIds: ['n9'] }],
+        notARuleProblem: [{ patternId: 'n1', reason: 'ok' }],
+      },
+      ['n1'],
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('n9');
+  });
+
+  test('a round with no negative patterns needs no decision', () => {
+    expect(validateRefineForcedChoice({ rules: [] }, []).ok).toBe(true);
+  });
+});
+
+describe('computeRuleVerdicts (Write Loop v2 Phase 1.4)', () => {
+  function round(
+    n: number,
+    ruleIds: string[],
+    appliedRules: string[],
+    negativeRuleIds: string[],
+  ): TrainingLabRound {
+    return {
+      round: n,
+      formulaVersionIn: {
+        id: `f${n}`,
+        status: 'TRIAL',
+        origin: 'ANALYZED',
+        version: n,
+        rules: ruleIds.map((id) => ({ id, statement: `stmt ${id}`, evidence: [] })),
+        includedArtifacts: [],
+        lineage: {},
+        warnings: [],
+        createdAt: '2026-08-14T00:00:00.000Z',
+      } as unknown as TrainingLabRound['formulaVersionIn'],
+      draft: { title: 't', script: 's', appliedRules },
+      draftArtifactHash: null,
+      critique: {
+        positivePatterns: [],
+        negativePatterns: negativeRuleIds.map((ruleId, i) => ({
+          id: `n${n}-${i}`,
+          ruleId,
+          description: 'x',
+          sourceEvidence: [],
+          draftEvidence: [],
+        })),
+      },
+      critiqueArtifactHash: null,
+      formulaVersionOut: null,
+      changeLog: null,
+      ruleChanges: null,
+      notARuleProblem: null,
+      status: 'DONE',
+    };
+  }
+
+  test('never-applied → DROP_BEFORE_MERGE, always-hurting → SUSPECT, else KEEP', () => {
+    const verdicts = computeRuleVerdicts([
+      round(1, ['rule-1', 'rule-2', 'rule-3'], ['rule-1', 'rule-2'], ['rule-2']),
+      round(2, ['rule-1', 'rule-2', 'rule-3'], ['rule-1', 'rule-2'], ['rule-2']),
+    ]);
+    const byId = new Map(verdicts.map((v) => [v.ruleId, v]));
+    expect(byId.get('rule-1')!.verdict).toBe('KEEP');
+    expect(byId.get('rule-2')!.verdict).toBe('SUSPECT');
+    expect(byId.get('rule-2')!.hurtCount).toBe(2);
+    expect(byId.get('rule-3')!.verdict).toBe('DROP_BEFORE_MERGE');
+    expect(byId.get('rule-3')!.exercised).toBe(0);
+  });
+
+  test('hurt in only one of two applied rounds stays KEEP', () => {
+    const verdicts = computeRuleVerdicts([
+      round(1, ['rule-1'], ['rule-1'], ['rule-1']),
+      round(2, ['rule-1'], ['rule-1'], []),
+    ]);
+    expect(verdicts[0]!.verdict).toBe('KEEP');
+    expect(verdicts[0]!.hurtCount).toBe(1);
   });
 });
 
@@ -428,6 +640,48 @@ describe('startTrainingLabRun — DRAFT failure stops the run', () => {
 
     const critiqueRows = harness.pipeline.ledger.all().filter((r) => r.batchId === run.id && r.stage === 'critique');
     expect(critiqueRows.length).toBe(0);
+  });
+
+  test('commits a late interactive DRAFT and continues to CRITIQUE after AGENT_EXIT', async () => {
+    const { videoSnapshotId, segments } = await seedVideo(spy);
+    const sourceQuote = segments[0]!.text.slice(0, 20);
+    const startingFormula = makeStartingFormula(videoSnapshotId, segments[0]!.id, sourceQuote);
+    const run = await startTrainingLabRun(
+      { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
+      { videoSnapshotId, startingFormula, draftAgent: 'grok', critiqueAgent: 'grok' },
+    );
+
+    const draftRow = await waitForLedgerRow(run.id, videoSnapshotId, 'draft', 1);
+    const draftDir = itemRunDir(run.id, videoSnapshotId, 'draft', 1);
+    await Bun.write(
+      join(draftDir, 'out', 'result.json'),
+      JSON.stringify({
+        title: 'Late but complete draft',
+        script: padScript('The writer finished this before the PTY was reported as exited.'),
+        appliedRules: ['rule-1'],
+      }),
+    );
+    const draftSettled = waitForSettled(harness.pipeline.scheduler, videoSnapshotId, 'draft', 1);
+    harness.workflow.turnComplete(Number(draftRow.turnId), { exitCode: 1 });
+    await draftSettled;
+
+    await waitUntil(
+      () => getTrainingLabRun(run.id, dir),
+      (saved) => saved?.status === 'FAILED',
+    );
+
+    const recovered = await continueTrainingLabFromSalvagedDraft(
+      { spy, scheduler: harness.pipeline.scheduler, dataDir: dir },
+      run.id,
+    );
+    expect(recovered.status).toBe('RUNNING');
+    expect(recovered.rounds[0]!.status).toBe('CRITIQUING');
+    expect(recovered.rounds[0]!.draft).toMatchObject({ title: 'Late but complete draft' });
+    expect(recovered.rounds[0]!.draftArtifactHash).toBeTruthy();
+
+    const critiqueRow = await waitForLedgerRow(run.id, videoSnapshotId, 'critique', 1);
+    expect(critiqueRow.status).toBe('non-terminal');
+    expect(critiqueRow.turnId).toBeTruthy();
   });
 });
 

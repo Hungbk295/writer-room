@@ -93,35 +93,17 @@ Nếu bạn muốn giữ đúng thứ tự M2 → M2.5, nói một câu, tôi đ
 
 ---
 
-## P4 — Viết thử + chấm ở cấp compound (phần trả lời đúng câu hỏi của bạn)
+## P4 — Superseded: test-write không còn là release gate
 
-> **Superseded 2026-08-10:** Không tiếp tục P4 theo premise “compound Formula đã là Writer input”. Khả năng test-write được giữ lại và mở rộng thành FM5 trong [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md): test trên topic mới, source transcript bị loại khỏi author context, có static gates + human approval trước Writer-ready.
+P4 cũ không tiếp tục theo premise “compound Formula đã là Writer input”. Test-write chỉ còn tùy chọn; LLM critique không phải release proof.
 
-**Mục tiêu:** *"dùng bản đó để thử viết bài mới, hay là được"* — trả lời bằng bài viết thật + chấm có bằng chứng.
-
-| Việc | File |
-|---|---|
-| `DRAFT` với compound formula — tái dùng stage của Training Lab | `daemon/src/training/training-lab.ts` (mở rộng, không viết lại) |
-| `CRITIQUE` compound: grounding 2 chiều, cite được **nhiều video** | dùng validator P1 |
-| **Envelope gọn:** chỉ gửi các đoạn evidence đã cite (+ ít segment kề), **không gửi full transcript** | `studio-*.ts` |
-| UI: mỗi vòng thử hiện draft + pattern tốt/xấu kèm bằng chứng 2 phía | `web/src/pages/Studio*.tsx` |
-
-- **Rủi ro lớn nhất của cả kế hoạch nằm ở đây.** Vòng 2 Training Lab đã chết thật `AGENT_NO_OUTPUT` ở ~96KB với **1** transcript. Compound 5 video mà gửi cả 5 transcript thì chắc chắn chết. Envelope gọn là cách phòng đã thiết kế nhưng **chưa được chứng minh** — phase này phải đo kích thước prompt thật và ghi lại con số, không được đoán.
-- **Còn nợ:** session-resume thật cho Codex vẫn chưa nối (cần sửa `agents/adapters.ts`, ngoài ranh giới, **phải hỏi bạn riêng** trước khi đụng). Không nối thì mỗi vòng DRAFT vẫn là context mới — tốn token hơn nhưng vẫn chạy đúng.
-- **DoD:** một bài viết thật sinh từ compound formula, critique cite được ≥2 video nguồn khác nhau, và số đo kích thước prompt được ghi vào STATUS.
+Studio migrate sang `WRITER_READY_PROFILE` (nhất quán series) và/hoặc Taste case (human preference). Chi tiết: FM1–FM2 trong [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md) (số hiệu FM cập nhật 2026-08-11, FM0 cũ đã gộp vào FM1 — đừng tin số hiệu cũ, xem nội dung).
 
 ---
 
-## P5 — Promote theo thể loại + nối vào Writer
+## P5 — Superseded: không promote `COMPOUND` thẳng vào Writer
 
-> **Superseded 2026-08-10:** Không promote `COMPOUND` thẳng thành Formula cho Writer. P5 được thay bằng FM6: chỉ immutable `WriterFormula { kind: 'WRITER', readiness: 'WRITER_READY' }` sau migration + transfer test + human approval mới vào Writer picker.
-
-| Việc | File |
-|---|---|
-| Promote compound → `TRIAL` gắn tên thể loại (hành động người dùng, không tự động — ADR-6) | `studio-store.ts`, `http.ts` |
-| Writer's Formula picker nhận cả 2 loại (`SINGLE_VIDEO` \| `COMPOUND`), pin theo hash y như nhau | `web` + contract Writer |
-
-- **DoD:** viết 1 script mới bằng compound Formula qua đúng luồng Writer, không phải đường tắt riêng.
+Không còn `WriterFormula` runtime. Writer chỉ nhận pinned `WRITER_READY_PROFILE`. Legacy compound/per-video = Training-only. Taste optional, không authority. Xem FM1 trong [`FORMULA-MIGRATION-TO-WRITER.md`](./FORMULA-MIGRATION-TO-WRITER.md).
 
 ---
 

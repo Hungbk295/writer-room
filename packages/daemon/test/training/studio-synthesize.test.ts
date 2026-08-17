@@ -36,10 +36,21 @@ import {
 
 let dir: string;
 let harness: AgentHarness;
+let turnLaunches: Map<number, { mode: string; interactiveRequired?: boolean; forceHeadless: boolean }>;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'wr-studio-synthesize-'));
   harness = await createAgentHarness({ dataDir: dir, defaultProjectRoot: dir });
+  turnLaunches = new Map();
+  harness.subscribe((event) => {
+    if (event.kind === 'spawnTurn') {
+      turnLaunches.set(event.turnId, {
+        mode: event.spec.mode,
+        interactiveRequired: event.interactiveRequired,
+        forceHeadless: event.forceHeadless,
+      });
+    }
+  });
   // Registered exactly once per test, mirroring the one-time `http.ts` registration.
   registerStudioSynthesizeSettleListener(harness.pipeline.scheduler, { dataDir: dir });
 });
@@ -176,13 +187,23 @@ describe('startStudioSynthesize — happy path', () => {
     expect(started.synthesizeAttempt).toBe(1);
 
     const row = await waitForLedgerRow(session.id, 1);
+    const launch = await waitUntil(
+      () => turnLaunches.get(Number(row.turnId)),
+      (value) => value !== undefined,
+    );
+    expect(launch).toEqual({ mode: 'interactive', interactiveRequired: true, forceHeadless: false });
     const settled = waitForSettled(harness.pipeline.scheduler, session.id, 1);
     await Bun.write(
       join(itemRunDir(session.id, 1), 'out', 'result.json'),
       JSON.stringify({
         proposals: [
-          { clusterId: similarCluster.id, statement: 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể' },
-          { clusterId: singleCluster.id, statement: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
+          {
+            clusterId: similarCluster.id,
+            instruction: 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể',
+            when: 'Bài mở đầu bằng trải nghiệm cá nhân',
+            priority: 'CORE',
+          },
+          { clusterId: singleCluster.id, instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
         ],
       }),
     );
@@ -196,7 +217,14 @@ describe('startStudioSynthesize — happy path', () => {
     expect(finalSession!.proposals).toHaveLength(2);
     const bySimilar = finalSession!.proposals.find((p) => p.clusterId === similarCluster.id)!;
     expect(bySimilar.decision).toBe('PENDING');
-    expect(bySimilar.statement).toBe('Mở bài bằng câu chuyện thật, gắn một con số cụ thể');
+    expect(bySimilar.instruction).toBe('Mở bài bằng câu chuyện thật, gắn một con số cụ thể');
+    // `when`/`priority` come straight off the LLM output; a missing `priority` (the
+    // SINGLE-cluster proposal above) must default to OPTIONAL, never CORE.
+    expect(bySimilar.when).toBe('Bài mở đầu bằng trải nghiệm cá nhân');
+    expect(bySimilar.priority).toBe('CORE');
+    const bySingleDefaultPriority = finalSession!.proposals.find((p) => p.clusterId === singleCluster.id)!;
+    expect(bySingleDefaultPriority.priority).toBe('OPTIONAL');
+    expect(bySingleDefaultPriority.when).toBeUndefined();
     // Sources are app-derived from the cluster's own members, never taken from the
     // LLM's output — this is what ADR-13 means by "the LLM never commits provenance".
     expect(bySimilar.sources).toHaveLength(2);
@@ -218,8 +246,8 @@ describe('startStudioSynthesize — happy path', () => {
       join(itemRunDir(session.id, 1), 'out', 'result.json'),
       JSON.stringify({
         proposals: [
-          { clusterId: 'c-does-not-exist', statement: 'Một câu đề xuất cho cụm không tồn tại' },
-          { clusterId: similarCluster.id, statement: 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể' },
+          { clusterId: 'c-does-not-exist', instruction: 'Một câu đề xuất cho cụm không tồn tại' },
+          { clusterId: similarCluster.id, instruction: 'Mở bài bằng câu chuyện thật, gắn một con số cụ thể' },
         ],
       }),
     );
@@ -235,7 +263,7 @@ describe('startStudioSynthesize — happy path', () => {
     expect(finalSession!.proposals[0]!.clusterId).toBe(similarCluster.id);
   });
 
-  test('a proposal with an empty statement is rejected by validateCompoundRule (STUDIO_RULE_UNGROUNDED) and never becomes a proposal', async () => {
+  test('a proposal with an empty instruction is rejected by validateCompoundRule (STUDIO_RULE_UNGROUNDED) and never becomes a proposal', async () => {
     const session = await seedSessionWithTwoClusters();
     const similarCluster = session.clusters.find((c) => c.kind === 'SIMILAR')!;
     const singleCluster = session.clusters.find((c) => c.kind === 'SINGLE')!;
@@ -247,8 +275,8 @@ describe('startStudioSynthesize — happy path', () => {
       join(itemRunDir(session.id, 1), 'out', 'result.json'),
       JSON.stringify({
         proposals: [
-          { clusterId: similarCluster.id, statement: '   ' }, // whitespace-only, rejected
-          { clusterId: singleCluster.id, statement: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
+          { clusterId: similarCluster.id, instruction: '   ' }, // whitespace-only, rejected
+          { clusterId: singleCluster.id, instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
         ],
       }),
     );
@@ -275,7 +303,7 @@ describe('startStudioSynthesize — happy path', () => {
     const settled1 = waitForSettled(harness.pipeline.scheduler, session.id, 1);
     await Bun.write(
       join(itemRunDir(session.id, 1), 'out', 'result.json'),
-      JSON.stringify({ proposals: [{ clusterId: similarCluster.id, statement: 'Đề xuất lượt 1' }] }),
+      JSON.stringify({ proposals: [{ clusterId: similarCluster.id, instruction: 'Đề xuất lượt 1' }] }),
     );
     harness.workflow.turnComplete(Number(row1.turnId), { exitCode: 0 });
     await settled1;
@@ -295,8 +323,8 @@ describe('startStudioSynthesize — happy path', () => {
       join(itemRunDir(session.id, 2), 'out', 'result.json'),
       JSON.stringify({
         proposals: [
-          { clusterId: similarCluster.id, statement: 'Đề xuất lượt 2 — không được ghi đè' },
-          { clusterId: singleCluster.id, statement: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
+          { clusterId: similarCluster.id, instruction: 'Đề xuất lượt 2 — không được ghi đè' },
+          { clusterId: singleCluster.id, instruction: 'Chốt bài bằng một khung khái niệm đã đặt tên' },
         ],
       }),
     );
@@ -309,7 +337,7 @@ describe('startStudioSynthesize — happy path', () => {
     );
     expect(finalSession!.proposals).toHaveLength(2);
     const bySimilar = finalSession!.proposals.find((p) => p.clusterId === similarCluster.id)!;
-    expect(bySimilar.statement).toBe('Đề xuất lượt 1'); // untouched by attempt 2
+    expect(bySimilar.instruction).toBe('Đề xuất lượt 1'); // untouched by attempt 2
   });
 });
 
@@ -340,7 +368,7 @@ describe('end-to-end: synthesize -> decide -> rebuildCompound -> promote', () =>
     await Bun.write(
       join(itemRunDir(session.id, 1), 'out', 'result.json'),
       JSON.stringify({
-        proposals: session.clusters.map((c, i) => ({ clusterId: c.id, statement: `Đề xuất chung chung ${i + 1}` })),
+        proposals: session.clusters.map((c, i) => ({ clusterId: c.id, instruction: `Đề xuất chung chung ${i + 1}` })),
       }),
     );
     harness.workflow.turnComplete(Number(row.turnId), { exitCode: 0 });
@@ -353,7 +381,7 @@ describe('end-to-end: synthesize -> decide -> rebuildCompound -> promote', () =>
 
     const [acceptMe, editMe, rejectMe] = finalSession.proposals;
     applyProposalDecision(finalSession, acceptMe!.id, 'ACCEPTED');
-    applyProposalDecision(finalSession, editMe!.id, 'ACCEPTED', 'Câu chữ do người dùng viết lại');
+    applyProposalDecision(finalSession, editMe!.id, 'ACCEPTED', { instruction: 'Câu chữ do người dùng viết lại' });
     applyProposalDecision(finalSession, rejectMe!.id, 'REJECTED');
     await rebuildCompound(finalSession, dir);
     await saveStudioSession(finalSession, dir);

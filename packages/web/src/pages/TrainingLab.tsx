@@ -14,6 +14,7 @@ import { useTrainingLabRunPoll } from '../hooks.ts';
 import { RuleList } from './Training.tsx';
 import { describeErrorCode } from '../features/training/FormulaDiscoveryAction.tsx';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
+import { EntityId, shortEntityId } from '../components/ui/EntityId.tsx';
 
 function agentLabel(id: DefaultAgentId): string {
   return DEFAULT_AGENT_OPTIONS.find((o) => o.id === id)?.label ?? id;
@@ -87,23 +88,22 @@ export function TrainingLabPage() {
                     style={{ cursor: 'pointer' }}
                     onClick={() => { location.hash = href({ name: 'training-lab-run', id: run.id }); }}
                   >
-                    <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                      <a
-                        href={href({ name: 'training-lab-run', id: run.id })}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <strong>{label}</strong>
-                      </a>
-                      <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
-                    </div>
-                    <div class="meta">
-                      <span>video: {run.videoSnapshotId}</span>
+                    <a
+                      href={href({ name: 'training-lab-run', id: run.id })}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <strong>{label}</strong>
+                    </a>
+                    <div class="meta" style={{ marginTop: '0.2rem' }}>
+                      <EntityId id={run.id} label="ID phiên train" />
+                      <EntityId id={run.videoSnapshotId} label="ID video" />
                       <span>{run.roundCount} / tối đa 3 vòng</span>
                       <span>agent 1: {agentLabel(run.critiqueAgent)} · agent 2: {agentLabel(run.draftAgent)}</span>
                       <span>{new Date(run.updatedAt).toLocaleString()}</span>
                     </div>
                   </div>
-                  <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
+                  <div class="row pack-row-actions" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                    <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
                     <a class="btn secondary" href={href({ name: 'training-lab-run', id: run.id })}>
                       Mở
                     </a>
@@ -146,11 +146,10 @@ function PatternList({ patterns, tone }: { patterns: CritiquePattern[]; tone: 'o
       {patterns.map((p) => (
         <li key={p.id}>
           <strong>{p.description}</strong>
-          {p.ruleId && (
-            <div class="meta" style={{ marginTop: '0.15rem' }}>
-              <span class="muted">rule: {p.ruleId}</span>
-            </div>
-          )}
+          <div class="meta" style={{ marginTop: '0.15rem' }}>
+            <EntityId id={p.id} label="ID nhận xét" />
+            {p.ruleId && <EntityId id={p.ruleId} label="Rule ID" />}
+          </div>
           <div class="stack" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
             {(p.sourceEvidence || []).map((ev, i) => {
               const segIds = ev.segmentIds || ((ev as any).segmentId ? [(ev as any).segmentId] : []);
@@ -181,6 +180,12 @@ function PatternList({ patterns, tone }: { patterns: CritiquePattern[]; tone: 'o
 /** Part 3 of the round — "chấm điểm" per the user's own words, split into two
  * clearly separated lists (positive/negative), never a numeric score (SDD §12a:
  * "Grading is qualitative pattern-matching, not a numeric score"). */
+const VERDICT_CHIP: Record<string, string> = {
+  KEEP: 'chip ok',
+  SUSPECT: 'chip warn',
+  DROP_BEFORE_MERGE: 'chip bad',
+};
+
 const REGRESSION_STATUS_CHIP: Record<string, string> = {
   fixed: 'chip ok',
   'still-present': 'chip bad',
@@ -215,7 +220,7 @@ function CritiqueView({ critique }: { critique: CritiqueArtifact }) {
                 <span class={REGRESSION_STATUS_CHIP[r.status] ?? 'chip'}>{r.status}</span>
                 <span style={{ marginLeft: '0.5rem', fontSize: '0.85rem' }}>{r.note}</span>
                 <div class="meta" style={{ marginTop: '0.15rem' }}>
-                  <span class="muted">pattern: {r.patternId}</span>
+                  <EntityId id={r.patternId} label="ID nhận xét" />
                 </div>
               </li>
             ))}
@@ -231,20 +236,29 @@ function CritiqueView({ critique }: { critique: CritiqueArtifact }) {
  * formula sau khi đã căn chỉnh lại." A `FAILED` round shows its error and renders
  * nothing past whatever stage actually completed (SDD §12a: no partial re-run, no
  * pretending a later stage is still pending once the round has failed). */
-function RoundBlock({ round }: { round: TrainingLabRound }) {
+function RoundBlock({ round, runId }: { round: TrainingLabRound; runId: string }) {
   const failed = round.status === 'FAILED';
+  const roundRef = `${runId}:round:${round.round}`;
   return (
     <section class="panel">
       <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0 }}>Vòng {round.round}</h2>
+        <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0 }}>Vòng {round.round}</h2>
+          <EntityId
+            id={roundRef}
+            label="ID vòng"
+            displayId={`${shortEntityId(runId)}/r${round.round}`}
+          />
+        </div>
         <span class={roundStatusBadgeClass(round.status)}>{round.status}</span>
       </div>
 
       <div style={{ marginTop: '1rem' }}>
         <h3>1. Formula (agent 1 trích xuất)</h3>
-        <p class="muted" style={{ margin: '0 0 0.5rem' }}>
-          Phiên bản v{round.formulaVersionIn.version}
-        </p>
+        <div class="meta" style={{ margin: '0 0 0.5rem' }}>
+          <span>Phiên bản v{round.formulaVersionIn.version}</span>
+          <EntityId id={round.formulaVersionIn.id} label="Formula ID" />
+        </div>
         <RuleList rules={round.formulaVersionIn.rules} />
       </div>
 
@@ -252,7 +266,12 @@ function RoundBlock({ round }: { round: TrainingLabRound }) {
         <h3>2. Bài viết (agent 2)</h3>
         {round.draft ? (
           <>
-            <p style={{ margin: '0 0 0.5rem' }}><strong>{round.draft.title}</strong></p>
+            <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+              <strong>{round.draft.title}</strong>
+              {round.draftArtifactHash && (
+                <EntityId id={round.draftArtifactHash} label="Mã bản viết" />
+              )}
+            </div>
             <pre class="pre">{round.draft.script}</pre>
             <div class="row" style={{ gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
               {round.draft.appliedRules.map((r) => (
@@ -267,7 +286,12 @@ function RoundBlock({ round }: { round: TrainingLabRound }) {
 
       {(round.critique || round.status === 'CRITIQUING') && (
         <div style={{ marginTop: '1.25rem' }}>
-          <h3>3. Chấm (agent 1 phê bình)</h3>
+          <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <h3>3. Chấm (agent 1 phê bình)</h3>
+            {round.critiqueArtifactHash && (
+              <EntityId id={round.critiqueArtifactHash} label="Mã bản chấm" />
+            )}
+          </div>
           {round.critique ? (
             <CritiqueView critique={round.critique} />
           ) : (
@@ -281,10 +305,38 @@ function RoundBlock({ round }: { round: TrainingLabRound }) {
           <h3>4. Formula sau khi căn chỉnh</h3>
           {round.formulaVersionOut ? (
             <>
-              <p class="muted" style={{ margin: '0 0 0.5rem' }}>
-                Phiên bản v{round.formulaVersionOut.version} (từ v{round.formulaVersionIn.version})
-              </p>
+              <div class="meta" style={{ margin: '0 0 0.5rem' }}>
+                <span>Phiên bản v{round.formulaVersionOut.version} (từ v{round.formulaVersionIn.version})</span>
+                <EntityId id={round.formulaVersionOut.id} label="Formula ID" />
+              </div>
               <RuleList rules={round.formulaVersionOut.rules} />
+              {((round.ruleChanges?.length ?? 0) > 0 || (round.notARuleProblem?.length ?? 0) > 0) && (
+                <div class="training-detail-grid" style={{ marginTop: '0.75rem' }}>
+                  <div>
+                    <span class="chip">Sửa rule ({round.ruleChanges?.length ?? 0})</span>
+                    <ul class="list" style={{ marginTop: '0.4rem' }}>
+                      {(round.ruleChanges ?? []).map((c, i) => (
+                        <li key={i} style={{ fontSize: '0.85rem' }}>
+                          <strong>{c.action}</strong> {c.ruleId}: {c.statement}
+                          <div class="meta" style={{ marginTop: '0.15rem' }}>
+                            <span>vì: {c.sourcePatternIds.join(', ')}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <span class="chip warn">Không phải lỗi rule ({round.notARuleProblem?.length ?? 0})</span>
+                    <ul class="list" style={{ marginTop: '0.4rem' }}>
+                      {(round.notARuleProblem ?? []).map((n) => (
+                        <li key={n.patternId} style={{ fontSize: '0.85rem' }}>
+                          <strong>{n.patternId}</strong>: {n.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
               {round.changeLog && round.changeLog.length > 0 && (
                 <div style={{ marginTop: '0.75rem' }}>
                   <p class="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.82rem' }}>
@@ -306,7 +358,9 @@ function RoundBlock({ round }: { round: TrainingLabRound }) {
 
       {failed && (
         <div style={{ marginTop: '1.25rem' }}>
-          <p class="error" style={{ margin: 0 }}>{describeErrorCode(round.errorCode)}</p>
+          <p class="error" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+            {describeErrorCode(round.errorCode, round.errorReason)}
+          </p>
         </div>
       )}
     </section>
@@ -343,6 +397,7 @@ export function TrainingLabRunPage({ id }: { id: string }) {
               {run.channelTitle || run.videoSnapshotId}
             </h1>
             <span class={runStatusBadgeClass(run.status)}>{run.status}</span>
+            <EntityId id={run.id} label="ID phiên train" />
           </div>
           <p class="page-lead" style={{ marginBottom: 0 }}>
             Vòng {latestRound ? latestRound.round : 0}/{run.maxRounds} · video: {run.videoSnapshotId} ·
@@ -355,7 +410,7 @@ export function TrainingLabRunPage({ id }: { id: string }) {
 
       <div class="stack" style={{ marginTop: '1rem' }}>
         {run.rounds.map((round) => (
-          <RoundBlock key={round.round} round={round} />
+          <RoundBlock key={round.round} round={round} runId={run.id} />
         ))}
       </div>
 
@@ -364,6 +419,28 @@ export function TrainingLabRunPage({ id }: { id: string }) {
           <p class="ok" style={{ margin: 0, fontWeight: 600 }}>
             ✅ Hoàn tất — Formula cuối: v{lastRefined.version}
           </p>
+          {run.ruleVerdicts && run.ruleVerdicts.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <h3 style={{ marginBottom: '0.35rem' }}>Kết luận từng rule (đọc trước khi merge)</h3>
+              <p class="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.82rem' }}>
+                Tính từ dữ liệu thật của run: rule nào draft có áp, rule nào bị pattern tiêu cực
+                trỏ vào. Lab không tự xoá rule — người quyết khi merge.
+              </p>
+              <ul class="list">
+                {run.ruleVerdicts.map((v) => (
+                  <li key={v.ruleId}>
+                    <span class={VERDICT_CHIP[v.verdict]}>{v.verdict}</span>
+                    <span style={{ marginLeft: '0.5rem', fontSize: '0.85rem' }}>{v.statement}</span>
+                    <div class="meta" style={{ marginTop: '0.15rem' }}>
+                      <span>{v.ruleId}</span>
+                      <span>áp dụng {v.exercised} vòng</span>
+                      <span>bị chê {v.hurtCount} lần</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
     </div>

@@ -30,6 +30,8 @@ export interface YoutubeTranscript {
 export interface YoutubePort {
   inspectVideo(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeVideoInfo>;
   listChannel(canonicalUrl: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
+  /** Zero-config keyword search used by Writer Room's Source Pack explorer. */
+  searchVideos?(query: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
   fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
   streamUrl(canonicalUrl: string, signal?: AbortSignal): Promise<string>;
   thumbnail(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }>;
@@ -47,6 +49,7 @@ interface YtDlpJson {
   upload_date?: string;
   timestamp?: number;
   thumbnail?: string;
+  thumbnails?: Array<{ url?: string }>;
   entries?: YtDlpJson[];
   /** Human-authored caption tracks, keyed by language. */
   subtitles?: Record<string, unknown[]>;
@@ -76,7 +79,7 @@ function toInfo(value: YtDlpJson): YoutubeVideoInfo {
     viewCount: Math.max(0, Math.round(value.view_count ?? 0)),
     durationSec: Math.max(0, value.duration ?? 0),
     publishedAt: publishedAt(value),
-    thumbnailUrl: value.thumbnail ?? null,
+    thumbnailUrl: value.thumbnail ?? value.thumbnails?.at(-1)?.url ?? null,
   };
 }
 
@@ -148,6 +151,36 @@ export class YtDlpAdapter implements YoutubePort {
         canonicalUrl,
       ],
       { signal, timeoutMs: 120_000, maximumStdoutBytes: 32 * 1024 * 1024 },
+    );
+    const parsed = parseJson(result.stdout);
+    return (parsed.entries ?? []).flatMap((entry) => {
+      try {
+        return [toInfo(entry)];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  /**
+   * `ytsearch` gives Source Pack exploration the same zero-config search path
+   * as DNA Spy. Flat playlist metadata is sufficient for the picker; full
+   * metadata and transcripts are fetched only for videos the editor selects.
+   */
+  async searchVideos(query: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]> {
+    const clean = query.replace(/[\r\n\0]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!clean) return [];
+    const count = Math.max(1, Math.min(limit, 50));
+    const result = await requireSuccessfulProcess(
+      this.binary,
+      [
+        ...this.baseArgs(),
+        '--flat-playlist',
+        '--dump-single-json',
+        '--skip-download',
+        `ytsearch${count}:${clean}`,
+      ],
+      { signal, timeoutMs: 60_000, maximumStdoutBytes: 16 * 1024 * 1024 },
     );
     const parsed = parseJson(result.stdout);
     return (parsed.entries ?? []).flatMap((entry) => {

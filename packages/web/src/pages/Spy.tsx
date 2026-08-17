@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api, type SpyRunSummary } from '../api.ts';
+import { api, type SpyRunSummary, type SpyVideoRow } from '../api.ts';
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
 import { CustomSelect, Field, Input } from '../components/ui/Forms.tsx';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 
 type SpyMode = 'video' | 'channel';
+
+function thumbSrc(video: SpyVideoRow): string {
+  return video.thumbnailUrl || `https://i.ytimg.com/vi/${video.sourceVideoId}/hqdefault.jpg`;
+}
 
 /** Client-side detect — khớp packages/spy evidence/youtube-url.ts */
 function isYoutubeVideoUrl(raw: string): boolean {
@@ -35,12 +39,16 @@ export function SpyPage() {
   const [url, setUrl] = useState('');
   const [depth, setDepth] = useState<'metadata' | 'transcript'>('transcript');
   const [topN, setTopN] = useState(5);
+  const [selectionMode, setSelectionMode] = useState<'popular' | 'latest'>('popular');
   const [scanLimit, setScanLimit] = useState(60);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [spyRunId, setSpyRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<SpyRunSummary[]>([]);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [runVideos, setRunVideos] = useState<Record<string, SpyVideoRow[]>>({});
+  const [expandingRunId, setExpandingRunId] = useState<string | null>(null);
 
   const refresh = async () => {
     const data = await api.listSpyRuns();
@@ -55,6 +63,30 @@ export function SpyPage() {
     setError(null);
     await api.deleteSpyRun(id);
     setRuns((prev) => prev.filter((r) => r.id !== id));
+    setExpandedRunId((current) => current === id ? null : current);
+    setRunVideos((current) => {
+      const { [id]: _removed, ...remaining } = current;
+      return remaining;
+    });
+  };
+
+  const toggleChannelVideos = async (run: SpyRunSummary) => {
+    if (expandedRunId === run.id) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(run.id);
+    if (runVideos[run.id]) return;
+    setExpandingRunId(run.id);
+    try {
+      const result = await api.getSpyRun(run.id);
+      setRunVideos((current) => ({ ...current, [run.id]: result.videos }));
+    } catch (err) {
+      setExpandedRunId(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExpandingRunId(null);
+    }
   };
 
   // Tự chuyển tab khi user dán URL video / kênh.
@@ -85,7 +117,7 @@ export function SpyPage() {
       if (asVideo !== (mode === 'video')) setMode(asVideo ? 'video' : 'channel');
       const started = asVideo
         ? await api.startVideo({ url, depth })
-        : await api.startChannel({ url, depth, topN, scanLimit });
+        : await api.startChannel({ url, depth, topN, selectionMode, scanLimit });
       setOperationId(started.operationId);
       setSpyRunId(started.spyRunId);
     } catch (err) {
@@ -161,24 +193,38 @@ export function SpyPage() {
           </Field>
           {mode === 'channel' && (
             <>
-              <Field label="Top N">
-                <Input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={topN}
-                  onInput={(e) => setTopN(Number((e.target as HTMLInputElement).value))}
-                />
+              <Field label="Lấy video">
+                <div class="row" style={{ gap: '0.5rem', flexWrap: 'nowrap' }}>
+                  <CustomSelect<'popular' | 'latest'>
+                    value={selectionMode}
+                    onChange={setSelectionMode}
+                    options={[
+                      { value: 'popular', label: 'Popular', description: 'nổi bật nhất' },
+                      { value: 'latest', label: 'Latest', description: 'mới đăng' },
+                    ]}
+                  />
+                  <Input
+                    type="number"
+                    min={1}
+                    max={20}
+                    aria-label="Số video lấy"
+                    value={topN}
+                    onInput={(e) => setTopN(Number((e.target as HTMLInputElement).value))}
+                    style={{ width: '5rem', flex: '0 0 5rem' }}
+                  />
+                </div>
               </Field>
-              <Field label="Scan">
-                <Input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={scanLimit}
-                  onInput={(e) => setScanLimit(Number((e.target as HTMLInputElement).value))}
-                />
-              </Field>
+              {selectionMode === 'popular' && (
+                <Field label="Scan">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={scanLimit}
+                    onInput={(e) => setScanLimit(Number((e.target as HTMLInputElement).value))}
+                  />
+                </Field>
+              )}
             </>
           )}
         </div>
@@ -204,30 +250,72 @@ export function SpyPage() {
           <p class="muted">Chưa có run nào.</p>
         ) : (
           <ul class="list">
-            {runs.map((run) => (
-              <li key={run.id} class="pack-row">
-                <div>
-                  <a href={href({ name: 'spy-run', id: run.id })}>
-                    <strong>{run.canonicalSource}</strong>
-                  </a>
-                  <div class="meta">
-                    <span class="chip">{run.kind === 'video' ? 'video' : 'channel'}</span>
-                    <span class="chip">{run.status}</span>
-                    {typeof run.videoCount === 'number' && (
-                      <span>{run.videoCount} video</span>
+            {runs.map((run) => {
+              const isExpanded = expandedRunId === run.id;
+              const videos = runVideos[run.id] ?? [];
+              return (
+                <li key={run.id} class="spy-run-card">
+                  <div class="spy-run-card-summary">
+                    {run.kind === 'video' && run.thumbnailUrl && (
+                      <img class="spy-run-card-thumb" src={run.thumbnailUrl} alt="" loading="lazy" />
                     )}
-                    <span>{new Date(run.createdAt).toLocaleString()}</span>
+                    <div class="spy-run-card-copy">
+                      <a href={href({ name: 'spy-run', id: run.id })}>
+                        <strong>{run.displayTitle || run.canonicalSource}</strong>
+                      </a>
+                      <div class="meta">
+                        <span class="chip">{run.kind === 'video' ? 'video' : 'channel'}</span>
+                        <span class="chip">{run.status}</span>
+                        {typeof run.videoCount === 'number' && (
+                          <span>{run.videoCount} video</span>
+                        )}
+                        <span>{new Date(run.createdAt).toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <div class="row spy-run-card-actions" style={{ gap: '0.5rem' }}>
+                      {run.kind === 'channel' && (
+                        <button
+                          type="button"
+                          class="btn secondary spy-run-expand"
+                          onClick={() => void toggleChannelVideos(run)}
+                          aria-label={isExpanded ? 'Thu gọn danh sách video' : 'Mở danh sách video'}
+                          aria-expanded={isExpanded}
+                          title={isExpanded ? 'Thu gọn video' : 'Xem video trong kênh'}
+                        >
+                          <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path d={isExpanded ? 'm4 10 4-4 4 4' : 'm4 6 4 4 4-4'} />
+                          </svg>
+                        </button>
+                      )}
+                      <a class="btn secondary" href={href({ name: 'spy-run', id: run.id })}>Mở</a>
+                      <DeleteButton
+                        title={run.displayTitle || run.canonicalSource}
+                        onDelete={() => remove(run.id)}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
-                  <a class="btn secondary" href={href({ name: 'spy-run', id: run.id })}>Mở</a>
-                  <DeleteButton
-                    title={run.canonicalSource}
-                    onDelete={() => remove(run.id)}
-                  />
-                </div>
-              </li>
-            ))}
+                  {run.kind === 'channel' && isExpanded && (
+                    <div class="spy-run-video-list" aria-label={`Video từ ${run.displayTitle || 'kênh'}`}>
+                      {expandingRunId === run.id ? (
+                        <p class="muted">Đang tải video…</p>
+                      ) : videos.length === 0 ? (
+                        <p class="muted">Run này chưa có video.</p>
+                      ) : videos.map((video) => (
+                        <a
+                          key={video.id}
+                          class="spy-run-video-preview"
+                          href={href({ name: 'spy-run', id: run.id })}
+                          title={video.title}
+                        >
+                          <img src={thumbSrc(video)} alt="" loading="lazy" />
+                          <span>{video.title}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

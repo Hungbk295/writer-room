@@ -231,6 +231,7 @@ describe('videoSpy', () => {
       url: VIDEO_URL,
       depth: 'transcript',
       topN: 5,
+      selectionMode: 'popular',
       scanLimit: 60,
       rankBy: 'velocity',
       minDurationSec: 0,

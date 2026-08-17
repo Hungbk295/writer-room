@@ -13,12 +13,13 @@
 import type { Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { commitArtifact, turnKey as computeTurnKey } from '@writer-room/pipeline-core';
 import type { AgentManager } from '../agents/index.ts';
 import type { TeamWorkflow, TurnSettledEvent } from '../team/workflow.ts';
 import { acquireClone, reapClone } from './agent-pool.ts';
 import type { StageLedger } from './ledger.ts';
+import { parseAgentResultJson } from './parse-agent-json.ts';
 
 export interface DispatchItemParams {
   batchId: string;
@@ -29,8 +30,23 @@ export interface DispatchItemParams {
   templateId: string;
   /** The real instructions written to `prompt.md` (SDD §5.2). */
   promptMarkdown: string;
-  /** Opaque to the scheduler — written verbatim to `input/envelope.json`. */
+  /** Opaque, compact metadata — written verbatim to `input/envelope.json`.
+   *
+   * Large prose belongs in `inputFiles`, never in a JSON string field: a JSON
+   * escape turns every Markdown newline into one enormous physical line, which
+   * makes line-paginated agent Read tools unable to consume it. */
   envelope: unknown;
+  /**
+   * Source files staged beneath this turn's `input/` directory. Use ordinary
+   * line-readable Markdown/text here (for example `topic-pack.md`) and point to
+   * it from the compact envelope with `contentFile: "input/topic-pack.md"`.
+   */
+  inputFiles?: Array<{
+    /** Safe relative path below `input/`; nested directories are allowed. */
+    path: string;
+    /** File bytes as UTF-8 text. */
+    content: string;
+  }>;
   inputHashes: string[];
   promptVersion: string;
   /** Per-dispatch override of the scoped-budget placeholder defaults (see class doc). */
@@ -41,6 +57,29 @@ export interface DispatchItemParams {
    * resume turn over turn instead of starting fresh (SDD §12a session-continuity fix,
    * 2026-08-09). Omit for the default M0.5 behavior (fresh clone every attempt). */
   sessionGroup?: string;
+  /**
+   * Run this item in a live, writable PTY rather than a one-shot `exec` process.
+   * The agent must call `team_turn_complete` after writing `out/result.json`; the
+   * scheduler remains the only component that validates and commits that file.
+   *
+   * This is intentionally opt-in. Ordinary pipeline items retain the existing
+   * headless, process-exit settlement path.
+   */
+  interactivePty?: boolean;
+  /**
+   * When true, never resume the underlying CLI session for this dispatch, even if
+   * `sessionGroup` makes the clone id stable (added 2026-08-10, real bug: Training
+   * Lab's shared CRITIQUE+REFINE session accumulated 352K+ cached tokens by round
+   * 2 — every round's full transcript-sized envelope piling into ONE ever-growing
+   * CLI session — and a grok REFINE turn reached `end_turn` without ever calling
+   * its write tool, `AGENT_NO_OUTPUT`, likely lost in that much accumulated
+   * history). `sessionGroup` still keeps the clone id (and therefore the
+   * client-side terminal pane) stable — this field ONLY controls whether
+   * `TeamWorkflow.requestTurn`'s `job.freshContext` suppresses `resumeSessionRef`
+   * for THIS dispatch, decoupling "stable pane identity" from "unbounded CLI
+   * context growth," which were wrongly the same knob before this field existed.
+   */
+  freshContext?: boolean;
   /**
    * Optional domain-owned grounding check (SDD §5.2 commit-rule Branch 4,
    * `AGENT_UNGROUNDED`) — e.g. Training-core's `validateAnalysis` bound to the
@@ -77,6 +116,10 @@ export interface ItemSettledResult {
   attempt: number;
   outcome: 'COMMITTED' | 'FAILED';
   errorCode?: string;
+  /** Free-text detail from `validateContent` (or similar) — surface in UI so
+   * `AGENT_SCHEMA`/`DRAFT_LENGTH` are not opaque. Optional; absent on process-level
+   * failures (exit/no-output/bad-JSON) that have no further detail. */
+  errorReason?: string;
   artifactHash?: string;
 }
 
@@ -121,18 +164,66 @@ const DEFAULT_MAX_CONTENT_RETRIES = 2;
  * revisit once the heartbeat path is confirmed working for real workloads. */
 const STALL_MS = 600_000;
 const TIMEOUT_MS = 900_000;
+/**
+ * A live Codex/Claude TUI can be genuinely busy for many minutes without adding
+ * text to the terminal ring buffer (for example while composing and writing an
+ * 800–1500 word draft). Ring-buffer silence is therefore not a valid PTY failure
+ * signal. Keep only a generous absolute cap; normal completion is the agent's
+ * `team_turn_complete` MCP call.
+ */
+const INTERACTIVE_PTY_TIMEOUT_MS = 45 * 60_000;
 
-/** SDD §5.2 lines ~492-497: the turn's `taskNote` is a short pointer to `prompt.md`,
- * not the instructions themselves. Adapted to relative paths since `overrideCwd` is
- * already the item run dir the pointer refers to. */
-const ASSIGNMENT_TASK_NOTE =
-  'Read prompt.md in your working directory and follow it exactly. Write your result to out/result.json inside it. Do not write anywhere else.';
+/**
+ * Each dispatch has its own stage directory. A live PTY may deliberately persist
+ * across Lab rounds, so its shell cwd can be older than the current stage; pass
+ * exact paths instead of relying on the process cwd being current.
+ */
+function assignmentTaskNote(
+  itemRunDir: string,
+  inputFiles: ReadonlyArray<NonNullable<DispatchItemParams['inputFiles']>[number]> = [],
+): string {
+  const promptPath = join(itemRunDir, 'prompt.md');
+  const envelopePath = join(itemRunDir, 'input', 'envelope.json');
+  const resultPath = join(itemRunDir, 'out', 'result.json');
+  const sourcePaths = inputFiles.map((file) => join(itemRunDir, 'input', file.path));
+  const sourceNote = sourcePaths.length > 0
+    ? ` Read these source text file(s) too: ${sourcePaths.join(', ')}.`
+    : '';
+  return `Read ${promptPath} and ${envelopePath}.${sourceNote} All staged input is local and line-readable: use filesystem Read only. Do not open Chrome, a browser, Playwright, or file:// URLs. Follow ${promptPath} exactly, then write your result to ${resultPath}. Do not write anywhere else.`;
+}
+
+/** Reject paths which could cause a caller-owned input file to escape this turn's
+ * `input/` directory. The scheduler owns the filesystem contract, so callers do
+ * not need shell access to materialize readable source text. */
+function inputFilePath(inputDir: string, filePath: string): string {
+  const candidate = join(inputDir, filePath);
+  const withinInput = relative(inputDir, candidate);
+  if (
+    !filePath
+    || isAbsolute(filePath)
+    || withinInput === ''
+    || withinInput === '..'
+    || withinInput.startsWith(`..${sep}`)
+    || isAbsolute(withinInput)
+  ) {
+    throw new Error(`inputFiles path must be a non-empty relative path within input/: ${filePath}`);
+  }
+  return candidate;
+}
 
 /** Appended to the end of every `prompt.md` — same "write your result, nowhere else"
  * pointer as the taskNote above, reworded for a first-person read from inside the
- * file itself rather than a reference back to it. */
+ * file itself rather than a reference back to it.
+ *
+ * Reworded 2026-08-11 after a real agy Training Lab run: the previous "Reply done
+ * when the file exists" let content-retries (and session-resumed agents) exit with
+ * SUCCESS/`done` while leaving a REJECTED `out/result.json` untouched — file existed,
+ * so the agent stopped. Require an overwrite that satisfies the prompt. */
 const STANDING_POINTER =
-  'Write your result to out/result.json. Do not write anywhere else. Reply "done" when the file exists.';
+  'Write your result to out/result.json. Do not write anywhere else. If out/result.json '
+  + 'already exists from a rejected attempt, you MUST overwrite it with a corrected '
+  + 'version that fully satisfies prompt.md (length band, schema, grounding — whatever '
+  + 'the prompt requires). Reply "done" only after the corrected file is written.';
 
 /** SDD §5.4: guard/budget rejections from `requestTurn` are backpressure — the item
  * stays WAITING_LANE, never FAILED. Everything else (disabled agent, workflow
@@ -234,7 +325,7 @@ export class LaneScheduler {
    * burned through. */
   private async dispatchItemInternal(params: DispatchItemParams, retriesUsed: number): Promise<DispatchItemResult> {
     const {
-      batchId, itemId, stage, attempt, templateId, promptMarkdown, envelope, inputHashes, promptVersion,
+      batchId, itemId, stage, attempt, templateId, promptMarkdown, envelope, inputFiles = [], inputHashes, promptVersion,
     } = params;
 
     const itemRunDir = join(
@@ -251,9 +342,15 @@ export class LaneScheduler {
 
     // Step 3: write the file-based Agent I/O Contract (SDD §5.2).
     const outDir = join(itemRunDir, 'out');
-    await mkdir(join(itemRunDir, 'input'), { recursive: true });
+    const inputDir = join(itemRunDir, 'input');
+    await mkdir(inputDir, { recursive: true });
     await mkdir(outDir, { recursive: true });
-    await writeFile(join(itemRunDir, 'input', 'envelope.json'), JSON.stringify(envelope, null, 2), 'utf8');
+    await writeFile(join(inputDir, 'envelope.json'), JSON.stringify(envelope, null, 2), 'utf8');
+    await Promise.all(inputFiles.map(async (file) => {
+      const path = inputFilePath(inputDir, file.path);
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, file.content, 'utf8');
+    }));
     const promptContent = `${promptMarkdown.trimEnd()}\n\n---\n\n${STANDING_POINTER}\n`;
     await writeFile(join(itemRunDir, 'prompt.md'), promptContent, 'utf8');
 
@@ -284,14 +381,19 @@ export class LaneScheduler {
 
     // Step 6: dispatch — exclusive + scoped budget, never mcp__team.
     const r = this.deps.workflow.requestTurn(cloneId, 'assignment', undefined, {
-      taskNote: ASSIGNMENT_TASK_NOTE,
+      taskNote: assignmentTaskNote(itemRunDir, inputFiles),
       overrideCwd: itemRunDir,
       skipWorktree: true,
       allowedTools: ['Read', 'Write', 'Glob'],
       orchestrated: true,
+      persistentInteractive: params.interactivePty === true,
+      // `freshContext` intentionally discards prior CLI context. In live-PTY mode
+      // the equivalent is a replacement pane before the next assignment arrives.
+      restartInteractive: params.interactivePty === true && params.freshContext === true,
       exclusive: true,
-      stallMs: STALL_MS,
-      timeoutMs: TIMEOUT_MS,
+      freshContext: params.freshContext,
+      stallMs: params.interactivePty ? undefined : STALL_MS,
+      timeoutMs: params.interactivePty ? INTERACTIVE_PTY_TIMEOUT_MS : TIMEOUT_MS,
       budget: {
         scope: batchId,
         maxTurns: params.maxTurns ?? this.defaultMaxTurns,
@@ -346,11 +448,11 @@ export class LaneScheduler {
     // clone must not linger (SDD §5.3: "HUMAN_WAIT reaps its clone immediately").
     reapClone(this.deps.agents, entry.cloneId);
 
-    const fail = (errorCode: string): void => {
+    const fail = (errorCode: string, errorReason?: string): void => {
       this.deps.ledger.updateStatus(entry.turnKey, { status: 'terminal', outcome: 'FAILED', errorCode });
       this.publish({
         batchId: entry.batchId, itemId: entry.itemId, stage: entry.stage, attempt: entry.attempt,
-        outcome: 'FAILED', errorCode,
+        outcome: 'FAILED', errorCode, errorReason,
       });
     };
 
@@ -371,14 +473,27 @@ export class LaneScheduler {
         return;
       }
 
-      // Branch 3: schema/parse failure.
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        fail('AGENT_SCHEMA');
+      // Branch 3: schema/parse failure — lenient parse (raw newlines in strings are common).
+      // No content-retry here (SDD: Branches 1–3 are process-level, not revise-content).
+      // Repair recovers the usual agent mistake; still-broken JSON fails with a clear reason.
+      const parsedResult = parseAgentResultJson(raw);
+      if (!parsedResult.ok) {
+        fail('AGENT_SCHEMA', parsedResult.error);
         return;
       }
+      if (parsedResult.repaired) {
+        console.warn(
+          `[pipeline] repaired malformed JSON for ${entry.itemId}/${entry.stage} `
+          + `(unescaped control chars and/or trailing junk)`,
+        );
+        // Persist repaired bytes so later artifact reads match what we committed.
+        try {
+          await writeFile(resultPath, `${JSON.stringify(parsedResult.value, null, 2)}\n`, 'utf8');
+        } catch {
+          // non-fatal — commit path still uses `parsed` in memory
+        }
+      }
+      const parsed: unknown = parsedResult.value;
 
       // Branch 4: AGENT_UNGROUNDED — domain-owned grounding check (SDD §5.2). M0.5
       // shipped with no validator wired up (no caller passed one); Training's M1
@@ -404,7 +519,7 @@ export class LaneScheduler {
           }
           this.publish({
             batchId: entry.batchId, itemId: entry.itemId, stage: entry.stage, attempt: entry.attempt,
-            outcome: 'FAILED', errorCode: validation.errorCode,
+            outcome: 'FAILED', errorCode: validation.errorCode, errorReason: validation.reason,
           });
           return;
         }
@@ -473,15 +588,33 @@ export class LaneScheduler {
       `[pipeline] retrying ${entry.itemId}/${entry.stage} attempt ${entry.attempt} `
       + `(content-retry ${retryNum}/${entry.maxContentRetries})`,
     );
+    // Correction text is intentionally stage-neutral (2026-08-11): the previous
+    // boilerplate always said "every quote must be verbatim" — that is right for
+    // CRITIQUE/ANALYZE grounding failures, but actively MISLEADING on DRAFT length
+    // rejections (a real agy run kept rewriting around "quotes" and left the too-long
+    // script untouched). Lead with the concrete rejection reason; tell the agent to
+    // OVERWRITE the rejected file; only mention verbatim quotes when the reason
+    // itself is about grounding/quotes.
+    const looksLikeGrounding = Boolean(
+      reason && /quote|verbatim|segment|ungrounded|grounding|evidence/i.test(reason),
+    );
     const correction = [
       '',
       '---',
       '',
-      `RETRY ${retryNum}: your previous submission for this exact task was REJECTED:`,
-      reason ? `"${reason}"` : '(no further detail available)',
+      `RETRY ${retryNum}: your previous out/result.json for this exact task was REJECTED.`,
+      reason ? `Reason: ${reason}` : 'Reason: (no further detail available)',
       '',
-      'Fix this specific problem and resubmit — every quote must be an EXACT verbatim',
-      'substring of the source text you were given. Do not paraphrase, summarize, or invent.',
+      'You MUST overwrite out/result.json with a corrected submission. Do not leave the',
+      'previous file in place. Do not reply "done" until the new file fully fixes the',
+      'rejection above (re-check length/schema/grounding as required by this prompt).',
+      ...(looksLikeGrounding
+        ? [
+            '',
+            'Grounding reminder: every quote must be an EXACT verbatim substring of the',
+            'source text you were given. Do not paraphrase, summarize, or invent.',
+          ]
+        : []),
     ].join('\n');
     const retryParams: DispatchItemParams = {
       ...entry.params,
@@ -498,7 +631,7 @@ export class LaneScheduler {
       // the ORIGINAL rejection now rather than leaving the item silently stuck.
       this.publish({
         batchId: entry.batchId, itemId: entry.itemId, stage: entry.stage, attempt: entry.attempt,
-        outcome: 'FAILED', errorCode,
+        outcome: 'FAILED', errorCode, errorReason: reason,
       });
     }
   }

@@ -48,9 +48,10 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { commitArtifact } from '@writer-room/pipeline-core';
 import type { SpyService } from '@writer-room/spy';
 import {
-  toWriterFormula,
+  toTrainingDraftView,
   validateAnalysis,
   validateCritique,
   type AnalysisArtifact,
@@ -61,7 +62,9 @@ import {
   type FormulaArtifact,
 } from '@writer-room/training-core';
 import { DEFAULT_AGENT_IDS, type DefaultAgentId } from '../agents/defaults.ts';
+import { createJobDoneNotification } from '../notifications.ts';
 import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
+import { parseAgentResultJson } from '../pipeline/parse-agent-json.ts';
 import { getTrainingLabRun, saveFormula, saveTrainingLabRun } from './storage.ts';
 
 export { DEFAULT_AGENT_IDS, type DefaultAgentId };
@@ -72,10 +75,27 @@ export const DRAFT_STAGE = 'draft';
 export const CRITIQUE_STAGE = 'critique';
 export const REFINE_STAGE = 'refine';
 
-/** SDD §12a: "up to 3 rounds total, then stops" — not user-configurable in this
- * milestone, but kept as a named constant/field on `TrainingLabRun` rather than
- * hardcoded deep in the loop logic, so a future caller CAN override it. */
-export const DEFAULT_MAX_ROUNDS = 3;
+/**
+ * SDD §12a shipped "up to 3 rounds"; Write Loop v2 Phase 1 cuts that to 2 (and
+ * lets a caller ask for 1). Evidence: across 9 real lab runs, round 3 never
+ * produced a rule change that round 2 had not already produced — it produced
+ * agreement. The lab's job here is narrow: surface the rules a draft cannot
+ * actually execute, then stop. Convergence is not a goal (see `ruleVerdicts`).
+ */
+export const DEFAULT_MAX_ROUNDS = 2;
+
+/** Hard ceiling if a caller passes something larger — the old §12a limit. */
+export const MAX_ALLOWED_ROUNDS = 3;
+
+/**
+ * Absolute draft word band (Write Loop v2 Phase 1) — replaces the old
+ * "~25-45% of the source video's length" band. The point of the lab draft is a
+ * *compressed* piece an agent can genuinely write in one turn and a critic can
+ * read whole; tying that to source length made an 18k-char source demand a
+ * 2000-3000 word draft, which is a different (worse) test of the same rules.
+ */
+export const LAB_MIN_WORDS = 800;
+export const LAB_MAX_WORDS = 1500;
 
 /** Same generous single-page transcript fetch precedent as `orchestrator.ts`'s
  * `TRANSCRIPT_FETCH_LIMIT` — a real full-length video transcript is very unlikely
@@ -83,9 +103,9 @@ export const DEFAULT_MAX_ROUNDS = 3;
 const TRANSCRIPT_FETCH_LIMIT = 2000;
 
 /** SDD §5.5 turn_key inputs — bump manually if a stage's prompt template changes. */
-const DRAFT_PROMPT_VERSION = 'training-lab-draft-v2';
+const DRAFT_PROMPT_VERSION = 'training-lab-draft-v5-absolute-band';
 const CRITIQUE_PROMPT_VERSION = 'training-lab-critique-v3';
-const REFINE_PROMPT_VERSION = 'training-lab-refine-v2';
+const REFINE_PROMPT_VERSION = 'training-lab-refine-v4-forced-choice';
 
 /** Formula versions are plain `FormulaArtifact`s now (2026-08-10 unification):
  * `version` and `lineage.parentFormulaId` live on the base type, so the old
@@ -108,8 +128,53 @@ export interface TrainingLabRound {
    * like evidence — plain trust-the-agent text, same caveat as the REFINE prompt's
    * own instruction to reference pattern ids. */
   changeLog: string[] | null;
+  /** Forced-choice REFINE output (Write Loop v2 Phase 1): what the refiner decided
+   * to DO about each negative pattern. Null for rounds refined before this shipped. */
+  ruleChanges: TrainingLabRuleChange[] | null;
+  /** The other half of the forced choice: patterns the refiner explicitly declines
+   * to blame on a rule ("the draft executed badly, the rule is fine"). */
+  notARuleProblem: TrainingLabNotARuleProblem[] | null;
   status: 'DRAFTING' | 'CRITIQUING' | 'REFINING' | 'DONE' | 'FAILED';
   errorCode?: string;
+  /** Detail from the failed stage's validator (e.g. actual vs target word count). */
+  errorReason?: string;
+}
+
+/** One decision the REFINE stage made about the rule set. */
+export interface TrainingLabRuleChange {
+  ruleId: string;
+  action: 'edit' | 'add' | 'remove' | 'narrow';
+  statement: string;
+  /** Critique pattern ids that justify this change — checked against the round's
+   * real pattern ids, so "justified by n7" cannot be invented. */
+  sourcePatternIds: string[];
+}
+
+/** A negative pattern the refiner attributes to execution, not to a rule. */
+export interface TrainingLabNotARuleProblem {
+  patternId: string;
+  reason: string;
+}
+
+/**
+ * End-of-run per-rule read-out (Write Loop v2 Phase 1). This is what the human
+ * actually needs at merge time, and what 9 lab runs never produced: which rules a
+ * draft could genuinely execute, and which ones only ever looked good on paper.
+ *
+ *  - `DROP_BEFORE_MERGE` — never applied by any draft. A rule no writer executes
+ *    is not a strict rule, it is a wish.
+ *  - `SUSPECT` — applied, but every round it was applied it drew a negative
+ *    pattern. The human decides at merge; the lab does not delete rules.
+ *  - `KEEP` — applied and not consistently harmful.
+ */
+export interface TrainingLabRuleVerdict {
+  ruleId: string;
+  statement: string;
+  /** Rounds whose draft self-reported applying this rule. */
+  exercised: number;
+  /** Negative critique patterns pointing at this rule, across all rounds. */
+  hurtCount: number;
+  verdict: 'KEEP' | 'SUSPECT' | 'DROP_BEFORE_MERGE';
 }
 
 export interface TrainingLabRun {
@@ -130,6 +195,8 @@ export interface TrainingLabRun {
    * căn chỉnh, CRITIQUE+REFINE stages — same agent for both, per `CRITIQUE_REFINE_SESSION_GROUP`). */
   draftAgent: DefaultAgentId;
   critiqueAgent: DefaultAgentId;
+  /** Filled when the run reaches DONE — see `TrainingLabRuleVerdict`. */
+  ruleVerdicts?: TrainingLabRuleVerdict[];
 }
 
 interface EnvelopeSegment {
@@ -146,21 +213,38 @@ interface TrainingLabDeps {
   dataDir: string;
 }
 
+async function notifyTrainingLabDone(run: TrainingLabRun, dataDir: string): Promise<void> {
+  try {
+    await createJobDoneNotification({
+      kind: 'training-lab',
+      jobId: run.id,
+      title: 'Training Lab đã hoàn tất',
+      detail: `${run.channelTitle || 'Formula'} · ${run.rounds.length}/${run.maxRounds} vòng`,
+    }, dataDir);
+  } catch (err) {
+    // Completion is already durable. A notification failure must never turn a
+    // successful Lab job into FAILED or trigger another agent turn.
+    console.error('[notifications] không tạo được thông báo Training Lab:', (err as Error).message);
+  }
+}
+
 // ── Prompts ───────────────────────────────────────────────────────────────
 
 function buildDraftPrompt(
   formulaVersionIn: FormulaVersion,
   previousCritique: CritiqueArtifact | null,
-  targetWordCount: number,
+  wordRange: { minWords: number; maxWords: number },
 ): string {
-  // `toWriterFormula` is the ONE place that defines "what does a writer agent see
-  // of a Formula" (`@writer-room/training-core/writer-view.ts`) — same projection
-  // the Writer pipeline itself uses. DRAFT is a writer agent (it composes a NEW
-  // script from the rules, same as Writer), so it gets the same evidence-stripped
-  // view, not raw `formulaVersionIn.rules` with their (single-video) evidence.
-  const writerFormula = toWriterFormula(formulaVersionIn);
-  const minWords = Math.round(targetWordCount * 0.7);
-  const maxWords = Math.round(targetWordCount * 1.3);
+  /* `toTrainingDraftView` (training-core/draft-view.ts) strips evidence off the rules:
+   * DRAFT composes a NEW script from them, so it should no more see per-rule
+   * `evidence`/`sources`/`segmentIds` than a real Writer prompt would. It is the
+   * Training-Lab draft projection ONLY — the name says so deliberately (FM1). It is
+   * NOT Writer input: statements can still be source-bound, which is exactly why
+   * Writer takes a migrated `WRITER_READY_PROFILE` instead (plan §1). Shared and
+   * exported rather than inlined here so it stays under test — this projection has
+   * had a real bug before (legacy shape returning an empty label). */
+  const writerFormula = toTrainingDraftView(formulaVersionIn);
+  const { minWords, maxWords } = wordRange;
   const lines: string[] = [
     '# Training Lab — DRAFT stage (one video, one round)',
     '',
@@ -172,14 +256,23 @@ function buildDraftPrompt(
     "your choice) that applies as many of `formulaVersionIn.rules` as genuinely fit.",
     'Do not force a rule that does not make sense for your chosen topic.',
     '',
-    `## Length target: ~${targetWordCount} words (acceptable range: ${minWords}-${maxWords})`,
+    `## Length target: ${minWords}-${maxWords} words`,
     '',
-    "This matches the ACTUAL word count of the real video this Formula was extracted",
-    'from. A script far shorter than this cannot honestly apply structural rules like',
-    '"sustains a multi-part structure through Phần năm" or "includes a multi-beat cold',
-    'open" — there simply is not enough room. Write a FULL script at this length, not',
-    'an outline or a summary. This is checked programmatically: a script far under the',
-    'minimum will be rejected and you will be asked to expand it.',
+    "This is DELIBERATELY much shorter than the source video, on purpose — the point",
+    'of this exercise is to test whether you genuinely understood and can compress the',
+    "Formula's rules into a small space, not to reproduce the source at full length.",
+    'The band is absolute: it does NOT scale with how long the source video is.',
+    'A script padded out with filler to look more complete is a WORSE test than a short,',
+    'dense one that clearly shows each rule actually applied. Do not write an outline or',
+    'a bullet list either — write real prose at this length, just compressed.',
+    'This is checked programmatically: a script outside this range will be rejected and',
+    'you will be asked to rewrite it at the right length.',
+    '',
+    'Word count = whitespace-separated tokens of `script` (same as JS',
+    '`script.trim().split(/\\s+/).length`). Before you finish, count the words in the',
+    `script you wrote and confirm it is between ${minWords} and ${maxWords}. If it is`,
+    'over the max, cut filler; if under the min, expand into real prose — do not leave',
+    'an out-of-range file and reply "done".',
     '',
     '## Formula rules to apply',
     '',
@@ -292,7 +385,32 @@ function buildCritiquePrompt(previousNegativePatterns: CritiquePattern[]): strin
   return lines.join('\n');
 }
 
-function buildRefinePrompt(): string {
+function buildRefinePrompt(negativePatterns: CritiquePattern[]): string {
+  const forcedChoice = negativePatterns.length > 0
+    ? [
+      '',
+      '## Forced choice — every negative pattern must be decided',
+      '',
+      'For EACH negative pattern id below you MUST do exactly one of two things:',
+      '',
+      '1. Put its id in the `sourcePatternIds` of a `ruleChanges` entry — you are',
+      '   saying a rule caused it, and here is the change to that rule.',
+      '2. Put it in `notARuleProblem` with a reason — you are saying the rule is fine',
+      '   and the draft simply executed it badly.',
+      '',
+      'A pattern that appears in neither is a rejected refinement, checked',
+      'programmatically. "Everything is fine" is not available: the critique already',
+      'found these problems. Across 9 real runs this stage returned zero rule changes',
+      'every single time; that is the behaviour this check exists to stop.',
+      '',
+      ...negativePatterns.map((p) => `- **${p.id}**: ${p.description}`),
+      '',
+      '`ruleChanges[].action` is one of `edit` | `add` | `remove` | `narrow`.',
+      '`ruleChanges[].statement` is the rule text AFTER the change (for `remove`,',
+      'say in one line what is being removed and why).',
+      'Every `ruleChanges[].ruleId` that is not `add` must be an existing rule id.',
+    ].join('\n')
+    : '';
   return [
     '# Training Lab — REFINE stage (one video, one round)',
     '',
@@ -307,10 +425,18 @@ function buildRefinePrompt(): string {
     'contradict it. Propose a new rule if a strong recurring pattern is not covered by',
     'any existing rule.',
     '',
+    'The updated set MUST contain at least one rule marked `"role": "payoff"` that',
+    'describes how the source video resolves its tension, delivers its opening promise,',
+    'or lands its final takeaway/reward. Ground it in evidence from the actual payoff',
+    'or closing beat, not merely the opening promise. A CTA, sign-off, or disclaimer',
+    'alone is not a payoff. If the current Formula omitted payoff, add that missing',
+    'rule now and explain the addition in `changeLog`. This is a programmatic gate.',
+    '',
     'Every change you make MUST reference which pattern(s) justified it — record this in',
     'a `changeLog` array of short free-text strings, e.g.',
     '"kept rule-1: pattern p1 confirms it works" or',
     '"dropped rule-4: pattern n2 shows the draft could not follow it".',
+    forcedChoice,
     '',
     'Write every `statement` in the SAME language as the transcript.',
     '',
@@ -327,10 +453,154 @@ function buildRefinePrompt(): string {
     'Write your result as JSON to `out/result.json` in exactly this shape:',
     '',
     '```json',
-    '{ "rules": [ { "id": "rule-1", "statement": "...", "evidence": [ { "segmentIds": ["..."], "quote": "..." } ] } ],',
-    '  "changeLog": [ "..." ] }',
+    '{ "rules": [ { "id": "rule-1", "statement": "...", "role": "payoff", "evidence": [ { "segmentIds": ["..."], "quote": "..." } ] } ],',
+    '  "changeLog": [ "..." ],',
+    '  "ruleChanges": [ { "ruleId": "rule-3", "action": "narrow", "statement": "...",',
+    '    "sourcePatternIds": ["n1", "n2"] } ],',
+    '  "notARuleProblem": [ { "patternId": "n3", "reason": "..." } ] }',
     '```',
   ].join('\n');
+}
+
+export interface RefineOutput {
+  rules: AnalysisRule[];
+  changeLog?: string[];
+  ruleChanges?: TrainingLabRuleChange[];
+  notARuleProblem?: TrainingLabNotARuleProblem[];
+}
+
+const RULE_CHANGE_ACTIONS = new Set(['edit', 'add', 'remove', 'narrow']);
+
+/**
+ * Write Loop v2 Phase 1.3 — the forced choice.
+ *
+ * The grounding half of REFINE (`validateAnalysis`) already stops invented
+ * evidence. It does not stop the actual failure seen in production: 9 of 9 lab
+ * runs came back with `ruleChanges = 0` while their own critique listed negative
+ * patterns. That is a refiner declining to decide, and it makes the whole
+ * calibration loop unfalsifiable. So: every negative pattern must be assigned
+ * either to a rule change or to "the rule is fine, the draft executed it badly".
+ *
+ * Referencing a pattern id that does not exist is also rejected — otherwise
+ * coverage could be satisfied with invented ids.
+ */
+export function validateRefineForcedChoice(
+  parsed: unknown,
+  negativePatternIds: string[],
+): { ok: true } | { ok: false; errorCode: string; reason: string } {
+  if (negativePatternIds.length === 0) return { ok: true };
+  const p = (parsed ?? {}) as Partial<RefineOutput>;
+  const ruleChanges = Array.isArray(p.ruleChanges) ? p.ruleChanges : [];
+  const notARuleProblem = Array.isArray(p.notARuleProblem) ? p.notARuleProblem : [];
+  const known = new Set(negativePatternIds);
+  const decided = new Set<string>();
+
+  for (const [i, change] of ruleChanges.entries()) {
+    if (!change || typeof change !== 'object') {
+      return { ok: false, errorCode: 'REFINE_UNDECIDED', reason: `ruleChanges[${i}] is not an object` };
+    }
+    if (typeof change.ruleId !== 'string' || !change.ruleId.trim()) {
+      return { ok: false, errorCode: 'REFINE_UNDECIDED', reason: `ruleChanges[${i}].ruleId is missing` };
+    }
+    if (typeof change.action !== 'string' || !RULE_CHANGE_ACTIONS.has(change.action)) {
+      return {
+        ok: false,
+        errorCode: 'REFINE_UNDECIDED',
+        reason: `ruleChanges[${i}].action must be one of edit/add/remove/narrow`,
+      };
+    }
+    if (typeof change.statement !== 'string' || !change.statement.trim()) {
+      return { ok: false, errorCode: 'REFINE_UNDECIDED', reason: `ruleChanges[${i}].statement is empty` };
+    }
+    if (!Array.isArray(change.sourcePatternIds) || change.sourcePatternIds.length === 0) {
+      return {
+        ok: false,
+        errorCode: 'REFINE_UNDECIDED',
+        reason: `ruleChanges[${i}] ("${change.ruleId}") cites no sourcePatternIds — say which pattern justified it`,
+      };
+    }
+    for (const patternId of change.sourcePatternIds) {
+      if (!known.has(patternId)) {
+        return {
+          ok: false,
+          errorCode: 'REFINE_UNDECIDED',
+          reason:
+            `ruleChanges[${i}] cites pattern "${patternId}", which is not a negative pattern of this round `
+            + `(valid ids: ${negativePatternIds.join(', ')})`,
+        };
+      }
+      decided.add(patternId);
+    }
+  }
+
+  for (const [i, entry] of notARuleProblem.entries()) {
+    if (!entry || typeof entry !== 'object' || typeof entry.patternId !== 'string') {
+      return { ok: false, errorCode: 'REFINE_UNDECIDED', reason: `notARuleProblem[${i}].patternId is missing` };
+    }
+    if (typeof entry.reason !== 'string' || !entry.reason.trim()) {
+      return {
+        ok: false,
+        errorCode: 'REFINE_UNDECIDED',
+        reason: `notARuleProblem[${i}] ("${entry.patternId}") has an empty reason`,
+      };
+    }
+    if (!known.has(entry.patternId)) {
+      return {
+        ok: false,
+        errorCode: 'REFINE_UNDECIDED',
+        reason: `notARuleProblem[${i}] cites pattern "${entry.patternId}", which is not a negative pattern of this round`,
+      };
+    }
+    decided.add(entry.patternId);
+  }
+
+  const undecided = negativePatternIds.filter((id) => !decided.has(id));
+  if (undecided.length > 0) {
+    return {
+      ok: false,
+      errorCode: 'REFINE_UNDECIDED',
+      reason:
+        `negative pattern(s) ${undecided.join(', ')} appear in neither ruleChanges[].sourcePatternIds nor `
+        + 'notARuleProblem — decide each one: change a rule, or say the rule is fine and the draft executed it badly',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * End-of-run rule read-out. Deliberately computed from what actually happened
+ * (draft self-reports + critique patterns), not from what REFINE claimed.
+ */
+export function computeRuleVerdicts(rounds: TrainingLabRound[]): TrainingLabRuleVerdict[] {
+  const statements = new Map<string, string>();
+  for (const round of rounds) {
+    for (const rule of round.formulaVersionIn.rules) statements.set(rule.id, rule.statement);
+    for (const rule of round.formulaVersionOut?.rules ?? []) statements.set(rule.id, rule.statement);
+  }
+
+  const verdicts: TrainingLabRuleVerdict[] = [];
+  for (const [ruleId, statement] of statements) {
+    let exercised = 0;
+    let hurtCount = 0;
+    let hurtWhileExercised = 0;
+    for (const round of rounds) {
+      const applied = round.draft?.appliedRules?.includes(ruleId) ?? false;
+      const hurtThisRound = (round.critique?.negativePatterns ?? []).filter((p) => p.ruleId === ruleId).length;
+      hurtCount += hurtThisRound;
+      if (applied) {
+        exercised += 1;
+        if (hurtThisRound > 0) hurtWhileExercised += 1;
+      }
+    }
+    const verdict: TrainingLabRuleVerdict['verdict'] =
+      exercised === 0
+        ? 'DROP_BEFORE_MERGE'
+        : hurtWhileExercised === exercised
+          ? 'SUSPECT'
+          : 'KEEP';
+    verdicts.push({ ruleId, statement, exercised, hurtCount, verdict });
+  }
+  return verdicts;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -439,22 +709,28 @@ async function handleDispatchFailure(
  * CRITIQUE's envelope and produce a confusing downstream failure two stages later.
  */
 /**
- * `targetWordCount` check added 2026-08-10 (user: "agent viết bài đang quá ngắn...
- * kể cả tôi đọc lại cũng k đánh giá được") — real runs showed drafts at 15-40% of
- * the source video's actual word count (no length guidance existed before this),
- * too short for CRITIQUE — or a human — to meaningfully judge whether the draft
- * sustains the source's structure/pacing at the same scale. Only checks a MINIMUM
- * — a HARD 70% of target floor (user: "tôi yêu cầu cứng luôn, bài viết phải đạt
- * ít nhất 70% so với script gốc") — deliberately no maximum here, since a
- * longer-than-target script is not the failure mode anyone has observed or
- * complained about. This
- * reuses `LaneScheduler`'s new content-retry (2026-08-10): a too-short draft is
- * rejected with the actual word count in `reason`, and the agent gets a chance to
- * expand and resubmit instead of the round failing outright.
+ * Length-target check, added 2026-08-10, REDESIGNED same day per the user's second
+ * pass: an initial version targeted ~100% of the source's word count (fixing drafts
+ * that were coming out at only 15-40% of source length, too short to compare
+ * against). The user then reframed the actual goal: DRAFT is not trying to
+ * reproduce the source, it is a TEST of whether the Formula's rules were extracted
+ * well enough that an agent can compress them into a MUCH shorter script and still
+ * apply them faithfully — "Mục tiêu là chấm formula để kiểm định lại agent đã thực
+ * sự hiểu và trích xuất formula đủ chưa."
+ *
+ * Band history:
+ * - 30-40% hard band (2026-08-10): too tight for LLM length control. A real dual-agy
+ *   run wrote 2919 words against a 2050-2750 target (only ~6% over max), exhausted
+ *   content-retries without rewriting, and the UI showed generic `AGENT_SCHEMA`.
+ * - 25-45% accept band (2026-08-11): still clearly compressed vs full source, with
+ *   enough headroom that agents can land a pass without surgical word-count edits.
+ * Length failures use `DRAFT_LENGTH` (not `AGENT_SCHEMA`) so the UI can say "độ dài"
+ * rather than "sai định dạng". Reuses `LaneScheduler`'s content-retry: a draft
+ * outside the band is rejected with its actual word count in `reason`.
  */
 function validateDraftShape(
   parsed: unknown,
-  targetWordCount: number,
+  wordRange: { minWords: number; maxWords: number },
 ): { ok: true } | { ok: false; errorCode: string; reason: string } {
   const p = parsed as Partial<DraftArtifact> | null;
   if (!p || typeof p !== 'object') {
@@ -467,49 +743,50 @@ function validateDraftShape(
     return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'draft.script missing or empty' };
   }
   const wordCount = p.script.trim().split(/\s+/).length;
-  // Hard floor at 70% of target (user: "tôi yêu cầu cứng luôn, bài viết phải đạt
-  // ít nhất 70% so với script gốc", 2026-08-10) — tightened from an initial 50%.
-  const minWords = Math.round(targetWordCount * 0.7);
+  const { minWords, maxWords } = wordRange;
   if (wordCount < minWords) {
     return {
       ok: false,
-      errorCode: 'AGENT_SCHEMA',
-      reason: `draft.script is only ${wordCount} words — target is ~${targetWordCount} `
-        + `(minimum ${minWords}). Expand it into a full script, not an outline.`,
+      errorCode: 'DRAFT_LENGTH',
+      reason: `draft.script is only ${wordCount} words — target is ${minWords}-${maxWords}. `
+        + `Too short to judge; expand it into a real script, not an outline. `
+        + `Overwrite out/result.json with a longer script; do not leave this file and reply "done".`,
+    };
+  }
+  if (wordCount > maxWords) {
+    return {
+      ok: false,
+      errorCode: 'DRAFT_LENGTH',
+      reason: `draft.script is ${wordCount} words — target is ${minWords}-${maxWords}. `
+        + `Too long; this is a compression test, cut it down, don't pad it out. `
+        + `Overwrite out/result.json with a shorter script; do not leave this file and reply "done".`,
     };
   }
   return { ok: true };
 }
 
-/** Stable across all rounds of one run's DRAFT stage (SDD §12a session-continuity fix,
- * 2026-08-09) — combined with `batchId`/`itemId` (already hashed into the clone id by
- * `cloneAgentId`), this keeps the SAME clone id round over round, which is what lets
- * `TeamWorkflow`'s existing `store.resumeRef(agentId)` find and resume the prior
- * round's session (verified for real against codex-cli 0.147.0 — see
- * `docs/plans/agent-harness-architecture.md` §5.8; grok and agy adapters ALSO wire
- * `resumeSessionRef` as of 2026-08-10 — see `adapters.ts`'s grok/agy
- * `buildHeadlessTurn`, verified by hand against both installed binaries: real
- * `--resume`/`--conversation` context resume, not just a stable pane identity).
- * "agent 2 viết bài mỗi turn không cần fresh context" — the DRAFT/writer role. */
+/**
+ * Stable across all DRAFT rounds. `interactivePty` keeps the writable TUI for this
+ * clone id alive and wakes it with the next absolute-path assignment, so the writer
+ * retains useful drafting context without relying on headless `exec resume`.
+ */
 const DRAFT_SESSION_GROUP = 'draft';
 
-/** Stable across all rounds AND across CRITIQUE/REFINE both (added 2026-08-10, user:
- * "2 agent chạy thì chỉ chạy ở 2 session thôi" — CRITIQUE/REFINE previously only
- * shared a clone id WITHIN one round via matching `attempt`; a real 3-round run showed
- * 3 distinct identities for this role (one per round) plus DRAFT's 1 — 4 total, not
- * the 2 the user expects (one per agent ROLE, not per round). Naming this "the critic"
- * to match §12a's "agent 1 sẽ là người chấm luôn" — CRITIQUE and REFINE are the same
- * conceptual agent (the analyst who already has the transcript), just two stages. */
+/**
+ * Stable role identity for CRITIQUE and REFINE. Their transcript-sized assignments
+ * deliberately set `freshContext`, so the PTY bridge replaces the critic pane before
+ * each assignment instead of carrying an unbounded transcript history forward.
+ */
 const CRITIQUE_REFINE_SESSION_GROUP = 'critique-refine';
 
-/** Source-video word count, clamped to a range an agent can realistically write in
- * one turn (2026-08-10 length-target fix — see `validateDraftShape`'s doc comment).
- * Floor of 600 covers very short clips; ceiling of 4000 keeps very long videos
- * (up to `TRANSCRIPT_FETCH_LIMIT`'s ~2.2h) from demanding an impractically long
- * single-turn write. Rounded to the nearest 50 for a cleaner prompt number. */
-function draftTargetWordCount(transcriptWordCount: number): number {
-  const clamped = Math.min(4000, Math.max(600, transcriptWordCount));
-  return Math.round(clamped / 50) * 50;
+/**
+ * Absolute band since Write Loop v2 Phase 1 (was ~25-45% of the source video's
+ * word count). A rule set either survives compression to ~1k words or it does
+ * not; making the target track source length only changed how much filler a long
+ * source demanded. Kept as a function so callers/tests have one name to import.
+ */
+export function draftTargetWordRange(): { minWords: number; maxWords: number } {
+  return { minWords: LAB_MIN_WORDS, maxWords: LAB_MAX_WORDS };
 }
 
 async function dispatchDraftRound(
@@ -518,9 +795,7 @@ async function dispatchDraftRound(
   round: TrainingLabRound,
   previousCritique: CritiqueArtifact | null,
 ): Promise<void> {
-  const { envelopeSegments } = fetchTranscriptSegments(deps.spy, run.videoSnapshotId);
-  const transcriptWordCount = envelopeSegments.reduce((sum, s) => sum + s.text.trim().split(/\s+/).length, 0);
-  const targetWordCount = draftTargetWordCount(transcriptWordCount);
+  const wordRange = draftTargetWordRange();
 
   const envelope = { formulaVersionIn: round.formulaVersionIn, previousCritique: previousCritique ?? null };
   const dispatch = await deps.scheduler.dispatchItem({
@@ -528,20 +803,16 @@ async function dispatchDraftRound(
     itemId: run.videoSnapshotId,
     stage: DRAFT_STAGE,
     attempt: round.round,
-    // User-selectable per run (2026-08-10, "agent 2") — default suggested by the UI
-    // is `grok` (Claude/Codex headless turns were repeatedly hitting the
-    // still-unresolved heartbeat/stall watchdog bug; grok is a separate binary/
-    // session lineage unaffected by it), but any of the 4 default agents works: all
-    // now have real session resume wired (`adapters.ts`), so combined with
-    // `sessionGroup` below, DRAFT genuinely resumes its prior round's context
-    // regardless of which one is picked.
+    // User-selectable per run ("agent 2"). All Lab stages now launch an actual
+    // writable PTY and receive a short assignment message after the TUI has booted.
     templateId: run.draftAgent,
-    promptMarkdown: buildDraftPrompt(round.formulaVersionIn, previousCritique, targetWordCount),
+    promptMarkdown: buildDraftPrompt(round.formulaVersionIn, previousCritique, wordRange),
     envelope,
     inputHashes: [envelopeHash(envelope)],
     promptVersion: DRAFT_PROMPT_VERSION,
     sessionGroup: DRAFT_SESSION_GROUP,
-    validateContent: (parsed) => validateDraftShape(parsed, targetWordCount),
+    interactivePty: true,
+    validateContent: (parsed) => validateDraftShape(parsed, wordRange),
   });
   await handleDispatchFailure(deps, run, round, dispatch);
 }
@@ -584,6 +855,10 @@ async function dispatchCritiqueRound(
     inputHashes: [envelopeHash(envelope)],
     promptVersion: CRITIQUE_PROMPT_VERSION,
     sessionGroup: CRITIQUE_REFINE_SESSION_GROUP,
+    interactivePty: true,
+    // Fresh critic context: the PTY bridge replaces this pane before injecting the
+    // transcript-sized assignment — see `CRITIQUE_REFINE_SESSION_GROUP`.
+    freshContext: true,
     validateContent: (parsed) => {
       const p = parsed as Partial<CritiqueArtifact>;
       const critique: CritiqueArtifact = {
@@ -606,6 +881,8 @@ async function dispatchRefineRound(
   const critique = round.critique;
   if (!critique) throw new Error('[training-lab] dispatchRefineRound called before round.critique was set');
   const envelope = { transcript: envelopeSegments, formulaVersionIn: round.formulaVersionIn, critique };
+  const negativePatterns = critique.negativePatterns ?? [];
+  const negativePatternIds = negativePatterns.map((p) => p.id);
 
   const dispatch = await deps.scheduler.dispatchItem({
     batchId: run.id,
@@ -614,11 +891,15 @@ async function dispatchRefineRound(
     attempt: round.round,
     // Same agent as CRITIQUE (user-selectable "agent 1") — see CRITIQUE dispatch above.
     templateId: run.critiqueAgent,
-    promptMarkdown: buildRefinePrompt(),
+    promptMarkdown: buildRefinePrompt(negativePatterns),
     envelope,
     inputHashes: [envelopeHash(envelope)],
     promptVersion: REFINE_PROMPT_VERSION,
     sessionGroup: CRITIQUE_REFINE_SESSION_GROUP,
+    interactivePty: true,
+    // Fresh critic context: the PTY bridge replaces this pane before injecting the
+    // transcript-sized assignment — see `CRITIQUE_REFINE_SESSION_GROUP`.
+    freshContext: true,
     validateContent: (parsed) => {
       const p = parsed as { rules?: unknown };
       const analysis: AnalysisArtifact = {
@@ -629,11 +910,13 @@ async function dispatchRefineRound(
       };
       // Reuse the EXISTING `validateAnalysis` (training-core) rather than a
       // near-duplicate — a `FormulaVersion`'s `rules` are still `AnalysisRule[]`
-      // with the same evidence shape grounded in the same transcript (SDD §12a: the
-      // "every rule change must cite which pattern justified it" requirement is a
-      // PROMPT instruction to the agent via `changeLog`, not a new grounding shape
-      // the validator needs to check).
-      return validateAnalysis(analysis, segmentsById);
+      // with the same evidence shape grounded in the same transcript.
+      const grounded = validateAnalysis(analysis, segmentsById, { requirePayoff: true });
+      if (!grounded.ok) return grounded;
+      // Write Loop v2 Phase 1.3: grounding is not enough — the refiner must also
+      // have DECIDED something about every negative pattern (see
+      // `validateRefineForcedChoice`).
+      return validateRefineForcedChoice(p, negativePatternIds);
     },
   });
   await handleDispatchFailure(deps, run, round, dispatch);
@@ -648,9 +931,14 @@ export async function startTrainingLabRun(
     startingFormula: FormulaArtifact;
     draftAgent: DefaultAgentId;
     critiqueAgent: DefaultAgentId;
+    /** 1 or 2 (Write Loop v2 Phase 1); defaults to `DEFAULT_MAX_ROUNDS`. */
+    maxRounds?: number;
   },
 ): Promise<TrainingLabRun> {
   const { videoSnapshotId, startingFormula, draftAgent, critiqueAgent } = params;
+  const maxRounds = params.maxRounds === undefined
+    ? DEFAULT_MAX_ROUNDS
+    : Math.min(MAX_ALLOWED_ROUNDS, Math.max(1, Math.round(params.maxRounds)));
   const v1: FormulaVersion = { ...startingFormula };
   const now = new Date().toISOString();
   const channelTitle = startingFormula.channelTitle ?? '';
@@ -664,6 +952,8 @@ export async function startTrainingLabRun(
     critiqueArtifactHash: null,
     formulaVersionOut: null,
     changeLog: null,
+    ruleChanges: null,
+    notARuleProblem: null,
     status: 'DRAFTING',
   };
 
@@ -672,7 +962,7 @@ export async function startTrainingLabRun(
     videoSnapshotId,
     channelTitle,
     status: 'RUNNING',
-    maxRounds: DEFAULT_MAX_ROUNDS,
+    maxRounds,
     rounds: [round1],
     createdAt: now,
     updatedAt: now,
@@ -685,6 +975,88 @@ export async function startTrainingLabRun(
   // settle-listener drives everything after this dispatch returns.
   await dispatchDraftRound(deps, run, round1, null);
   return run;
+}
+
+/**
+ * Recover a failed DRAFT when its interactive agent wrote `out/result.json` after
+ * the bridge had already settled the turn as `AGENT_EXIT`. The recovery repeats
+ * the scheduler's artifact validation/commit boundary, then continues at
+ * CRITIQUE; it never re-runs or silently replaces the writer's finished draft.
+ */
+export async function continueTrainingLabFromSalvagedDraft(
+  deps: TrainingLabDeps,
+  runId: string,
+): Promise<TrainingLabRun> {
+  const run = await getTrainingLabRun(runId, deps.dataDir);
+  if (!run) throw new Error('Training Lab run không tồn tại');
+
+  if (run.status === 'DONE') return run;
+  if (run.status === 'RUNNING') {
+    throw new Error('Training Lab đang chạy — chỉ khôi phục sau khi DRAFT đã fail');
+  }
+
+  const round = [...run.rounds].reverse().find((candidate) =>
+    candidate.status === 'FAILED'
+      && candidate.errorCode === 'AGENT_EXIT'
+      && candidate.draft === null
+      && candidate.draftArtifactHash === null
+  );
+  if (!round) {
+    throw new Error('Không có DRAFT lỗi AGENT_EXIT để khôi phục');
+  }
+
+  const itemRunDir = join(
+    deps.dataDir,
+    'workspaces',
+    'pipeline',
+    run.id,
+    run.videoSnapshotId,
+    'attempts',
+    String(round.round),
+    DRAFT_STAGE,
+  );
+  const resultPath = join(itemRunDir, 'out', 'result.json');
+  let raw: string;
+  try {
+    raw = await readFile(resultPath, 'utf8');
+  } catch {
+    throw new Error(`Không thấy kết quả DRAFT cần khôi phục tại ${resultPath}`);
+  }
+
+  const parsedResult = parseAgentResultJson(raw);
+  if (!parsedResult.ok) {
+    throw new Error(`Kết quả DRAFT không phải JSON hợp lệ: ${parsedResult.error}`);
+  }
+  const wordRange = draftTargetWordRange();
+  const shape = validateDraftShape(parsedResult.value, wordRange);
+  if (!shape.ok) {
+    throw new Error(`Kết quả DRAFT không qua gate: ${shape.reason}`);
+  }
+
+  const draft = parsedResult.value as DraftArtifact;
+  const commit = await commitArtifact({
+    runDir: itemRunDir,
+    stage: DRAFT_STAGE,
+    version: round.round,
+    content: draft,
+  });
+
+  round.draft = draft;
+  round.draftArtifactHash = commit.hash;
+  round.status = 'CRITIQUING';
+  delete round.errorCode;
+  delete round.errorReason;
+  run.status = 'RUNNING';
+  run.updatedAt = new Date().toISOString();
+  await saveTrainingLabRun(run, deps.dataDir);
+
+  await dispatchCritiqueRound(deps, run, round);
+
+  const latest = await getTrainingLabRun(runId, deps.dataDir);
+  if (!latest) throw new Error('Training Lab run biến mất sau khi khôi phục');
+  // `dispatchCritiqueRound` may immediately fail its admission and persist FAILED;
+  // return that authoritative state rather than the optimistic state above.
+  return latest;
 }
 
 /**
@@ -719,6 +1091,7 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
   if (event.outcome === 'FAILED') {
     round.status = 'FAILED';
     round.errorCode = event.errorCode;
+    if (event.errorReason) round.errorReason = event.errorReason;
     run.status = 'FAILED';
     run.updatedAt = now;
     await saveTrainingLabRun(run, deps.dataDir);
@@ -748,10 +1121,12 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
       return;
     }
     case REFINE_STAGE: {
-      const parsed = await readCommittedArtifact<{ rules: AnalysisRule[]; changeLog?: string[] }>(deps.dataDir, event);
+      const parsed = await readCommittedArtifact<RefineOutput>(deps.dataDir, event);
       const formulaVersionOut = buildRefinedVersion(round.formulaVersionIn, parsed.rules, run.id);
       round.formulaVersionOut = formulaVersionOut;
       round.changeLog = Array.isArray(parsed.changeLog) ? parsed.changeLog : null;
+      round.ruleChanges = Array.isArray(parsed.ruleChanges) ? parsed.ruleChanges : null;
+      round.notARuleProblem = Array.isArray(parsed.notARuleProblem) ? parsed.notARuleProblem : null;
       round.status = 'DONE';
       // 2026-08-10: a refined version is saved to the SHARED Formula store, not only
       // inside this run's log. Before this, every improvement the Training Lab made
@@ -770,6 +1145,8 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
           critiqueArtifactHash: null,
           formulaVersionOut: null,
           changeLog: null,
+          ruleChanges: null,
+          notARuleProblem: null,
           status: 'DRAFTING',
         };
         run.rounds.push(nextRound);
@@ -778,8 +1155,11 @@ async function handleTrainingLabSettle(deps: TrainingLabDeps, event: ItemSettled
         await dispatchDraftRound(deps, run, nextRound, round.critique);
       } else {
         run.status = 'DONE';
+        // The read-out the human merges from (Write Loop v2 Phase 1.4).
+        run.ruleVerdicts = computeRuleVerdicts(run.rounds);
         run.updatedAt = now;
         await saveTrainingLabRun(run, deps.dataDir);
+        await notifyTrainingLabDone(run, deps.dataDir);
       }
       return;
     }

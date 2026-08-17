@@ -5,10 +5,12 @@ import { parseRoute, type Route } from './router.ts';
 import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
-import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
+import { WriterPage, WriterPackPage, WriterRunPage } from './pages/Writer.tsx';
+import { WriterV2Page, WriterV2RunPage } from './pages/WriterV2.tsx';
 import { FormulasPage, FormulaPage } from './pages/Training.tsx';
 import { TrainingLabPage, TrainingLabRunPage } from './pages/TrainingLab.tsx';
 import { StudioListPage, StudioSessionPage } from './pages/Studio.tsx';
+import { StudioProfilePage, StudioProfilesPage } from './pages/StudioProfiles.tsx';
 import { AgentsPage } from './pages/Agents.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { TerminalDrawer } from './components/terminal/TerminalDrawer.tsx';
@@ -37,7 +39,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (route.name === 'writer' || route.name === 'writer-pack') {
+    if (route.name === 'writer' || route.name === 'writer-pack' || route.name === 'writer-run') {
       void api.listWriterPacks()
         .then((d) => setWriterCount(d.packs.length))
         .catch(() => undefined);
@@ -58,6 +60,15 @@ function App() {
     case 'writer-pack':
       page = <WriterPackPage id={route.id} />;
       break;
+    case 'writer-run':
+      page = <WriterRunPage id={route.id} />;
+      break;
+    case 'writer-v2':
+      page = <WriterV2Page />;
+      break;
+    case 'writer-v2-run':
+      page = <WriterV2RunPage id={route.id} />;
+      break;
     case 'training-formulas':
       page = <FormulasPage />;
       break;
@@ -75,6 +86,12 @@ function App() {
       break;
     case 'studio-session':
       page = <StudioSessionPage id={route.id} />;
+      break;
+    case 'studio-profiles':
+      page = <StudioProfilesPage />;
+      break;
+    case 'studio-profile':
+      page = <StudioProfilePage id={route.id} />;
       break;
     case 'agents':
       page = <AgentsPage />;

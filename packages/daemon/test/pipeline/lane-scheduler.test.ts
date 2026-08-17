@@ -99,6 +99,27 @@ afterEach(() => {
 });
 
 describe('LaneScheduler — commit rule + clone lifecycle', () => {
+  test('stages companion source files outside the compact JSON envelope', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    const sourceText = '# Source\n\nMột dòng có thể được Read theo dòng.\n';
+    const { dispatch, settled } = await dispatchAndSettle(
+      harness,
+      scheduler,
+      baseParams({
+        itemId: 'item-companion-input',
+        envelope: { sourcePack: { contentFile: 'input/source-pack.md' } },
+        inputFiles: [{ path: 'source-pack.md', content: sourceText }],
+      }),
+      'ok',
+    );
+
+    expect(settled.outcome).toBe('COMMITTED');
+    expect(await readFile(join(dispatch.itemRunDir, 'input', 'source-pack.md'), 'utf8')).toBe(sourceText);
+    const envelope = JSON.parse(await readFile(join(dispatch.itemRunDir, 'input', 'envelope.json'), 'utf8'));
+    expect(envelope).toEqual({ sourcePack: { contentFile: 'input/source-pack.md' } });
+    expect(JSON.stringify(envelope)).not.toContain(sourceText.trim());
+  });
+
   test('happy path: ok stub commits artifact, reaps clone', async () => {
     const scheduler = harness.pipeline.scheduler;
     const { dispatch, settled } = await dispatchAndSettle(harness, scheduler, baseParams(), 'ok');

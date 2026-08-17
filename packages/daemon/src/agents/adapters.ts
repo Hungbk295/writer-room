@@ -75,6 +75,10 @@ const claudeCode: AgentAdapter = {
     if (ctx.mcpConfigPath) args.push('--mcp-config', ctx.mcpConfigPath);
     args.push(...agent.args);
     if (ctx.orchestrated) {
+      // Writer/Training inputs are staged local files. Chrome can neither read
+      // `file://` under automation nor add value here; disabling it also keeps a
+      // Claude turn from wasting its limited time trying a browser workaround.
+      args.push('--no-chrome');
       const tools = ctx.allowedTools ?? [];
       const builtin = tools.filter((tool) => !tool.startsWith('mcp__'));
       if (builtin.length) args.push('--tools', builtin.join(','));
@@ -91,7 +95,7 @@ const claudeCode: AgentAdapter = {
     if (ctx.mcpConfigPath) args.push('--mcp-config', ctx.mcpConfigPath);
     args.push(...agent.args);
     if (ctx.orchestrated) {
-      args.push('--setting-sources', 'user', '--strict-mcp-config', '--permission-mode', 'dontAsk');
+      args.push('--setting-sources', 'user', '--strict-mcp-config', '--permission-mode', 'dontAsk', '--no-chrome');
     }
     if (tools.length) args.push('--allowedTools', tools.join(','));
     if (ctx.orchestrated) {

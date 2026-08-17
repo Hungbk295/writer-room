@@ -85,6 +85,21 @@ describe('default agents', () => {
     expect(resumed.args[resumed.args.length - 1]).toBe('do the next thing');
   });
 
+  test('orchestrated Claude turns disable Chrome but retain filesystem tools', () => {
+    const agent = buildDefaultAgents(dir).find((a) => a.id === 'claude')!;
+    const adapter = getAdapter('claude-code');
+    const interactive = adapter.buildInteractive(agent, {
+      cwd: dir,
+      mcpConfigPath: '/tmp/fake-mcp.json',
+      orchestrated: true,
+      allowedTools: ['Read', 'Edit', 'Write', 'mcp__team'],
+    });
+
+    expect(interactive.args).toContain('--no-chrome');
+    expect(interactive.args).toContain('Read,Edit,Write');
+    expect(interactive.args).toContain('Read,Edit,Write,mcp__team');
+  });
+
   test('grok adapter builds interactive and headless specs without --mcp-config', () => {
     const agent = buildDefaultAgents(dir).find((a) => a.id === 'grok')!;
     const adapter = getAdapter('grok');

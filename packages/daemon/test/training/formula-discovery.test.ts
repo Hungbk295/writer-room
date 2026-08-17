@@ -93,6 +93,7 @@ describe('runFormulaDiscovery — happy path', () => {
         rules: [
           {
             id: 'rule-1',
+            role: 'payoff',
             statement: 'Opens with a direct question to the viewer.',
             evidence: [{ segmentIds: [firstSegment.id], quote }],
           },
@@ -130,6 +131,7 @@ describe('runFormulaDiscovery — ungrounded rejection', () => {
       rules: [
         {
           id: 'rule-1',
+          role: 'payoff',
           statement: 'Claims something the transcript never says.',
           evidence: [{
             segmentIds: [`seg-fabricated`],
@@ -233,6 +235,7 @@ describe('runFormulaDiscovery — ungrounded rejection', () => {
       rules: [
         {
           id: 'rule-1',
+          role: 'payoff',
           statement: 'Opens with a concrete claim from the transcript.',
           evidence: [{ segmentIds: [segments[0]!.id], quote: segments[0]!.text.slice(0, 15) }],
         },

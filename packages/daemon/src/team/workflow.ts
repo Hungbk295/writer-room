@@ -289,6 +289,21 @@ export class TeamWorkflow {
     this.deps.store.audit('turn_started', agentId, `turn ${next.id} (${next.reason})`);
     const taskNote = job?.taskNote ?? (next.reason === 'assignment' ? this.deps.store.getAssignment(agentId)?.task : undefined);
     const persistentInteractive = job?.persistentInteractive === true;
+    // Hard gate (plan §3.2): a persistent interactive orchestrated turn has no
+    // headless prompt to fall back on — the pane is told to do exactly this task,
+    // and `buildInjectLine` embeds it. A missing task would wake the agent into a
+    // turn that says nothing to do; fail fast and settle instead of emitting a
+    // spawnTurn that can never make progress. Mirrors the spec-build catch block
+    // below (same audit/publish path, no `dispatchNext` — a queued sibling turn
+    // of the same agent stays queued rather than retrying a broken job).
+    if (persistentInteractive && job?.orchestrated === true && !taskNote?.trim()) {
+      this.turnJobs.delete(next.id);
+      this.deps.store.updateTurn(next.id, { status: 'failed' });
+      this.deps.store.audit('turn_failed', agentId, `turn ${next.id} interactive orchestrated turn thiếu taskNote — không emit spawnTurn`);
+      this.deps.emit({ kind: 'agentPaused', agentId, reason: `turn ${next.id} thiếu taskNote cho interactive orchestrated turn` });
+      this.publishSettled({ turnId: next.id, agentId, status: 'failed', exitCode: -1 });
+      return;
+    }
     // A Board turn is delivered to a pane that was already launched by the
     // client. Build an actual interactive spec here as well (rather than a
     // discarded `-p` spec) so logs, side effects, and future bridges cannot
@@ -327,6 +342,7 @@ export class TeamWorkflow {
           Boolean(taskNote?.trim()),
           job?.orchestrated === true,
           persistentInteractive ? next.id : undefined,
+          taskNote,
         );
         this.deps.emit({
           kind: 'spawnTurn',

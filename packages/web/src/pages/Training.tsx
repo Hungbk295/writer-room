@@ -3,7 +3,9 @@ import {
   api, DEFAULT_AGENT_OPTIONS, type DefaultAgentId, type Formula, type FormulaRule, type FormulaSummary,
 } from '../api.ts';
 import { href } from '../router.ts';
+import { isTauri } from '../components/terminal/terminalApi.ts';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
+import { EntityId } from '../components/ui/EntityId.tsx';
 
 /** ADR-14: `origin` replaced `scope`. Shown in Vietnamese because it is the one
  * thing that tells the user whether a Formula came from one video, from refining
@@ -12,6 +14,18 @@ export function originLabel(origin: Formula['origin']): string {
   if (origin === 'COMPOUND') return 'Ghép (thể loại)';
   if (origin === 'REFINED') return 'Đã tinh chỉnh';
   return '1 video';
+}
+
+/** List/detail title: rename → video title → genre → channel. */
+export function formulaDisplayName(formula: Formula | FormulaSummary): string {
+  if ('label' in formula && formula.label?.trim()) return formula.label.trim();
+  if (formula.title?.trim()) return formula.title.trim();
+  if ('videoTitle' in formula && formula.videoTitle?.trim()) return formula.videoTitle.trim();
+  if (formula.origin === 'COMPOUND' && 'genre' in formula && formula.genre?.trim()) {
+    return formula.genre.trim();
+  }
+  if ('channelTitle' in formula && formula.channelTitle?.trim()) return formula.channelTitle.trim();
+  return 'Formula';
 }
 
 /** Distinct source videos behind a compound Formula — derived, never stored, so it
@@ -37,41 +51,49 @@ export function RuleList({ rules }: { rules: FormulaRule[] }) {
     return <p class="muted" style={{ margin: 0 }}>Không có rule.</p>;
   }
   return (
-    <ul class="list">
-      {rules.map((rule) => (
-        <li key={rule.id}>
-          <strong>{rule.statement}</strong>
-          <div class="meta" style={{ marginTop: '0.15rem' }}>
-            <span class="muted">{rule.id}</span>
-          </div>
-          <div class="stack" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
-            {(rule.evidence || []).map((ev, i) => {
-              const segIds = ev.segmentIds || ((ev as any).segmentId ? [(ev as any).segmentId] : []);
-              return (
-                <blockquote
-                  key={`${rule.id}-${i}`}
-                  style={{
-                    margin: 0,
-                    padding: '0.5rem 0.75rem',
-                    borderLeft: '3px solid var(--teal)',
-                    background: 'rgba(31, 138, 122, 0.06)',
-                    borderRadius: '6px',
-                  }}
-                >
-                  <code>{ev.quote}</code>
-                  {segIds.length > 0 && (
-                    <div class="meta" style={{ marginTop: '0.25rem' }}>
-                      <span>segment{segIds.length > 1 ? 's' : ''}: {segIds.join(', ')}</span>
-                      {typeof ev.startSec === 'number' && <span>{ev.startSec}s–{ev.endSec}s</span>}
-                    </div>
-                  )}
-                </blockquote>
-              );
-            })}
-          </div>
-        </li>
-      ))}
-    </ul>
+    <div class="stack" style={{ gap: '0.6rem' }}>
+      {!rules.some((rule) => rule.role === 'payoff') && (
+        <p class="error" style={{ margin: 0 }}>
+          ⚠ Formula này chưa có PAYOFF được đánh dấu và dẫn chứng. Hãy chạy Training Lab để bổ sung.
+        </p>
+      )}
+      <ul class="list">
+        {rules.map((rule) => (
+          <li key={rule.id}>
+            <strong>{rule.statement}</strong>
+            <div class="meta" style={{ marginTop: '0.15rem' }}>
+              <EntityId id={rule.id} label="Rule ID" />
+              {rule.role && <span class={rule.role === 'payoff' ? 'chip ok' : 'chip'}>{rule.role.toUpperCase()}</span>}
+            </div>
+            <div class="stack" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
+              {(rule.evidence || []).map((ev, i) => {
+                const segIds = ev.segmentIds || ((ev as any).segmentId ? [(ev as any).segmentId] : []);
+                return (
+                  <blockquote
+                    key={`${rule.id}-${i}`}
+                    style={{
+                      margin: 0,
+                      padding: '0.5rem 0.75rem',
+                      borderLeft: '3px solid var(--teal)',
+                      background: 'rgba(31, 138, 122, 0.06)',
+                      borderRadius: '6px',
+                    }}
+                  >
+                    <code>{ev.quote}</code>
+                    {segIds.length > 0 && (
+                      <div class="meta" style={{ marginTop: '0.25rem' }}>
+                        <span>segment{segIds.length > 1 ? 's' : ''}: {segIds.join(', ')}</span>
+                        {typeof ev.startSec === 'number' && <span>{ev.startSec}s–{ev.endSec}s</span>}
+                      </div>
+                    )}
+                  </blockquote>
+                );
+              })}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -119,16 +141,14 @@ export function FormulasPage() {
             {formulas.map((formula) => (
               <li key={formula.id} class="pack-row">
                 <div style={{ cursor: 'pointer' }} onClick={() => { location.hash = href({ name: 'training-formula', id: formula.id }); }}>
-                  <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                    <a
-                      href={href({ name: 'training-formula', id: formula.id })}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <strong>{formula.label}</strong>
-                    </a>
-                    <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
-                  </div>
-                  <div class="meta">
+                  <a
+                    href={href({ name: 'training-formula', id: formula.id })}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <strong>{formula.label}</strong>
+                  </a>
+                  <div class="meta" style={{ marginTop: '0.2rem' }}>
+                    <EntityId id={formula.id} label="Formula ID" />
                     <span>{originLabel(formula.origin)}</span>
                     {formula.version > 1 && <span>v{formula.version}</span>}
                     <span>{formula.videoCount} video</span>
@@ -136,7 +156,8 @@ export function FormulasPage() {
                     <span>{new Date(formula.createdAt).toLocaleString()}</span>
                   </div>
                 </div>
-                <div class="row pack-row-actions" style={{ gap: '0.5rem' }}>
+                <div class="row pack-row-actions" style={{ gap: '0.5rem', alignItems: 'center' }}>
+                  <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
                   <a class="btn secondary" href={href({ name: 'training-formula', id: formula.id })}>
                     Mở
                   </a>
@@ -157,6 +178,9 @@ export function FormulasPage() {
 export function FormulaPage({ id }: { id: string }) {
   const [formula, setFormula] = useState<Formula | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
 
   useEffect(() => {
     void api.getFormula(id)
@@ -164,7 +188,29 @@ export function FormulaPage({ id }: { id: string }) {
       .catch((err) => setError(err.message));
   }, [id]);
 
-  if (error) {
+  const startRename = () => {
+    if (!formula) return;
+    setRenameDraft(formulaDisplayName(formula));
+    setRenaming(true);
+  };
+
+  const submitRename = async (e: Event) => {
+    e.preventDefault();
+    if (!formula || !renameDraft.trim() || renameBusy) return;
+    setRenameBusy(true);
+    setError(null);
+    try {
+      const updated = await api.renameFormula(formula.id, renameDraft.trim());
+      setFormula(updated);
+      setRenaming(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  if (error && !formula) {
     return (
       <div>
         <p class="error">{error}</p>
@@ -177,15 +223,37 @@ export function FormulaPage({ id }: { id: string }) {
     return <p class="muted">Đang tải…</p>;
   }
 
+  const displayName = formulaDisplayName(formula);
+
   return (
     <div>
       <div class="page-header">
         <div>
-          <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
-            <h1 class="page-title" style={{ marginBottom: 0 }}>
-              {formula.genre ?? formula.channelTitle ?? 'Formula'}
-            </h1>
-            <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
+          <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {renaming ? (
+              <form class="row" style={{ gap: '0.4rem', alignItems: 'center', flex: 1 }} onSubmit={submitRename}>
+                <input
+                  style={{ flex: 1, minWidth: '12rem' }}
+                  value={renameDraft}
+                  onInput={(e) => setRenameDraft((e.target as HTMLInputElement).value)}
+                  autofocus
+                />
+                <button class="btn" type="submit" disabled={renameBusy || !renameDraft.trim()}>
+                  {renameBusy ? 'Đang lưu…' : 'Lưu'}
+                </button>
+                <button class="btn secondary" type="button" disabled={renameBusy} onClick={() => setRenaming(false)}>
+                  Huỷ
+                </button>
+              </form>
+            ) : (
+              <>
+                <h1 class="page-title" style={{ marginBottom: 0 }}>
+                  {displayName}
+                </h1>
+                <span class={statusBadgeClass(formula.status)}>{formula.status}</span>
+              </>
+            )}
+            <EntityId id={formula.id} label="Formula ID" />
           </div>
           <p class="page-lead" style={{ marginBottom: 0 }}>
             {originLabel(formula.origin)}
@@ -193,8 +261,17 @@ export function FormulaPage({ id }: { id: string }) {
             {new Date(formula.createdAt).toLocaleString()}
           </p>
         </div>
-        <a class="btn secondary" href={href({ name: 'training-formulas' })}>← Formula</a>
+        <div class="row" style={{ gap: '0.5rem' }}>
+          {!renaming && (
+            <button class="btn secondary" type="button" onClick={startRename}>
+              Đổi tên
+            </button>
+          )}
+          <a class="btn secondary" href={href({ name: 'training-formulas' })}>← Formula</a>
+        </div>
       </div>
+
+      {error && <p class="error">{error}</p>}
 
       {formula.warnings.length > 0 && (
         <div class="stack" style={{ margin: '0.75rem 0' }}>
@@ -215,7 +292,9 @@ export function FormulaPage({ id }: { id: string }) {
           </p>
         ) : (
           <p class="muted" style={{ margin: 0 }}>
-            {formula.channelTitle ?? 'Không rõ kênh'} · 1 video
+            {formula.videoTitle ?? displayName}
+            {formula.channelTitle ? ` · ${formula.channelTitle}` : ''}
+            {' · 1 video'}
             {formula.lineage.parentFormulaId ? ' · đã tinh chỉnh từ bản trước' : ''}
           </p>
         )}
@@ -239,7 +318,7 @@ export function FormulaPage({ id }: { id: string }) {
               {formula.includedArtifacts.map((a) => (
                 <li key={a.videoSnapshotId}>
                   <div class="meta">
-                    <span>video: {a.videoSnapshotId}</span>
+                    <EntityId id={a.videoSnapshotId} label="Video ID" />
                     <span style={{ fontFamily: 'var(--font-mono)' }}>hash: {a.analysisArtifactHash.slice(0, 16)}…</span>
                   </div>
                 </li>
@@ -325,12 +404,20 @@ function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
   // và agent 2"), so an untouched dropdown reproduces the prior default exactly.
   const [draftAgent, setDraftAgent] = useState<DefaultAgentId>('grok');
   const [critiqueAgent, setCritiqueAgent] = useState<DefaultAgentId>('grok');
+  // Write Loop v2 Phase 1: 2 rounds is the default (round 3 never added anything
+  // across 9 real runs); 1 is there for a quick read on a fresh formula.
+  const [maxRounds, setMaxRounds] = useState<number>(2);
 
   const start = async () => {
     setPhase('starting');
     setError(null);
+    if (!isTauri()) {
+      setError('Training Lab chạy bằng PTY tương tác. Hãy mở Writer Room qua `bun run app:macos`, không chạy trên browser thuần.');
+      setPhase('failed');
+      return;
+    }
     try {
-      const run = await api.startTrainingLabRun(formulaId, draftAgent, critiqueAgent);
+      const run = await api.startTrainingLabRun(formulaId, draftAgent, critiqueAgent, maxRounds);
       setRunId(run.id);
       setPhase('done');
     } catch (err) {
@@ -365,6 +452,16 @@ function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
               ))}
             </select>
           </label>
+          <label class="stack" style={{ gap: '0.25rem' }}>
+            <span class="muted" style={{ fontSize: '0.82rem' }}>Số vòng</span>
+            <select
+              value={String(maxRounds)}
+              onChange={(e) => setMaxRounds(Number((e.target as HTMLSelectElement).value))}
+            >
+              <option value="2">2 vòng (mặc định)</option>
+              <option value="1">1 vòng</option>
+            </select>
+          </label>
         </div>
         <button class="btn secondary" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => void start()}>
           🔬 Bắt đầu Training Lab
@@ -381,6 +478,7 @@ function StartTrainingLabAction({ formulaId }: { formulaId: string }) {
     return (
       <div class="row" style={{ gap: '0.5rem', alignItems: 'center' }}>
         <span class="chip ok">🔬 Đã bắt đầu</span>
+        {runId && <EntityId id={runId} label="ID phiên train" />}
         {runId && (
           <a class="btn teal" href={href({ name: 'training-lab-run', id: runId })}>
             Xem tiến trình →

@@ -27,6 +27,27 @@ export function writerExportsRoot(root = dataRoot()): string {
   return join(root, 'exports', 'writer');
 }
 
+/**
+ * Writer product root (runs + taste cases) — separate from Source Pack staging
+ * under `exports/writer` and from Training under `training/`. ADR-FM10: Writer
+ * never shares a store with Formula artifacts.
+ */
+export function writerRoot(root = dataRoot()): string {
+  return join(root, 'writer');
+}
+
+/**
+ * General packs (Write Loop v2 Phase 2) — one hand-curated markdown file per
+ * channel (`hieu-tv.md`), describing HOW that channel makes moves: taste DNA plus
+ * one entry per video (hook / outline / example + provenance tags / payoff /
+ * boundary). Deliberately a plain file store, not a DB: it is edited by a human,
+ * reviewed by a human, and pinned by content hash on every run that uses it.
+ * Never a source of facts — facts come only from the topic pack.
+ */
+export function generalPacksRoot(root = dataRoot()): string {
+  return join(root, 'general-packs');
+}
+
 /** Root for Training (SDD 002 §M1) persisted Formula artifacts — mirrors
  * `writerExportsRoot`'s JSON-per-record-under-a-data-root shape (see
  * `packages/daemon/src/training/storage.ts`). */

@@ -29,6 +29,29 @@ describe('validateAnalysis', () => {
     expect(result.ok).toBe(true);
   });
 
+  test('payoff gate rejects a grounded Formula that only describes setup', () => {
+    const segments = segmentsMap({ 'seg-1': 'Have you ever wondered why the sky is blue?' });
+    const result = validateAnalysis(baseAnalysis(), segments, { requirePayoff: true });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errorCode).toBe('AGENT_INCOMPLETE');
+      expect(result.reason).toContain('role "payoff"');
+    }
+  });
+
+  test('payoff gate accepts a grounded payoff rule', () => {
+    const segments = segmentsMap({ 'seg-1': 'The answer is that patience gives you freedom.' });
+    const analysis = baseAnalysis({
+      rules: [{
+        id: 'rule-payoff',
+        role: 'payoff',
+        statement: 'Closes by converting the argument into a concrete freedom payoff.',
+        evidence: [{ segmentIds: ['seg-1'], quote: 'patience gives you freedom' }],
+      }],
+    });
+    expect(validateAnalysis(analysis, segments, { requirePayoff: true })).toEqual({ ok: true });
+  });
+
   test('rejects zero rules', () => {
     const segments = segmentsMap({ 'seg-1': 'anything' });
     const result = validateAnalysis(baseAnalysis({ rules: [] }), segments);

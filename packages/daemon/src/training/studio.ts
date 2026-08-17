@@ -36,9 +36,31 @@ import {
   type PickedRule,
   type RuleCluster,
   type RuleSource,
+  type TopicLeakKind,
+  type WriterReadyProfile,
+  type WriterReadyProfileGuideline,
 } from '@writer-room/training-core';
 import { ensureDir, trainingRoot } from '../paths.ts';
+import { saveProfile } from './profile-store.ts';
 import { getFormula, saveFormula } from './storage.ts';
+
+/**
+ * A picked rule's migration classification (plan/writer-train/
+ * FORMULA-MIGRATION-TO-WRITER.md §2.4): what a human decides a rule IS, browsing the
+ * pool with `WRITER_READY_PROFILE` migration in mind —
+ *  - `PROFILE` — a candidate consistency guideline; eligible for `publishProfile`.
+ *  - `TASTE` — a real editorial decision, but FM2 (Taste capture) is not built yet;
+ *    tagging it now costs nothing and the classification survives on the pick for
+ *    when FM2 lands.
+ *  - `SOURCE_ONLY` — useful as training evidence, not as writer guidance.
+ *  - `REJECT` — not worth carrying forward at all.
+ * Purely a pick-level tag: it does NOT change clustering/synthesize (those still run
+ * over every pick, exactly as before FM1 — see `recomputeClusters`), so the
+ * pre-existing compound-Formula merge flow (training-only) is untouched by this
+ * field. Only `publishProfile` reads it, to decide which ACCEPTED proposals become
+ * profile guidelines.
+ */
+export type RuleClassification = 'PROFILE' | 'TASTE' | 'SOURCE_ONLY' | 'REJECT';
 
 /** A rule ref as the UI sends it back when picking — identifies one rule inside one
  * committed L1 Formula. The Studio re-reads the Formula to get the statement and
@@ -46,6 +68,9 @@ import { getFormula, saveFormula } from './storage.ts';
 export interface RuleRef {
   formulaId: string;
   ruleId: string;
+  /** Set via `classifyPick`, after the pick already exists in a session. Absent =
+   * not yet triaged. */
+  classification?: RuleClassification;
 }
 
 /** One row in the browse-and-pick pool: every rule of every pickable Formula. */
@@ -56,31 +81,58 @@ export interface PoolRule extends RuleRef {
   formulaOrigin: FormulaArtifact['origin'];
   videoSnapshotId: string;
   channelTitle: string;
+  /** Display name of the parent Formula (video title / rename), for pool grouping. */
+  formulaTitle: string;
+  videoTitle?: string;
   statement: string;
   evidenceCount: number;
   formulaCreatedAt: string;
 }
 
-/** An LLM-proposed merged rule awaiting a human decision. */
+/**
+ * An LLM-proposed merged/genericized rule awaiting a human decision.
+ *
+ * Shape changed 2026-08-11 (FM1, plan §2.5/§6): a bare `statement` string is what a
+ * training-only compound Formula rule needs, but it is NOT enough to publish a
+ * `WriterReadyProfile` guideline — that needs the SAME generic-hoá pass to also
+ * separate out WHEN a rule applies from what it says to do, and how strongly (§2.2's
+ * `instruction`/`when`/`avoidWhen`/`priority`). Rather than run two separate
+ * generic-ization passes (one for compound Formulas, one for profiles), this shape
+ * change makes the ONE SYNTHESIZE turn (`studio-synthesize.ts`) serve both: a
+ * compound Formula rule's `statement` is `instruction` (see `rebuildCompound`); a
+ * profile guideline takes all four fields (see `publishProfile`).
+ */
 export interface RuleProposal {
   id: string;
   clusterId: string;
-  /** What the LLM (or the human, after an edit) proposes the merged rule should say. */
-  statement: string;
+  /** What the LLM (or the human, after an edit) proposes the merged rule should say —
+   * the reusable technique itself, stripped of topic/video specifics. */
+  instruction: string;
+  /** Free text, optional — when this applies. */
+  when?: string;
+  /** Free text, optional — when this should NOT be followed. */
+  avoidWhen?: string;
+  priority: 'CORE' | 'OPTIONAL';
   sources: RuleSource[];
   decision: 'PENDING' | 'ACCEPTED' | 'REJECTED';
-  /** Set when the human rewrote the statement instead of taking the LLM's wording. */
+  /** Set when the human rewrote `instruction` instead of taking the LLM's wording. */
   edited?: boolean;
-  /** Set when what the human submitted is verbatim one of the cluster's original
-   * source statements — i.e. "keep the original", not an edit. Distinguished so the
-   * committed rule reports `CARRIED` rather than mislabelling the decision as
-   * `HUMAN_EDITED`; see `applyProposalDecision`. */
+  /** Set when what the human submitted as `instruction` is verbatim one of the
+   * cluster's original source statements — i.e. "keep the original", not an edit.
+   * Distinguished so the committed rule reports `CARRIED` rather than mislabelling
+   * the decision as `HUMAN_EDITED`; see `applyProposalDecision`. */
   keptOriginal?: boolean;
 }
 
 export interface StudioSession {
   id: string;
   genre: string;
+  /**
+   * L1 Formulas the human scoped this session to. The rule pool only offers rules
+   * from these ids — empty means "chưa chọn nguồn", not "mọi formula" (đổ hết rule
+   * vào một kho là loạn khi có nhiều video).
+   */
+  sourceFormulaIds: string[];
   picks: RuleRef[];
   clusters: RuleCluster[];
   proposals: RuleProposal[];
@@ -139,7 +191,14 @@ export async function getStudioSession(id: string, dataDir?: string): Promise<St
     // dead/redundant — an on-disk file written before these fields existed really can
     // lack them at runtime, even though the parsed value's static type claims otherwise.
     const raw = JSON.parse(await readFile(sessionPath(id, dataDir), 'utf8')) as Partial<StudioSession>;
-    return { synthesizeStatus: 'IDLE', synthesizeAttempt: 0, ...raw } as StudioSession;
+    return {
+      synthesizeStatus: 'IDLE',
+      synthesizeAttempt: 0,
+      ...raw,
+      // Guard: older sessions may lack the array entirely; never leave undefined.
+      // Placed after `...raw` so it always wins over a missing/invalid on-disk value.
+      sourceFormulaIds: Array.isArray(raw.sourceFormulaIds) ? raw.sourceFormulaIds : [],
+    } as StudioSession;
   } catch {
     return null;
   }
@@ -180,6 +239,7 @@ export async function createStudioSession(genre: string, dataDir?: string): Prom
   const session: StudioSession = {
     id: randomUUID(),
     genre,
+    sourceFormulaIds: [],
     picks: [],
     clusters: [],
     proposals: [],
@@ -190,6 +250,37 @@ export async function createStudioSession(genre: string, dataDir?: string): Prom
     updatedAt: now,
   };
   await saveStudioSession(session, dataDir);
+  return session;
+}
+
+/**
+ * Scopes the session to a set of L1 Formulas. Picks that fall outside the new set
+ * are dropped and clusters/compound are recomputed. COMPOUND Formulas cannot be
+ * sources (would double-merge).
+ */
+export async function setSourceFormulas(
+  session: StudioSession,
+  formulaIds: string[],
+  dataDir?: string,
+): Promise<StudioSession> {
+  const unique = [...new Set(formulaIds.map((id) => id.trim()).filter(Boolean))];
+  for (const id of unique) {
+    const formula = await getFormula(id, dataDir);
+    if (!formula) throw new Error(`Formula nguồn không tồn tại: ${id}`);
+    if (formula.origin === 'COMPOUND') {
+      throw new Error('Không chọn Formula COMPOUND làm nguồn — chỉ L1 (ANALYZED/REFINED)');
+    }
+  }
+  const allowed = new Set(unique);
+  session.sourceFormulaIds = unique;
+  session.picks = session.picks.filter((p) => allowed.has(p.formulaId));
+  // Changing the source set invalidates proposals that referenced old clusters;
+  // recompute from remaining picks. Proposals for clusters that no longer exist
+  // are dropped so the UI does not show orphan "chờ duyệt" rows.
+  await recomputeClusters(session, dataDir);
+  const liveClusterIds = new Set(session.clusters.map((c) => c.id));
+  session.proposals = session.proposals.filter((p) => liveClusterIds.has(p.clusterId));
+  await rebuildCompound(session, dataDir);
   return session;
 }
 
@@ -219,7 +310,7 @@ export async function deleteStudioSession(id: string, dataDir?: string): Promise
  */
 export async function listRulePool(
   dataDir?: string,
-  opts: { includeOlderVersions?: boolean } = {},
+  opts: { includeOlderVersions?: boolean; formulaIds?: string[] } = {},
 ): Promise<PoolRule[]> {
   const root = join(trainingRoot(dataDir), 'formulas');
   await ensureDir(root);
@@ -230,6 +321,8 @@ export async function listRulePool(
     return [];
   }
 
+  const allowIds = opts.formulaIds ? new Set(opts.formulaIds) : null;
+
   const formulas: FormulaArtifact[] = [];
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
@@ -238,16 +331,25 @@ export async function listRulePool(
       // A COMPOUND Formula's rules are already merged output — picking them back into
       // another merge would double-count provenance and compound the wording twice.
       if (formula.origin === 'COMPOUND') continue;
+      if (allowIds && !allowIds.has(formula.id)) continue;
       formulas.push(formula);
     } catch {
       // skip corrupt
     }
   }
 
-  const visible = opts.includeOlderVersions ? formulas : keepLatestPerVideo(formulas);
+  // When the caller scopes to explicit formula ids, honor every selected version —
+  // "latest per video" would hide a v1 the user deliberately added next to its v3.
+  const visible =
+    opts.includeOlderVersions || allowIds ? formulas : keepLatestPerVideo(formulas);
 
   const pool: PoolRule[] = [];
   for (const formula of visible) {
+    const formulaTitle =
+      formula.title?.trim() ||
+      formula.videoTitle?.trim() ||
+      formula.channelTitle?.trim() ||
+      'Formula';
     for (const rule of formula.rules) {
       pool.push({
         formulaId: formula.id,
@@ -256,6 +358,8 @@ export async function listRulePool(
         formulaOrigin: formula.origin,
         videoSnapshotId: formula.videoSnapshotId ?? 'unknown',
         channelTitle: formula.channelTitle ?? 'unknown',
+        formulaTitle,
+        ...(formula.videoTitle ? { videoTitle: formula.videoTitle } : {}),
         statement: rule.statement,
         evidenceCount: rule.evidence.length,
         formulaCreatedAt: formula.createdAt,
@@ -368,7 +472,9 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
     if (!accepted) continue; // still pending, rejected, or never synthesized — not in the compound yet
     rules.push({
       id: accepted.id,
-      statement: accepted.statement,
+      // A training-only compound Formula rule only needs the bare technique text —
+      // `when`/`avoidWhen`/`priority` are Profile-only concerns (see `publishProfile`).
+      statement: accepted.instruction,
       // A merged rule inherits the evidence of every rule it was merged from — this
       // is what keeps it grounded and what the lean CRITIQUE envelope ships.
       evidence: accepted.sources.flatMap((s) => s.evidence),
@@ -414,9 +520,9 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
  * the HTTP route (or a test) is responsible for `rebuildCompound` + `saveStudioSession`
  * afterward, same division as `session.picks` mutation in `http.ts`.
  *
- * `statement`, when provided, overwrites the LLM's wording. It then marks the rule
- * either `HUMAN_EDITED` or — if what the human submitted is character-for-character
- * one of the cluster's ORIGINAL source statements — `CARRIED`.
+ * `edit.instruction`, when provided, overwrites the LLM's wording. It then marks the
+ * rule either `HUMAN_EDITED` or — if what the human submitted is character-for-
+ * character one of the cluster's ORIGINAL source statements — `CARRIED`.
  *
  * That one equality check exists for a specific reason, not as cleverness: the whole
  * point of SYNTHESIZE is to genericize, and an LLM can genericize a rule into
@@ -426,37 +532,171 @@ export async function rebuildCompound(session: StudioSession, dataDir?: string):
  * `CompoundRuleOrigin`) would otherwise have no code path at all and rot as a dead
  * enum value. Restoring the original is the only case where equality carries
  * unambiguous intent, so it is the only case inferred; any other text is an edit.
+ *
+ * `edit.when`/`avoidWhen`/`priority`, when provided, simply overwrite — no
+ * inference needed there, they carry no "is this still the original" ambiguity.
  */
 export function applyProposalDecision(
   session: StudioSession,
   proposalId: string,
   decision: 'ACCEPTED' | 'REJECTED',
-  statement?: string,
+  edit?: { instruction?: string; when?: string; avoidWhen?: string; priority?: 'CORE' | 'OPTIONAL' },
 ): StudioSession {
   const proposal = session.proposals.find((p) => p.id === proposalId);
   if (!proposal) throw new Error('proposal không tồn tại');
   proposal.decision = decision;
-  if (typeof statement === 'string' && statement.trim().length > 0) {
-    const next = statement.trim();
+  if (typeof edit?.instruction === 'string' && edit.instruction.trim().length > 0) {
+    const next = edit.instruction.trim();
     const cluster = session.clusters.find((c) => c.id === proposal.clusterId);
     const isOriginal = (cluster?.members ?? []).some((m) => m.statement.trim() === next);
-    proposal.statement = next;
+    proposal.instruction = next;
     proposal.edited = !isOriginal;
     proposal.keptOriginal = isOriginal;
   }
+  if (typeof edit?.when === 'string') proposal.when = edit.when.trim() || undefined;
+  if (typeof edit?.avoidWhen === 'string') proposal.avoidWhen = edit.avoidWhen.trim() || undefined;
+  if (edit?.priority) proposal.priority = edit.priority;
   return session;
+}
+
+/** The human triage step of migration (§2.4): tag one already-picked rule with what
+ * it IS for the purposes of moving it toward the Writer. Throws on a ref that was
+ * never picked into this session — same "never fake it" precedent `resolvePicks`
+ * follows for a Formula that no longer resolves. */
+export function classifyPick(
+  session: StudioSession,
+  ref: { formulaId: string; ruleId: string },
+  classification: RuleClassification,
+): StudioSession {
+  const pick = session.picks.find((p) => p.formulaId === ref.formulaId && p.ruleId === ref.ruleId);
+  if (!pick) throw new Error('rule chưa được chọn vào session — không thể phân loại');
+  pick.classification = classification;
+  return session;
+}
+
+export type PublishProfileResult =
+  | { ok: true; profile: WriterReadyProfile }
+  | { ok: false; errorCode: 'PROFILE_EMPTY'; reason: string }
+  | {
+      ok: false;
+      errorCode: 'PROFILE_LEAK_DETECTED';
+      reason: string;
+      leaks: { proposalId: string; kind: TopicLeakKind; excerpt: string }[];
+    };
+
+/**
+ * Migration publish (§2.4/§2.5, ADR-FM10/FM13): turns the session's ACCEPTED
+ * proposals whose picks were ALL classified `PROFILE` into one immutable
+ * `WriterReadyProfile`, always `readiness: 'TRIAL'` — there is no parameter for
+ * `VALIDATED` and no caller of this function can ever produce one (ADR-FM13, same
+ * hard-assert precedent as `formulaFromSingleAnalysis`'s `status: 'TRIAL'`).
+ *
+ * Unlike `promoteCompound`'s topic-leak scan (advisory-only, training-only output),
+ * this IS a gate (§2.4 "Leak check chặn") — a leaking guideline blocks publish
+ * entirely, because a Profile is what the Writer actually reads, and a source leak
+ * there is exactly the failure this whole migration exists to prevent (§1).
+ *
+ * Deliberately does not require multi-video clustering (ADR-FM14): a `SINGLE`
+ * cluster built from one formula's one rule is a completely normal, expected input
+ * here — the thin path is 1 formula -> 1 profile (§2.5), not a warning case.
+ */
+export async function publishProfile(
+  session: StudioSession,
+  input: {
+    label: string;
+    scope: { language: string; genre?: string; contentModes: string[] };
+    editorialPromise?: string;
+    antiPatterns?: string[];
+  },
+  dataDir?: string,
+): Promise<PublishProfileResult> {
+  const picksByRef = new Map(session.picks.map((p) => [`${p.formulaId}:${p.ruleId}`, p]));
+
+  const eligible = session.proposals.filter((proposal) => {
+    if (proposal.decision !== 'ACCEPTED') return false;
+    const cluster = session.clusters.find((c) => c.id === proposal.clusterId);
+    if (!cluster || cluster.members.length === 0) return false;
+    // Every rule the merged guideline came from must have been triaged PROFILE — a
+    // cluster with even one TASTE/SOURCE_ONLY/REJECT member must not silently
+    // contribute a guideline built partly from a rule the human said was NOT
+    // profile material.
+    return cluster.members.every(
+      (m) => picksByRef.get(`${m.sourceFormulaId}:${m.sourceRuleId}`)?.classification === 'PROFILE',
+    );
+  });
+
+  if (eligible.length === 0) {
+    return {
+      ok: false,
+      errorCode: 'PROFILE_EMPTY',
+      reason: 'Không có guideline nào đã duyệt (ACCEPTED) và được phân loại PROFILE để publish',
+    };
+  }
+
+  const leaks: { proposalId: string; kind: TopicLeakKind; excerpt: string }[] = [];
+  for (const proposal of eligible) {
+    for (const text of [proposal.instruction, proposal.when, proposal.avoidWhen]) {
+      if (!text) continue;
+      for (const leak of detectTopicLeak(text)) {
+        leaks.push({ proposalId: proposal.id, kind: leak.kind, excerpt: leak.excerpt });
+      }
+    }
+  }
+  if (leaks.length > 0) {
+    return {
+      ok: false,
+      errorCode: 'PROFILE_LEAK_DETECTED',
+      reason: `${leaks.length} chỗ còn dính leak nguồn — sửa lại instruction/when/avoidWhen hoặc reject proposal trước khi publish`,
+      leaks,
+    };
+  }
+
+  const guidelines: WriterReadyProfileGuideline[] = eligible.map((proposal) => {
+    const cluster = session.clusters.find((c) => c.id === proposal.clusterId)!;
+    return {
+      id: proposal.id,
+      instruction: proposal.instruction,
+      when: proposal.when,
+      avoidWhen: proposal.avoidWhen,
+      priority: proposal.priority,
+      sourceRuleIds: cluster.members.map((m) => `${m.sourceFormulaId}:${m.sourceRuleId}`),
+    };
+  });
+
+  const profile: WriterReadyProfile = {
+    kind: 'WRITER_READY_PROFILE',
+    id: randomUUID(),
+    version: 1,
+    label: input.label,
+    readiness: 'TRIAL',
+    scope: input.scope,
+    editorialPromise: input.editorialPromise,
+    guidelines,
+    antiPatterns: input.antiPatterns ?? [],
+    createdAt: new Date().toISOString(),
+  };
+
+  await saveProfile(profile, dataDir);
+  return { ok: true, profile };
 }
 
 /**
  * ADR-6: explicit human promotion, `DRAFT` → `TRIAL`, and the moment the compound
- * Formula enters the shared store where the Writer can pin it and the Formula list
- * can show it. `VALIDATED` remains unreachable.
+ * Formula enters the shared `formulas/` store where Training can read it (list,
+ * pick back into another Studio session, etc). `VALIDATED` remains unreachable.
+ *
+ * Training-only (FM1, ADR-FM1/FM3): a promoted compound Formula does NOT enter the
+ * Writer's picker — Formulas of every origin (`ANALYZED`/`REFINED`/`COMPOUND`) are
+ * `FORMULA_TRAINING_ONLY`. The only path to something a Writer can pin is
+ * `publishProfile` above, which is a SEPARATE human action producing a SEPARATE
+ * artifact in a SEPARATE store (`profile-store.ts`) — this function never touches
+ * that store and never sets anything a Writer reads.
  */
 export async function promoteCompound(session: StudioSession, dataDir?: string): Promise<StudioSession> {
   if (!session.compound) throw new Error('no compound Formula to promote');
   if (session.compound.rules.length === 0) throw new Error('compound Formula has no rules');
 
-  // Advisory topic-leak scan (training-core's `writer-view.ts`, 2026-08-10) — a
+  // Advisory topic-leak scan (training-core's `leak.ts`, 2026-08-10) — a
   // last-look net, not a gate: SYNTHESIZE is asked to genericize every statement, but
   // an LLM can still miss one, and a human accepting/editing a proposal has no reason
   // to re-derive this check by eye. `detectTopicLeak` never blocks — same "advisory,
