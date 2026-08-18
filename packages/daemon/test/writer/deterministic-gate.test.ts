@@ -60,6 +60,81 @@ describe('numeric claim extraction', () => {
   });
 });
 
+/**
+ * Money is written half a dozen ways in Vietnamese and the gate used to key on the
+ * spelling, so run `d638638b` was blocked on "900 nghìn" and "một trăm nghìn" while
+ * the pack held the same two amounts as "900.000đ" and "100k". That turned the gate
+ * into a style rule: to pass, the writer had to paste the pack's characters into a
+ * voiceover. These tests pin the fold to VND, and pin the three things the fold must
+ * NOT do.
+ */
+describe('money unit normalisation', () => {
+  const gate = (script: string, packMarkdown: string) =>
+    runDeterministicGate({ script, packMarkdown });
+
+  /** Same amount, two spellings: one in the script, one in the pack. */
+  const spelledDifferently = (inScript: string, inPack: string) =>
+    gate(
+      `Khoản đó rơi vào khoảng ${inScript} mỗi tháng.`,
+      `# pack\n\nnguồn ghi rõ ${inPack} mỗi tháng.`,
+    );
+
+  test('an amount matches the pack whichever way each side spells it', () => {
+    expect(spelledDifferently('900 nghìn', '900.000đ').violations).toEqual([]);
+    expect(spelledDifferently('một trăm nghìn', '100k').violations).toEqual([]);
+    expect(spelledDifferently('13 triệu', '13tr').violations).toEqual([]);
+    expect(spelledDifferently('2 tỷ', '2.000.000.000 đồng').violations).toEqual([]);
+  });
+
+  test('and in the other direction — neither spelling is privileged', () => {
+    expect(spelledDifferently('900.000đ', '900 nghìn').violations).toEqual([]);
+    expect(spelledDifferently('100k', 'một trăm nghìn').violations).toEqual([]);
+  });
+
+  test('scaling happens after parseDigits, so 2,5 triệu is not 25 triệu', () => {
+    // The whole safety argument for the fold. Collapsing these would let a
+    // fabricated 2,5 triệu borrow its source from a real 25 triệu.
+    const result = gate(
+      'Tiền nhà của người đó là 2,5 triệu một tháng.',
+      '# pack\n\nlương tháng của người đó là 25 triệu.',
+    );
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('dollars are not folded into đồng — the rate moves, the match would be invented', () => {
+    const result = gate(
+      'Người đó giữ 4000 đô trong tài khoản.',
+      '# pack\n\nnguồn ghi 4.000đ phí chuyển và 100 triệu tiền gửi.',
+    );
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+    // Dollars still match dollars.
+    expect(gate('Người đó giữ 4000 đô.', '# pack\n\nnguồn ghi 4000 usd.').violations).toEqual([]);
+  });
+
+  test('the short suffixes do not fire inside ordinary words', () => {
+    expect(extractNumericClaims('Đi 3 km rồi mua 2 kg gạo, 5 kể cả phí.')).toEqual([]);
+    expect(extractNumericClaims('Anh ấy trở lại sau 3 trận, mất 9 được 2 trăm.')).toEqual([]);
+    const claims = extractNumericClaims('Trong 5 năm, tôi được 2 lần tăng lương, đến 3 tháng thì nghỉ.');
+    expect(claims.map((c) => [c.value, c.unit])).toEqual([[5, 'năm'], [2, 'lần'], [3, 'tháng']]);
+  });
+
+  test('money in a short suffix is still never common knowledge', () => {
+    const result = gate(
+      'Thông thường mỗi món như vậy chỉ 100k một tháng.',
+      '# pack\n\nKhông có con số nào ở đây.',
+    );
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('an amount that is nowhere in the pack is still unsourced', () => {
+    const result = gate(
+      'Số dư còn lại là 380.000 đồng vào cuối tháng.',
+      '# pack\n\nnguồn chỉ nói về 25 triệu và 900k.',
+    );
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+});
+
 describe('proper noun extraction', () => {
   test('clause-initial capitals are not names, mid-sentence ones are', () => {
     // "Minh" opens its sentence here, so it is deliberately NOT a candidate —

@@ -9,6 +9,7 @@
     "typecheck": "tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/spy/tsconfig.json --noEmit && tsc -p packages/daemon/tsconfig.json --noEmit && tsc -p packages/pipeline-core/tsconfig.json --noEmit && tsc -p packages/training-core/tsconfig.json --noEmit",
     "daemon": "bun packages/daemon/src/index.ts",
     "spy": "bun packages/spy/src/cli.ts",
+    "writer:regate": "bun packages/daemon/src/regate-cli.ts",
     "ui:build": "bun --cwd packages/web vite build",
     "app:macos": "bunx @tauri-apps/cli dev",
     "app:build": "bun run ui:build && bunx @tauri-apps/cli build"

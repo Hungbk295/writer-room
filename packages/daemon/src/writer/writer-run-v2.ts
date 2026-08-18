@@ -65,7 +65,7 @@ const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 
 const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source';
 const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length';
-const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v1';
+const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
 
 /** The one item id every stage of a v2 run uses (one run = one piece). */
@@ -664,6 +664,26 @@ function buildEditReviewPrompt(opts: { hasGateViolations: boolean }): string {
     '5. **Read the last 20% again on its own.** A one-pass script decays there: repetition,',
     '   summary instead of payoff, an ending that restates rather than resolves.',
     '6. Is the prose dry — all rule, no life? That is a real MEDIUM defect, not a nitpick.',
+    '7. **Recompute every number.** Redo every sum, difference, product, quotient, running',
+    '   total and percentage in the piece — including the ones that look already sourced. A',
+    '   figure can be wrong inside the source material itself, and the gate only checks that',
+    '   a number HAS a source, never that it is CORRECT. From a real run: "20 triệu/tháng,',
+    '   lợi nhuận 8%/năm, sau 7 năm được 1,7 đến gần 2 tỷ" — the contributions alone are',
+    '   1,68 tỷ (20 × 84 months) and the true future value is about 2,24 tỷ. That number came',
+    '   straight from the source video, the gate passed it, and one editor missed it too.',
+    '8. **Repeated parallel structure.** Are there three consecutive sentences opening on the',
+    '   same mould, far enough that it reads machine-written? Listing three action steps is',
+    '   valid and normal — flag only when it sounds formulaic, not when it is merely parallel.',
+    '9. **Metaphor.** Is the governing metaphor used to reason FURTHER, or only to sound good?',
+    '   And is any single image reused often enough to have become a formula?',
+    '10. **Steelman.** Is the opposing side built in its STRONGEST form before it is answered,',
+    '    or only propped up so it falls over easily?',
+    '11. **Ending — logic.** If the piece closes on a set of questions or a test, do they all',
+    '    run in the SAME direction of pass/fail? From a real run: a piece closed on 4',
+    '    questions that did not, so the rule "answer no to any one of them" inverted —',
+    '    answering "no" to the question about the 30% threshold was in fact the safe signal.',
+    '12. **Ending — image.** Does the final sentence close the CONCRETE image the opening set',
+    '    up, or does it dissolve into an abstract proposition?',
     '',
     '## Output rules',
     '',
@@ -675,6 +695,8 @@ function buildEditReviewPrompt(opts: { hasGateViolations: boolean }): string {
     '  what is wrong, in place.',
     '- An empty `defects` array is a valid, respected answer. Do not invent defects to look',
     '  thorough.',
+    '- The checklist is where to look, not a defect quota. Twelve items passing clean is a',
+    '  clean piece, not a review you did badly.',
     '',
     'Write JSON to `out/result.json`:',
     '',

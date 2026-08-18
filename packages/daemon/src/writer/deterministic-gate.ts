@@ -140,8 +140,13 @@ const ASSUMPTION_MARKERS = [
  *     "20 năm", "80%" pass only in a sentence that says where the convention
  *     comes from ("chuyên gia thường khuyên…", "thông thường…"). The reader can
  *     see the hedge — same philosophy as the assumption-marker escape.
+ *
+ * `MONEY_UNITS` lists the canonical spellings AND the short suffixes (`k` / `tr` /
+ * `đ`), so a caller reaching `isCommonKnowledgeClaim` with a raw unit still gets the
+ * strict money rule. `normalizeUnit` folds the short forms away before the gate sees
+ * them; this set is the safety net if that ever stops being true.
  */
-const MONEY_UNITS = new Set(['triệu', 'nghìn', 'tỷ', 'đồng', 'usd']);
+const MONEY_UNITS = new Set(['triệu', 'nghìn', 'ngàn', 'tỷ', 'tỉ', 'đồng', 'usd', 'đô', 'k', 'tr', 'đ']);
 const NEVER_COMMON_UNITS = new Set([...MONEY_UNITS, 'tuổi', 'lần', 'người']);
 const TIME_UNITS = new Set(['năm', 'tháng', 'tuần', 'ngày', 'giờ', 'phút']);
 
@@ -169,8 +174,20 @@ const COMMON_KNOWLEDGE_MARKERS = [
   'kinh điển',
 ];
 
-/** Units that turn a bare number into a factual claim. */
-const UNIT_PATTERN = 'triệu|nghìn|ngàn|tỷ|tỉ|đồng|usd|đô|tuổi|lần|%|phần trăm|năm|tháng|tuần|ngày|giờ|phút|người';
+/**
+ * Units that turn a bare number into a factual claim.
+ *
+ * The short money suffixes (`k`, `tr`, `đ`) sit LAST on purpose: alternation in JS
+ * is first-match-wins, so `tr` ahead of `triệu` would clip "13 triệu" down to
+ * "13 tr" and lose the multiplier. Each carries a negative lookahead because they
+ * are also the opening letters of very common Vietnamese words — without it `k`
+ * fires inside "km"/"kg"/"kể", `tr` inside "trong"/"trăm"/"trở", and `đ` inside
+ * "đến"/"được"/"đô". `\p{M}` is in the guard so a decomposed (NFD) input, where the
+ * next code point is a combining mark rather than a letter, is rejected too.
+ */
+const NOT_LETTER = '(?![\\p{L}\\p{M}])';
+const UNIT_PATTERN = 'triệu|nghìn|ngàn|tỷ|tỉ|đồng|usd|đô|tuổi|lần|%|phần trăm|năm|tháng|tuần|ngày|giờ|phút|người'
+  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}`;
 
 const DIGIT_CLAIM_RE = new RegExp(`(\\d[\\d.,]*)\\s*(${UNIT_PATTERN})`, 'giu');
 
@@ -210,6 +227,10 @@ function normalizeUnit(unit: string): string {
   if (u === 'ngàn') return 'nghìn';
   if (u === 'phần trăm') return '%';
   if (u === 'đô') return 'usd';
+  // Short money suffixes are spellings, not different units.
+  if (u === 'k') return 'nghìn';
+  if (u === 'tr') return 'triệu';
+  if (u === 'đ') return 'đồng';
   return u;
 }
 
@@ -335,8 +356,42 @@ export function extractNumericClaims(text: string): NumericClaim[] {
   return claims;
 }
 
+/**
+ * VND scale factors, keyed by the CANONICAL unit `normalizeUnit` produces.
+ * `usd` / `đô` is deliberately absent: an exchange rate moves, so folding dollars
+ * into đồng would invent matches ("4000 đô" ≈ "100 triệu" only at one moment in
+ * time). Dollars keep their own unit and match only other dollars.
+ */
+const VND_SCALE: Record<string, number> = {
+  đồng: 1,
+  nghìn: 1_000,
+  triệu: 1_000_000,
+  tỷ: 1_000_000_000,
+};
+
+/**
+ * The identity of a numeric claim, used to match a script number against the
+ * ledger and the pack. Money is folded to đồng so that a writer is not forced to
+ * copy the pack's *spelling* of an amount into a voiceover: "900 nghìn",
+ * "900.000đ" and "0,9 triệu" are one claim, and the gate is left checking
+ * fabrication rather than typography.
+ *
+ * The scaling happens HERE, downstream of `parseDigits`, and that ordering is the
+ * whole safety argument: `parseDigits` has already resolved "2,5" → 2.5 and
+ * "380.000" → 380000, so "2,5 triệu" (2_500_000) and "25 triệu" (25_000_000) stay
+ * two different keys. Scaling before the separator/decimal split would collapse
+ * them and source a fabricated figure from a real one — the exact bug
+ * `parseDigits`'s comment warns about.
+ *
+ * `Math.round` only removes binary-float dust (0.1 * 1_000 is 100.00000000000001,
+ * which would otherwise never equal the 100_000 written as "100 nghìn"); đồng is
+ * the smallest unit in circulation, so there is nothing below it to lose.
+ */
 function claimKey(claim: { value: number; unit: string }): string {
-  return `${claim.value}|${claim.unit}`;
+  const unit = normalizeUnit(claim.unit);
+  const scale = VND_SCALE[unit];
+  if (scale === undefined) return `${claim.value}|${unit}`;
+  return `${Math.round(claim.value * scale)}|đồng`;
 }
 
 /**
