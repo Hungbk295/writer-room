@@ -270,6 +270,67 @@ export class SpyService {
     };
   }
 
+  /**
+   * Small, deterministic catalogue for an agent that needs to decide which
+   * captured materials to read.  Unlike getResult(), it deliberately excludes
+   * thumbnails, tags, and other bulky snapshot fields.
+   */
+  getRunManifest(spyRunId: string) {
+    const run = this.store.getSpyRun(spyRunId);
+    if (!run) throw new AppError('not_found', 'Spy run không tồn tại');
+    const videos = this.store.listVideoSnapshots(spyRunId);
+    return {
+      spyRunId: run.id,
+      status: run.status,
+      kind: run.kind,
+      canonicalSource: run.canonicalSource,
+      createdAt: run.createdAt,
+      completedAt: run.completedAt,
+      videoCount: videos.length,
+      videos: videos.map((video) => ({
+        videoSnapshotId: video.id,
+        youtubeVideoId: video.sourceVideoId,
+        title: video.title,
+        channelTitle: video.channelTitle,
+        rank: video.rank,
+        publishedAt: video.publishedAt,
+        durationSec: video.durationSec,
+        viewCount: video.viewCount,
+        transcriptStatus: video.transcriptStatus,
+        transcriptSegments: this.store.transcriptSegmentCount(video.id),
+      })),
+    };
+  }
+
+  /** Resolve human-supplied titles to the immutable snapshot IDs read APIs use. */
+  findRunVideos(input: { spyRunId: string; titles: string[]; match?: 'exact' | 'contains' }) {
+    const run = this.store.getSpyRun(input.spyRunId);
+    if (!run) throw new AppError('not_found', 'Spy run không tồn tại');
+    const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const mode = input.match ?? 'exact';
+    const videos = this.store.listVideoSnapshots(input.spyRunId);
+    const results = input.titles.map((requestedTitle) => {
+      const needle = normalize(requestedTitle);
+      const matches = videos.filter((video) => {
+        const title = normalize(video.title);
+        return mode === 'contains' ? title.includes(needle) : title === needle;
+      }).map((video) => ({
+        videoSnapshotId: video.id,
+        youtubeVideoId: video.sourceVideoId,
+        title: video.title,
+        publishedAt: video.publishedAt,
+        transcriptStatus: video.transcriptStatus,
+        transcriptSegments: this.store.transcriptSegmentCount(video.id),
+      }));
+      return {
+        requestedTitle,
+        status: matches.length === 0 ? 'not_found' : matches.length === 1 ? 'resolved' : 'ambiguous',
+        matches,
+      };
+    });
+    return { spyRunId: run.id, match: mode, results };
+  }
+
   getTranscript(videoSnapshotId: string, cursor = 0, limit = 500) {
     const snapshot = this.store.getVideoSnapshot(videoSnapshotId);
     if (!snapshot) throw new AppError('not_found', 'Video snapshot không tồn tại');

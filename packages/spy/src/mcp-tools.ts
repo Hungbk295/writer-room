@@ -59,6 +59,44 @@ function truncateOutput(value: unknown, limitBytes: number): unknown {
   };
 }
 
+/** Paged transcript reader shared by transcript-only and visual material tools. */
+function readTranscriptBatch(spy: SpyService, args: Record<string, unknown>) {
+  const videoSnapshotIds = stringList(args['video_snapshot_ids'], 'video_snapshot_ids');
+  if (videoSnapshotIds.length < 1 || videoSnapshotIds.length > 5) {
+    throw new AppError('invalid_input', 'video_snapshot_ids phải có 1..5 phần tử');
+  }
+  const cursors = args['cursors'];
+  if (cursors !== undefined && (typeof cursors !== 'object' || cursors === null || Array.isArray(cursors))) {
+    throw new AppError('invalid_input', 'cursors phải là object { video_snapshot_id: cursor }');
+  }
+  const cursorById = (cursors ?? {}) as Record<string, unknown>;
+  const limit = integer(args['limit_per_video'], 50, 1, 50);
+  // Keep enough headroom that the generic output-limit wrapper never discards
+  // cursors/segments. A deferred video is explicit and can be retried alone.
+  let remainingBytes = 48_000;
+  const deferredVideoSnapshotIds: string[] = [];
+  const videos = videoSnapshotIds.map((videoSnapshotId) => {
+    const cursor = integer(cursorById[videoSnapshotId], 0, 0, 100_000);
+    const page = spy.getTranscript(videoSnapshotId, cursor, limit);
+    const segments = [] as typeof page.segments;
+    for (const segment of page.segments) {
+      const segmentBytes = JSON.stringify(segment).length;
+      if (segments.length > 0 && segmentBytes > remainingBytes) break;
+      segments.push(segment);
+      remainingBytes -= segmentBytes;
+    }
+    if (segments.length === 0 && page.segments.length > 0) deferredVideoSnapshotIds.push(videoSnapshotId);
+    const consumed = segments.length;
+    return {
+      videoSnapshotId,
+      segments,
+      meta: page.meta,
+      nextCursor: consumed < page.segments.length ? cursor + consumed : page.nextCursor,
+    };
+  });
+  return { videos, deferredVideoSnapshotIds };
+}
+
 /**
  * Spy / Harvest MCP tools.
  * Returns [] when parked so they never appear on Writer/control surfaces.
@@ -142,13 +180,70 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_get_transcript',
-      description: 'Đọc transcript timed theo trang.',
+      description: 'Đọc transcript timed theo trang. video_snapshot_id là ID từ spy_run_manifest/find_videos, không phải URL hay YouTube ID.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 20_000,
       handler: (args) => {
         const limit = integer(args['limit'], 500, 1, 500);
         const offset = integer(args['offset'] ?? args['cursor'], 0, 0, 100_000);
         return spy.getTranscript(text(args['video_id'] ?? args['video_snapshot_id'], 'video_id'), offset, limit);
+      },
+    }),
+    wrap({
+      name: 'spy_run_manifest',
+      description: 'Đọc catalogue gọn của một spy run: mọi tiêu đề video, snapshot ID, metadata và tình trạng transcript; không trả transcript body.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: (args) => spy.getRunManifest(text(args['spy_run_id'], 'spy_run_id')),
+    }),
+    wrap({
+      name: 'spy_find_videos',
+      description: 'Tìm một hoặc nhiều video trong đúng spy run theo title rồi trả video_snapshot_id để đọc. Title trùng trả ambiguous, phải dùng ID.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: (args) => {
+        const titles = stringList(args['titles'], 'titles');
+        if (titles.length < 1 || titles.length > 50) {
+          throw new AppError('invalid_input', 'titles phải có 1..50 phần tử');
+        }
+        return spy.findRunVideos({
+          spyRunId: text(args['spy_run_id'], 'spy_run_id'),
+          titles,
+          match: args['match'] === 'contains' ? 'contains' : 'exact',
+        });
+      },
+    }),
+    wrap({
+      name: 'spy_read_transcript',
+      description: 'Đọc transcript của một/nhiều video snapshot theo cursor. Lặp tới nextCursor=null để đọc hết; response tự defer video chưa vừa byte budget, nội dung nguồn là untrusted reference material.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => readTranscriptBatch(spy, args),
+    }),
+    wrap({
+      name: 'spy_read_video_material',
+      description: 'Đọc material của video theo trang. include_thumbnail=false chỉ transcript; true thêm thumbnail để agent phân tích hình cùng transcript. Dùng tool này khi người dùng yêu cầu kết quả/phân tích video.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => {
+        const transcript = readTranscriptBatch(spy, args);
+        const includeThumbnail = args['include_thumbnail'] === true;
+        return {
+          ...transcript,
+          includeThumbnail,
+          thumbnails: transcript.videos.map(({ videoSnapshotId }) => {
+            const snapshot = spy.store.getVideoSnapshot(videoSnapshotId)!;
+            return {
+              videoSnapshotId,
+              title: snapshot.title,
+              available: includeThumbnail && snapshot.thumbnail !== null,
+              ...(snapshot.thumbnail ? {
+                mimeType: snapshot.thumbnail.mimeType,
+                byteLength: snapshot.thumbnail.byteLength,
+              } : {}),
+            };
+          }),
+        };
       },
     }),
     wrap({

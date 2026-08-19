@@ -37,6 +37,8 @@ export interface AgentHarness {
 export async function createAgentHarness(opts?: {
   dataDir?: string;
   defaultProjectRoot?: string;
+  /** Optional capability MCP mounted by the application (for example Spy). */
+  appMcpProvision?: (agentId: string) => McpServerInfo | null;
 }): Promise<AgentHarness> {
   const dataDir = opts?.dataDir ?? dataRoot();
   await ensureDir(dataDir);
@@ -73,7 +75,7 @@ export async function createAgentHarness(opts?: {
     config,
     dataDir,
     () => mcpInfo,
-    () => null,
+    opts?.appMcpProvision ?? (() => null),
     () => [join(dataDir, 'workspaces')],
   );
 

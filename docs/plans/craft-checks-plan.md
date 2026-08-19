@@ -2,7 +2,23 @@
 
 > Ngày: 2026-08-17
 > Căn cứ: phân tích run `9bf99a61` (bài "Trả góp 0%", DONE, 2300 từ) + so sánh workflow NotebookLM vs Writer Room.
-> Trạng thái: **DRAFT — chờ duyệt trước khi triển khai.**
+> Trạng thái: **KHÔNG TRIỂN KHAI — superseded 2026-08-18.**
+
+> **Superseded 2026-08-18:** plan này **đã bị bác bỏ sau khi verify bằng code thật**, đừng
+> implement. Ba nhận định lõi (ẩn dụ lặp · nhịp câu đều · cấu trúc song song) là ĐÚNG và đã
+> được giữ lại, nhưng chuyển sang chỗ khác: hai cái đầu vào CLI `bun writer:regate` (Mục 4 và
+> Mục 5, chế độ báo cáo), cái thứ ba vào checklist EDIT_REVIEW (câu 8). Xem
+> `docs/plans/channel-style-craft-checks-process.md` §5 để có đủ 7 lỗi đã verify. Bốn lỗi chặn:
+> ① toàn bộ plan dựa vào một tầng WARNING **không tồn tại** — `deterministic-gate.ts` trả
+> `passed: violations.length === 0`, nên mọi violation đều là hard block và sẽ **ăn hết vòng
+> repair duy nhất**, tranh với lỗi factual; ② §2b/§2c nhắm vào nhánh **Profile đã bị v2 loại bỏ**
+> (`writer-run-v2.ts` có 0 lần xuất hiện từ `profile`; run `9bf99a61` dùng `formulaId` v34,
+> không có `profileId`); ③ **AC-1 fail** — chạy `countTriads()` nguyên văn theo plan trên chính
+> run làm căn cứ cho ra **1**, không phải ≥2, và triad được plan dẫn làm bằng chứng lại không bị
+> hàm này bắt (first-token `Hợp → Anh → Anh`, chuỗi chỉ dài 2); ④ **AC-2 fail** — bài có **7**
+> câu ≤5 từ (min 1 từ), không phải 0. Ngoài ra `forbiddenPhrases` đề xuất sẽ cấm
+> `bánh xe hamster` — cụm này **có trong topic pack**, là `factsLedger[24]`, và là ẩn dụ vận
+> hành được duy nhất của bài.
 
 ---
 

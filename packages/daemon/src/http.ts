@@ -33,6 +33,7 @@ import {
   type SourcePackVideoPick,
 } from './source-pack-sessions.ts';
 import { createAgentHarness, type AgentHarness } from './harness.ts';
+import { McpSpyServer } from './spy-mcp.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
 import { listJobNotifications, markJobNotificationRead } from './notifications.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
@@ -125,6 +126,7 @@ function contentType(path: string): string {
 
 export interface HttpApp {
   spy: SpyService;
+  spyMcp: McpSpyServer | null;
   harness: AgentHarness;
   startedAt: number;
   webRoot: string;
@@ -140,7 +142,15 @@ export async function createHttpApp(): Promise<HttpApp> {
   const spy = new SpyService({ dataRoot: spyRoot(root) });
   await spy.init();
 
-  const harness = await createAgentHarness({ dataDir: root, defaultProjectRoot: APP_ROOT });
+  // Spy MCP owns a distinct least-privilege tool surface.  Start it before the
+  // agent harness so newly prepared agent configs contain the live endpoint.
+  const spyMcp = SPY_FEATURE.enabled ? new McpSpyServer(spy) : null;
+  if (spyMcp) await spyMcp.start();
+  const harness = await createAgentHarness({
+    dataDir: root,
+    defaultProjectRoot: APP_ROOT,
+    appMcpProvision: () => spyMcp?.info() ?? null,
+  });
 
   // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
   // exactly once per daemon process here, where `harness` and `spy` are already in
@@ -166,11 +176,11 @@ export async function createHttpApp(): Promise<HttpApp> {
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: root });
 
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
-  return { spy, harness, startedAt: Date.now(), webRoot };
+  return { spy, spyMcp, harness, startedAt: Date.now(), webRoot };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
-  const { spy, harness, startedAt, webRoot } = app;
+  const { spy, spyMcp, harness, startedAt, webRoot } = app;
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -183,10 +193,19 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json({
           ok: true,
           spy: SPY_FEATURE.enabled,
+          spyMcp: spyMcp ? { url: spyMcp.info()?.url ?? null } : null,
           agents: harness.listAgents().length,
           teamMcp: mcp ? { url: mcp.url } : null,
           uptimeMs: Date.now() - startedAt,
         });
+      }
+
+      // Local-only credential for manually connecting an external MCP client.
+      // It deliberately mirrors /api/team/mcp; do not put it in health output.
+      if (method === 'GET' && pathname === '/api/spy/mcp') {
+        const info = spyMcp?.info();
+        if (!info) return error('Spy MCP đang tắt', 404);
+        return json(info);
       }
 
       // ── In-app completion notifications ────────────────────────────────
@@ -1571,14 +1590,17 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   });
 
   const mcp = app.harness.teamMcpInfo();
+  const spyMcp = app.spyMcp?.info();
   console.log(`Writer Room http://127.0.0.1:${server.port}`);
   console.log(`data: ${dataRoot()}`);
   console.log(`spy: ${SPY_FEATURE.enabled ? 'on' : 'off'}`);
   console.log(`agents: ${app.harness.listAgents().map((a) => a.id).join(', ')}`);
   console.log(`team-mcp: ${mcp?.url ?? 'off'}`);
+  console.log(`spy-mcp: ${spyMcp?.url ?? 'off'}`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
+    app.spyMcp?.stop();
     app.harness.dispose();
     await releaseLock();
     process.exit(0);
