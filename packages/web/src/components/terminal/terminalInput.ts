@@ -3,31 +3,42 @@
  *
  * Codex and other full-screen CLIs can accept a pasted prompt while they are
  * still updating their composer, then drop a carriage return included in the
- * same PTY chunk. Waiting briefly between the text and Enter makes the submit
- * a distinct terminal key event, exactly like a person typing then pressing
- * Enter. `\r` is deliberate: it is what xterm sends for the Enter key.
+ * same PTY chunk. Letting the TUI go quiet between the text and Enter makes the
+ * submit a distinct terminal key event, exactly like a person typing and then
+ * pressing Enter. `\r` is deliberate: it is what xterm sends for the Enter key.
  */
+import { waitForPtyQuiet, type Delay, type SequenceReader } from './ptyQuiet.ts';
+
 export const PTY_ENTER = '\r';
+
 /**
- * Claude Code's Ink composer acknowledges a large programmatic paste later than
- * Codex's composer. 180ms was enough for Codex in normal cases, but Claude could
- * visibly receive the assignment text and still miss the immediately-following
- * Return. Keep the key event separate by a human-scale interval for every TUI;
- * this is a one-time dispatch cost, not an agent-thinking delay.
+ * Composer repaint after a paste is short and bursty, so a small settle window
+ * is enough. The ceiling matters more than the floor here: the text is already
+ * in the composer, and a TUI that never stops drawing must still get its Enter.
  */
-export const TUI_SUBMIT_SETTLE_MS = 800;
+export const PTY_SUBMIT_SETTLE_MS = 600;
+export const PTY_SUBMIT_MIN_WAIT_MS = 300;
+export const PTY_SUBMIT_MAX_WAIT_MS = 5_000;
 
 type PtyWriter = (data: string) => Promise<void>;
-type Delay = (ms: number) => Promise<void>;
 
-const browserDelay: Delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-
-export async function submitPtyLine(
-  write: PtyWriter,
-  text: string,
-  delay: Delay = browserDelay,
-): Promise<void> {
-  await write(text);
-  await delay(TUI_SUBMIT_SETTLE_MS);
-  await write(PTY_ENTER);
+export async function submitPtyLine(opts: {
+  write: PtyWriter;
+  text: string;
+  readSequence: SequenceReader;
+  isActive?: () => boolean;
+  delay?: Delay;
+  now?: () => number;
+}): Promise<void> {
+  await opts.write(opts.text);
+  await waitForPtyQuiet({
+    readSequence: opts.readSequence,
+    settleMs: PTY_SUBMIT_SETTLE_MS,
+    minWaitMs: PTY_SUBMIT_MIN_WAIT_MS,
+    maxWaitMs: PTY_SUBMIT_MAX_WAIT_MS,
+    isActive: opts.isActive,
+    delay: opts.delay,
+    now: opts.now,
+  });
+  await opts.write(PTY_ENTER);
 }

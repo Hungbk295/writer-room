@@ -384,7 +384,13 @@ export class LaneScheduler {
       taskNote: assignmentTaskNote(itemRunDir, inputFiles),
       overrideCwd: itemRunDir,
       skipWorktree: true,
-      allowedTools: ['Read', 'Write', 'Glob'],
+      // `mcp__team` is not optional: an interactive turn ends when the agent calls
+      // `team_turn_complete`, never by the PTY process exiting. Leave the MCP server
+      // out of the allowlist and the CLI stops for a permission prompt that nobody is
+      // there to answer — the agent finishes the work, cannot report it, and the turn
+      // burns down the full INTERACTIVE_PTY_TIMEOUT_MS. `agents/index.ts` already
+      // grants it on its own interactive path; this one had drifted.
+      allowedTools: ['Read', 'Write', 'Glob', 'mcp__team'],
       orchestrated: true,
       persistentInteractive: params.interactivePty === true,
       // `freshContext` intentionally discards prior CLI context. In live-PTY mode

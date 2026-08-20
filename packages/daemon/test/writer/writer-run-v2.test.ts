@@ -20,12 +20,16 @@ import type { PipelineLedgerRow } from '../../src/pipeline/ledger.ts';
 import { listJobNotifications } from '../../src/notifications.ts';
 import { saveFormula } from '../../src/training/storage.ts';
 import { createWriterPack } from '../../src/writer-packs.ts';
-import { getWriterRunV2, listWriterRunsV2 } from '../../src/writer/run-store-v2.ts';
+import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from '../../src/writer/run-store-v2.ts';
 import {
   continueWriterRunV2,
   EDIT_REVIEW_STAGE,
+  readStyledVersion,
   REPAIR_STAGE,
+  registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
+  RESTYLE_STAGE,
+  startRestyle,
   startWriterRunV2,
   STUDY_STAGE,
   validateEditorReview,
@@ -57,6 +61,18 @@ const PACK_MARKDOWN = [
   `${PACK_QUOTE}. ${PACK_QUOTE_2}. ${PACK_QUOTE_3}.`,
 ].join('\n');
 
+const STYLE_ID = 'nhan-vat-xuyen-suot.md';
+const CHANNEL_STYLE = [
+  '# Nhân vật xuyên suốt',
+  '<!-- version: 2 -->',
+  '',
+  '## Ngôi kể',
+  'Ngôi thứ hai, gọi khán giả là "bạn".',
+  '',
+  '## Nhân vật',
+  'Một nhân vật hư cấu tên Vy đi xuyên suốt bài.',
+].join('\n');
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'wr-writer-v2-'));
   harness = await createAgentHarness({ dataDir: dir, defaultProjectRoot: dir });
@@ -74,6 +90,9 @@ beforeEach(async () => {
     }
   });
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: dir });
+  registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: dir });
+  mkdirSync(join(dir, 'channel-styles'), { recursive: true });
+  writeFileSync(join(dir, 'channel-styles', STYLE_ID), CHANNEL_STYLE, 'utf8');
   mkdirSync(join(dir, 'general-packs'), { recursive: true });
   writeFileSync(
     join(dir, 'general-packs', 'hieu-tv.md'),
@@ -136,16 +155,21 @@ function waitForSettled(scheduler: LaneScheduler, stage: string, attempt = 1): P
 }
 
 /** Hand the pipeline a stage result and wait for it to settle. */
-async function completeStage(runId: string, stage: string, result: unknown): Promise<ItemSettledResult> {
-  const row = await waitForLedgerRow(runId, stage);
+async function completeStage(
+  runId: string,
+  stage: string,
+  result: unknown,
+  attempt = 1,
+): Promise<ItemSettledResult> {
+  const row = await waitForLedgerRow(runId, stage, attempt);
   const launch = await waitUntil(
     () => turnLaunches.get(Number(row.turnId)),
     (value) => value !== undefined,
   );
   expect(launch).toEqual({ mode: 'interactive', interactiveRequired: true, forceHeadless: false });
   stageAgents.set(`${runId}:${stage}`, turnAgents.get(Number(row.turnId))!);
-  await Bun.write(join(itemRunDir(runId, stage), 'out', 'result.json'), JSON.stringify(result));
-  const settled = waitForSettled(harness.pipeline.scheduler, stage);
+  await Bun.write(join(itemRunDir(runId, stage, attempt), 'out', 'result.json'), JSON.stringify(result));
+  const settled = waitForSettled(harness.pipeline.scheduler, stage, attempt);
   harness.workflow.turnComplete(Number(row.turnId), { exitCode: 0 });
   return settled;
 }
@@ -464,7 +488,7 @@ describe('Writer v2 — end to end', () => {
       beatAnchors: [ANCHOR_1, ANCHOR_2],
     });
 
-    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status !== 'RUNNING');
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r != null && r.status !== 'RUNNING');
     expect(failed!.status).toBe('FAILED_GATE');
     expect(failed!.errorCode).toBe('WRITER_V2_GATE');
     expect(failed!.finalScript).toBeNull();
@@ -495,7 +519,7 @@ describe('Writer v2 — end to end', () => {
       beatAnchors: [ANCHOR_1, ANCHOR_2],
     });
 
-    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status !== 'RUNNING');
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r != null && r.status !== 'RUNNING');
     expect(done!.status).toBe('DONE');
     expect(done!.finalScript).toBe(cleanScript());
     expect(done!.gateResults.at(-1)!.passed).toBe(true);
@@ -509,8 +533,216 @@ describe('Writer v2 — end to end', () => {
     const runId = await startRun();
     writeFileSync(join(dir, 'general-packs', 'hieu-tv.md'), '# Hieu TV\n<!-- version: 2 -->\n', 'utf8');
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
-    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status !== 'RUNNING');
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r != null && r.status !== 'RUNNING');
     expect(failed!.status).toBe('FAILED');
     expect(failed!.errorCode).toBe('GENERAL_PACK_CHANGED');
+  });
+});
+
+describe('Writer v2 — restyle', () => {
+  /** Drive a run all the way to DONE: restyle only ever starts from one of those. */
+  async function runToDone(): Promise<string> {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'EDIT_REVIEW');
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    return runId;
+  }
+
+  /** A restyled script: different voice, same length band, no host-identity leak. */
+  function styledScript(marker: string): string {
+    const filler = Array.from({ length: 848 }, (_, i) => `chữ${i}`).join(' ');
+    return `${marker} Vy ngồi xuống và mở bảng chi tiêu của chính mình. ${filler}`;
+  }
+
+  const deps = () => ({ scheduler: harness.pipeline.scheduler, dataDir: dir });
+
+  test('startRestyle dispatches restyle-v1 as attempt 1 in its own interactive pane', async () => {
+    const runId = await runToDone();
+    const before = (await getWriterRunV2(runId, dir))!;
+
+    const started = await startRestyle(deps(), runId, STYLE_ID);
+    expect(started.restyling).toEqual({
+      version: 1,
+      styleId: STYLE_ID,
+      startedAt: expect.any(String),
+    });
+    // Untouched, even while a restyle is in flight.
+    expect(started.status).toBe('DONE');
+    expect(started.finalScript).toBe(before.finalScript);
+
+    const row = await waitForLedgerRow(runId, RESTYLE_STAGE, 1);
+    expect(row.stage).toBe(RESTYLE_STAGE);
+    expect(row.attempt).toBe(1);
+    const launch = await waitUntil(
+      () => turnLaunches.get(Number(row.turnId)),
+      (value) => value !== undefined,
+    );
+    expect(launch).toEqual({ mode: 'interactive', interactiveRequired: true, forceHeadless: false });
+
+    // Both large inputs are staged as ordinary Markdown, not escaped into the envelope.
+    const inputDir = join(itemRunDir(runId, RESTYLE_STAGE, 1), 'input');
+    expect(await Bun.file(join(inputDir, 'source.md')).text()).toBe(before.finalScript!);
+    expect(await Bun.file(join(inputDir, 'style.md')).text()).toBe(CHANNEL_STYLE);
+    const envelope = JSON.parse(await Bun.file(join(inputDir, 'envelope.json')).text()) as {
+      sourceFile: string; styleFile: string; factsLedger: unknown[]; script?: string;
+    };
+    expect(envelope.sourceFile).toBe('input/source.md');
+    expect(envelope.styleFile).toBe('input/style.md');
+    expect(envelope.factsLedger).toHaveLength(3);
+    expect(envelope.script).toBeUndefined();
+
+    // Leave nothing live for teardown.
+    await completeStage(runId, RESTYLE_STAGE, { title: 'x', script: styledScript('A.') }, 1);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => (r?.styled?.length ?? 0) === 1);
+  });
+
+  test('a committed restyle writes a versioned file and leaves the run DONE', async () => {
+    const runId = await runToDone();
+    const before = (await getWriterRunV2(runId, dir))!;
+
+    await startRestyle(deps(), runId, STYLE_ID);
+    const script = styledScript('Chín giờ tối.');
+    expect((await completeStage(runId, RESTYLE_STAGE, { title: 'Bản của Vy', script }, 1)).outcome)
+      .toBe('COMMITTED');
+
+    const after = await waitUntil(
+      () => getWriterRunV2(runId, dir),
+      (r) => (r?.styled?.length ?? 0) === 1,
+    );
+    expect(after!.styled![0]).toEqual({
+      version: 1,
+      styleId: STYLE_ID,
+      styleVersion: 2,
+      styleHash: expect.any(String),
+      agentId: before.agentId,
+      path: `writer/styled/${runId}/v1.md`,
+      words: script.trim().split(/\s+/).length,
+      createdAt: expect.any(String),
+    });
+    expect(after!.restyling).toBeUndefined();
+    expect(after!.restyleError).toBeUndefined();
+
+    // The whole point: the sourced original survives the operation intact.
+    expect(after!.status).toBe('DONE');
+    expect(after!.phase).toBe('DONE');
+    expect(after!.finalScript).toBe(before.finalScript);
+
+    const markdown = await readStyledVersion(runId, 1, dir);
+    expect(markdown).toBe(`# Bản của Vy\n\n${script}\n`);
+    expect(await Bun.file(join(dir, 'writer', 'styled', runId, 'v1.md')).text()).toBe(markdown!);
+    expect(await readStyledVersion(runId, 2, dir)).toBeNull();
+    expect(await readStyledVersion(runId, 0, dir)).toBeNull();
+    expect(await readStyledVersion(runId, 1.5, dir)).toBeNull();
+
+    const summaries = await listWriterRunsV2(dir);
+    expect(summaries[0]!.styledCount).toBe(1);
+  });
+
+  test('a failed restyle records restyleError without failing the run', async () => {
+    const runId = await runToDone();
+    const before = (await getWriterRunV2(runId, dir))!;
+
+    await startRestyle(deps(), runId, STYLE_ID);
+    const row = await waitForLedgerRow(runId, RESTYLE_STAGE, 1);
+    const settled = waitForSettled(harness.pipeline.scheduler, RESTYLE_STAGE, 1);
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
+    expect((await settled).outcome).toBe('FAILED');
+
+    const after = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.restyleError !== undefined);
+    expect(after!.restyleError!.code).toBe('AGENT_EXIT');
+    expect(after!.restyling).toBeUndefined();
+    expect(after!.styled).toEqual([]);
+    expect(after!.status).toBe('DONE');
+    expect(after!.finalScript).toBe(before.finalScript);
+  });
+
+  test('a second restyle is attempt 2 and appends a second version', async () => {
+    const runId = await runToDone();
+
+    await startRestyle(deps(), runId, STYLE_ID);
+    await completeStage(runId, RESTYLE_STAGE, { title: 'v1', script: styledScript('Một.') }, 1);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => (r?.styled?.length ?? 0) === 1);
+
+    const second = await startRestyle(deps(), runId, STYLE_ID);
+    expect(second.restyling!.version).toBe(2);
+    // A distinct `attempt` is what keeps the turn key from re-attaching to v1's turn.
+    const row = await waitForLedgerRow(runId, RESTYLE_STAGE, 2);
+    expect(row.attempt).toBe(2);
+    expect(row.turnKey).not.toBe((await waitForLedgerRow(runId, RESTYLE_STAGE, 1)).turnKey);
+
+    await completeStage(runId, RESTYLE_STAGE, { title: 'v2', script: styledScript('Hai.') }, 2);
+    const after = await waitUntil(
+      () => getWriterRunV2(runId, dir),
+      (r) => (r?.styled?.length ?? 0) === 2,
+    );
+    expect(after!.styled!.map((s) => s.version)).toEqual([1, 2]);
+    expect(after!.styled!.map((s) => s.path)).toEqual([
+      `writer/styled/${runId}/v1.md`,
+      `writer/styled/${runId}/v2.md`,
+    ]);
+    expect(await readStyledVersion(runId, 2, dir)).toContain('# v2');
+    expect(after!.status).toBe('DONE');
+  });
+
+  test('guards: unknown run, a run still RUNNING, no finalScript, already restyling', async () => {
+    expect(startRestyle(deps(), 'no-such-run', STYLE_ID)).rejects.toThrow('không tồn tại');
+
+    const runningId = await startRun();
+    expect(startRestyle(deps(), runningId, STYLE_ID)).rejects.toThrow(/DONE/);
+    // Finish the STUDY turn so nothing is live at teardown.
+    await completeStage(runningId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runningId, dir), (r) => r?.phase === 'WRITE');
+    const writeRow = await waitForLedgerRow(runningId, WRITE_STAGE, 1);
+    const writeSettled = waitForSettled(harness.pipeline.scheduler, WRITE_STAGE, 1);
+    harness.workflow.turnComplete(Number(writeRow.turnId), { exitCode: -1 });
+    await writeSettled;
+
+    const runId = await runToDone();
+    expect(startRestyle(deps(), runId, 'khong-co-file-nay.md')).rejects.toThrow('không tồn tại');
+
+    const stripped = (await getWriterRunV2(runId, dir))!;
+    stripped.finalScript = null;
+    await saveWriterRunV2(stripped, dir);
+    expect(startRestyle(deps(), runId, STYLE_ID)).rejects.toThrow('finalScript');
+
+    const restored = (await getWriterRunV2(runId, dir))!;
+    restored.finalScript = cleanScript();
+    await saveWriterRunV2(restored, dir);
+    await startRestyle(deps(), runId, STYLE_ID);
+    expect(startRestyle(deps(), runId, STYLE_ID)).rejects.toThrow('restyle');
+
+    await completeStage(runId, RESTYLE_STAGE, { title: 'x', script: styledScript('Ba.') }, 1);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => (r?.styled?.length ?? 0) === 1);
+  });
+
+  test('a run recorded before restyle existed reads back without crashing', async () => {
+    const runId = await runToDone();
+    const raw = JSON.parse(
+      await Bun.file(join(dir, 'writer', 'runs-v2', `${runId}.json`)).text(),
+    ) as Record<string, unknown>;
+    delete raw.styled;
+    delete raw.restyling;
+    delete raw.restyleError;
+    await Bun.write(join(dir, 'writer', 'runs-v2', `${runId}.json`), JSON.stringify(raw));
+
+    const reread = await getWriterRunV2(runId, dir);
+    expect(reread!.styled).toEqual([]);
+    expect(reread!.restyling).toBeUndefined();
+    expect((await listWriterRunsV2(dir))[0]!.styledCount).toBe(0);
+
+    // And a restyle on such a run still numbers itself v1.
+    const started = await startRestyle(deps(), runId, STYLE_ID);
+    expect(started.restyling!.version).toBe(1);
+    await completeStage(runId, RESTYLE_STAGE, { title: 'x', script: styledScript('Bốn.') }, 1);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => (r?.styled?.length ?? 0) === 1);
   });
 });

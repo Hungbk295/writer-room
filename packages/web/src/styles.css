@@ -457,6 +457,15 @@ input, textarea, select {
 
 textarea { min-height: 140px; resize: vertical; }
 
+/* A select that sits in a button row instead of a form field: button height, no stretch. */
+.inline-select {
+  width: auto;
+  max-width: 260px;
+  height: 38px;
+  padding: 0 0.7rem;
+  font-size: 0.86rem;
+}
+
 .btn, .nav-term {
   appearance: none;
   height: 38px;

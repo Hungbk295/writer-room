@@ -48,6 +48,19 @@ export function generalPacksRoot(root = dataRoot()): string {
   return join(root, 'general-packs');
 }
 
+/**
+ * Channel styles (Writer v2 restyle) — one hand-curated markdown file per style
+ * (`nhan-vat-xuyen-suot.md`), telling the writer HOW the user's own channel
+ * sounds: person and address, cast, beat labels, rhetorical budgets, ending
+ * contract, boundaries. Same plain-file store as `generalPacksRoot` and for the
+ * same reason: edited by a human, reviewed by a human, pinned by content hash.
+ * Lives under the data root — not under `.claude/` — because the daemon reads it
+ * and may run from a different cwd. Never a source of facts.
+ */
+export function channelStylesRoot(root = dataRoot()): string {
+  return join(root, 'channel-styles');
+}
+
 /** Root for Training (SDD 002 §M1) persisted Formula artifacts — mirrors
  * `writerExportsRoot`'s JSON-per-record-under-a-data-root shape (see
  * `packages/daemon/src/training/storage.ts`). */

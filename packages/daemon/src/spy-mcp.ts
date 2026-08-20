@@ -21,6 +21,18 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_find_videos',
   'spy_read_transcript',
   'spy_read_video_material',
+  // M0: existing intelligence, deliberately read-only. Keep discovery,
+  // watchlist updates, and all other mutations off this local MCP surface.
+  'spy_channel_videos',
+  'spy_channel_outliers',
+  'spy_channel_profile',
+  'spy_video_metrics',
+  'spy_title_patterns',
+  'spy_video_comments',
+  'spy_corpus_videos',
+  'spy_corpus_channels',
+  'spy_channel_momentum',
+  'spy_competitors_list',
 ]);
 
 interface JsonRpcRequest {
@@ -86,6 +98,112 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       include_thumbnail: { type: 'boolean', description: 'true: return thumbnail image content for visual analysis; false: transcript only' },
     },
     required: ['video_snapshot_ids', 'include_thumbnail'],
+  },
+  spy_channel_videos: {
+    type: 'object',
+    properties: {
+      channel_id: { type: 'string', minLength: 1 },
+      spy_run_id: { type: 'string', minLength: 1 },
+      order_by: { type: 'string', enum: ['views', 'velocity', 'published_at', 'duration', 'engagement'] },
+      direction: { type: 'string', enum: ['asc', 'desc'] },
+      published_after: { type: 'string', format: 'date-time' },
+      published_before: { type: 'string', format: 'date-time' },
+      min_duration_sec: { type: 'integer', minimum: 0 },
+      max_duration_sec: { type: 'integer', minimum: 0 },
+      has_transcript: { type: 'boolean' },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+      cursor: { type: 'integer', minimum: 0, maximum: 100_000 },
+    },
+    anyOf: [{ required: ['channel_id'] }, { required: ['spy_run_id'] }],
+  },
+  spy_channel_outliers: {
+    type: 'object',
+    properties: {
+      channel_id: { type: 'string', minLength: 1 },
+      spy_run_id: { type: 'string', minLength: 1 },
+      min_score: { type: 'number', minimum: 0 },
+    },
+    anyOf: [{ required: ['channel_id'] }, { required: ['spy_run_id'] }],
+  },
+  spy_channel_profile: {
+    type: 'object',
+    properties: {
+      channel_id: { type: 'string', minLength: 1 },
+      spy_run_id: { type: 'string', minLength: 1 },
+    },
+    anyOf: [{ required: ['channel_id'] }, { required: ['spy_run_id'] }],
+  },
+  spy_video_metrics: {
+    type: 'object',
+    properties: {
+      video_id: { type: 'string', minLength: 1 },
+      spy_run_id: { type: 'string', minLength: 1 },
+    },
+    required: ['video_id'],
+  },
+  spy_title_patterns: {
+    type: 'object',
+    properties: {
+      channel_id: { type: 'string', minLength: 1 },
+      spy_run_id: { type: 'string', minLength: 1 },
+    },
+    anyOf: [{ required: ['channel_id'] }, { required: ['spy_run_id'] }],
+  },
+  spy_video_comments: {
+    type: 'object',
+    properties: {
+      video_id: { type: 'string', minLength: 1 },
+      channel_id: { type: 'string', minLength: 1 },
+      max_results: { type: 'integer', minimum: 1, maximum: 100 },
+      order: { type: 'string', enum: ['relevance', 'time'] },
+      include_replies: { type: 'boolean' },
+    },
+    anyOf: [{ required: ['video_id'] }, { required: ['channel_id'] }],
+  },
+  spy_corpus_videos: {
+    type: 'object',
+    properties: {
+      title_query: { type: 'string', minLength: 1 },
+      transcript_query: { type: 'string', minLength: 1 },
+      channel_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1 },
+      min_views: { type: 'number', minimum: 0 },
+      max_views: { type: 'number', minimum: 0 },
+      min_duration_sec: { type: 'integer', minimum: 0 },
+      max_duration_sec: { type: 'integer', minimum: 0 },
+      published_after: { type: 'string', format: 'date-time' },
+      published_before: { type: 'string', format: 'date-time' },
+      has_transcript: { type: 'boolean' },
+      min_outlier_score: { type: 'number', minimum: 0 },
+      min_view_per_sub: { type: 'number', minimum: 0 },
+      order_by: { type: 'string', enum: ['views', 'velocity', 'published_at', 'duration', 'engagement'] },
+      direction: { type: 'string', enum: ['asc', 'desc'] },
+      limit: { type: 'integer', minimum: 1, maximum: 200 },
+      cursor: { type: 'integer', minimum: 0, maximum: 100_000 },
+    },
+  },
+  spy_corpus_channels: {
+    type: 'object',
+    properties: {
+      min_videos: { type: 'integer', minimum: 0 },
+      min_avg_views: { type: 'number', minimum: 0 },
+      limit: { type: 'integer', minimum: 1, maximum: 200 },
+    },
+  },
+  spy_channel_momentum: {
+    type: 'object',
+    properties: {
+      channel_id: { type: 'string', minLength: 1 },
+      window_days: { type: 'integer', minimum: 1, maximum: 365 },
+    },
+    required: ['channel_id'],
+  },
+  spy_competitors_list: {
+    type: 'object',
+    properties: {
+      owner_channel_id: { type: 'string', minLength: 1 },
+      channel_id: { type: 'string', minLength: 1, description: 'Alias of owner_channel_id' },
+    },
+    anyOf: [{ required: ['owner_channel_id'] }, { required: ['channel_id'] }],
   },
 };
 

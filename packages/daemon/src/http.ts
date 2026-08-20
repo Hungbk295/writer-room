@@ -81,9 +81,18 @@ import {
   type DefaultAgentId as WriterAgentId,
 } from './writer/writer-run.ts';
 import { deleteWriterRun, getWriterRun, listWriterRuns } from './writer/run-store.ts';
-import { continueWriterRunV2, registerWriterV2SettleListener, startWriterRunV2 } from './writer/writer-run-v2.ts';
+import {
+  continueWriterRunV2,
+  readStyledVersion,
+  recoverInterruptedRestyles,
+  registerWriterV2RestyleListener,
+  registerWriterV2SettleListener,
+  startRestyle,
+  startWriterRunV2,
+} from './writer/writer-run-v2.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2 } from './writer/run-store-v2.ts';
 import { getGeneralPack, listGeneralPacks } from './writer/general-pack.ts';
+import { getChannelStyle, listChannelStyles } from './writer/channel-style.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -174,6 +183,9 @@ export async function createHttpApp(): Promise<HttpApp> {
   // Write Loop v2: STUDY → WRITE → gate → editor → repair → gate. Runs beside the
   // v1 listener above; each ignores the other's stages (v2 owns `*-v2`).
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: root });
+  // Separate listener on purpose: a restyle runs against a run that is already DONE,
+  // and handleWriterV2Settle returns early for anything whose status is not RUNNING.
+  registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: root });
 
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
   return { spy, spyMcp, harness, startedAt: Date.now(), webRoot };
@@ -1312,6 +1324,20 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(pack);
       }
 
+      // ── Channel styles (restyle) ──────────────────────────────
+      // Read-only over `writer-room-data/channel-styles/*.md`. A style says how THIS
+      // channel writes; the general pack beside it only describes the reference channel
+      // the craft was learned from, so the two stay separate stores.
+      if (method === 'GET' && pathname === '/api/writer/channel-styles') {
+        return json({ styles: await listChannelStyles(dataRoot()) });
+      }
+      const channelStyleMatch = /^\/api\/writer\/channel-styles\/(.+)$/.exec(pathname);
+      if (method === 'GET' && channelStyleMatch) {
+        const style = await getChannelStyle(decodeURIComponent(channelStyleMatch[1]!), dataRoot());
+        if (!style) return error('Channel style không tồn tại', 404);
+        return json(style);
+      }
+
       // ── Writer v2 runs (Write Loop v2) ────────────────────────
       if (method === 'GET' && pathname === '/api/writer/v2/runs') {
         return json({ runs: await listWriterRunsV2(dataRoot()) });
@@ -1374,6 +1400,35 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const status = /không tồn tại/i.test(msg) ? 404 : 400;
           return error(msg, status);
         }
+      }
+      const writerV2RestyleMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/restyle$/.exec(pathname);
+      if (method === 'POST' && writerV2RestyleMatch) {
+        const runId = decodeURIComponent(writerV2RestyleMatch[1]!);
+        const body = await readBody(req);
+        const styleId = typeof body.styleId === 'string' ? body.styleId.trim() : '';
+        if (!styleId) return error('styleId bắt buộc — vd "nhan-vat-xuyen-suot.md"');
+        try {
+          const run = await startRestyle(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+            runId,
+            styleId,
+          );
+          return json(run);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không restyle được Writer v2 run';
+          const status = /không tồn tại/i.test(msg) ? 404 : 400;
+          return error(msg, status);
+        }
+      }
+      const writerV2StyledMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/styled\/(\d+)$/.exec(pathname);
+      if (method === 'GET' && writerV2StyledMatch) {
+        const markdown = await readStyledVersion(
+          decodeURIComponent(writerV2StyledMatch[1]!),
+          Number(writerV2StyledMatch[2]!),
+          dataRoot(),
+        );
+        if (markdown === null) return error('Bản styled không tồn tại', 404);
+        return json({ markdown });
       }
       const writerV2RunMatch = /^\/api\/writer\/v2\/runs\/([^/]+)$/.exec(pathname);
       if (method === 'GET' && writerV2RunMatch) {

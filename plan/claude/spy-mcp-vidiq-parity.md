@@ -81,7 +81,9 @@ Ký hiệu: **✅ ĐÃ CÓ** · **🟢 LÀM NGAY** (≤1 ngày, không cần h�
 
 **Tại sao khả thi:** quota Data API mặc định 10.000 unit/ngày. Poll 2.000 video mỗi giờ = 40 call `videos.list` (batch 50) = 40 unit/giờ = **960 unit/ngày, chưa tới 10% quota**. Dữ liệu vật lý **đã tồn tại ngầm** trong spy — mỗi `spy_channel_start` tạo một `spy_runs` mới với `video_snapshots` mang `created_at` + `view_count` riêng. Chỉ là chưa ai đọc nó theo trục thời gian (`getLatestMetrics` luôn `LIMIT 1`).
 
-Cần: bảng `video_stat_points(source_video_id, sampled_at, views, likes, comments)` + một cron poller + 3 tool đọc. Ước ~3-4 ngày. Sau đó spy có thứ mà vidIQ **không có**: đường cong view độ phân giải cao cho đúng tập kênh bạn quan tâm, lưu vĩnh viễn, không tốn credit.
+Cần: bảng `video_stat_points(source_video_id, sampled_at, views, likes, comments)` + một cron poller + 3 tool đọc. Ước ~3-4 ngày. Sau đó spy có đường cong view độ phân giải cao cho đúng tập kênh bạn quan tâm, không tốn credit.
+
+> **Sửa 2026-08-20 (codex verify policy).** Bản đầu viết "lưu vĩnh viễn" — **sai**. Với video **không thuộc quyền uỷ quyền**, view/like/comment count cũng chịu trần refresh-hoặc-purge 30 ngày như metadata. Nghĩa là time-series ở đây là **cửa sổ trượt 30 ngày**, không phải kho lịch sử vĩnh viễn. Phần giá trị vẫn còn: VPH 1h/24h/7d và đường cong 30 ngày đầu sau publish — vốn là đoạn đáng giá nhất. Phần mất: không giữ được điểm đo của 6 tháng trước. Việc số liệu *phái sinh đã tổng hợp* có được giữ lâu hơn không là câu hỏi policy đang mở (ADR-SI-9), **không được tự giả định là được phép**. Chi tiết: `plan/claude/spy-keyword-reach-spec.md` §6.4.
 
 ### 2.4 Khám phá / index toàn cầu
 
@@ -172,6 +174,8 @@ Hiện `DeterministicStubLlm` trả template cứng (`persona: 'clear'`, đúng 
 ## 4. Nếu chỉ chọn một
 
 **P1 (time-series).** Lý do: nó là năng lực duy nhất vừa nằm trong nhóm "độc quyền" của vidIQ vừa clone được ở phạm vi bạn cần, chi phí quota gần như bằng 0, và một khi có chuỗi thời gian thì outlier score, growth, breakout detection, cảnh báo — tất cả đều trở nên chính xác hơn hẳn so với việc chỉ có một điểm tĩnh `views/tuổi`.
+
+> **Đọc kèm sửa đổi 2026-08-20 ở §2.3.** Lập luận trên vẫn đúng cho cửa sổ 30 ngày, nhưng **không** còn đúng cho "lịch sử dài hạn". Nếu mục tiêu là chuỗi thời gian dài hạn hợp pháp thì nguồn duy nhất là **OAuth kênh sở hữu (P3)**, không phải P1 — đây là lý do `spy-keyword-reach-spec.md` §6.4 đề nghị kéo phần read-only của P3/M4 lên sớm.
 
 Nhưng **P0 phải làm trước** dù chọn gì, vì 6 tool đang trả rác sẽ làm nhiễu mọi thứ xây bên trên.
 

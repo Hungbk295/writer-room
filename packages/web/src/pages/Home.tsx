@@ -55,6 +55,9 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
         <a class={is(['writer-v2', 'writer-v2-run'])} href={href({ name: 'writer-v2' })}>
           Writer v2
         </a>
+        <a class={is(['channel-styles'])} href={href({ name: 'channel-styles' })}>
+          Style kênh
+        </a>
         <a class={is(['training-formulas', 'training-formula'])} href={href({ name: 'training-formulas' })}>
           Formula
         </a>

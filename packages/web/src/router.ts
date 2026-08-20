@@ -7,6 +7,8 @@ export type Route =
   | { name: 'writer-run'; id: string }
   | { name: 'writer-v2' }
   | { name: 'writer-v2-run'; id: string }
+  // `path` is a channel-style file name; absent means "no style opened yet"
+  | { name: 'channel-styles'; path?: string }
   | { name: 'training-formulas' }
   | { name: 'training-formula'; id: string }
   | { name: 'training-lab' }
@@ -35,6 +37,10 @@ export function parseRoute(hash = location.hash): Route {
     return { name: 'writer-pack', id: parts[1]! };
   }
   if (parts[0] === 'writer') return { name: 'writer' };
+  if (parts[0] === 'channel-styles' && parts[1]) {
+    return { name: 'channel-styles', path: decodeURIComponent(parts[1]!) };
+  }
+  if (parts[0] === 'channel-styles') return { name: 'channel-styles' };
   if (parts[0] === 'training' && parts[1] === 'formulas' && parts[2]) return { name: 'training-formula', id: parts[2]! };
   if (parts[0] === 'training' && parts[1] === 'formulas') return { name: 'training-formulas' };
   if (parts[0] === 'training' && parts[1] === 'lab' && parts[2]) return { name: 'training-lab-run', id: parts[2]! };
@@ -60,6 +66,8 @@ export function href(route: Route): string {
     case 'writer-run': return `#/writer/runs/${route.id}`;
     case 'writer-v2': return '#/writer/v2';
     case 'writer-v2-run': return `#/writer/v2/${route.id}`;
+    case 'channel-styles':
+      return route.path ? `#/channel-styles/${encodeURIComponent(route.path)}` : '#/channel-styles';
     case 'training-formulas': return '#/training/formulas';
     case 'training-formula': return `#/training/formulas/${route.id}`;
     case 'training-lab': return '#/training/lab';

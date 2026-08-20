@@ -305,6 +305,35 @@ export interface EditorDefect {
 
 export type WriterV2Phase = 'STUDY' | 'WRITE' | 'GATE' | 'EDIT_REVIEW' | 'REPAIR' | 'DONE' | 'FAILED';
 
+/** One channel-voice style file. Its `path` is the id sent back when restyling. */
+export interface ChannelStyleSummary {
+  path: string;
+  version: number | null;
+  title: string;
+  wordCount: number;
+  hash: string;
+}
+
+/** A style plus its full markdown — what the reader tab renders. */
+export interface ChannelStyle extends ChannelStyleSummary {
+  markdown: string;
+}
+
+/**
+ * One restyled rendering of a finished run. Versions accumulate so the same
+ * `finalScript` can be A/B'd across voices; the original is never touched.
+ */
+export interface StyledVersion {
+  version: number;
+  styleId: string;
+  styleVersion: number | null;
+  styleHash: string;
+  agentId: string;
+  path: string;
+  words: number;
+  createdAt: string;
+}
+
 export interface WriterRunV2 {
   id: string;
   status: 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
@@ -335,6 +364,10 @@ export interface WriterRunV2 {
   editorDefects: EditorDefect[] | null;
   finalScript: string | null;
   repairAttempted?: boolean;
+  /** Present only while a restyle stage is in flight; `status` stays DONE. */
+  restyling?: { version: number; styleId: string; startedAt: string };
+  restyleError?: { code: string; reason: string; at: string };
+  styled?: StyledVersion[];
   createdAt: string;
   updatedAt: string;
   errorCode?: string;
@@ -360,6 +393,7 @@ export interface WriterRunV2Summary {
   hasScript: boolean;
   gateViolationCount: number;
   defectCount: number;
+  styledCount: number;
 }
 
 export interface WriterEditRecord {
@@ -1030,6 +1064,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  listChannelStyles: () => request<{ styles: ChannelStyleSummary[] }>('/api/writer/channel-styles'),
+  getChannelStyle: (path: string) =>
+    request<ChannelStyle>(`/api/writer/channel-styles/${encodeURIComponent(path)}`),
+  /** Rewrites a finished run in a channel voice as a new styled version; `finalScript` is untouched. */
+  restyleWriterRunV2: (id: string, styleId: string) =>
+    request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}/restyle`, {
+      method: 'POST',
+      body: JSON.stringify({ styleId }),
+    }),
+  getWriterRunV2Styled: (id: string, version: number) =>
+    request<{ markdown: string }>(
+      `/api/writer/v2/runs/${encodeURIComponent(id)}/styled/${encodeURIComponent(String(version))}`,
+    ),
   deleteWriterRunV2: (id: string) =>
     request<{ ok: boolean }>(`/api/writer/v2/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 

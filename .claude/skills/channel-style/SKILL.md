@@ -5,7 +5,8 @@ description: >
   chạy NGOÀI pipeline. Dùng skill này khi người dùng nói "restyle bài này", "áp style kênh
   vào run X", "viết lại bản này theo giọng kênh tôi", hoặc muốn thử một style khác trên
   cùng một bản gốc để A/B. Skill đọc `finalScript` + `study.factsLedger` từ file run,
-  áp một file style trong `styles/`, rồi ghi ra một file MỚI trong `writer-room-data/exports/`.
+  áp một file style trong `writer-room-data/channel-styles/`, rồi ghi ra một file MỚI trong
+  `writer-room-data/exports/`.
   KHÔNG sửa `finalScript`, KHÔNG thêm stage vào pipeline, KHÔNG có gate chặn.
 ---
 
@@ -34,7 +35,7 @@ Cả ba đều nằm trên đĩa. Không cần gọi API, không cần daemon ch
 |---|---|
 | Bản gốc có nguồn | `writer-room-data/writer/runs-v2/<runId>.json` → `finalScript` |
 | **Facts ledger** | cùng file → `study.factsLedger` |
-| Style | `.claude/skills/channel-style/styles/<ten>.md` |
+| Style | `writer-room-data/channel-styles/<ten>.md` |
 
 **Đọc ledger là BẮT BUỘC.** Đây là thứ duy nhất phân biệt skill này với "nhờ AI viết lại
 cho hay hơn". Ledger là một mảng các phần tử `{ fact, quote, videoId }` — mỗi phần tử là một

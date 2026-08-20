@@ -2,7 +2,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { submitPtyLine } from './terminalInput.ts';
-import { scheduleQuietPtyEnterRetry } from './terminalAutoRetry.ts';
+import { schedulePtyEnterRecovery } from './terminalAutoRetry.ts';
 
 export interface TerminalCreateRequest {
   executable: string;
@@ -81,13 +81,17 @@ export function termAttach(
 export const termWrite = (sessionId: string, data: string) =>
   invoke<void>('terminal_write', { sessionId, data });
 
-/** Type a prompt, let the TUI apply it, then send a distinct Enter key. */
+/** Type a prompt, let the TUI finish repainting, then send a distinct Enter key. */
 export const termSubmitLine = (sessionId: string, text: string) =>
-  submitPtyLine((data) => termWrite(sessionId, data), text);
+  submitPtyLine({
+    write: (data) => termWrite(sessionId, data),
+    text,
+    readSequence: async () => (await termSnapshot(sessionId)).sequence,
+  });
 
 /**
- * Send a TUI assignment, then retry exactly one Enter after five seconds only
- * when terminal output stayed quiet. The returned function cancels that retry
+ * Send a TUI assignment, then watch whether the agent actually starts working
+ * and re-send Enter if it did not. The returned function cancels that watch
  * when the owning turn settles or its PTY is replaced.
  */
 export async function termSubmitLineWithAutoRetry(
@@ -101,18 +105,7 @@ export async function termSubmitLineWithAutoRetry(
 ): Promise<() => void> {
   await termSubmitLine(sessionId, text);
 
-  let baselineSequence: number;
-  try {
-    baselineSequence = (await termSnapshot(sessionId)).sequence;
-  } catch (error) {
-    // The first Enter was delivered. If the pane disappears before its baseline
-    // snapshot, there is simply no safe PTY to retry against.
-    opts.onRetryError?.(error);
-    return () => {};
-  }
-
-  return scheduleQuietPtyEnterRetry({
-    baselineSequence,
+  return schedulePtyEnterRecovery({
     readSequence: async () => (await termSnapshot(sessionId)).sequence,
     write: (data) => termWrite(sessionId, data),
     isActive: opts.isActive,

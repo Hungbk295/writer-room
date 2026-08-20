@@ -27,12 +27,13 @@
  *    perform compliance. One repair, then a human.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FormulaArtifact } from '@writer-room/training-core';
 import { normalizeFormula } from '@writer-room/training-core';
 import { DEFAULT_AGENT_IDS, type DefaultAgentId } from '../agents/defaults.ts';
 import { createJobDoneNotification } from '../notifications.ts';
+import { writerRoot } from '../paths.ts';
 import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
 import { getFormula } from '../training/storage.ts';
 import { getWriterPack, type WriterPack } from '../writer-packs.ts';
@@ -42,8 +43,9 @@ import {
   type GateResult,
   type LedgerEntry,
 } from './deterministic-gate.ts';
+import { getChannelStyle } from './channel-style.ts';
 import { getGeneralPack } from './general-pack.ts';
-import { getWriterRunV2, saveWriterRunV2 } from './run-store-v2.ts';
+import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
 import { validateWriterVideoPlan, type WriterVideoPlan } from './video-plan.ts';
 
@@ -55,6 +57,15 @@ export const EDIT_REVIEW_STAGE = 'edit-review-v2';
 export const REPAIR_STAGE = 'repair-v2';
 
 /**
+ * Restyle runs OUTSIDE the five-stage loop above: it starts from a run that is
+ * already `DONE`, never changes `status` or `finalScript`, and writes each result
+ * to its own versioned file. It therefore has its OWN settle listener — the main
+ * one returns early on any run that is not `RUNNING`, which is exactly every run
+ * a restyle can be dispatched from.
+ */
+export const RESTYLE_STAGE = 'restyle-v1';
+
+/**
  * Writer v2 is deliberately a live, human-observable PTY workflow. The author
  * keeps one writable pane from STUDY through WRITE/REPAIR; the editor receives
  * a distinct pane so a review is never accidentally delivered to the writer's
@@ -62,11 +73,13 @@ export const REPAIR_STAGE = 'repair-v2';
  */
 const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
+const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 
 const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source';
 const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
+const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
 
 /** The one item id every stage of a v2 run uses (one run = one piece). */
 export const WRITER_V2_ITEM_ID = 'piece';
@@ -110,6 +123,23 @@ export interface EditorDefect {
   note: string;
 }
 
+/**
+ * One restyle result. A run accumulates these; `finalScript` stays the sourced
+ * original, so a styled version is always an addition, never a replacement.
+ */
+export interface StyledVersion {
+  version: number;
+  /** Relative path in the channel-styles root, e.g. `nhan-vat-xuyen-suot.md`. */
+  styleId: string;
+  styleVersion: number | null;
+  styleHash: string;
+  agentId: DefaultAgentId;
+  /** Relative to dataDir, e.g. `writer/styled/<runId>/v1.md`. */
+  path: string;
+  words: number;
+  createdAt: string;
+}
+
 export type WriterV2Phase =
   | 'STUDY'
   | 'WRITE'
@@ -150,6 +180,13 @@ export interface WriterRunV2 {
   finalScript: string | null;
   /** True once a repair round has been dispatched — the cap is one. */
   repairAttempted?: boolean;
+  /** Set while a restyle turn is in flight. All three restyle fields are optional
+   * so every run written before restyle existed still reads back unchanged. */
+  restyling?: { version: number; styleId: string; startedAt: string };
+  /** Last restyle failure. Never touches `status`/`errorCode` — the run itself is
+   * still the DONE run it was; only the side operation failed. */
+  restyleError?: { code: string; reason: string; at: string };
+  styled?: StyledVersion[];
   createdAt: string;
   updatedAt: string;
   errorCode?: string;
@@ -1459,5 +1496,504 @@ async function handleWriterV2Settle(deps: WriterV2Deps, event: ItemSettledResult
 
     default:
       return;
+  }
+}
+
+// ── Restyle ───────────────────────────────────────────────────────────────
+//
+// A side operation on a finished run, not a sixth stage. The invariants that
+// make it safe to run on a `DONE` record:
+//
+//   - `run.status` and `run.finalScript` are NEVER written here, on any branch,
+//     success or failure. The sourced original stays exactly as the gate left it.
+//   - It has its OWN settle listener. `handleWriterV2Settle` returns early unless
+//     the run is `RUNNING`, so a restyle settle would be silently dropped by it —
+//     and `restyle-v1` must stay out of that listener's stage whitelist.
+//   - It never calls `handleDispatchFailure`: that helper fails the whole run, and
+//     treats `WAITING_LANE` (legitimate backpressure) as an error.
+//   - `attempt` is the styled-version number, and the style file's hash is in
+//     `inputHashes`. Both feed `computeTurnKey`, so restyling the same run with a
+//     different style — or the same style twice — gets a genuinely new turn
+//     instead of re-attaching to the previous one.
+
+/** Where a styled version lives, relative to `dataDir`. */
+function styledRelPath(runId: string, version: number): string {
+  return `writer/styled/${runId}/v${version}.md`;
+}
+
+/**
+ * Path to the agent's raw `out/result.json` for a restyle turn — present even when
+ * the turn was INTERRUPTED before the ledger commit step copied it into `artifacts/`.
+ * Used by `recoverInterruptedRestyles` after a daemon reboot: `reconcileOnBoot` marks
+ * the ledger row INTERRUPTED but never fires `onItemSettled`, so without this the run
+ * would stay `restyling` forever — the exact failure `studio-synthesize.ts` documents
+ * for its own SYNTHESIZE turn.
+ *
+ * `attempt` is the styled-version number for this stage (see `dispatchRestyle`).
+ */
+function restyleOutResultPath(dataDir: string, runId: string, version: number): string {
+  return join(
+    dataDir,
+    'workspaces',
+    'pipeline',
+    runId,
+    WRITER_V2_ITEM_ID,
+    'attempts',
+    String(version),
+    RESTYLE_STAGE,
+    'out',
+    'result.json',
+  );
+}
+
+function buildRestylePrompt(opts: {
+  styleTitle: string;
+  wordRange: { minWords: number; maxWords: number };
+  ledgerCount: number;
+  forbiddenNames: string[];
+}): string {
+  return [
+    '# Writer v2 — RESTYLE (same piece, different voice)',
+    '',
+    'Read the finished script at `input/source.md`, then read the channel style at',
+    '`input/style.md`. `input/envelope.json` holds the compact contract: the facts',
+    'ledger the original was written against, the length band, and the forbidden host',
+    'names. The assignment message gives absolute paths if this PTY has an older',
+    'working directory — use those paths. Do not open Chrome, a browser, Playwright or',
+    '`file://`; both inputs are staged as line-readable local Markdown.',
+    '',
+    `## Style: ${opts.styleTitle}`,
+    `## Length: ${opts.wordRange.minWords}-${opts.wordRange.maxWords} words`,
+    'Count ONLY `script`, with `script.trim().split(/\\s+/).length`, before you write',
+    '`out/result.json`.',
+    '',
+    '## What this turn is',
+    '',
+    'This is a VOICE rewrite, not a new article. The argument already exists and it is',
+    'already sourced. Keep its claims, keep the order it makes them in, and keep every',
+    'fact. What changes is how it sounds: person and address, the shape of the beats,',
+    'the images, the ending contract — whatever `input/style.md` prescribes. Where the',
+    'style contradicts the original\'s voice, the style wins; where it would contradict',
+    'a fact, the fact wins.',
+    '',
+    '## Hard rules',
+    '',
+    '1. **Do not change a single fact.** No number, organisation name, survey sample,',
+    '   study or year may be altered, rounded, re-attributed or "improved". If the',
+    '   original says 43%, the restyle says 43%.',
+    '2. **Do not add facts.** Everything factual must already be in `factsLedger` or in',
+    `   the source script. Facts available: ${opts.ledgerCount}. Nothing new gets invented`,
+    '   to make a scene land better.',
+    `3. You are not the source pack's host. Forbidden identities: ${
+      opts.forbiddenNames.length ? opts.forbiddenNames.map((n) => `"${n}"`).join(', ') : '(none)'
+    }.`,
+    '4. Vietnamese prose. Do not mention, enumerate or visibly perform the style rules.',
+    '',
+    '## If the style asks for a recurring fictional character',
+    '',
+    'Some styles carry a named character through the piece. That is allowed, and these',
+    'three laws are not negotiable:',
+    '',
+    '1. **The character\'s arithmetic must actually be right.** Every figure you give the',
+    '   character has to add up, and any ratio you state about them has to fall inside a',
+    '   band the ledger supports. `1,3 triệu × 10 kỳ = 13 triệu` — do the multiplication.',
+    '   `6,5/15 = 43%` — and only write that if the ledger has a `40–45%` band to land in.',
+    '2. **Keep the source\'s multiple when you localise a number.** A real failure: the',
+    '   source moved from `600 đô` to `4000 đô`, a 6,67× jump; the rewrite localised it as',
+    '   `15 → 70 triệu`, only 4,67×, and quietly changed what the piece claims. The correct',
+    '   localisation is `15 → 100 triệu`. Compute the source ratio first, then pick the',
+    '   local numbers to match it.',
+    '3. **A fictional character NEVER speaks a quote from `factsLedger`.** Testimony from a',
+    '   real person keeps its real subject — it stays attributed to whoever actually said',
+    '   it. Your character may only ENCOUNTER it: read it, hear it, recognise themself in',
+    '   it. The moment an invented person utters a sourced line, the piece is fabricating',
+    '   evidence.',
+    '',
+    'Write JSON to `out/result.json`:',
+    '',
+    '```json',
+    '{ "title": "...", "script": "..." }',
+    '```',
+  ].join('\n');
+}
+
+/**
+ * Deliberately the THINNEST validator in this file: non-empty fields, the length
+ * band, and the host-identity leak. No gate, no ledger check, no character-maths
+ * check.
+ *
+ * The reason is the retry loop behind it. A `validateContent` failure sends the
+ * agent back to rewrite, up to `DEFAULT_MAX_CONTENT_RETRIES` times, with the
+ * violation quoted at it — which is precisely the "perform compliance until the
+ * checker shuts up" loop this whole design avoids (see the file header on why the
+ * 3-round refine loop was removed). The character-arithmetic and no-new-facts laws
+ * are stated in the prompt and read by a human on the styled file; they are not
+ * turned into an auto-retry whip.
+ */
+export function validateRestyleOutput(
+  parsed: unknown,
+  opts: { wordRange: { minWords: number; maxWords: number }; forbiddenNames: string[] },
+): { ok: true; title: string; script: string } | { ok: false; errorCode: string; reason: string } {
+  const p = parsed as { title?: unknown; script?: unknown } | null;
+  if (!p || typeof p !== 'object') {
+    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'restyle output is not an object' };
+  }
+  const title = typeof p.title === 'string' ? p.title.trim() : '';
+  const script = typeof p.script === 'string' ? p.script.trim() : '';
+  if (!title) return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'title missing or empty' };
+  if (!script) return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'script missing or empty' };
+
+  const words = countScriptWords(script);
+  const { minWords, maxWords } = opts.wordRange;
+  if (words < minWords || words > maxWords) {
+    return {
+      ok: false,
+      errorCode: 'RESTYLE_LENGTH',
+      reason:
+        `script is ${words} words — band is ${minWords}-${maxWords}. `
+        + 'Overwrite out/result.json at the right length; do not leave this file and reply "done".',
+    };
+  }
+
+  const leak = findIdentityLeak(script, opts.forbiddenNames);
+  if (leak) {
+    return {
+      ok: false,
+      errorCode: 'RESTYLE_IDENTITY',
+      reason:
+        `script adopts the source-pack host identity "${leak}". This channel is not that host — `
+        + 'keep the facts, drop the persona. Overwrite out/result.json.',
+    };
+  }
+
+  return { ok: true, title, script };
+}
+
+/**
+ * Validate a raw restyle payload against THIS run's own band and host names.
+ * Shared by the settle path and the boot-recovery path so the two can never drift
+ * into accepting different things.
+ */
+async function validateRestyleForRun(
+  dataDir: string,
+  run: WriterRunV2,
+  parsed: unknown,
+): Promise<ReturnType<typeof validateRestyleOutput>> {
+  const pack = await getWriterPack(run.packId, dataDir);
+  return validateRestyleOutput(parsed, {
+    wordRange: wordRangeFor(run),
+    forbiddenNames: pack ? forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title }) : [],
+  });
+}
+
+/**
+ * Commit ONE validated styled version onto a run: write the versioned markdown file,
+ * append the `StyledVersion` entry, clear the in-flight flag, save.
+ *
+ * The single place a styled version is ever committed — `handleRestyleSettle` (normal
+ * path) and `recoverInterruptedRestyles` (post-reboot path) both go through here, so
+ * a run recovered at boot is byte-for-byte the same record as one settled live.
+ *
+ * `run.status`, `run.phase` and `run.finalScript` are NOT touched, ever. A styled
+ * version is an addition to a finished run, never a replacement for what the gate
+ * approved.
+ */
+async function commitStyledVersion(
+  dataDir: string,
+  run: WriterRunV2,
+  opts: { version: number; styleId: string; title: string; script: string },
+): Promise<void> {
+  const { version, styleId, title, script } = opts;
+  const style = await getChannelStyle(styleId, dataDir);
+  const dir = join(writerRoot(dataDir), 'styled', run.id);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `v${version}.md`), `# ${title}\n\n${script}\n`, 'utf8');
+
+  run.styled = [
+    ...(run.styled ?? []),
+    {
+      version,
+      styleId,
+      styleVersion: style?.version ?? null,
+      styleHash: style?.hash ?? '',
+      agentId: run.agentId,
+      path: styledRelPath(run.id, version),
+      words: countScriptWords(script),
+      createdAt: new Date().toISOString(),
+    },
+  ];
+  delete run.restyling;
+  run.restyleError = undefined;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, dataDir);
+}
+
+/** Record a restyle failure WITHOUT touching `run.status`, `phase` or `finalScript`. */
+async function recordRestyleError(
+  dataDir: string,
+  run: WriterRunV2,
+  code: string,
+  reason: string,
+): Promise<void> {
+  run.restyleError = { code, reason, at: new Date().toISOString() };
+  delete run.restyling;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, dataDir);
+}
+
+/**
+ * Rewrite a finished run's `finalScript` in a channel style, as a new version.
+ *
+ * The run must be `DONE` — restyle is not a way to rescue a red gate, and the
+ * original it starts from must be one a human could already ship.
+ */
+export async function startRestyle(
+  deps: WriterV2Deps,
+  runId: string,
+  styleId: string,
+): Promise<WriterRunV2> {
+  const run = await getWriterRunV2(runId, deps.dataDir);
+  if (!run) throw new Error('Writer v2 run không tồn tại');
+  if (run.status !== 'DONE') {
+    throw new Error(`Chỉ restyle được run đã DONE (hiện: ${run.status}/${run.phase})`);
+  }
+  if (!run.finalScript) {
+    throw new Error('Run này không có finalScript để restyle');
+  }
+  if (run.restyling) {
+    throw new Error(
+      `Run đang restyle v${run.restyling.version} theo "${run.restyling.styleId}"; chờ turn đó settle trước`,
+    );
+  }
+  const style = await getChannelStyle(styleId, deps.dataDir);
+  if (!style) throw new Error(`Channel style không tồn tại: ${styleId}`);
+
+  const version = (run.styled?.length ?? 0) + 1;
+  run.restyling = { version, styleId: style.path, startedAt: new Date().toISOString() };
+  run.restyleError = undefined;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+
+  await dispatchRestyle(deps, run, style, version);
+  return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+}
+
+async function dispatchRestyle(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  style: { path: string; title: string; hash: string; markdown: string },
+  version: number,
+): Promise<void> {
+  const source = run.finalScript;
+  if (!source) throw new Error('[writer-v2] dispatchRestyle called without a finalScript');
+  const pack = await getWriterPack(run.packId, deps.dataDir);
+  const forbiddenNames = pack
+    ? forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title })
+    : [];
+  const wordRange = wordRangeFor(run);
+  const factsLedger = run.study?.factsLedger ?? [];
+
+  // Compact envelope only. Both pieces of prose are staged as ordinary Markdown
+  // beside it — a JSON string field would escape every newline into one enormous
+  // physical line that agent Read tools cannot paginate.
+  const envelope = {
+    contract: {
+      role: 'Writer v2 — RESTYLE stage',
+      instruction: 'same argument, same facts, different voice',
+    },
+    factsLedger,
+    packTitle: run.packTitle,
+    wordRange,
+    forbiddenHostNames: forbiddenNames,
+    sourceFile: 'input/source.md',
+    styleFile: 'input/style.md',
+  };
+
+  const dispatch = await deps.scheduler.dispatchItem({
+    batchId: run.id,
+    itemId: WRITER_V2_ITEM_ID,
+    stage: RESTYLE_STAGE,
+    // `attempt` is the styled-version number: it is part of the turn key, so
+    // version 2 can never re-attach to version 1's turn.
+    attempt: version,
+    templateId: run.agentId,
+    promptMarkdown: buildRestylePrompt({
+      styleTitle: style.title,
+      wordRange,
+      ledgerCount: factsLedger.length,
+      forbiddenNames,
+    }),
+    envelope,
+    inputFiles: [
+      { path: 'source.md', content: source },
+      { path: 'style.md', content: style.markdown },
+    ],
+    inputHashes: [envelopeHash(envelope), contentHash(source), style.hash],
+    promptVersion: RESTYLE_PROMPT_VERSION,
+    sessionGroup: RESTYLE_PTY_SESSION_GROUP,
+    interactivePty: true,
+    // The author pane of the original run may have died days ago, and its CLI
+    // context is about writing the piece, not restyling it.
+    freshContext: true,
+    validateContent: (parsed) => {
+      const v = validateRestyleOutput(parsed, { wordRange, forbiddenNames });
+      return v.ok ? { ok: true as const } : { ok: false as const, errorCode: v.errorCode, reason: v.reason };
+    },
+  });
+
+  if (dispatch.status !== 'RUNNING') {
+    await recordRestyleError(
+      deps.dataDir,
+      run,
+      dispatch.reason ?? 'RESTYLE_DISPATCH_FAILED',
+      `Không dispatch được restyle v${version} (${dispatch.status})`,
+    );
+  }
+}
+
+/**
+ * The restyle settle path, deliberately separate from `registerWriterV2SettleListener`.
+ *
+ * Restyle always settles on a run whose status is `DONE`, and the main handler
+ * returns early on anything that is not `RUNNING` — so sharing that listener would
+ * mean either dropping every restyle result or weakening the guard that keeps a
+ * finished run finished.
+ */
+export function registerWriterV2RestyleListener(
+  scheduler: LaneScheduler,
+  deps: { dataDir: string },
+): () => void {
+  return scheduler.onItemSettled((event) => {
+    if (event.stage !== RESTYLE_STAGE) return;
+    void handleRestyleSettle(deps.dataDir, event).catch((err) => {
+      console.error('[writer-v2] restyle settle failed:', (err as Error).message);
+    });
+  });
+}
+
+async function handleRestyleSettle(dataDir: string, event: ItemSettledResult): Promise<void> {
+  const run = await getWriterRunV2(event.batchId, dataDir);
+  if (!run) return;
+  // A settle for a restyle nobody is waiting for (stale listener, restarted daemon,
+  // an event for an older version) is ignored rather than recorded.
+  if (!run.restyling || run.restyling.version !== event.attempt) return;
+  const version = run.restyling.version;
+  const styleId = run.restyling.styleId;
+
+  if (event.outcome !== 'COMMITTED' || !event.artifactHash) {
+    await recordRestyleError(
+      dataDir,
+      run,
+      event.errorCode ?? 'RESTYLE_FAILED',
+      event.errorReason ?? `restyle v${version} không hoàn tất`,
+    );
+    return;
+  }
+
+  const parsed = await readCommittedArtifact<unknown>(dataDir, event);
+  const validated = await validateRestyleForRun(dataDir, run, parsed);
+  if (!validated.ok) {
+    await recordRestyleError(dataDir, run, validated.errorCode, validated.reason);
+    return;
+  }
+
+  // `status` and `finalScript` are untouched inside `commitStyledVersion` on purpose —
+  // the styled file is an addition to a finished run, never a replacement for what the
+  // gate approved.
+  await commitStyledVersion(dataDir, run, {
+    version,
+    styleId,
+    title: validated.title,
+    script: validated.script,
+  });
+}
+
+/**
+ * Boot recovery for restyles that were in flight when the daemon went down.
+ *
+ * `reconcileOnBoot` (`pipeline/lane-scheduler.ts`) marks every non-terminal ledger row
+ * INTERRUPTED but never fires `onItemSettled`, and `registerWriterV2RestyleListener`
+ * only ever reacts to that event — so a run whose restyle was live across a restart
+ * would keep `run.restyling` forever and the UI would show "đang restyle" with nothing
+ * behind it. Worse, the agent often DID finish and left a perfectly good
+ * `out/result.json` on disk that nobody would ever pick up. Same failure and same
+ * fallback as `recoverStudioSynthesizeFromDisk` in `training/studio-synthesize.ts`.
+ *
+ * Two outcomes per stuck run, and only two:
+ *  - `out/result.json` reads, parses and validates → committed exactly as a live settle
+ *    would have committed it.
+ *  - anything else (absent, torn, invalid JSON, out of band, identity leak) →
+ *    `restyleError = { code: 'RESTYLE_INTERRUPTED', … }` so a human sees why and can
+ *    press Restyle again.
+ *
+ * In BOTH outcomes `run.status`, `run.phase` and `run.finalScript` are left exactly as
+ * they were. A restyle is a side operation on an already-finished run; a daemon crash
+ * during one must never be able to change the verdict the gate reached.
+ *
+ * Fire-and-forget at boot: one bad run must not stop the rest, so every run is wrapped
+ * on its own and a failure is logged and stepped over.
+ */
+export async function recoverInterruptedRestyles(dataDir: string): Promise<void> {
+  const summaries = await listWriterRunsV2(dataDir);
+  for (const summary of summaries) {
+    try {
+      const run = await getWriterRunV2(summary.id, dataDir);
+      if (!run?.restyling) continue;
+      const { version, styleId } = run.restyling;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await readFile(restyleOutResultPath(dataDir, run.id, version), 'utf8'));
+      } catch (err) {
+        await recordRestyleError(
+          dataDir,
+          run,
+          'RESTYLE_INTERRUPTED',
+          `Restyle v${version} bị ngắt (daemon restart) và không đọc được out/result.json: ${(err as Error).message}`,
+        );
+        continue;
+      }
+
+      const validated = await validateRestyleForRun(dataDir, run, parsed);
+      if (!validated.ok) {
+        await recordRestyleError(
+          dataDir,
+          run,
+          'RESTYLE_INTERRUPTED',
+          `Restyle v${version} bị ngắt (daemon restart); out/result.json có nhưng không hợp lệ (${validated.errorCode}): ${validated.reason}`,
+        );
+        continue;
+      }
+
+      await commitStyledVersion(dataDir, run, {
+        version,
+        styleId,
+        title: validated.title,
+        script: validated.script,
+      });
+      console.log(`[writer-v2] cứu được restyle v${version} của run ${run.id} sau khi daemon restart`);
+    } catch (err) {
+      console.error(
+        `[writer-v2] recoverInterruptedRestyles bỏ qua run ${summary.id}:`,
+        (err as Error).message,
+      );
+    }
+  }
+}
+
+/** Read one styled version's markdown back, for a route. `null` when absent. */
+export async function readStyledVersion(
+  runId: string,
+  version: number,
+  dataDir: string,
+): Promise<string | null> {
+  // Both segments are joined into a filesystem path, so both are checked here
+  // rather than trusting whatever a route parsed out of a URL.
+  if (!Number.isInteger(version) || version < 1) return null;
+  if (!runId || runId.includes('/') || runId.includes('\\') || runId.includes('..')) return null;
+  try {
+    return await readFile(join(writerRoot(dataDir), 'styled', runId, `v${version}.md`), 'utf8');
+  } catch {
+    return null;
   }
 }

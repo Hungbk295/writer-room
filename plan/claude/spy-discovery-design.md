@@ -35,7 +35,7 @@ Mục tiêu: research **rất nhiều** kênh đối thủ để tìm hướng �
 
 1. **`relatedToVideoId` đã gỡ hẳn 07/08/2023.** Không có API "video liên quan". Không có API keyword volume, autocomplete, hay "kênh tương tự". Đây đúng là thứ vidIQ bán và không tái tạo được qua API chính thức.
 2. **Một app = một API project.** *"you must create exactly one (1) API Project for that API Client"* — không xoay vòng key để lách quota.
-3. **Lưu trữ:** statistics (view/sub/số video) được lưu **vĩnh viễn**; mọi metadata văn bản khác *"not longer than 30 calendar days"* rồi phải refresh. → schema cần `refreshed_at` + job làm mới; time-series số liệu thì hợp lệ hoàn toàn.
+3. **Lưu trữ:** ~~statistics (view/sub/số video) được lưu **vĩnh viễn**~~ — **CLAIM NÀY SAI, đã sửa 2026-08-20 sau khi codex verify lại policy.** Đúng là: với kênh/video **không thuộc quyền uỷ quyền**, *mọi* dữ liệu Data API — kể cả view/like/comment count và vị trí kết quả — phải **refresh hoặc purge trong 30 ngày**, không riêng metadata văn bản. → schema cần `refreshed_at`/`stat_refreshed_at` + job làm mới **cho cả số liệu**, và time-series của video không sở hữu chỉ hợp lệ dưới dạng **cửa sổ trượt 30 ngày**, không phải kho vĩnh viễn. Dữ liệu qua OAuth của kênh mình nằm ngoài trần này. Hệ quả lan sang P1/M2: xem `plan/claude/spy-keyword-reach-spec.md` §6.4 và ADR-SI-9.
 
 Thêm: `mostPopular` chart từ 21/07/2025 chỉ còn Music/Movies/Gaming (YouTube bỏ trang Trending) → không xây feature Trending trên đó. View Shorts đổi cách đếm từ 31/03/2025 → không so viewCount thô giữa Shorts và video dài qua mốc đó.
 

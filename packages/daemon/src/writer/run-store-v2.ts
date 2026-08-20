@@ -6,7 +6,8 @@
  * code cũ"), and a v2 record has no Profile, no rubric, and no quality reviews —
  * mixing them in one folder would force every reader to discriminate on shape.
  */
-import { readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureDir, writerRoot } from '../paths.ts';
 import type { WriterRunV2 } from './writer-run-v2.ts';
@@ -30,6 +31,8 @@ export interface WriterRunV2Summary {
   hasScript: boolean;
   gateViolationCount: number;
   defectCount: number;
+  /** How many restyled versions this run has produced (0 for every pre-restyle run). */
+  styledCount: number;
 }
 
 function runsDir(dataDir?: string): string {
@@ -40,9 +43,27 @@ function runPath(id: string, dataDir?: string): string {
   return join(runsDir(dataDir), `${id}.json`);
 }
 
+/**
+ * Write the record atomically: temp file, then rename.
+ *
+ * A plain overwrite is readable mid-write, and `getWriterRunV2` turns an
+ * unparseable file into `null` — so a torn read does not look like an error, it
+ * looks like "this run does not exist". Both settle handlers bail on `!run`, so
+ * a single torn read silently drops a settle event and strands the run. The
+ * window is small but real, and it widened once restyle started writing to the
+ * same record after a run had finished. Same primitive as
+ * `pipeline-core/workspace-store.ts`, for the same reason.
+ *
+ * The temp name carries a uuid because two saves can be in flight at once; a
+ * shared `.tmp` would let them overwrite each other's partial content and then
+ * rename the loser's bytes into place.
+ */
 export async function saveWriterRunV2(run: WriterRunV2, dataDir?: string): Promise<void> {
   await ensureDir(runsDir(dataDir));
-  await writeFile(runPath(run.id, dataDir), `${JSON.stringify(run, null, 2)}\n`, 'utf8');
+  const target = runPath(run.id, dataDir);
+  const tmp = `${target}.${randomUUID().slice(0, 8)}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(run, null, 2)}\n`, 'utf8');
+  await rename(tmp, target);
 }
 
 export async function getWriterRunV2(id: string, dataDir?: string): Promise<WriterRunV2 | null> {
@@ -52,6 +73,7 @@ export async function getWriterRunV2(id: string, dataDir?: string): Promise<Writ
     return {
       ...run,
       gateResults: Array.isArray(run.gateResults) ? run.gateResults : [],
+      styled: Array.isArray(run.styled) ? run.styled : [],
       study: run.study ?? null,
       draft: run.draft ?? null,
       editorDefects: run.editorDefects ?? null,
@@ -83,6 +105,7 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     hasScript: Boolean(run.finalScript ?? run.draft?.script),
     gateViolationCount: latestGate?.violations.length ?? 0,
     defectCount: run.editorDefects?.length ?? 0,
+    styledCount: run.styled?.length ?? 0,
   };
 }
 

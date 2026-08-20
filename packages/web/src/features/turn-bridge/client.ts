@@ -41,6 +41,7 @@ import {
   termSnapshot,
   termSubmitLineWithAutoRetry,
 } from '../../components/terminal/terminalApi.ts';
+import { waitForPtyQuiet } from '../../components/terminal/ptyQuiet.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
@@ -165,14 +166,6 @@ function postJson(path: string, body: unknown): void {
     .catch((err) => console.error(`[turnBridge] POST ${path} failed`, err));
 }
 
-/** Claude Code takes longer than Codex to paint its first Ink composer. If input
- * arrives while that composer is mounting, its text can appear but the Return
- * event is ignored. Identify it from the launch spec rather than agent display
- * names, which users can freely rename. */
-function isClaudeCodeExecutable(executable: string): boolean {
-  return /(?:^|[/\\])claude(?:\.exe)?$/i.test(executable.trim());
-}
-
 /**
  * Starts the bridge. Returns a teardown function that closes the SSE
  * connection, clears heartbeat timers, and unsubscribes listeners.
@@ -200,8 +193,8 @@ export function startTurnBridge(): () => void {
   // MCP `team_turn_complete` and is observed as `turnSettled` below.
   const interactiveTurnToSessionId = new Map<number, string>();
   const interactiveSessionToTurnId = new Map<string, number>();
-  // One assignment gets one quiet-window Enter retry at most. Keep cancellation
-  // by turn so a later settle/replacement can never submit into a stale pane.
+  // One assignment gets one bounded Enter-recovery watch. Keep cancellation by
+  // turn so a later settle/replacement can never submit into a stale pane.
   const interactiveEnterRetryCancels = new Map<number, () => void>();
 
   function cancelInteractiveEnterRetry(turnId: number): void {
@@ -260,7 +253,6 @@ export function startTurnBridge(): () => void {
     try {
       if (event.restartInteractive) await replaceInteractivePane(event.agentId);
       let sessionId = liveInteractivePaneForAgent(event.agentId);
-      const launched = !sessionId;
       if (!sessionId) {
         sessionId = await terminals.launchTab({
           executable: event.spec.executable,
@@ -281,36 +273,45 @@ export function startTurnBridge(): () => void {
       startHeartbeat(event.turnId, sessionId);
 
       // A freshly-created TUI needs time to boot. A reused pane also needs a
-      // short hand-off: `team_turn_complete` is called from inside the prior
-      // response, so the daemon can emit the next assignment before Codex has
-      // painted a fresh composer. Injecting at 0 ms pastes text visibly but can
-      // lose Enter, leaving the agent apparently hung.
-      const claudeCode = isClaudeCodeExecutable(event.spec.executable);
-      const delayMs = launched
-        ? (claudeCode ? 2500 : 1200)
-        : (claudeCode ? 1400 : 800);
-      window.setTimeout(() => {
-        if (interactiveTurnToSessionId.get(event.turnId) !== sessionId) return;
-        void termSubmitLineWithAutoRetry(sessionId, event.injectText, {
-          isActive: () => interactiveTurnToSessionId.get(event.turnId) === sessionId,
-          onAutoRetry: () => {
-            console.info('[turnBridge] retried Enter after quiet PTY window for turn', event.turnId);
-          },
-          onRetryError: (err) => {
-            console.warn('[turnBridge] quiet-window Enter retry failed for turn', event.turnId, err);
-          },
-        }).then((cancelRetry) => {
-          if (interactiveTurnToSessionId.get(event.turnId) !== sessionId) {
+      // hand-off window: `team_turn_complete` is called from inside the prior
+      // response, so the daemon can emit the next assignment before the CLI has
+      // painted a fresh composer. Injecting too early pastes text visibly but
+      // can lose Enter, leaving the agent apparently hung. How long that takes
+      // differs per CLI and per machine, so wait for the pane itself to stop
+      // repainting instead of guessing a delay per executable. The wait runs
+      // detached: the bridge must stay free to service further team events.
+      const pane = sessionId;
+      const paneOwnsTurn = () => interactiveTurnToSessionId.get(event.turnId) === pane;
+      void (async () => {
+        try {
+          await waitForPtyQuiet({
+            readSequence: async () => (await termSnapshot(pane)).sequence,
+            settleMs: 600,
+            minWaitMs: 800,
+            maxWaitMs: 8_000,
+            isActive: paneOwnsTurn,
+          });
+          if (!paneOwnsTurn()) return;
+          const cancelRetry = await termSubmitLineWithAutoRetry(pane, event.injectText, {
+            isActive: paneOwnsTurn,
+            onAutoRetry: () => {
+              console.info('[turnBridge] re-sent Enter after idle PTY window for turn', event.turnId);
+            },
+            onRetryError: (err) => {
+              console.warn('[turnBridge] Enter recovery failed for turn', event.turnId, err);
+            },
+          });
+          if (!paneOwnsTurn()) {
             cancelRetry();
             return;
           }
           interactiveEnterRetryCancels.set(event.turnId, cancelRetry);
-        }).catch((err) => {
+        } catch (err) {
           console.error('[turnBridge] interactive inject failed for turn', event.turnId, err);
           releaseInteractiveTurn(event.turnId);
           postJson('/api/team/turn/complete', { turnId: event.turnId, exitCode: -1 });
-        });
-      }, delayMs);
+        }
+      })();
     } catch (err) {
       releaseInteractiveTurn(event.turnId);
       console.error('[turnBridge] interactive launch failed for turn', event.turnId, err);

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import {
   api,
+  type ChannelStyleSummary,
   type FormulaSummary,
   type GateResult,
   type GeneralPackSummary,
@@ -32,6 +33,22 @@ const PHASE_LABEL: Record<string, string> = {
   DONE: 'Xong',
   FAILED: 'Hỏng',
 };
+
+/**
+ * First real sentence of a style file — skips the `#` title, the `<!-- version -->`
+ * marker, quotes and bullets, so what is left is prose describing the voice.
+ * Returns null when the file opens straight into structure.
+ */
+function styleBlurbOf(markdown: string): string | null {
+  for (const raw of markdown.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#') || line.startsWith('<!--') || line.startsWith('>')) continue;
+    if (line.startsWith('-') || line.startsWith('*') || line.startsWith('|')) continue;
+    return line.length > 160 ? `${line.slice(0, 157)}…` : line;
+  }
+  return null;
+}
 
 function statusClass(status: WriterRunV2['status']): string {
   if (status === 'DONE') return 'chip ok';
@@ -387,6 +404,47 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [continuing, setContinuing] = useState(false);
   const [pollKey, setPollKey] = useState(0);
   const [copiedScript, setCopiedScript] = useState(false);
+  const [styles, setStyles] = useState<ChannelStyleSummary[]>([]);
+  const [styleId, setStyleId] = useState('');
+  // One-line gist of the picked style, read from its markdown so the dropdown
+  // says something about the voice instead of only naming it.
+  const [styleBlurb, setStyleBlurb] = useState<string | null>(null);
+  const [restyling, setRestyling] = useState(false);
+  // Deliberately NOT `setError`: that one blanks the whole run page, and a failed
+  // restyle must not hide the article the user already has.
+  const [restyleError, setRestyleError] = useState<string | null>(null);
+  const [openStyledVersion, setOpenStyledVersion] = useState<number | null>(null);
+  const [styledMarkdown, setStyledMarkdown] = useState<string | null>(null);
+  const [loadingStyled, setLoadingStyled] = useState(false);
+  const [copiedStyled, setCopiedStyled] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .listChannelStyles()
+      .then((d) => {
+        if (!alive) return;
+        setStyles(d.styles);
+        setStyleId((prev) => prev || d.styles[0]?.path || '');
+      })
+      .catch(() => { if (alive) setStyles([]); });
+    return () => { alive = false; };
+  }, []);
+
+  // Best-effort only: a failed blurb fetch must never surface as a restyle error.
+  useEffect(() => {
+    if (!styleId) {
+      setStyleBlurb(null);
+      return;
+    }
+    let alive = true;
+    setStyleBlurb(null);
+    void api
+      .getChannelStyle(styleId)
+      .then((d) => { if (alive) setStyleBlurb(styleBlurbOf(d.markdown)); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [styleId]);
 
   useEffect(() => {
     let alive = true;
@@ -396,7 +454,8 @@ export function WriterV2RunPage({ id }: { id: string }) {
         const data = await api.getWriterRunV2(id);
         if (!alive) return;
         setRun(data);
-        if (data.status === 'RUNNING') timer = window.setTimeout(() => void tick(), 2000);
+        // A restyle runs while the run stays DONE, so status alone can't drive the poll.
+        if (data.status === 'RUNNING' || data.restyling) timer = window.setTimeout(() => void tick(), 2000);
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : String(err));
       }
@@ -423,6 +482,9 @@ export function WriterV2RunPage({ id }: { id: string }) {
   // This is the recoverable shape: STUDY committed, but WRITE never committed.
   // The server also checks that the orphaned draft file exists and is readable.
   const canContinueWrite = run.status === 'FAILED' && run.phase === 'FAILED' && Boolean(run.study) && !run.draft;
+  // Restyle rewrites a finished article; there is nothing to rewrite before DONE.
+  const canRestyle = run.status === 'DONE' && Boolean(run.finalScript);
+  const styledVersions = [...(run.styled ?? [])].sort((a, b) => b.version - a.version);
 
   const rerun = async () => {
     if (!canRerun || rerunning) return;
@@ -474,6 +536,53 @@ export function WriterV2RunPage({ id }: { id: string }) {
     }
   };
 
+  const restyle = async () => {
+    if (!canRestyle || restyling || !styleId || run.restyling) return;
+    setRestyleError(null);
+    setRestyling(true);
+    try {
+      const next = await api.restyleWriterRunV2(run.id, styleId);
+      setRun(next);
+      // The run stays DONE while restyling, so the poll must be restarted by hand.
+      setPollKey((value) => value + 1);
+    } catch (err) {
+      setRestyleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestyling(false);
+    }
+  };
+
+  const openStyled = async (version: number) => {
+    if (openStyledVersion === version) {
+      setOpenStyledVersion(null);
+      setStyledMarkdown(null);
+      return;
+    }
+    setOpenStyledVersion(version);
+    setStyledMarkdown(null);
+    setCopiedStyled(false);
+    setRestyleError(null);
+    setLoadingStyled(true);
+    try {
+      const d = await api.getWriterRunV2Styled(run.id, version);
+      setStyledMarkdown(d.markdown);
+    } catch (err) {
+      setRestyleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingStyled(false);
+    }
+  };
+
+  const copyStyled = async () => {
+    if (!styledMarkdown) return;
+    try {
+      await navigator.clipboard.writeText(styledMarkdown);
+      setCopiedStyled(true);
+    } catch (err) {
+      setRestyleError(`Không copy được bản styled: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   return (
     <div>
       <div class="page-header">
@@ -489,7 +598,50 @@ export function WriterV2RunPage({ id }: { id: string }) {
             viết: {run.agentId} · biên tập: {run.editorAgentId}
           </p>
         </div>
-        <div class="row" style={{ gap: '0.5rem' }}>
+        <div class="row" style={{ gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          {canRestyle && styles.length === 0 && (
+            <span class="muted" style={{ fontSize: '0.85rem' }}>
+              Chưa có style kênh — tạo một file <code>.md</code> trong{' '}
+              <code>writer-room-data/channel-styles/</code>.
+            </span>
+          )}
+          {canRestyle && styles.length > 0 && (
+            <>
+              <select
+                class="inline-select"
+                value={styleId}
+                disabled={restyling || Boolean(run.restyling)}
+                onChange={(e) => setStyleId((e.target as HTMLSelectElement).value)}
+                title="Style giọng kênh dùng để viết lại"
+              >
+                {styles.map((s) => (
+                  <option key={s.path} value={s.path}>
+                    {s.title}{s.version ? ` · v${s.version}` : ''} · {s.wordCount} từ
+                  </option>
+                ))}
+              </select>
+              <a
+                class="btn secondary"
+                href={href({ name: 'channel-styles', path: styleId || undefined })}
+                title="Đọc toàn văn style trước khi restyle"
+              >
+                📖 Đọc style
+              </a>
+              <button
+                class="btn teal"
+                type="button"
+                disabled={restyling || Boolean(run.restyling) || !styleId}
+                onClick={() => void restyle()}
+              >
+                {restyling || run.restyling ? 'Đang restyle…' : '🎨 Restyle'}
+              </button>
+              {styleBlurb && (
+                <p class="muted" style={{ margin: 0, flexBasis: '100%', fontSize: '0.82rem' }}>
+                  {styleBlurb}
+                </p>
+              )}
+            </>
+          )}
           {canContinueWrite && (
             <button class="btn teal" type="button" disabled={continuing || rerunning} onClick={() => void continueWrite()}>
               {continuing ? 'Đang tiếp tục WRITE…' : '▶ Tiếp tục WRITE'}
@@ -501,6 +653,9 @@ export function WriterV2RunPage({ id }: { id: string }) {
             </button>
           )}
           <a class="btn secondary" href={href({ name: 'writer-v2' })}>← Writer v2</a>
+          {restyleError && (
+            <p class="error" style={{ margin: 0, flexBasis: '100%', fontSize: '0.85rem' }}>{restyleError}</p>
+          )}
         </div>
       </div>
 
@@ -602,6 +757,71 @@ export function WriterV2RunPage({ id }: { id: string }) {
                   </span>
                   <span style={{ marginLeft: '0.5rem' }}>{d.note}</span>
                   <div class="muted" style={{ fontSize: '0.8rem', marginTop: '0.15rem' }}>“{d.quote}”</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {canRestyle && (
+        <section class="panel" style={{ marginTop: '1rem' }}>
+          <h2>5. Bản styled ({styledVersions.length})</h2>
+          {run.restyling && (
+            <p style={{ marginTop: '0.5rem' }}>
+              <span class="chip warn">
+                ⏳ Đang restyle v{run.restyling.version} theo {run.restyling.styleId}…
+              </span>
+            </p>
+          )}
+          {run.restyleError && (
+            <p class="error" style={{ fontSize: '0.85rem' }}>
+              {run.restyleError.code}: {run.restyleError.reason}
+            </p>
+          )}
+          {styledVersions.length === 0 && !run.restyling ? (
+            <p class="muted">
+              Chưa có bản nào. Chọn một style kênh ở trên rồi bấm <strong>🎨 Restyle</strong> — bài gốc
+              không bị đụng, mỗi lần bấm ra một version mới để so giọng.
+            </p>
+          ) : (
+            <ul class="list">
+              {styledVersions.map((s) => (
+                <li key={s.version}>
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    style={{ width: '100%', justifyContent: 'flex-start', textAlign: 'left' }}
+                    onClick={() => void openStyled(s.version)}
+                  >
+                    v{s.version} · {s.styleId} · {s.words} từ · {new Date(s.createdAt).toLocaleString()}
+                  </button>
+                  {openStyledVersion === s.version && (
+                    <div style={{ position: 'relative', marginTop: '0.5rem' }}>
+                      {loadingStyled ? (
+                        <p class="muted">Đang tải…</p>
+                      ) : styledMarkdown !== null && (
+                        <>
+                          <pre class="pre" style={{ margin: 0, paddingTop: '3.8rem' }}>{styledMarkdown}</pre>
+                          <button
+                            class="btn"
+                            type="button"
+                            onClick={() => void copyStyled()}
+                            style={{
+                              position: 'absolute',
+                              top: '0.7rem',
+                              right: '0.7rem',
+                              background: 'rgba(255, 255, 255, 0.12)',
+                              borderColor: 'rgba(255, 255, 255, 0.28)',
+                              color: '#e8edf5',
+                            }}
+                          >
+                            {copiedStyled ? '✓ Đã copy' : '⧉ Copy bản styled'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

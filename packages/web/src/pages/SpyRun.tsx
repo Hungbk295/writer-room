@@ -8,6 +8,7 @@ import {
 import { href } from '../router.ts';
 import { pct, useOperationPoll } from '../hooks.ts';
 import { TranscriptPanel } from '../components/TranscriptPanel.tsx';
+import { EntityId } from '../components/ui/EntityId.tsx';
 import { FormulaDiscoveryAction, InteractiveFormulaDiscoveryAction } from '../features/training/FormulaDiscoveryAction.tsx';
 
 function thumbSrc(video: SpyVideoRow): string {
@@ -225,9 +226,7 @@ export function SpyRunPage({ id }: { id: string }) {
             </a>
             <span class="chip"><strong>{videos.length}</strong> video</span>
             <span class="chip"><strong>{readyCount}</strong> transcript</span>
-            <span class="chip" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem' }} title={id}>
-              ID: {id.slice(0, 8)}…
-            </span>
+            <EntityId id={id} label="ID" />
           </div>
         </div>
 
