@@ -135,6 +135,7 @@ export function SpyPage() {
             Spy một video hoặc cả kênh → transcript → Source Pack.
           </p>
         </div>
+        <a class="btn secondary" href={href({ name: 'spy-loop' })}>Auto-Loop →</a>
       </div>
 
       <form class="panel stack" onSubmit={start} style={{ marginTop: '1.25rem' }}>

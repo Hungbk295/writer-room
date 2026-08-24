@@ -16,7 +16,7 @@ import type {
   VideoTranscript,
 } from './schema.ts';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -223,7 +223,128 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
   content='transcript_segments',
   content_rowid='rowid'
 );
+
+-- v5: Auto-Loop — topic layer + loop tick + daily report tables
+
+CREATE TABLE IF NOT EXISTS topics (
+  topic_id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  market TEXT NOT NULL,
+  language TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','archived')),
+  own_channel_ids_json TEXT NOT NULL DEFAULT '[]',
+  brief_md TEXT NOT NULL DEFAULT '',
+  faceless_required INTEGER NOT NULL DEFAULT 1,
+  daily_search_budget INTEGER NOT NULL DEFAULT 20,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS topic_keywords (
+  topic_id TEXT NOT NULL,
+  term_key TEXT NOT NULL,
+  display_term TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','searched','exhausted','rejected')),
+  yield_channels INTEGER NOT NULL DEFAULT 0,
+  last_searched_at TEXT,
+  added_at TEXT NOT NULL,
+  added_by TEXT NOT NULL DEFAULT 'user' CHECK(added_by IN ('user','loop','agent')),
+  PRIMARY KEY (topic_id, term_key)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_keywords_status
+  ON topic_keywords(topic_id, status, yield_channels DESC);
+
+CREATE TABLE IF NOT EXISTS topic_channel_sources (
+  topic_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  term_key TEXT,
+  from_channel_id TEXT,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (topic_id, channel_id, relation)
+);
+
+CREATE TABLE IF NOT EXISTS topic_channels (
+  topic_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  fit_score REAL,
+  fit_reasons_json TEXT NOT NULL DEFAULT '[]',
+  -- Verdict thật (agent vision, chưa có ở P0) — LUÔN NULL cho tới khi
+  -- FacelessVerdictPort được implement.
+  faceless_score REAL,
+  faceless_signals_json TEXT NOT NULL DEFAULT '[]',
+  -- Phỏng đoán text-only (§3). KHÔNG được dùng để reject kênh.
+  faceless_hint REAL,
+  faceless_hint_reasons_json TEXT,
+  -- ≤6 hqdefault URL từ video mới nhất — Inbox review bằng mắt (§5.1). Không có
+  -- cái này thì người duyệt chỉ thấy tên kênh, và duyệt bằng tên là duyệt mù.
+  thumbnails_json TEXT,
+  style_match_score REAL,
+  style_notes TEXT,
+  learn_value_score REAL,
+  -- LearnValueReason[] — §7 bắt buộc mọi điểm số phải kèm reasons + method.
+  learn_value_reasons_json TEXT,
+  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','shortlisted','studied','rejected','own')),
+  decided_by TEXT CHECK(decided_by IN ('user','loop_auto')),
+  decided_at TEXT,
+  -- Lý do máy đọc được: 'lang_mismatch' | 'low_fit' | 'fit_learn_auto' | NULL (user).
+  decided_reason TEXT,
+  spy_run_id TEXT,
+  lang_detected TEXT,
+  lang_confidence REAL,
+  -- Bằng chứng cho quyết định ngôn ngữ: {method, evidenceField, majority,
+  -- declaredCount, sampleSize}. Reject phải nói được nó dựa vào field NÀO.
+  lang_evidence_json TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_scored_at TEXT,
+  PRIMARY KEY (topic_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_channels_status_fit
+  ON topic_channels(topic_id, status, fit_score DESC);
+
+CREATE TABLE IF NOT EXISTS loop_ticks (
+  tick_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  quota_day TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','failed','skipped_quota')),
+  step TEXT NOT NULL DEFAULT 'expand',
+  search_calls_used INTEGER NOT NULL DEFAULT 0,
+  general_units_used INTEGER NOT NULL DEFAULT 0,
+  -- Mốc sổ quota lúc tick BẮT ĐẦU. Số đã tiêu của tick = sổ hiện tại trừ mốc này,
+  -- nên nó đúng cả khi request lỗi (decorator đã charge) và khi resume (mốc gốc
+  -- được giữ nguyên, phần tiêu trước khi chết vẫn được tính).
+  search_baseline_calls INTEGER NOT NULL DEFAULT 0,
+  general_baseline_units INTEGER NOT NULL DEFAULT 0,
+  keywords_searched_json TEXT NOT NULL DEFAULT '[]',
+  new_candidates INTEGER NOT NULL DEFAULT 0,
+  new_shortlisted_auto INTEGER NOT NULL DEFAULT 0,
+  scanned_channels INTEGER NOT NULL DEFAULT 0,
+  keywords_harvested INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  UNIQUE(topic_id, quota_day)
+);
+
+CREATE TABLE IF NOT EXISTS daily_reports (
+  report_id TEXT PRIMARY KEY,
+  report_date TEXT NOT NULL,
+  topic_id TEXT,
+  summary_json TEXT NOT NULL,
+  markdown TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  delivered_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_daily_reports_topic_date
+  ON daily_reports(topic_id, report_date DESC);
+-- Một topic chỉ có ĐÚNG một report mỗi ngày. COALESCE vì SQLite coi các NULL là
+-- khác nhau trong UNIQUE, mà topic_id NULL = báo cáo tổng cũng chỉ được có một.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_reports_topic_date
+  ON daily_reports(COALESCE(topic_id, ''), report_date);
 `;
+
 
 const MIGRATION_1_TO_2 = `
 CREATE TABLE IF NOT EXISTS video_transcripts (
@@ -244,10 +365,56 @@ CREATE INDEX IF NOT EXISTS idx_video_snapshots_source
   ON video_snapshots(source_video_id);
 `;
 
+// v4 → v5: thêm uploads_playlist_id vào candidate_channels.
+// Các bảng mới (topics, topic_keywords, …) đã có IF NOT EXISTS trong SCHEMA_SQL nên
+// migration chỉ cần ALTER cột cũ.
+const MIGRATION_4_TO_5 = `
+ALTER TABLE candidate_channels ADD COLUMN uploads_playlist_id TEXT;
+`;
+
+/**
+ * Cột thêm vào bảng v5 sau khi v5 đã ra đời (DB dev có thể đã ở version 5 mà
+ * thiếu cột). Chạy ALTER idempotent mỗi lần mở DB — rẻ và không cần bump version.
+ */
+const V5_ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; type: string }> = [
+  { table: 'topic_channels', column: 'faceless_hint', type: 'REAL' },
+  { table: 'topic_channels', column: 'faceless_hint_reasons_json', type: 'TEXT' },
+  { table: 'topic_channels', column: 'decided_reason', type: 'TEXT' },
+  { table: 'topic_channels', column: 'thumbnails_json', type: 'TEXT' },
+  { table: 'topic_channels', column: 'learn_value_reasons_json', type: 'TEXT' },
+  { table: 'topic_channels', column: 'lang_evidence_json', type: 'TEXT' },
+  { table: 'loop_ticks', column: 'search_baseline_calls', type: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'loop_ticks', column: 'general_baseline_units', type: 'INTEGER NOT NULL DEFAULT 0' },
+];
+
 export type VideoListRow = VideoSnapshot;
 
 export type CandidateStatus = 'new' | 'shortlisted' | 'rejected' | 'scanned';
-export type DiscoverySource = 'search_video' | 'search_channel' | 'featured' | 'subscription' | 'manual';
+/**
+ * Nguồn phát hiện một kênh ứng viên. Mỗi nhãn phải TRUY NGUYÊN ĐƯỢC — không có
+ * nguồn tự động vô danh (ràng buộc C1).
+ *
+ * `manual` chung chung đã bị tách làm ba vì gộp lại thì nhìn một dòng không
+ * phân biệt được kênh đến từ corpus của chính mình (tự lực, đối chiếu được với
+ * bảng `channels`) hay từ ô dán tay (chỉ là LỜI KHAI, và đúng là chỗ dữ liệu
+ * provider ngoài có thể lọt vào mà không để lại dấu vết nào trong repo).
+ *
+ * `manual_user` CHỈ được ghi bởi entrypoint nhận input trực tiếp từ người đã
+ * xác thực. Đường tự động — topic import, corpus import, discovery, agent —
+ * ghi nhãn này là SAI THIẾT KẾ, không phải tiện tay.
+ */
+export type DiscoverySource =
+  | 'search_video'
+  | 'search_channel'
+  | 'featured'
+  | 'subscription'
+  /** Kênh đã spy sẵn trong bảng `channels` của chính mình. Kiểm chứng được. */
+  | 'corpus_import'
+  /** `seedChannelIds` trong file topic config của user. */
+  | 'seed_config'
+  /** Dán qua dashboard. Attestation, không phải bằng chứng. */
+  | 'manual_user';
+
 
 export interface CandidateChannelInput {
   channelId: string;
@@ -454,8 +621,44 @@ export class SpyStore {
       }
       // v2 → v3 thêm `competitors`; v3 → v4 thêm `api_quota_usage` + `candidate_channels`.
       // Cả ba đều do SCHEMA_SQL tạo ở trên (IF NOT EXISTS) nên migration chỉ cần nâng version.
+      // v4 → v5: thêm uploads_playlist_id vào candidate_channels (ALTER, ignore nếu đã có).
+      if (version === 4) {
+        try {
+          this.database.exec(MIGRATION_4_TO_5);
+        } catch {
+          // Cột đã tồn tại — bỏ qua.
+        }
+      }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
+      }
+    }
+    // Nhãn 'manual' cũ không truy nguyên được: không có cách nào CHỨNG MINH một
+    // hàng cũ đến từ corpus import hay từ ô dán tay. Đưa hết về 'manual_user' —
+    // nhãn "cần soi" — thay vì đoán tốt cho dữ liệu cũ. Đoán 'corpus_import' sẽ
+    // gắn nhãn "tự lực, kiểm chứng được" lên thứ chưa từng được kiểm chứng.
+    const hasLegacyManual = this.database
+      .prepare("SELECT 1 FROM candidate_channels WHERE discovered_via='manual' LIMIT 1")
+      .get();
+    if (hasLegacyManual) {
+      this.database.exec(
+        "UPDATE candidate_channels SET discovered_via='manual_user' WHERE discovered_via='manual'",
+      );
+    }
+    const hasLegacySource = this.database
+      .prepare("SELECT 1 FROM topic_channel_sources WHERE relation='manual' LIMIT 1")
+      .get();
+    if (hasLegacySource) {
+      this.database.exec(
+        "UPDATE topic_channel_sources SET relation='manual_user' WHERE relation='manual'",
+      );
+    }
+
+    for (const { table, column, type } of V5_ADDED_COLUMNS) {
+      try {
+        this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      } catch {
+        // Cột đã tồn tại — bỏ qua.
       }
     }
   }
@@ -1437,5 +1640,478 @@ export class SpyStore {
       spyRunId: String(row['spy_run_id']),
       model: nullableString(row['model']),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Topics
+  // ---------------------------------------------------------------------------
+
+  upsertTopic(input: {
+    topicId: string;
+    label: string;
+    market: string;
+    language: string;
+    status?: 'active' | 'paused' | 'archived';
+    ownChannelIds?: string[];
+    briefMd?: string;
+    facelessRequired?: boolean;
+    dailySearchBudget?: number;
+  }): void {
+    const now = nowIso();
+    this.database.prepare(
+      `INSERT INTO topics (topic_id, label, market, language, status, own_channel_ids_json,
+         brief_md, faceless_required, daily_search_budget, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id) DO UPDATE SET
+         label=excluded.label, market=excluded.market, language=excluded.language,
+         status=excluded.status, own_channel_ids_json=excluded.own_channel_ids_json,
+         brief_md=excluded.brief_md, faceless_required=excluded.faceless_required,
+         daily_search_budget=excluded.daily_search_budget, updated_at=excluded.updated_at`,
+    ).run(
+      input.topicId,
+      input.label,
+      input.market,
+      input.language,
+      input.status ?? 'active',
+      JSON.stringify(input.ownChannelIds ?? []),
+      input.briefMd ?? '',
+      input.facelessRequired !== false ? 1 : 0,
+      input.dailySearchBudget ?? 20,
+      now,
+      now,
+    );
+  }
+
+  getTopic(topicId: string): Row | null {
+    return this.database.prepare('SELECT * FROM topics WHERE topic_id=?').get(topicId) as Row | null;
+  }
+
+  listTopics(status?: 'active' | 'paused' | 'archived'): Row[] {
+    if (status) {
+      return this.database.prepare('SELECT * FROM topics WHERE status=? ORDER BY topic_id').all(status) as Row[];
+    }
+    return this.database.prepare('SELECT * FROM topics ORDER BY topic_id').all() as Row[];
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Topic keywords
+  // ---------------------------------------------------------------------------
+
+  upsertTopicKeyword(input: {
+    topicId: string;
+    termKey: string;
+    displayTerm: string;
+    relation: string;
+    evidenceJson?: string;
+    status?: string;
+    addedBy?: 'user' | 'loop' | 'agent';
+  }): void {
+    const now = nowIso();
+    this.database.prepare(
+      `INSERT INTO topic_keywords (topic_id, term_key, display_term, relation, evidence_json, status, added_at, added_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id, term_key) DO UPDATE SET
+         display_term=excluded.display_term, relation=excluded.relation,
+         evidence_json=excluded.evidence_json`,
+    ).run(
+      input.topicId,
+      input.termKey,
+      input.displayTerm,
+      input.relation,
+      input.evidenceJson ?? '{}',
+      input.status ?? 'pending',
+      now,
+      input.addedBy ?? 'user',
+    );
+  }
+
+  listTopicKeywords(topicId: string, status?: string): Row[] {
+    if (status) {
+      return this.database.prepare(
+        'SELECT * FROM topic_keywords WHERE topic_id=? AND status=? ORDER BY yield_channels DESC, added_at ASC',
+      ).all(topicId, status) as Row[];
+    }
+    return this.database.prepare(
+      'SELECT * FROM topic_keywords WHERE topic_id=? ORDER BY yield_channels DESC, added_at ASC',
+    ).all(topicId) as Row[];
+  }
+
+  markKeywordSearched(topicId: string, termKey: string, yieldDelta = 0): void {
+    this.database.prepare(
+      `UPDATE topic_keywords SET status='searched', last_searched_at=?, yield_channels=yield_channels+?
+       WHERE topic_id=? AND term_key=?`,
+    ).run(nowIso(), yieldDelta, topicId, termKey);
+  }
+
+  setKeywordStatus(topicId: string, termKey: string, status: string): void {
+    this.database.prepare('UPDATE topic_keywords SET status=? WHERE topic_id=? AND term_key=?')
+      .run(status, topicId, termKey);
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Topic channel sources
+  // ---------------------------------------------------------------------------
+
+  addTopicChannelSource(input: {
+    topicId: string;
+    channelId: string;
+    relation: string;
+    termKey?: string | null;
+    fromChannelId?: string | null;
+  }): void {
+    this.database.prepare(
+      `INSERT OR REPLACE INTO topic_channel_sources
+         (topic_id, channel_id, relation, term_key, from_channel_id, seen_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.topicId,
+      input.channelId,
+      input.relation,
+      input.termKey ?? null,
+      input.fromChannelId ?? null,
+      nowIso(),
+    );
+  }
+
+  /** Mọi provenance của một topic — dùng để dựng `foundVia` cho Inbox (§5.1). */
+  listTopicChannelSources(topicId: string, channelId?: string): Row[] {
+    if (channelId) {
+      return this.database.prepare(
+        `SELECT * FROM topic_channel_sources WHERE topic_id=? AND channel_id=?
+         ORDER BY seen_at ASC, rowid ASC`,
+      ).all(topicId, channelId) as Row[];
+    }
+    return this.database.prepare(
+      'SELECT * FROM topic_channel_sources WHERE topic_id=? ORDER BY seen_at ASC, rowid ASC',
+    ).all(topicId) as Row[];
+  }
+
+  /**
+   * Provenance ĐẦU TIÊN của một kênh trong topic — "kênh này lần đầu đến từ đâu".
+   * Một kênh có thể vào topic qua nhiều đường (PK gồm cả relation); lần đầu là
+   * câu trả lời đúng cho câu hỏi "tìm được nhờ keyword nào".
+   */
+  getTopicChannelSource(topicId: string, channelId: string): Row | null {
+    return this.database.prepare(
+      // seen_at trùng nhau khi nhiều nguồn được ghi trong cùng một tick →
+      // tie-break bằng rowid để "đường đầu tiên" luôn là đường chèn trước.
+      `SELECT * FROM topic_channel_sources WHERE topic_id=? AND channel_id=?
+       ORDER BY seen_at ASC, rowid ASC LIMIT 1`,
+    ).get(topicId, channelId) as Row | null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Topic channels
+  // ---------------------------------------------------------------------------
+
+  upsertTopicChannel(input: {
+    topicId: string;
+    channelId: string;
+    fitScore?: number | null;
+    fitReasonsJson?: string;
+    /** Verdict thật — P0 phải luôn truyền null (§3). */
+    facelessScore?: number | null;
+    facelessSignalsJson?: string;
+    /** Phỏng đoán text-only 0..1 — không phải verdict. */
+    facelessHint?: number | null;
+    facelessHintReasonsJson?: string | null;
+    /** JSON string[] — ≤6 thumbnail URL cho Inbox. */
+    thumbnailsJson?: string | null;
+    learnValueScore?: number | null;
+    /** JSON LearnValueReason[] — điểm không kèm lý do là điểm không dùng được. */
+    learnValueReasonsJson?: string | null;
+    status?: string;
+    decidedBy?: 'user' | 'loop_auto' | null;
+    decidedAt?: string | null;
+    spyRunId?: string | null;
+    langDetected?: string | null;
+    langConfidence?: number | null;
+    langEvidenceJson?: string | null;
+  }): void {
+    const now = nowIso();
+    this.database.prepare(
+      `INSERT INTO topic_channels
+         (topic_id, channel_id, fit_score, fit_reasons_json, faceless_score,
+          faceless_signals_json, faceless_hint, faceless_hint_reasons_json,
+          thumbnails_json, learn_value_score, learn_value_reasons_json,
+          status, decided_by, decided_at,
+          spy_run_id, lang_detected, lang_confidence, lang_evidence_json,
+          first_seen_at, last_scored_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id, channel_id) DO UPDATE SET
+         fit_score=COALESCE(excluded.fit_score, fit_score),
+         fit_reasons_json=COALESCE(excluded.fit_reasons_json, fit_reasons_json),
+         faceless_score=COALESCE(excluded.faceless_score, faceless_score),
+         faceless_signals_json=COALESCE(excluded.faceless_signals_json, faceless_signals_json),
+         faceless_hint=COALESCE(excluded.faceless_hint, faceless_hint),
+         faceless_hint_reasons_json=COALESCE(excluded.faceless_hint_reasons_json, faceless_hint_reasons_json),
+         thumbnails_json=COALESCE(excluded.thumbnails_json, thumbnails_json),
+         learn_value_score=COALESCE(excluded.learn_value_score, learn_value_score),
+         learn_value_reasons_json=COALESCE(excluded.learn_value_reasons_json, learn_value_reasons_json),
+         -- Quyết định là DÍNH: kênh đã có decided_by (user duyệt hoặc loop_auto)
+         -- không được một lần enrich/import sau đó âm thầm kéo về 'new'.
+         -- Đổi trạng thái phải đi qua decideTopicChannels.
+         status=CASE WHEN topic_channels.decided_by IS NULL THEN excluded.status ELSE topic_channels.status END,
+         decided_by=COALESCE(excluded.decided_by, topic_channels.decided_by),
+         decided_at=COALESCE(excluded.decided_at, topic_channels.decided_at),
+         spy_run_id=COALESCE(excluded.spy_run_id, spy_run_id),
+         lang_detected=COALESCE(excluded.lang_detected, lang_detected),
+         lang_confidence=COALESCE(excluded.lang_confidence, lang_confidence),
+         lang_evidence_json=COALESCE(excluded.lang_evidence_json, lang_evidence_json),
+         last_scored_at=excluded.last_scored_at`,
+    ).run(
+      input.topicId, input.channelId,
+      input.fitScore ?? null,
+      input.fitReasonsJson ?? '[]',
+      input.facelessScore ?? null,
+      input.facelessSignalsJson ?? '[]',
+      input.facelessHint ?? null,
+      input.facelessHintReasonsJson ?? null,
+      input.thumbnailsJson ?? null,
+      input.learnValueScore ?? null,
+      input.learnValueReasonsJson ?? null,
+      input.status ?? 'new',
+      input.decidedBy ?? null,
+      input.decidedAt ?? null,
+      input.spyRunId ?? null,
+      input.langDetected ?? null,
+      input.langConfidence ?? null,
+      input.langEvidenceJson ?? null,
+      now,
+      now,
+    );
+  }
+
+  listTopicChannels(topicId: string, filter: {
+    status?: string;
+    limit?: number;
+    cursor?: number;
+  } = {}): Row[] {
+    const where: string[] = ['topic_id=?'];
+    const params: Array<string | number> = [topicId];
+    if (filter.status) { where.push('status=?'); params.push(filter.status); }
+    const sql = `SELECT * FROM topic_channels WHERE ${where.join(' AND ')}
+      ORDER BY (COALESCE(fit_score, 0) * COALESCE(learn_value_score, 0)) DESC, first_seen_at ASC
+      LIMIT ? OFFSET ?`;
+    params.push(filter.limit ?? 50, filter.cursor ?? 0);
+    return this.database.prepare(sql).all(...params) as Row[];
+  }
+
+  /**
+   * @param reason Lý do máy đọc được, vd 'lang_mismatch' | 'low_fit' | 'fit_learn_auto'.
+   *   Bắt buộc có cho quyết định của loop để report/UI giải thích được vì sao
+   *   một kênh biến mất khỏi Inbox.
+   */
+  decideTopicChannels(
+    topicId: string,
+    channelIds: string[],
+    status: string,
+    decidedBy: 'user' | 'loop_auto',
+    reason: string | null = null,
+  ): void {
+    const stmt = this.database.prepare(
+      `UPDATE topic_channels SET status=?, decided_by=?, decided_at=?, decided_reason=?
+       WHERE topic_id=? AND channel_id=?`,
+    );
+    const now = nowIso();
+    for (const channelId of channelIds) {
+      stmt.run(status, decidedBy, now, reason, topicId, channelId);
+    }
+  }
+
+  /**
+   * Nạp kênh đã có sẵn trong corpus (`channels` — 20 kênh đã spy thủ công) vào
+   * một topic làm hạt giống. **0 quota tuyệt đối**: chỉ đọc/ghi SQLite, không
+   * chạm Data API (§1.2 cold start đường 2).
+   *
+   * Không đè trạng thái cũ: kênh đã có trong topic (kể cả đã reject) giữ nguyên.
+   */
+  importCorpusChannelsToTopic(topicId: string, market?: string | null): {
+    imported: string[];
+    skipped: string[];
+  } {
+    const rows = this.database.prepare(
+      'SELECT channel_id, title, subscriber_count, video_count, total_view_count FROM channels ORDER BY fetched_at DESC',
+    ).all() as Row[];
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    for (const row of rows) {
+      const channelId = String(row['channel_id']);
+      const existing = this.database.prepare(
+        'SELECT 1 FROM topic_channels WHERE topic_id=? AND channel_id=?',
+      ).get(topicId, channelId);
+      if (existing) {
+        skipped.push(channelId);
+        continue;
+      }
+      this.upsertCandidate({
+        channelId,
+        title: row['title'] === null ? null : String(row['title']),
+        market: market ?? null,
+        discoveredVia: 'corpus_import',
+        subscriberCount: row['subscriber_count'] === null ? null : Number(row['subscriber_count']),
+        videoCount: row['video_count'] === null ? null : Number(row['video_count']),
+        viewCount: row['total_view_count'] === null ? null : Number(row['total_view_count']),
+      });
+      this.upsertTopicChannel({ topicId, channelId, status: 'new' });
+      this.addTopicChannelSource({ topicId, channelId, relation: 'corpus_import' });
+      imported.push(channelId);
+    }
+    return { imported, skipped };
+  }
+
+  countTopicChannelsByStatus(topicId: string): Record<string, number> {
+    const rows = this.database.prepare(
+      'SELECT status, COUNT(*) AS n FROM topic_channels WHERE topic_id=? GROUP BY status',
+    ).all(topicId) as Row[];
+    return Object.fromEntries(rows.map((row) => [String(row['status']), Number(row['n'])]));
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Loop ticks
+  // ---------------------------------------------------------------------------
+
+  insertLoopTick(input: {
+    tickId: string;
+    topicId: string;
+    quotaDay: string;
+    searchBaselineCalls?: number;
+    generalBaselineUnits?: number;
+  }): boolean {
+    try {
+      this.database.prepare(
+        `INSERT INTO loop_ticks (tick_id, topic_id, quota_day, started_at, status, step,
+           search_baseline_calls, general_baseline_units)
+         VALUES (?, ?, ?, ?, 'running', 'expand', ?, ?)`,
+      ).run(
+        input.tickId, input.topicId, input.quotaDay, nowIso(),
+        input.searchBaselineCalls ?? 0, input.generalBaselineUnits ?? 0,
+      );
+      return true;
+    } catch {
+      // UNIQUE constraint violated → tick already exists for this quota_day
+      return false;
+    }
+  }
+
+  updateLoopTick(tickId: string, patch: {
+    status?: string;
+    step?: string;
+    searchCallsUsed?: number;
+    generalUnitsUsed?: number;
+    keywordsSearchedJson?: string;
+    newCandidates?: number;
+    newShortlistedAuto?: number;
+    scannedChannels?: number;
+    keywordsHarvested?: number;
+    error?: string | null;
+    finishedAt?: string | null;
+  }): void {
+    const current = this.database.prepare('SELECT * FROM loop_ticks WHERE tick_id=?').get(tickId) as Row | undefined;
+    if (!current) return;
+    const terminal = ['done', 'failed', 'skipped_quota'].includes(patch.status ?? String(current['status']));
+    this.database.prepare(
+      `UPDATE loop_ticks SET
+         status=?, step=?, search_calls_used=?, general_units_used=?, keywords_searched_json=?,
+         new_candidates=?, new_shortlisted_auto=?, scanned_channels=?, keywords_harvested=?,
+         error=?, finished_at=?
+       WHERE tick_id=?`,
+    ).run(
+      patch.status ?? String(current['status']),
+      patch.step ?? String(current['step']),
+      patch.searchCallsUsed ?? Number(current['search_calls_used']),
+      patch.generalUnitsUsed ?? Number(current['general_units_used']),
+      patch.keywordsSearchedJson ?? String(current['keywords_searched_json']),
+      patch.newCandidates ?? Number(current['new_candidates']),
+      patch.newShortlistedAuto ?? Number(current['new_shortlisted_auto']),
+      patch.scannedChannels ?? Number(current['scanned_channels']),
+      patch.keywordsHarvested ?? Number(current['keywords_harvested']),
+      patch.error !== undefined ? patch.error : (current['error'] === null ? null : String(current['error'])),
+      terminal ? (patch.finishedAt ?? nowIso()) : null,
+      tickId,
+    );
+  }
+
+  getLastTick(topicId: string): Row | null {
+    return this.database.prepare(
+      'SELECT * FROM loop_ticks WHERE topic_id=? ORDER BY quota_day DESC, started_at DESC LIMIT 1',
+    ).get(topicId) as Row | null;
+  }
+
+  getTickByDay(topicId: string, quotaDay: string): Row | null {
+    return this.database.prepare(
+      'SELECT * FROM loop_ticks WHERE topic_id=? AND quota_day=?',
+    ).get(topicId, quotaDay) as Row | null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v5 — Daily reports
+  // ---------------------------------------------------------------------------
+
+  insertDailyReport(input: {
+    reportId: string;
+    reportDate: string;
+    topicId: string | null;
+    summaryJson: string;
+    markdown: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO daily_reports (report_id, report_date, topic_id, summary_json, markdown, created_at, delivered_json)
+       VALUES (?, ?, ?, ?, ?, ?, '{}')`,
+    ).run(input.reportId, input.reportDate, input.topicId, input.summaryJson, input.markdown, nowIso());
+  }
+
+  /**
+   * Ghi report cho (topic, ngày) NẾU CHƯA CÓ. Trả về report_id đang tồn tại khi
+   * đã có — an toàn khi gọi lại sau crash. Tick chỉ được đánh `done` sau khi hàm
+   * này trả về thành công, nếu không một crash giữa chừng sẽ để lại tick `done`
+   * vĩnh viễn mà không có report nào, và lần chạy sau sẽ skip vì thấy `done`.
+   */
+  insertDailyReportOnce(input: {
+    reportId: string;
+    reportDate: string;
+    topicId: string | null;
+    summaryJson: string;
+    markdown: string;
+  }): { created: boolean; reportId: string } {
+    return this.transaction(() => {
+      const existing = this.getDailyReportByDate(input.topicId, input.reportDate);
+      if (existing) return { created: false, reportId: String(existing['report_id']) };
+      this.insertDailyReport(input);
+      return { created: true, reportId: input.reportId };
+    });
+  }
+
+  listDailyReports(topicId?: string | null, limit = 30): Row[] {
+    if (topicId !== undefined) {
+      return this.database.prepare(
+        'SELECT * FROM daily_reports WHERE topic_id=? ORDER BY report_date DESC LIMIT ?',
+      ).all(topicId, limit) as Row[];
+    }
+    return this.database.prepare('SELECT * FROM daily_reports ORDER BY report_date DESC LIMIT ?').all(limit) as Row[];
+  }
+
+  getDailyReport(reportId: string): Row | null {
+    return this.database.prepare('SELECT * FROM daily_reports WHERE report_id=?').get(reportId) as Row | null;
+  }
+
+  getDailyReportByDate(topicId: string | null, date: string): Row | null {
+    if (topicId === null) {
+      return this.database.prepare(
+        'SELECT * FROM daily_reports WHERE topic_id IS NULL AND report_date=? LIMIT 1',
+      ).get(date) as Row | null;
+    }
+    return this.database.prepare(
+      'SELECT * FROM daily_reports WHERE topic_id=? AND report_date=? LIMIT 1',
+    ).get(topicId, date) as Row | null;
+  }
+
+  markDelivered(reportId: string, key: string, value: string): void {
+    const row = this.getDailyReport(reportId);
+    if (!row) return;
+    const delivered = parseJson<Record<string, string>>(row['delivered_json'] ?? '{}');
+    delivered[key] = value;
+    this.database.prepare('UPDATE daily_reports SET delivered_json=? WHERE report_id=?')
+      .run(JSON.stringify(delivered), reportId);
   }
 }

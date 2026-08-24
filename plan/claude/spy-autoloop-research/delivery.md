@@ -1,0 +1,29 @@
+# r-delivery memo (2026-08-20) — Telegram, scheduler, dashboard, MCP, report schema
+
+## 1. Telegram
+- ~/.claude/skills/telegram-bot = prose guide, nothing importable. Write `packages/daemon/src/spy/report-telegram.ts`: POST api.telegram.org/bot<token>/sendMessage {chat_id, text, parse_mode:'HTML', disable_web_page_preview:true}; chunk ~4000 chars on paragraph boundary; escape & < >; retry once on 429 via parameters.retry_after. Prefer HTML over MarkdownV2.
+- No token/chat_id anywhere in repo or env. User must create bot (BotFather) + get chat_id via getUpdates.
+- GOTCHA: spyConfigSchema is .strict() (packages/spy/src/schema.ts:334) and loadConfig swallows errors (index.ts:66-74) → unknown key in spy.json silently drops youtubeDataApiKey. Either extend schema (telegram?, loop?) + getPublicConfig masked + PUT /api/settings/spy, or separate config file.
+
+## 2. Scheduler
+- Daemon: `bun packages/daemon/src/index.ts` → Bun.serve 127.0.0.1:4187, .daemon.lock, SIGINT→dispose. Tauri spawns it if not up; no launchd plist; pm2 empty; daemon NOT running 24/7 today.
+- No timer pattern exists; boot recovery pattern = reconcileOnBoot / recoverInterruptedRestyles (http.ts:192).
+- Recommend in-process `LoopScheduler` in `packages/daemon/src/spy/loop-scheduler.ts`, started in createHttpApp, disposed on shutdown: setTimeout to next 15:30 Asia/Ho_Chi_Minh capped at 1h (re-evaluate after Mac sleep); on fire AND on start(): if lastTickDate(topic) < quotaDay(now) && now ≥ dueTodayLocal → runTick (catch-up on boot). lastTick from loop_ticks. In-memory Set<topicId> lock. 08:00 digest = second job, rereads daily_reports, idempotent via delivered_json.telegram_digest. `GET /api/spy/loop/status` returns nextTickAt/lastTick shared with MCP spy_loop_status. launchd KeepAlive = optional P2, not now.
+
+## 3. Dashboard (Preact + Vite, hash router, `api` object in src/api.ts, styles.css, ui kit Stack/Row/Panel/Chip/Button/Field/Input/CustomSelect; polling via setTimeout loops in hooks.ts; markdown shown as <pre class="pre">)
+- router.ts:26 gotcha: add `spy-loop` route BEFORE spy-run match; Route `{name:'spy-loop', topic?}`; href `#/spy/loop?topic=`; main.tsx case; Home.tsx:50 is([...]) list. Telegram deep link must include `#/`: http://127.0.0.1:4187/#/spy/loop?topic=finance-vi
+- Tree: SpyLoopPage → TopicSwitcher, LoopKpiRow(+TickActions dry-run/real + DryRunPlanModal), tabs Inbox | Keywords | Studied | Reports. InboxTab: InboxList of InboxRow (ThumbGrid6 hqdefault, sub, median view, FacelessBadge, FitReasons, Shortlist/Reject/Reject+negative) + InboxDetailPane. Keys j/k/s/r/x/u, ignore when in input; optimistic update. KeywordBoardTab 4 columns pending/searched(yield)/exhausted/rejected + AddKeywordForm. StudiedTab → href spy-run. ReportsTab list + <pre> markdown + DeltaStrip. Poll status 5s only while running.
+- Endpoints: GET/POST/PATCH /api/spy/topics; GET /api/spy/loop/status?topic; GET /api/spy/loop/inbox?topic&status&limit&cursor&sort; POST /api/spy/loop/decide {topicId, channelIds, status, negativeKeyword?}; GET/POST /api/spy/loop/keywords, POST /api/spy/loop/keywords/decide; POST /api/spy/loop/tick {topicId, dryRun} (409 if running/paused); GET /api/spy/loop/reports, GET /api/spy/loop/reports/:id, POST .../resend; GET /api/spy/loop/studied. Gate with SPY_FEATURE.enabled like http.ts:1551.
+- InboxItem = { channelId, title, handle, url, thumbnails[≤6], subscriberCount, videoCount, country, publishedAt, medianViews, medianViewsVsOwn, fitScore, fitReasons[], facelessScore, facelessSignals[], learnValueScore, learnValueReasons[], foundVia{relation, term, fromChannelId}, status, decidedBy, decidedAt, firstSeenAt }
+
+## 4. MCP
+- spy-mcp.ts: EXPOSED_TOOL_NAMES set (:15-35) is the ONLY real gate — SCOPES includes spy.start so mutation tools would pass assertScopes. For loop mutations: requiredScopes ['spy.loop.write'], NOT in SCOPES, NOT in allowlist. Human mutations via HTTP only.
+- Add read tools in mcp-tools.ts: spy_topics_list, spy_loop_status{topic_id?}, spy_loop_inbox{topic_id, status?, limit?, cursor?} (outputLimit 64k, URLs only), spy_loop_report{topic_id?, date?} (stamps delivered_json.mcp_read). Add names to EXPOSED_TOOL_NAMES + inputSchemas.
+- Test packages/daemon/test/spy-mcp.test.ts:71-77 asserts exact sorted tools/list → append 4 names; :78-82 negative list → add spy_loop_decide, spy_loop_tick.
+
+## 5. Canonical report: daily_reports.summary_json (ReportSummaryJson v1)
+{ version, reportId, reportDate, topicId, topicLabel, tick{tickId,status,startedAt,finishedAt,durationSec,error,dryRun}, quota{searchUsed,searchBudget,searchRemainingDay,generalUsed,generalLimit}, funnel{expanded,searched,newCandidates,autoShortlisted,pendingReview,autoRejected,scanned,keywordsHarvested}, inboxTotal, topLearn[{channelId,title,url,subscriberCount,ageMonths,medianViews,medianViewsVsOwn,ownChannelTitle,facelessScore,fitScore,learnValueScore,foundVia,status,decidedBy,why[]}], newKeywords[], exhaustedKeywords[{term,rejectRate,yieldChannels}], scannedChannels[{channelId,title,spyRunId,topTitlePattern,outliers}], delta{vsReportId,vsDate,newCandidates/Prev,inboxTotal/Prev,shortlistedTotal/Prev,studiedTotal/Prev,keywordsPending/Prev,firstSeenToday[],movedToShortlistToday[],userDecisionsSinceLast{shortlisted,rejected},newlyExhausted[]}, warnings[], links{dashboard,mcpTool} }
+summary_json immutable; only delivered_json updated later. `renderReport(summary, {mode:'tick'|'digest'})` → markdown (Vietnamese) used by DB, Telegram (HTML-converted), MCP, web <pre>. Digest drops Tick/Quota lines, leads with "Còn N kênh chưa duyệt".
+
+Template:
+📊 Spy Loop — {topicLabel} — {date} / Tick · Quota / Kênh mới → auto-shortlist · chờ duyệt · auto-reject / Inbox / 🔄 So với hôm qua (…) / ⭐ Đáng học nhất (title — sub, tháng, median view (×own), faceless, fit, keyword → url, why) / 🔍 Đã scan sâu / 🔑 Keyword mới / ⚠ exhausted / ⚠ warnings / 👉 Duyệt: link

@@ -47,6 +47,50 @@ export function quotaDay(now: Date = new Date()): string {
   }).format(now);
 }
 
+/** Chuỗi chỉ có ngày, không có giờ — `2026-08-21`. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Quy một MỐC THỜI GIAN về quota-day Pacific. Trả null nếu rỗng/không parse được.
+ *
+ * Đây là hàm phải dùng mỗi khi so một timestamp với một quota-day. So trực tiếp
+ * bằng `iso.startsWith(quotaDay())` hay `iso.slice(0,10) === quotaDay()` là SAI:
+ * timestamp là UTC còn quota-day là Pacific, hai cái lệch nhau 17:00–23:59
+ * Pacific (07:00–13:59 giờ VN) nên phép so **không bao giờ khớp** trong khung đó
+ * — và vì nó fail im lặng, chỗ gọi chỉ trông như "không tìm thấy gì".
+ * Lỗi này đã xảy ra hai lần trong cùng một ngày ở hai package khác nhau.
+ *
+ * @throws invalid_input khi nhận chuỗi chỉ-có-ngày. Một quota-day ĐÃ là quota-day:
+ *   `new Date('2026-08-21')` là nửa đêm UTC, quy về Pacific sẽ lùi thành 08-20 và
+ *   lại sinh ra đúng loại lệch ngày mà hàm này tồn tại để chặn. So hai quota-day
+ *   với nhau thì so chuỗi trực tiếp.
+ */
+export function quotaDayOf(at: Date | string | null | undefined): string | null {
+  if (at === null || at === undefined || at === '') return null;
+  if (typeof at === 'string' && DATE_ONLY.test(at.trim())) {
+    throw new AppError(
+      'invalid_input',
+      `quotaDayOf() nhận chuỗi chỉ có ngày ("${at}"). Đó đã là một quota-day — so chuỗi trực tiếp, đừng parse lại thành Date.`,
+    );
+  }
+  const date = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  return quotaDay(date);
+}
+
+/**
+ * Hai mốc thời gian có rơi vào cùng một quota-day Pacific không?
+ * false khi một trong hai không parse được — không có ngày thì không "cùng ngày".
+ */
+export function isSameQuotaDay(
+  a: Date | string | null | undefined,
+  b: Date | string | null | undefined,
+): boolean {
+  const dayA = quotaDayOf(a);
+  const dayB = quotaDayOf(b);
+  return dayA !== null && dayA === dayB;
+}
+
 /** Thời điểm reset kế tiếp (nửa đêm Pacific) dưới dạng ISO. */
 export function nextQuotaReset(now: Date = new Date()): string {
   const today = quotaDay(now);

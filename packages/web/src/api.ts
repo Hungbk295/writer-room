@@ -862,7 +862,242 @@ export interface StudioSessionSummary {
   updatedAt: string;
 }
 
+// ── Spy Auto-Loop types ─────────────────────────────────────────────────────
+
+export type TopicStatus = 'active' | 'paused' | 'archived';
+
+export interface Topic {
+  topicId: string;
+  label: string;
+  market: string;
+  language: string;
+  status: TopicStatus;
+  ownChannelIds: string[];
+  briefMd: string;
+  facelessRequired: boolean;
+  dailySearchBudget: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LoopTickStatus = 'running' | 'done' | 'failed' | 'skipped_quota';
+
+export interface LoopStatus {
+  topicId: string;
+  topicLabel: string;
+  topicStatus: TopicStatus;
+  lastTick: {
+    tickId: string;
+    quotaDay: string;
+    status: LoopTickStatus;
+    step: string;
+    startedAt: string;
+    finishedAt: string | null;
+    error: string | null;
+  } | null;
+  nextTickAt: string | null;
+  inboxTotal: number;
+  shortlistedTotal: number;
+  studiedTotal: number;
+  keywordsPending: number;
+  quota: {
+    searchUsed: number;
+    searchBudget: number;
+    searchRemainingDay: number;
+    generalUsed: number;
+    generalLimit: number;
+  } | null;
+}
+
+export interface InboxItem {
+  channelId: string;
+  title: string | null;
+  handle: string | null;
+  url: string;
+  thumbnails: string[];        // ≤6 hqdefault URLs; P0 thường rỗng (chưa persist)
+  subscriberCount: number | null;
+  videoCount: number | null;
+  country: string | null;
+  publishedAt: string | null;
+  medianViews: number | null;
+  medianViewsVsOwn: number | null;
+  fitScore: number | null;
+  fitReasons: string[];
+  /**
+   * VERDICT faceless — do agent vision chấm. **Luôn `null` ở P0.**
+   * Chỉ giá trị này mới được hiển thị như một kết luận.
+   */
+  facelessScore: number | null;
+  /** Evidence ref của verdict. P0 luôn rỗng. */
+  facelessSignals: string[];
+  /**
+   * PHỎNG ĐOÁN từ title/description (0..1). KHÔNG phải kết luận — UI bắt buộc
+   * gắn nhãn "đoán từ chữ" và không được dùng để auto-reject.
+   */
+  facelessHint: number | null;
+  facelessHintReasons: string[];
+  learnValueScore: number | null;
+  learnValueReasons: string[];
+  langDetected: string | null;
+  langConfidence: number | null;
+  /**
+   * Bằng chứng ngôn ngữ. CHỈ được trình bày như lý do loại kênh khi
+   * `canJustifyRejection` là true (tức method === 'declared_fields').
+   * 'title_heuristic' là phỏng đoán đã ghi lại — loop không bao giờ reject vì nó,
+   * nên UI cũng không được đọc nó như một phán quyết.
+   */
+  langEvidence: LangEvidence | null;
+  foundVia: { relation: string; term: string | null; fromChannelId: string | null };
+  status: string;
+  decidedBy: string | null;
+  /** Lý do máy đọc được khi loop tự quyết ('lang_mismatch', 'low_fit', …). */
+  decidedReason: string | null;
+  decidedAt: string | null;
+  firstSeenAt: string;
+}
+
+export interface LangEvidence {
+  method: string;
+  evidenceField: string | null;
+  declaredByField: Record<string, number>;
+  declaredCount: number | null;
+  sampleSize: number | null;
+  majority: string | null;
+  canJustifyRejection: boolean;
+  summary: string;
+}
+
+export type KeywordStatus = 'pending' | 'searched' | 'exhausted' | 'rejected';
+
+export interface Keyword {
+  topicId: string;
+  termKey: string;
+  displayTerm: string;
+  relation: string;
+  status: KeywordStatus;
+  yieldChannels: number;
+  lastSearchedAt: string | null;
+  addedAt: string;
+  addedBy: string;
+}
+
+export interface TickPlan {
+  topicId: string;
+  quotaDay: string;
+  dryRun: true;
+  steps: Array<{
+    step: string;
+    estimatedSearchCalls: number;
+    estimatedGeneralUnits: number;
+    keywords: string[];
+    note: string;
+  }>;
+  totalSearchCalls: number;
+  totalGeneralUnits: number;
+  canProceed: boolean;
+  warnings: string[];
+}
+
+export interface StoredReport {
+  reportId: string;
+  reportDate: string;
+  topicId: string | null;
+  summary: ReportSummaryJson | null;
+  markdown: string;
+  createdAt: string;
+  deliveredJson: Record<string, string>;
+}
+
+export interface ReportSummaryJson {
+  version: number;
+  reportId: string;
+  reportDate: string;
+  topicId: string | null;
+  topicLabel: string;
+  tick: {
+    tickId: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string | null;
+    durationSec: number | null;
+    error: string | null;
+    dryRun: boolean;
+  };
+  quota: {
+    searchUsed: number;
+    searchBudget: number;
+    searchRemainingDay: number;
+    generalUsed: number;
+    generalLimit: number;
+  };
+  funnel: {
+    expanded: number;
+    searched: number;
+    newCandidates: number;
+    autoShortlisted: number;
+    pendingReview: number;
+    autoRejected: number;
+    scanned: number;
+    keywordsHarvested: number;
+  };
+  inboxTotal: number;
+  topLearn: Array<{
+    channelId: string;
+    title: string;
+    url: string;
+    subscriberCount: number | null;
+    ageMonths: number | null;
+    medianViews: number | null;
+    medianViewsVsOwn: number | null;
+    ownChannelTitle: string | null;
+    /** Verdict — null ở P0. */
+    facelessScore: number | null;
+    fitScore: number | null;
+    learnValueScore: number | null;
+    foundVia: { relation: string; term: string | null };
+    status: string;
+    decidedBy: string | null;
+    why: string[];
+  }>;
+  newKeywords: string[];
+  exhaustedKeywords: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
+  scannedChannels: Array<{ channelId: string; title: string; spyRunId: string | null; topTitlePattern: string | null; outliers: string[] }>;
+  delta: {
+    vsReportId: string | null;
+    vsDate: string | null;
+    newCandidatesPrev: number | null;
+    inboxTotalPrev: number | null;
+    shortlistedTotalPrev: number | null;
+    studiedTotalPrev: number | null;
+    keywordsPendingPrev: number | null;
+    firstSeenToday: string[];
+    movedToShortlistToday: string[];
+    userDecisionsSinceLast: { shortlisted: number; rejected: number };
+    newlyExhausted: string[];
+  };
+  warnings: string[];
+  links: { dashboard: string; mcpTool: string };
+}
+
+/**
+ * Bản public của `config/spy-loop.json` (FILE RIÊNG — không bao giờ ghi chung
+ * `spy.json`, vì `spyConfigSchema` là `.strict()` và một key lạ sẽ làm mất
+ * `youtubeDataApiKey`). `botToken` không bao giờ rời server.
+ */
+export interface SpyLoopSettings {
+  enabled: boolean;
+  tickHourLocal: string;    // "HH:MM"
+  digestHourLocal: string;  // "HH:MM"
+  timezone: string;
+  telegram?: {
+    chatId: string;
+    enabled: boolean;
+    botTokenSet: boolean;
+  };
+}
+
 export const api = {
+
   health: () => request<Health>('/api/health'),
   listJobNotifications: () => request<{ notifications: JobDoneNotification[] }>('/api/notifications'),
   markJobNotificationRead: (id: string) =>
@@ -1215,6 +1450,103 @@ export const api = {
     request<TrainingLabRun>(`/api/training/lab/runs/${encodeURIComponent(id)}`),
   deleteTrainingLabRun: (id: string) =>
     request<{ ok: boolean }>(`/api/training/lab/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // ── Spy Auto-Loop ──────────────────────────────────────────────────────────
+  listTopics: () => request<{ topics: Topic[] }>('/api/spy/topics'),
+  createTopic: (body: { topicId: string; label: string; market: string; language: string; ownChannelIds?: string[]; facelessRequired?: boolean; dailySearchBudget?: number }) =>
+    request<{ topic: Topic }>('/api/spy/topics', { method: 'POST', body: JSON.stringify(body) }),
+  patchTopic: (topicId: string, body: Partial<Pick<Topic, 'label' | 'status' | 'dailySearchBudget' | 'facelessRequired'>>) =>
+    request<{ topic: Topic }>(`/api/spy/topics/${encodeURIComponent(topicId)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  loopStatus: (topicId: string) =>
+    request<LoopStatus>(`/api/spy/loop/status?topic=${encodeURIComponent(topicId)}`),
+
+  loopInbox: (params: { topic: string; status?: string; limit?: number; cursor?: number; sort?: string }) => {
+    const q = new URLSearchParams({ topic: params.topic });
+    if (params.status) q.set('status', params.status);
+    if (params.limit != null) q.set('limit', String(params.limit));
+    if (params.cursor != null) q.set('cursor', String(params.cursor));
+    if (params.sort) q.set('sort', params.sort);
+    return request<{ items: InboxItem[]; total: number; nextCursor: number | null }>(`/api/spy/loop/inbox?${q}`);
+  },
+
+  /** `status: 'new'` = undo (phím `u`) — đưa kênh trở lại hàng chờ duyệt. */
+  loopDecide: (body: {
+    topicId: string;
+    channelIds: string[];
+    status: 'shortlisted' | 'rejected' | 'new';
+    negativeKeyword?: string;
+  }) =>
+    request<{ updated: number }>('/api/spy/loop/decide', { method: 'POST', body: JSON.stringify(body) }),
+
+  /**
+   * Cold start #1 (design §1.2): dán URL kênh / `@handle` / `UC…`.
+   * Tốn ~1 unit/50 id (handle thì 1 unit/kênh) — KHÔNG dùng provider ngoài.
+   */
+  addManualCandidates: (topicId: string, inputs: string[]) =>
+    request<{ added: number; skippedKnown: number; notFound: string[] }>(
+      '/api/spy/loop/candidates/manual',
+      { method: 'POST', body: JSON.stringify({ topicId, inputs }) },
+    ),
+
+  /** Cold start #2: nạp kênh đã spy sẵn trong corpus vào topic. 0 quota. */
+  importCorpus: (topicId: string) =>
+    request<{ added: number; skippedKnown: number }>(
+      '/api/spy/loop/import-corpus',
+      { method: 'POST', body: JSON.stringify({ topicId }) },
+    ),
+
+  loopKeywords: (topicId: string) =>
+    request<{ keywords: Keyword[] }>(`/api/spy/loop/keywords?topic=${encodeURIComponent(topicId)}`),
+
+  addKeyword: (body: { topicId: string; displayTerm: string; relation?: string }) =>
+    request<{ keyword: Keyword }>('/api/spy/loop/keywords', {
+      method: 'POST',
+      body: JSON.stringify({ topicId: body.topicId, term: body.displayTerm, relation: body.relation }),
+    }),
+
+  decideKeywords: (body: { topicId: string; termKeys: string[]; status: KeywordStatus; negative?: boolean }) =>
+    request<{ ok: boolean; updated: number }>('/api/spy/loop/keywords/decide', { method: 'POST', body: JSON.stringify(body) }),
+
+  loopTick: (body: { topicId: string; dryRun?: boolean }) =>
+    request<TickPlan | { ok: boolean; running: boolean; dryRun: false }>('/api/spy/loop/tick', { method: 'POST', body: JSON.stringify(body) }),
+
+  loopReports: (topicId: string) =>
+    request<{ reports: StoredReport[] }>(`/api/spy/loop/reports?topic=${encodeURIComponent(topicId)}`),
+
+  loopReport: (id: string) =>
+    request<StoredReport>(`/api/spy/loop/reports/${encodeURIComponent(id)}`),
+
+  resendReport: (id: string) =>
+    request<{ ok: boolean }>(`/api/spy/loop/reports/${encodeURIComponent(id)}/resend`, { method: 'POST' }),
+
+  loopStudied: (topicId: string) =>
+    request<{
+      channels: Array<{
+        channelId: string;
+        title: string | null;
+        handle: string | null;
+        spyRunId: string | null;
+        status: string;
+        fitScore: number | null;
+        learnValueScore: number | null;
+        facelessScore: number | null;
+        facelessHint: number | null;
+        decidedAt: string | null;
+      }>;
+    }>(`/api/spy/loop/studied?topic=${encodeURIComponent(topicId)}`),
+
+  getSpyLoopSettings: () =>
+    request<SpyLoopSettings>('/api/settings/spy-loop'),
+
+  putSpyLoopSettings: (body: {
+    enabled?: boolean;
+    tickHourLocal?: string;
+    digestHourLocal?: string;
+    timezone?: string;
+    telegram?: { botToken?: string; chatId?: string; enabled?: boolean };
+  }) =>
+    request<SpyLoopSettings>('/api/settings/spy-loop', { method: 'PUT', body: JSON.stringify(body) }),
 };
 
 export function formatDuration(sec: number): string {

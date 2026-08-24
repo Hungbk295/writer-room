@@ -25,6 +25,7 @@ import {
   continueWriterRunV2,
   EDIT_REVIEW_STAGE,
   readStyledVersion,
+  recoverInterruptedRestyles,
   REPAIR_STAGE,
   registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
@@ -744,5 +745,133 @@ describe('Writer v2 — restyle', () => {
     expect(started.restyling!.version).toBe(1);
     await completeStage(runId, RESTYLE_STAGE, { title: 'x', script: styledScript('Bốn.') }, 1);
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => (r?.styled?.length ?? 0) === 1);
+  });
+
+  describe('boot recovery', () => {
+    /**
+     * The state a daemon restart leaves behind, reproduced without a live turn:
+     * `run.restyling` is set on disk, the ledger row is already terminal, and no
+     * `onItemSettled` will ever arrive — exactly what `reconcileOnBoot` produces.
+     */
+    async function stranded(version = 1): Promise<string> {
+      const runId = await runToDone();
+      const run = (await getWriterRunV2(runId, dir))!;
+      run.restyling = { version, styleId: STYLE_ID, startedAt: '2026-08-19T17:08:40.000Z' };
+      await saveWriterRunV2(run, dir);
+      return runId;
+    }
+
+    /** Whatever the agent left in `out/result.json` before the daemon went down. */
+    async function writeOutResult(runId: string, body: string, version = 1): Promise<void> {
+      await Bun.write(join(itemRunDir(runId, RESTYLE_STAGE, version), 'out', 'result.json'), body);
+    }
+
+    test('a finished out/result.json is committed as a styled version', async () => {
+      const runId = await stranded();
+      const before = (await getWriterRunV2(runId, dir))!;
+      const script = styledScript('Bảy giờ sáng.');
+      await writeOutResult(runId, JSON.stringify({ title: 'Bản cứu được', script }));
+
+      await recoverInterruptedRestyles(dir);
+
+      const after = (await getWriterRunV2(runId, dir))!;
+      expect(after.styled).toHaveLength(1);
+      expect(after.styled![0]).toEqual({
+        version: 1,
+        styleId: STYLE_ID,
+        styleVersion: 2,
+        styleHash: expect.any(String),
+        agentId: before.agentId,
+        path: `writer/styled/${runId}/v1.md`,
+        words: script.trim().split(/\s+/).length,
+        createdAt: expect.any(String),
+      });
+      expect(after.restyling).toBeUndefined();
+      expect(after.restyleError).toBeUndefined();
+      expect(await readStyledVersion(runId, 1, dir)).toBe(`# Bản cứu được\n\n${script}\n`);
+
+      // The invariant: recovery is an addition, never a verdict change.
+      expect(after.status).toBe('DONE');
+      expect(after.phase).toBe('DONE');
+      expect(after.finalScript).toBe(before.finalScript);
+    });
+
+    test('no out/result.json at all → RESTYLE_INTERRUPTED, run still DONE', async () => {
+      const runId = await stranded();
+      const before = (await getWriterRunV2(runId, dir))!;
+
+      await recoverInterruptedRestyles(dir);
+
+      const after = (await getWriterRunV2(runId, dir))!;
+      expect(after.restyleError!.code).toBe('RESTYLE_INTERRUPTED');
+      expect(after.restyleError!.reason).toContain('out/result.json');
+      expect(after.restyling).toBeUndefined();
+      expect(after.styled).toEqual([]);
+      expect(after.status).toBe('DONE');
+      expect(after.phase).toBe('DONE');
+      expect(after.finalScript).toBe(before.finalScript);
+    });
+
+    test('an out/result.json outside the word band → RESTYLE_INTERRUPTED, not a styled version', async () => {
+      const runId = await stranded();
+      const before = (await getWriterRunV2(runId, dir))!;
+      await writeOutResult(runId, JSON.stringify({ title: 'Quá ngắn', script: 'Vy ngồi xuống.' }));
+
+      await recoverInterruptedRestyles(dir);
+
+      const after = (await getWriterRunV2(runId, dir))!;
+      expect(after.restyleError!.code).toBe('RESTYLE_INTERRUPTED');
+      expect(after.restyleError!.reason).toContain('RESTYLE_LENGTH');
+      expect(after.restyling).toBeUndefined();
+      expect(after.styled).toEqual([]);
+      expect(await readStyledVersion(runId, 1, dir)).toBeNull();
+      expect(after.status).toBe('DONE');
+      expect(after.phase).toBe('DONE');
+      expect(after.finalScript).toBe(before.finalScript);
+    });
+
+    test('a run with no restyling in flight is not touched at all', async () => {
+      const runId = await runToDone();
+      const before = (await getWriterRunV2(runId, dir))!;
+      expect(before.restyling).toBeUndefined();
+
+      await recoverInterruptedRestyles(dir);
+
+      // Whole record, byte for byte — `updatedAt` included, so a stray save would show.
+      expect(await getWriterRunV2(runId, dir)).toEqual(before);
+    });
+
+    test('a torn out/result.json on one run does not stop the next run from recovering', async () => {
+      const broken = await stranded();
+      await writeOutResult(broken, '{"title":"cụt","scr');
+      const good = await stranded();
+      const script = styledScript('Mười giờ.');
+      await writeOutResult(good, JSON.stringify({ title: 'Bản tốt', script }));
+
+      await recoverInterruptedRestyles(dir);
+
+      const brokenAfter = (await getWriterRunV2(broken, dir))!;
+      expect(brokenAfter.restyleError!.code).toBe('RESTYLE_INTERRUPTED');
+      expect(brokenAfter.restyling).toBeUndefined();
+      expect(brokenAfter.status).toBe('DONE');
+
+      const goodAfter = (await getWriterRunV2(good, dir))!;
+      expect(goodAfter.styled).toHaveLength(1);
+      expect(goodAfter.restyling).toBeUndefined();
+      expect(goodAfter.status).toBe('DONE');
+    });
+
+    test('a second boot after a recovered restyle is a no-op', async () => {
+      const runId = await stranded();
+      await writeOutResult(runId, JSON.stringify({ title: 'Một lần', script: styledScript('Sáu.') }));
+
+      await recoverInterruptedRestyles(dir);
+      const afterFirst = (await getWriterRunV2(runId, dir))!;
+      await recoverInterruptedRestyles(dir);
+
+      // `restyling` is gone, so the sweep skips the run — no duplicate v1 entry.
+      expect(await getWriterRunV2(runId, dir)).toEqual(afterFirst);
+      expect(afterFirst.styled).toHaveLength(1);
+    });
   });
 });

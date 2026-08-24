@@ -33,6 +33,12 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_corpus_channels',
   'spy_channel_momentum',
   'spy_competitors_list',
+  // Spy Loop read tools (P0 — agy-2). Write tools (spy_loop_decide, spy_loop_tick)
+  // deliberately excluded: they require scope spy.loop.write which is not in SCOPES.
+  'spy_topics_list',
+  'spy_loop_status',
+  'spy_loop_inbox',
+  'spy_loop_report',
 ]);
 
 interface JsonRpcRequest {
@@ -204,6 +210,34 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       channel_id: { type: 'string', minLength: 1, description: 'Alias of owner_channel_id' },
     },
     anyOf: [{ required: ['owner_channel_id'] }, { required: ['channel_id'] }],
+  },
+  // ── Spy Loop read tools ────────────────────────────────────────────────────
+  spy_topics_list: {
+    type: 'object',
+    properties: {},
+  },
+  spy_loop_status: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1, description: 'Lọc theo topic; bỏ trống = tất cả topic' },
+    },
+  },
+  spy_loop_inbox: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      status: { type: 'string', enum: ['new', 'shortlisted', 'rejected', 'studied'] },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+      cursor: { type: 'integer', minimum: 0 },
+    },
+    required: ['topic_id'],
+  },
+  spy_loop_report: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1, description: 'Lọc theo topic; bỏ trống = report mới nhất tất cả topic' },
+      date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Ngày report YYYY-MM-DD; bỏ trống = mới nhất' },
+    },
   },
 };
 

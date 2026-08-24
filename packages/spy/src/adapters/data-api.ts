@@ -39,6 +39,14 @@ export interface VideoStatistics {
   channelId: string | null;
   channelTitle: string | null;
   thumbnailUrl: string | null;
+  /**
+   * snippet.defaultAudioLanguage — ngôn ngữ audio kênh tự khai. Đã có sẵn trong
+   * part=snippet; là tín hiệu DUY NHẤT đủ mạnh để post-filter ngôn ngữ (§2.1).
+   * Rất nhiều video để trống → phải kiểm tra độ phủ trước khi kết luận.
+   */
+  defaultAudioLanguage: string | null;
+  /** snippet.defaultLanguage — ngôn ngữ của title/description, fallback yếu hơn. */
+  defaultLanguage: string | null;
 }
 
 export interface ChannelStatistics {
@@ -139,6 +147,8 @@ interface ApiItem {
     channelId?: string;
     channelTitle?: string;
     country?: string;
+    defaultAudioLanguage?: string;
+    defaultLanguage?: string;
     resourceId?: { videoId?: string };
     position?: number;
     thumbnails?: {
@@ -273,6 +283,8 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
           channelId: item.snippet?.channelId ?? null,
           channelTitle: item.snippet?.channelTitle ?? null,
           thumbnailUrl: pickThumbnail(item, item.id),
+          defaultAudioLanguage: item.snippet?.defaultAudioLanguage ?? null,
+          defaultLanguage: item.snippet?.defaultLanguage ?? null,
         });
       }
     }

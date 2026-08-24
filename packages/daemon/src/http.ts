@@ -35,7 +35,11 @@ import {
 import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { McpSpyServer } from './spy-mcp.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
-import { listJobNotifications, markJobNotificationRead } from './notifications.ts';
+import { createJobDoneNotification, listJobNotifications, markJobNotificationRead } from './notifications.ts';
+import { handleGetSpyLoopConfig, handlePutSpyLoopConfig, loadSpyLoopConfig } from './spy/loop-config.ts';
+import { LoopScheduler } from './spy/loop-scheduler.ts';
+import { sendTelegramReport } from './spy/report-telegram.ts';
+import { createSpyLoopAdapter, type SpyLoopAdapter } from './spy/loop-contract.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -139,6 +143,8 @@ export interface HttpApp {
   harness: AgentHarness;
   startedAt: number;
   webRoot: string;
+  loopScheduler: LoopScheduler | null;
+  loop: SpyLoopAdapter | null;
 }
 
 export async function createHttpApp(): Promise<HttpApp> {
@@ -186,13 +192,50 @@ export async function createHttpApp(): Promise<HttpApp> {
   // Separate listener on purpose: a restyle runs against a run that is already DONE,
   // and handleWriterV2Settle returns early for anything whose status is not RUNNING.
   registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: root });
+  // …and because that listener only ever fires on `onItemSettled`, a restyle that was
+  // in flight when the daemon went down would never settle at all: `reconcileOnBoot`
+  // (already run inside `createAgentHarness` above, so the ledger is terminal by now
+  // and nothing can race us) marks the row INTERRUPTED silently. Sweep those runs once
+  // per boot — commit the agent's `out/result.json` if it is there and valid, otherwise
+  // clear the stuck flag with a RESTYLE_INTERRUPTED reason. Fire-and-forget: a slow
+  // filesystem must not delay the port opening.
+  void recoverInterruptedRestyles(root).catch((err) => {
+    console.error('[writer-v2] recoverInterruptedRestyles failed:', (err as Error).message);
+  });
+
+  // Spy Loop Scheduler — catch-up on boot, daily tick + 08:00 digest.
+  // `spy.loop` is real now (packages/spy/src/loop); `createSpyLoopAdapter` maps its
+  // raw store rows onto the JSON contract the dashboard consumes.
+  const loop: SpyLoopAdapter | null = SPY_FEATURE.enabled ? createSpyLoopAdapter(spy) : null;
+  let loopScheduler: LoopScheduler | null = null;
+  if (loop) {
+    loopScheduler = new LoopScheduler({
+      loop,
+      spy,
+      dataDir: root,
+      // Injected, not imported: `notifications.ts` must not import the scheduler
+      // and the scheduler must not import `http.ts` — that would be a cycle.
+      onTickDone: async (event) => {
+        await createJobDoneNotification(
+          {
+            kind: 'spy-loop',
+            jobId: event.tickId,
+            title: `Spy Loop — ${event.topicLabel}`,
+            detail: event.detail,
+          },
+          root,
+        );
+      },
+    });
+    loopScheduler.start();
+  }
 
   const webRoot = resolve(APP_ROOT, 'packages/web/dist');
-  return { spy, spyMcp, harness, startedAt: Date.now(), webRoot };
+  return { spy, spyMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
-  const { spy, spyMcp, harness, startedAt, webRoot } = app;
+  const { spy, spyMcp, harness, startedAt, webRoot, loop, loopScheduler } = app;
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -911,7 +954,16 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(session);
       }
 
+
       // ── Settings ──────────────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/settings/spy-loop') {
+        return json(await handleGetSpyLoopConfig(dataRoot()));
+      }
+      if (method === 'PUT' && pathname === '/api/settings/spy-loop') {
+        const body = await readBody(req);
+        return json(await handlePutSpyLoopConfig(dataRoot(), body));
+      }
+
       if (method === 'GET' && pathname === '/api/settings/spy') {
         const publicCfg = spy.getPublicConfig();
         return json({
@@ -1442,6 +1494,272 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json({ ok: true });
       }
 
+
+      // ── Spy Loop — Topics ─────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/topics') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        return json({ topics: await loop.listTopics() });
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/topics') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topic = await loop.upsertTopic({
+          topicId: String(body['topicId'] ?? ''),
+          label: String(body['label'] ?? ''),
+          market: String(body['market'] ?? 'vi'),
+          language: String(body['language'] ?? 'vi'),
+          ownChannelIds: Array.isArray(body['ownChannelIds'])
+            ? (body['ownChannelIds'] as unknown[]).map(String)
+            : [],
+          facelessRequired: body['facelessRequired'] !== false,
+          dailySearchBudget: typeof body['dailySearchBudget'] === 'number'
+            ? body['dailySearchBudget']
+            : 20,
+          briefMd: typeof body['briefMd'] === 'string' ? body['briefMd'] : undefined,
+          status: (body['status'] === 'active' || body['status'] === 'paused' || body['status'] === 'archived')
+            ? body['status']
+            : 'active',
+        });
+        return json({ topic });
+      }
+
+      const spyTopicMatch = /^\/api\/spy\/topics\/([^/]+)$/.exec(pathname);
+      if (method === 'PATCH' && spyTopicMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = decodeURIComponent(spyTopicMatch[1]!);
+        const existing = await loop.getTopic(topicId);
+        if (!existing) return error('Topic không tồn tại', 404);
+        const body = await readBody(req);
+        const updated = await loop.upsertTopic({
+          topicId: existing.topicId,
+          label: typeof body['label'] === 'string' ? body['label'] : existing.label,
+          market: typeof body['market'] === 'string' ? body['market'] : existing.market,
+          language: typeof body['language'] === 'string' ? body['language'] : existing.language,
+          status: (body['status'] === 'active' || body['status'] === 'paused' || body['status'] === 'archived')
+            ? body['status']
+            : existing.status,
+          ownChannelIds: Array.isArray(body['ownChannelIds'])
+            ? (body['ownChannelIds'] as unknown[]).map(String)
+            : existing.ownChannelIds,
+          briefMd: typeof body['briefMd'] === 'string' ? body['briefMd'] : existing.briefMd,
+          facelessRequired: typeof body['facelessRequired'] === 'boolean'
+            ? body['facelessRequired']
+            : existing.facelessRequired,
+          dailySearchBudget: typeof body['dailySearchBudget'] === 'number'
+            ? body['dailySearchBudget']
+            : existing.dailySearchBudget,
+        });
+        return json({ topic: updated });
+      }
+
+      // ── Spy Loop — Cold start tự lực (design §1.2) ────────────
+      // Thay cho đường gieo hạt bằng provider dữ liệu ngoài (đã gỡ hẳn): dự án
+      // tồn tại để THAY THẾ những provider đó, nên không bước nào — kể cả cold
+      // start — được phép phụ thuộc vào một trong số họ.
+      if (method === 'POST' && pathname === '/api/spy/loop/candidates/manual') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        const inputs = Array.isArray(body['inputs'])
+          ? (body['inputs'] as unknown[]).map(String)
+          : [];
+        if (!topicId) return error('topicId bắt buộc');
+        if (inputs.length === 0) return error('inputs[] bắt buộc — URL kênh, @handle hoặc UC-id');
+        if (inputs.length > 200) return error('Tối đa 200 kênh mỗi lần');
+        return json(await loop.addManualCandidates({ topicId, inputs }));
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/loop/import-corpus') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        if (!topicId) return error('topicId bắt buộc');
+        // 0 quota: chỉ copy kênh đã spy trong corpus sang topic.
+        return json(await loop.importCorpus({ topicId }));
+      }
+
+      // ── Spy Loop — Status ─────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/status') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = url.searchParams.get('topic') ?? undefined;
+        const statuses = await loop.status(topicId);
+        // Một topic → trả thẳng object (dashboard hỏi từng topic một);
+        // không có `topic` → danh sách cho MCP `spy_loop_status`.
+        if (topicId) {
+          const one = statuses[0];
+          if (!one) return error('Topic không tồn tại', 404);
+          return json(one);
+        }
+        return json({ statuses });
+      }
+
+      // ── Spy Loop — Inbox ──────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/inbox') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = url.searchParams.get('topic');
+        if (!topicId) return error('topic bắt buộc');
+        const statusFilter = url.searchParams.get('status') ?? undefined;
+        const limit = Math.min(Number(url.searchParams.get('limit') || 50), 200);
+        const cursor = Number(url.searchParams.get('cursor') || 0);
+        const sort = url.searchParams.get('sort') ?? undefined;
+        return json(await loop.inbox({ topicId, status: statusFilter, limit, cursor, sort }));
+      }
+
+      // ── Spy Loop — Decide ─────────────────────────────────────
+      if (method === 'POST' && pathname === '/api/spy/loop/decide') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        const channelIds = Array.isArray(body['channelIds'])
+          ? (body['channelIds'] as unknown[]).map(String)
+          : [];
+        // 'new' = undo quyết định gần nhất (phím `u` trên dashboard) — không cần
+        // endpoint riêng, chỉ là đưa dòng về lại trạng thái chờ duyệt.
+        const status = body['status'] === 'shortlisted' || body['status'] === 'rejected' || body['status'] === 'new'
+          ? body['status']
+          : null;
+        if (!topicId || channelIds.length === 0 || !status) {
+          return error('topicId, channelIds[], status (shortlisted|rejected|new) bắt buộc');
+        }
+        const result = await loop.decide({
+          topicId,
+          channelIds,
+          status,
+          negativeKeyword: typeof body['negativeKeyword'] === 'string'
+            ? body['negativeKeyword']
+            : undefined,
+          decidedBy: 'user',
+        });
+        return json(result);
+      }
+
+      // ── Spy Loop — Keywords ───────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/keywords') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = url.searchParams.get('topic');
+        if (!topicId) return error('topic bắt buộc');
+        return json({ keywords: await loop.listKeywords(topicId) });
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/loop/keywords') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        const term = typeof body['term'] === 'string' ? body['term'].trim() : '';
+        if (!topicId || !term) return error('topicId và term bắt buộc');
+        const keyword = await loop.addKeyword({
+          topicId,
+          term,
+          relation: typeof body['relation'] === 'string' ? body['relation'] : 'seed',
+          addedBy: 'user',
+        });
+        return json({ keyword });
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/loop/keywords/decide') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        const termKeys = Array.isArray(body['termKeys'])
+          ? (body['termKeys'] as unknown[]).map(String)
+          : typeof body['termKey'] === 'string' ? [body['termKey']] : [];
+        const status = body['status'] === 'rejected' || body['status'] === 'pending'
+          ? body['status']
+          : null;
+        if (!topicId || termKeys.length === 0 || !status) {
+          return error('topicId, termKeys[], status (pending|rejected) bắt buộc');
+        }
+        const decided = await loop.decideKeyword({
+          topicId,
+          termKeys,
+          status,
+          addToNegative: body['addToNegative'] === true || body['negative'] === true,
+        });
+        return json({ ok: true, updated: decided.updated });
+      }
+
+      // ── Spy Loop — Tick ───────────────────────────────────────
+      if (method === 'POST' && pathname === '/api/spy/loop/tick') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        if (!loopScheduler) return error('Spy Loop scheduler chưa khởi tạo', 503);
+        const body = await readBody(req);
+        const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+        if (!topicId) return error('topicId bắt buộc');
+        // Kiểm tra topic có bị paused không
+        const topic = await loop.getTopic(topicId);
+        if (!topic) return error('Topic không tồn tại', 404);
+        if (topic.status === 'paused') {
+          return json({ error: 'Topic đang paused' }, 409);
+        }
+        if (loopScheduler.isRunning(topicId)) {
+          return json({ error: 'Tick đang chạy cho topic này' }, 409);
+        }
+        // Dry-run chỉ lập kế hoạch, không gọi API nào → trả ngay.
+        if (body['dryRun'] === true) return json(await loop.planTick(topicId));
+        // Tick thật chạy nền để không giữ kết nối HTTP suốt vài phút.
+        void loopScheduler.runTick(topicId);
+        return json({ ok: true, running: true, dryRun: false });
+      }
+
+      // ── Spy Loop — Reports ────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/reports') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = url.searchParams.get('topic') ?? undefined;
+        const limit = Math.min(Number(url.searchParams.get('limit') || 20), 100);
+        return json({ reports: await loop.listReports({ topicId, limit }) });
+      }
+
+      const spyReportMatch = /^\/api\/spy\/loop\/reports\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && spyReportMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const reportId = decodeURIComponent(spyReportMatch[1]!);
+        const report = await loop.getReport(reportId);
+        if (!report) return error('Report không tồn tại', 404);
+        return json(report);
+      }
+
+      const spyReportResendMatch = /^\/api\/spy\/loop\/reports\/([^/]+)\/resend$/.exec(pathname);
+      if (method === 'POST' && spyReportResendMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const reportId = decodeURIComponent(spyReportResendMatch[1]!);
+        const report = await loop.getReport(reportId);
+        if (!report) return error('Report không tồn tại', 404);
+        const cfg = await handleGetSpyLoopConfig(dataRoot());
+        if (!cfg.telegram?.enabled || !cfg.telegram.botTokenSet) {
+          return error('Telegram chưa được cấu hình hoặc chưa bật');
+        }
+        // Lấy full config có token để gửi (loadSpyLoopConfig được import ở đầu file)
+        const fullCfg = await loadSpyLoopConfig(dataRoot());
+        await sendTelegramReport(report.markdown, fullCfg.telegram!);
+        await loop.markDelivered(reportId, 'telegram', new Date().toISOString());
+        return json({ ok: true });
+      }
+
+      // ── Spy Loop — Studied ────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/studied') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        const topicId = url.searchParams.get('topic');
+        if (!topicId) return error('topic bắt buộc');
+        return json({ channels: await loop.listStudied(topicId) });
+      }
+
       // ── Spy runs ──────────────────────────────────────────────
       if (method === 'GET' && pathname === '/api/spy/runs') {
         const runs = spy.store.listSpyRuns(undefined, 100).map((run) => ({
@@ -1655,6 +1973,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
+    app.loopScheduler?.dispose();
     app.spyMcp?.stop();
     app.harness.dispose();
     await releaseLock();

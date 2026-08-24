@@ -30,6 +30,19 @@ async function callMcp(info: { url: string; token: string }, id: number, method:
   return response.json() as Promise<{ result: { content?: Array<{ text: string }>; tools?: Array<{ name: string; inputSchema: Record<string, unknown> }> } }>;
 }
 
+async function callMcpRaw(info: { url: string; token: string }, id: number, method: string, params?: Record<string, unknown>) {
+  const response = await fetch(info.url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${info.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+  });
+  expect(response.status).toBe(200);
+  return response.json() as Promise<{
+    result?: { tools?: Array<{ name: string }>; content?: Array<{ text: string }> };
+    error?: { code: number; message: string };
+  }>;
+}
+
 function addVideoSnapshot(spyService: SpyService): { spyRunId: string; snapshot: VideoSnapshot } {
   const operation = spyService.store.createOrGetOperation({
     kind: 'acquire_channel', ownerSubject: 'test', idempotencyKey: `mcp-${randomUUID()}`, request: {},
@@ -71,14 +84,18 @@ describe('Spy MCP server', () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       'spy_channel_momentum', 'spy_channel_outliers', 'spy_channel_profile', 'spy_channel_start',
       'spy_channel_videos', 'spy_competitors_list', 'spy_corpus_channels', 'spy_corpus_videos',
-      'spy_find_videos', 'spy_get_status', 'spy_read_transcript', 'spy_read_video_material',
-      'spy_run_manifest', 'spy_title_patterns', 'spy_video_comments', 'spy_video_metrics',
-      'spy_video_start', 'spy_wait',
+      'spy_find_videos', 'spy_get_status', 'spy_loop_inbox', 'spy_loop_report',
+      'spy_loop_status', 'spy_read_transcript', 'spy_read_video_material',
+      'spy_run_manifest', 'spy_title_patterns', 'spy_topics_list', 'spy_video_comments',
+      'spy_video_metrics', 'spy_video_start', 'spy_wait',
     ]);
+    // Mutation tools must never appear in the allowlist.
     expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
       'spy_cancel', 'spy_competitors_update', 'spy_discover_channels', 'spy_discover_videos',
       'spy_expand_graph', 'spy_niche_set', 'spy_scan_candidates', 'spy_transcript_fetch',
       'spy_transcript_normalize',
+      // spy.loop.write tools — intentionally excluded from allowlist
+      'spy_loop_decide', 'spy_loop_tick',
     ]));
 
     const channelVideos = tools.find((tool) => tool.name === 'spy_channel_videos')!.inputSchema;
@@ -124,5 +141,67 @@ describe('Spy MCP server', () => {
     };
     expect(corpus).toMatchObject({ count: 1, videos: [{ sourceVideoId: snapshot.sourceVideoId }] });
     expect(spy.store.listVideoSnapshots(spyRunId)).toHaveLength(1);
+  });
+
+  /**
+   * Hard gate G6 (`plan/codex/spy-autoloop-hardgate.md`).
+   * `SCOPES` đã chứa `spy.start`, nên `assertScopes` KHÔNG chặn được mutation —
+   * `EXPOSED_TOOL_NAMES` là gate duy nhất. Vắng mặt trong tools/list là chưa đủ:
+   * phải chứng minh gọi thẳng cũng bị từ chối và DB không đổi.
+   */
+  test('allowlist: MCP không với tới được loop mutation tool (G6)', async () => {
+    root = await mkdtemp(join(tmpdir(), 'writer-room-spy-mcp-g6-'));
+    spy = new SpyService({ dataRoot: root });
+    await spy.init();
+    server = new McpSpyServer(spy);
+    const info = await server.start();
+
+    const listed = await callMcpRaw(info, 20, 'tools/list');
+    const names = (listed.result?.tools ?? []).map((tool) => tool.name);
+    expect(names).not.toContain('spy_loop_decide');
+    expect(names).not.toContain('spy_loop_tick');
+    // Read tool của loop có mặt → vắng mặt ở trên là chủ ý, không phải cả họ chưa tồn tại.
+    expect(names).toContain('spy_loop_inbox');
+
+    const topicId = 'finance-vi';
+    spy.store.upsertTopic({ topicId, label: 'Tài chính cá nhân VI', market: 'vi', language: 'vi' });
+    const channelsBefore = Object.values(spy.store.countTopicChannelsByStatus(topicId))
+      .reduce((sum, n) => sum + n, 0);
+    const tickBefore = spy.store.getLastTick(topicId);
+
+    for (const [index, toolName] of ['spy_loop_decide', 'spy_loop_tick'].entries()) {
+      const denied = await callMcpRaw(info, 21 + index, 'tools/call', {
+        name: toolName,
+        arguments: { topic_id: topicId, channel_ids: ['UCzzzzzzzzzzzzzzzzzzzzzz'], status: 'shortlisted' },
+      });
+      expect(denied.result).toBeUndefined();
+      expect(denied.error?.code).toBe(-32602);
+      expect(denied.error?.message).toContain('tool not found');
+    }
+
+    expect(Object.values(spy.store.countTopicChannelsByStatus(topicId)).reduce((sum, n) => sum + n, 0))
+      .toBe(channelsBefore);
+    expect(spy.store.getLastTick(topicId)).toEqual(tickBefore);
+  });
+
+  test('spy_loop_report trả null khi không có loop, không bắt đầu operation', async () => {
+    root = await mkdtemp(join(tmpdir(), 'writer-room-spy-mcp-loop-'));
+    spy = new SpyService({ dataRoot: root });
+    await spy.init();
+    server = new McpSpyServer(spy);
+    const info = await server.start();
+
+    const runsBefore = spy.store.listSpyRuns(undefined, 100);
+
+    const payload = await callMcp(info, 5, 'tools/call', {
+      name: 'spy_loop_report', arguments: {},
+    });
+    const result = JSON.parse(payload.result.content![0]!.text) as { report: unknown; note?: string };
+
+    // spy.loop chưa có hoặc không có reports → report là null hoặc undefined
+    expect(result.report === null || result.report === undefined).toBe(true);
+    // Không có operation mới được tạo
+    const runsAfter = spy.store.listSpyRuns(undefined, 100);
+    expect(runsAfter.length).toBe(runsBefore.length);
   });
 });

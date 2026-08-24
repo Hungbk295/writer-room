@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Spy Auto-Loop — Kế hoạch xây dựng P0</title>
+  <style>
+    :root {
+      --ink:#162238; --muted:#62718a; --navy:#102547; --blue:#2563eb; --teal:#09836c;
+      --amber:#a45a00; --red:#bb3347; --line:#d8e1ec; --canvas:#f2f5f9; --paper:#fff;
+      --blue-soft:#edf4ff; --teal-soft:#e8f8f4; --amber-soft:#fff5e6; --red-soft:#fff0f2;
+      --shadow:0 12px 35px rgba(17, 36, 68, .09); --radius:16px;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:var(--canvas); font:15px/1.6 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    a { color:var(--blue); }
+    .hero { color:#fff; padding:54px 24px 48px; background:radial-gradient(circle at 80% 10%,#3779cf 0,transparent 31%),linear-gradient(135deg,#0b1930,#163b71); }
+    .hero-inner, .layout { max-width:1200px; margin:auto; }
+    .eyebrow { margin:0 0 11px; color:#a9cbff; text-transform:uppercase; letter-spacing:.13em; font-weight:800; font-size:12px; }
+    h1 { max-width:840px; margin:0; font-size:clamp(35px,5vw,59px); line-height:1.08; letter-spacing:-.04em; }
+    .lead { max-width:800px; margin:18px 0 0; color:#dce9fc; font-size:18px; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:24px; }
+    .chip { border:1px solid rgba(255,255,255,.25); border-radius:99px; padding:4px 10px; background:rgba(255,255,255,.1); font-size:12px; font-weight:750; }
+    .layout { display:grid; grid-template-columns:245px minmax(0,1fr); gap:22px; padding:24px 20px 72px; align-items:start; }
+    .toc { position:sticky; top:16px; padding:17px; background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+    .toc h2 { margin:0 0 8px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.12em; }
+    .toc ol { margin:0; padding-left:19px; }
+    .toc li { margin:6px 0; }
+    .toc a { color:#3d4c63; text-decoration:none; font-size:13px; font-weight:650; }
+    .toc a:hover { color:var(--blue); }
+    button { width:100%; margin-top:14px; padding:9px; color:#fff; background:var(--navy); border:0; border-radius:10px; font:inherit; font-size:13px; font-weight:750; cursor:pointer; }
+    .section { margin-bottom:20px; padding:29px; background:var(--paper); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); scroll-margin-top:16px; }
+    .section-label { margin:0 0 6px; color:var(--blue); font-size:11px; letter-spacing:.13em; text-transform:uppercase; font-weight:850; }
+    h2 { margin:0 0 9px; color:var(--navy); line-height:1.2; font-size:28px; letter-spacing:-.025em; }
+    h3 { margin:23px 0 8px; color:#1e3357; font-size:18px; }
+    p { margin:7px 0 13px; }
+    ul,ol { padding-left:22px; } li { margin:5px 0; }
+    .muted { color:var(--muted); } .small { font-size:13px; }
+    .grid { display:grid; gap:13px; margin-top:14px; } .two { grid-template-columns:repeat(2,minmax(0,1fr)); } .three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .card { padding:16px; border:1px solid var(--line); border-radius:13px; background:#fbfcfe; }
+    .card h3 { margin:0 0 5px; font-size:16px; } .card p:last-child { margin-bottom:0; }
+    .status { display:inline-block; border-radius:99px; padding:2px 8px; font-size:11px; font-weight:850; text-transform:uppercase; letter-spacing:.04em; }
+    .ready { background:var(--teal-soft); color:var(--teal); } .open { background:var(--amber-soft); color:var(--amber); } .block { background:var(--red-soft); color:var(--red); } .defer { background:var(--blue-soft); color:#265bbd; }
+    .callout { padding:16px 18px; border-left:4px solid var(--blue); background:var(--blue-soft); border-radius:0 12px 12px 0; }
+    .warn { border-left-color:var(--amber); background:var(--amber-soft); }
+    .danger { border-left-color:var(--red); background:var(--red-soft); }
+    .flow { display:grid; grid-template-columns:repeat(7,minmax(105px,1fr)); gap:8px; align-items:stretch; margin-top:17px; overflow-x:auto; padding-bottom:3px; }
+    .node { position:relative; min-width:108px; padding:13px 10px; border:1px solid #c9d8ee; border-radius:12px; background:var(--blue-soft); text-align:center; font-size:13px; font-weight:750; }
+    .node:not(:last-child)::after { position:absolute; z-index:2; right:-12px; top:50%; content:"→"; color:#6581ad; font-size:20px; transform:translateY(-50%); }
+    .node.teal { border-color:#a9dfd3; background:var(--teal-soft); } .node.amber { border-color:#f0c98a; background:var(--amber-soft); }
+    table { width:100%; margin-top:13px; border-collapse:collapse; font-size:13px; }
+    th,td { padding:10px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; } th { color:#53627a; background:#f8fafc; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+    code { padding:1px 4px; border-radius:4px; background:#edf1f6; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .check { padding:0; list-style:none; } .check li { padding-left:26px; position:relative; } .check li::before { position:absolute; left:0; content:"□"; color:var(--blue); font-weight:800; }
+    .source { margin-top:17px; padding-top:14px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    @media (max-width:820px) { .layout { grid-template-columns:1fr; padding:16px 14px 50px; } .toc { position:relative; top:auto; } .two,.three { grid-template-columns:1fr; } .section { padding:21px; } }
+    @media print { body { background:#fff; } .hero { padding:24px; } .layout { display:block; padding:0; } .toc { display:none; } .section { box-shadow:none; break-inside:avoid; border-radius:0; margin:0; } }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Implementation plan · Spy P0</p>
+      <h1>Spy Auto-Loop: từ topic đến báo cáo có thể duyệt</h1>
+      <p class="lead">Một vòng lặp thu thập có giới hạn, có bằng chứng và có người duyệt. P0 lấy yt-dlp làm data plane, dùng corpus đã xác nhận để thu nhận gợi ý liền kề, rồi giao Gemini Flash phân tích — không tạo global YouTube index hay sao chép đối thủ.</p>
+      <div class="chips"><span class="chip">P0</span><span class="chip">yt-dlp + confirmed corpus</span><span class="chip">Gemini Flash analysis</span><span class="chip">Human review</span><span class="chip">Hard-gated</span><span class="chip">2026-08-23</span></div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Mục lục">
+      <h2>Mục lục</h2>
+      <ol>
+        <li><a href="#goal">Mục tiêu &amp; phạm vi</a></li>
+        <li><a href="#flow">Luồng vận hành</a></li>
+        <li><a href="#components">Thành phần &amp; dữ liệu</a></li>
+        <li><a href="#build">Thứ tự xây dựng</a></li>
+        <li><a href="#roles">Phân vai P0</a></li>
+        <li><a href="#guardrails">Ràng buộc cứng</a></li>
+        <li><a href="#acceptance">Nghiệm thu P0</a></li>
+        <li><a href="#next">Sau P0</a></li>
+      </ol>
+      <button type="button" onclick="window.print()">In / lưu PDF</button>
+    </nav>
+
+    <main>
+      <section id="goal" class="section">
+        <p class="section-label">01 · Outcome</p>
+        <h2>Spy Loop cần tạo ra gì?</h2>
+        <p>Với mỗi <strong>topic</strong>, hệ thống chạy một lượt có giới hạn thu thập: tìm bằng yt-dlp, lấy transcript/thumbnail, thu gợi ý trực tiếp quanh video corpus đã duyệt, rồi để Gemini Flash phân tích. Kết quả luôn vào hàng duyệt; P0 không tự quyết định thay user.</p>
+        <div class="grid three">
+          <article class="card"><h3>Đầu vào</h3><p>Topic, keyword do user cung cấp và corpus/import batch đã được xác nhận.</p></article>
+          <article class="card"><h3>Đầu ra P0</h3><p>Observation có provenance, asset/transcript, Gemini analysis có evidence và Inbox để user quyết.</p></article>
+          <article class="card"><h3>Người quyết</h3><p>User duyệt nạp corpus, promotion và shortlist/reject. Agent chỉ thu thập/diễn giải evidence; P0 không auto-triage semantic.</p></article>
+        </div>
+        <div class="callout"><strong>Ranh giới chính:</strong> Auto-Loop sở hữu corpus membership, recommendation review state và report. Nguồn thô là yt-dlp/C3; Gemini Flash chỉ tạo phân tích có dẫn chứng trên những input đó. Không có nhánh nào được dựng global candidate index.</div>
+      </section>
+
+      <section id="flow" class="section">
+        <p class="section-label">02 · Runtime</p>
+        <h2>Luồng một tick</h2>
+        <div class="flow" aria-label="Luồng Auto Loop">
+          <div class="node">Confirmed<br>corpus</div><div class="node">yt-dlp<br>search</div><div class="node">C3 adjacent<br>suggestions</div><div class="node">yt-dlp enrich<br>assets</div><div class="node amber">C2 Gemini<br>analysis</div><div class="node">User<br>review</div><div class="node teal">Report<br>+ Inbox</div>
+        </div>
+        <table>
+          <thead><tr><th>Bước</th><th>Việc làm</th><th>Quy tắc quyết định</th></tr></thead>
+          <tbody>
+            <tr><td>0. Plan</td><td>Đọc topic, confirmed corpus, keyword và collection budget.</td><td>Budget là số query, seed, suggestion/seed, timeout và concurrency; dry-run không chạy collector.</td></tr>
+            <tr><td>1. Import</td><td>User đưa corpus qua C3/browser capture hoặc upload và xác nhận batch.</td><td>Draft không được rò vào candidate/topic corpus; provenance, actor, evidence và thời gian là bắt buộc.</td></tr>
+            <tr><td>2. Search</td><td><code>ytsearch</code> qua yt-dlp, lưu title/channel/URL/raw observation.</td><td>Mỗi query bị giới hạn; không ngầm fallback sang YouTube Data API trong P0.</td></tr>
+            <tr><td>3. C3 suggestions</td><td>Lấy title, keyword/metadata quan sát, channel và thumbnail/video reference từ gợi ý trực tiếp quanh seed đã confirm.</td><td>Depth cố định 1, tối đa 20 item/seed, không tự quét target mới; draft trước khi user chọn confirm.</td></tr>
+            <tr><td>4. Enrich</td><td>yt-dlp inspect, transcript và thumbnail/frame của item được chọn.</td><td>Raw observation luôn tách khỏi suy luận Gemini; thiếu asset/transcript trả <code>unavailable</code>, không bịa dữ liệu.</td></tr>
+            <tr><td>5. C2 analysis</td><td>Local agy gọi Gemini Flash trên manifest metadata + transcript + thumbnail.</td><td>Output schema phải kèm model, prompt-policy, input/evidence refs, timestamp và trạng thái; mặc định review-only.</td></tr>
+            <tr><td>6. Review/report</td><td>Persist Inbox/report idempotent sau khi asset và analysis đã lưu.</td><td>User quyết định promotion/reject; crash/restart không tạo item/report trùng.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="components" class="section">
+        <p class="section-label">03 · Architecture</p>
+        <h2>Thành phần và dữ liệu</h2>
+        <div class="grid two">
+          <article class="card"><h3>Configuration</h3><ul><li><code>config/topics/*.json</code>: topic, language, keyword, collection bounds.</li><li><code>config/spy-loop.json</code>: schedule, retry/timeout và Telegram.</li><li>Data API key, nếu còn, là capability tùy chọn ngoài P0; không phải điều kiện chạy loop này.</li></ul></article>
+          <article class="card"><h3>Source runtime</h3><ul><li><code>YtDlpAcquisitionPort</code>: search, inspect, channel list, transcript, thumbnail.</li><li><code>RecommendationCapturePort</code>: C3 capture trực tiếp quanh seed corpus; browser/yt-dlp adapter chỉ khi thực sự cung cấp evidence đó.</li><li><code>LoopRunner</code>: checkpoint, resume, report và collection bounds.</li></ul></article>
+          <article class="card"><h3>Analysis runtime</h3><ul><li><code>GeminiFlashAnalysisPort</code>: multimodal analysis độc lập với raw collector và <code>LlmPort</code> text-only hiện có.</li><li>Input manifest: metadata observation, transcript chunks, thumbnail/frame artifact refs và chỉ analysis context đã được duyệt; không có cookie, session hay private topic metadata.</li><li>Analysis-run record: kind, immutable input refs/digests, model/prompt-policy, attempt/status/expiry. Expiry lấy theo evidence hết hạn sớm nhất; không ghi <code>unavailable</code> giả vào schema <code>interpreted</code>.</li></ul></article>
+          <article class="card"><h3>Persistence &amp; surface</h3><ul><li><code>topics</code>, corpus membership, candidates và topic sources.</li><li>Import/recommendation batch + item + immutable provenance links; asset/evidence artifact 30 ngày.</li><li>Dashboard: capture preview, selective confirm, Inbox/report. Writer Spy MCP vẫn read-only.</li></ul></article>
+        </div>
+        <h3>Provenance phải lưu được</h3>
+        <p>Mỗi observation/candidate phải mang một nhãn đóng. P0 dự kiến dùng <code>ytdlp_search</code>, <code>corpus_import</code>, <code>corpus_suggestion</code>, <code>seed_config</code> hoặc <code>manual_user</code>. Hai nhãn corpus chỉ hợp lệ khi có batch/item audit và immutable link về seed/import; <code>manual_user</code> chỉ là lời khai của user, không phải bằng chứng lịch sử. Không system path nào được phép ghi nó.</p>
+      </section>
+
+      <section id="build" class="section">
+        <p class="section-label">04 · Delivery order</p>
+        <h2>Thứ tự xây dựng an toàn</h2>
+        <table>
+          <thead><tr><th>Slice</th><th>Nội dung</th><th>Trạng thái</th></tr></thead>
+          <tbody>
+            <tr><td>P0-A</td><td>Source-mode switch: P0 inject <code>YtDlpAcquisitionPort</code>; all search/inspect/transcript/thumbnail paths are yt-dlp-first and Data API is forbidden.</td><td><span class="status open">Cần xây</span></td></tr>
+            <tr><td>P0-B</td><td>Browser-assisted corpus import: draft → user confirm → immutable provenance, session actor, artifact retention.</td><td><span class="status open">Design draft</span></td></tr>
+            <tr><td>P0-C</td><td>C3 bounded recommendations: confirmed seed only, depth 1, ≤20/seed, raw capture draft, selective confirm.</td><td><span class="status open">Cần xây</span></td></tr>
+            <tr><td>P0-D</td><td>yt-dlp enrichment: detail, transcript, thumbnail/frame and normalized raw observation/artifact manifest.</td><td><span class="status open">Cần xây</span></td></tr>
+            <tr><td>P0-E</td><td>C2 local agy → Gemini Flash structured analysis, evidence storage, Inbox/report integration, review-only policy.</td><td><span class="status open">Cần xây</span></td></tr>
+            <tr><td>P0-F</td><td>Deterministic hard gates for no-Data-API, bounded collection, provenance, restart and Gemini evidence.</td><td><span class="status block">Chặn release</span></td></tr>
+            <tr><td>M1/M2</td><td>Change report và time-series từ repeated yt-dlp observations trong corpus; không dựng index song song.</td><td><span class="status defer">Sau P0</span></td></tr>
+          </tbody>
+        </table>
+        <div class="callout warn"><strong>Quyết định thay thế:</strong> quota coordinator và live Data API tick không còn là P0 blocker. Không xóa code cũ trong slice này; nó chuyển thành capability tùy chọn/deferred. P0 phải chứng minh đường mới không chạm nó.</div>
+      </section>
+
+      <section id="roles" class="section">
+        <p class="section-label">05 · Current P0</p>
+        <h2>Feature làm trước: Corpus Intelligence Loop</h2>
+        <p>P0 mới là một vertical slice hoàn chỉnh từ corpus được user xác nhận đến Inbox: <strong>yt-dlp lấy raw observation → C3 thu gợi ý trực tiếp quanh seed → yt-dlp lấy transcript/thumbnail → C2 Gemini Flash phân tích → user review</strong>. Đây mới là đường mà user sẽ vận hành; Data API/quota accounting không được chặn nó.</p>
+        <div class="grid two">
+          <article class="card"><h3>Agy A · yt-dlp source plane</h3><p>Map và invert acquisition/search so P0 calls yt-dlp first. Define normalized raw observation, capture bounds, capability/failure states and a fake that proves Data API is never touched.</p></article>
+          <article class="card"><h3>Agy B · C3 corpus/recommendation plane</h3><p>Implement batch/item/provenance contract for browser corpus import and direct recommendations. Enforce confirmed seed, depth 1, per-seed ceiling, draft isolation and selective confirmation.</p></article>
+          <article class="card"><h3>Agy C · C2 Gemini analysis plane</h3><p>Define multimodal Gemini Flash port, structured schema, input manifest, prompt/injection boundary, artifact/evidence retention and review-only semantics.</p></article>
+          <article class="card"><h3>Agy D · adversarial release gate</h3><p>Write independent fixtures for NoDataApi, bounded yt-dlp/C3 capture, draft/confirm provenance, restart/idempotency, unavailable states and evidence-bearing Gemini output.</p></article>
+        </div>
+        <h3>Trình tự bàn giao</h3>
+        <ol>
+          <li>Codex chốt interface, storage boundary và hard-gate acceptance trước khi có code.</li>
+          <li>Agy A chuyển source plane sang yt-dlp; Agy B làm import/corpus membership trước vì C3 chỉ được chạy trên seed đã confirm.</li>
+          <li>Agy B thêm C3 capture; Agy A làm enrich sau khi user confirm selected item. Agy D viết fixture độc lập song hành.</li>
+          <li>Agy C nối Gemini Flash review-only vào artifact manifest; Codex chạy gate và chỉ ghi repair note theo file:line.</li>
+        </ol>
+        <div class="callout"><strong>Không suy diễn nguồn:</strong> C3 capture chỉ ghi observation. Chỉ item user chọn confirm mới được promote; target thiếu channel identity vẫn là <code>needs_identity</code>, không được tự tạo candidate channel từ handle/text.</div>
+      </section>
+
+      <section id="guardrails" class="section">
+        <p class="section-label">05 · Non-negotiable</p>
+        <h2>Ràng buộc không được phá</h2>
+        <div class="grid three">
+          <article class="card"><h3>C1 · Tự chủ dữ liệu</h3><p>Không vidIQ hay provider intelligence ngoài. P0 lấy raw YouTube observation bằng yt-dlp và C3 capture có provenance; Data API chỉ là capability deferred, không phải fallback ngầm.</p></article>
+          <article class="card"><h3>C2 · Toàn bộ semantic analysis qua local agy</h3><p>Local agy gọi Gemini Flash cho transcript, thumbnail/frame và raw metadata đã được thu nhận. Kết quả lưu model, prompt policy, input/evidence và thời điểm; review-only cho đến khi user duyệt policy auto-action riêng.</p></article>
+          <article class="card"><h3>C3 · Corpus import + gợi ý liền kề</h3><p>Browser-assisted capture là workflow quan trọng sau khi user xác nhận corpus. Gợi ý chỉ xuất phát từ seed confirmed, depth 1, host/identity được server xác thực, batch/owner/evidence đầy đủ; không crawler đệ quy, không lưu cookie/session capture và không rửa nguồn.</p></article>
+        </div>
+        <ul>
+          <li>Raw public observation/artifact và mọi derivative recomputable chỉ giữ trong cửa sổ trượt 30 ngày; purge artifact vẫn giữ audit digest/tombstone.</li>
+          <li>Nếu report theo ngày vẫn dùng Pacific, mọi report/resume key phải đi qua một <code>reportDay()</code>/<code>quotaDay()</code> duy nhất; không cắt ngày UTC.</li>
+          <li>Metric thiếu mẫu phải trả <code>unavailable</code>/<code>insufficient_sample</code>, không nội suy số.</li>
+          <li>Parser deterministically extracts IDs/URL/time; Gemini may analyze meaning but cannot turn an unobserved fact into a measurement. <code>keyword_candidates</code> must say it is Gemini-derived unless it is a raw platform tag.</li>
+          <li>Gemini Flash is inference over bounded assets, not a market-data provider. Prompt content from titles/transcripts is untrusted data, not instruction.</li>
+        </ul>
+      </section>
+
+      <section id="acceptance" class="section">
+        <p class="section-label">06 · Release gate</p>
+        <h2>Checklist nghiệm thu P0</h2>
+        <ul class="check">
+          <li>A1 · <strong>NoDataApi:</strong> production P0 fixture injects a throwing Data API port and successfully executes yt-dlp search, enrichment, C3 and analysis without touching it.</li>
+          <li>A2 · <strong>Bounded acquisition:</strong> yt-dlp search has a literal query/result ceiling; C3 only accepts a confirmed seed, depth exactly 1 and ≤20 suggestions/seed. Timeout/retry/cancel are stored as unavailable/failed observations, never hidden.</li>
+          <li>A3 · <strong>Raw evidence:</strong> each yt-dlp/C3 observation records canonical URL/identity, capture time, method/adapter version and server-generated artifact digest. Raw title/channel/tag/position stay separate from derived analysis.</li>
+          <li>A4 · <strong>Corpus and C3 isolation:</strong> draft import/recommendation batches create no candidate/topic row; selective user confirm runs atomically. Two seeds may retain two observations for one target, but promotion dedupes the target while preserving both links.</li>
+          <li>A5 · <strong>C2 evidence contract:</strong> every Gemini result validates against a JSON schema and stores model/version, prompt-policy, input-manifest digest, cited transcript/asset refs, observation time and status in an analysis-run record. A malformed/failed response publishes <code>unavailable</code>, not a guessed result or a fake <code>interpreted</code> profile.</li>
+          <li>A6 · <strong>Truth and safety:</strong> output never presents Gemini keyword candidates as search volume/rank/CTR/global trend; titles/transcripts are untrusted data and cannot change the prompt policy. Semantic output cannot auto-reject or mutate corpus state in P0.</li>
+          <li>A7 · <strong>Restart, retention and access:</strong> crash/retry yields no duplicate batch/item/report; raw public artifacts purge after 30 days with audit tombstone; Writer Spy MCP remains unable to call loop mutation tools.</li>
+          <li>T1 · if daily scheduling/report keys remain, Pacific date tests cover restart crossover, digest 08:00 VN and both sides of midnight without UTC string slicing.</li>
+          <li>Provenance · stored source values belong to the closed allowed union; no system path writes <code>manual_user</code>. A repo gate cannot prove a human did not paste provider-derived data, so environment-level tool audit remains a separate control.</li>
+        </ul>
+        <p class="source">P0 passes when deterministic source/provenance/C2 gates are green without a Data API key. A future Data API capability requires its own quota gate; it cannot silently broaden this P0.</p>
+      </section>
+
+      <section id="next" class="section">
+        <p class="section-label">07 · Next after P0</p>
+        <h2>Lộ trình intelligence</h2>
+        <div class="grid two">
+          <article class="card"><h3>M1 · Change intelligence</h3><p>So sánh repeated yt-dlp observations trên đúng managed corpus: upload, cadence, views/day, freshness. Không dựng discovery hay review-state thứ hai.</p></article>
+          <article class="card"><h3>M5a · Recommendation co-occurrence</h3><p>Similar signal chỉ trong stored C3 observation: seed video, position quan sát, thời gian và count hỗ trợ. Không gọi đó là global similarity.</p></article>
+          <article class="card"><h3>M2 · VPH quan sát</h3><p>Lấy ≥2 raw view-count observations bằng yt-dlp trong cửa sổ 30 ngày; chỉ hiển thị VPH khi timestamps và raw points hợp lệ. Data API polling là phương án optional sau này, không phải P0.</p></article>
+          <article class="card"><h3>M3/M4/M5b</h3><p>Opportunity card evidence-first, OAuth Analytics cho owned channel và corpus-bounded embeddings/analysis trên evidence đã chốt.</p></article>
+        </div>
+        <div class="source">Nguồn chi tiết: <a href="./spy-corpus-intelligence-workflow.html">workflow visual</a>, <a href="./spy-corpus-intelligence-explained-vi.html">workflow diễn giải tiếng Việt</a>, <a href="../../plan/codex/spy-corpus-intelligence-hardgate.md">active P0 hard gate</a>, <a href="../../plan/codex/spy-autoloop-hardgate.md">deferred Data API quota gate</a>, và <a href="../../plan/codex/spy-intelligence-learning-roadmap.md">intelligence roadmap</a>.</div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

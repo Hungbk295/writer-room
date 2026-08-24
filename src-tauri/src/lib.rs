@@ -24,6 +24,20 @@ fn base_url() -> String {
     format!("http://127.0.0.1:{}", port())
 }
 
+fn ui_url() -> String {
+    if let Ok(url) = std::env::var("WRITER_ROOM_UI_URL") {
+        return url;
+    }
+    if cfg!(debug_assertions) {
+        let dev_port = std::env::var("WRITER_ROOM_DEV_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5178);
+        return format!("http://127.0.0.1:{dev_port}");
+    }
+    base_url()
+}
+
 fn daemon_is_up() -> bool {
     let url = format!("{}/api/health", base_url());
     matches!(
@@ -142,7 +156,7 @@ pub fn run() {
             };
 
             let url = match &status {
-                Ok(()) => WebviewUrl::External(base_url().parse().expect("valid daemon url")),
+                Ok(()) => WebviewUrl::External(ui_url().parse().expect("valid ui url")),
                 Err(detail) => {
                     let encoded = urlencode(&failure_page(detail));
                     WebviewUrl::External(
@@ -156,7 +170,7 @@ pub fn run() {
             WebviewWindowBuilder::new(&handle, "main", url)
                 .title("Spy")
                 .inner_size(1440.0, 920.0)
-                .min_inner_size(1000.0, 700.0)
+                .min_inner_size(520.0, 420.0)
                 .center()
                 .build()?;
             Ok(())

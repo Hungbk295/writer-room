@@ -3,3 +3,5 @@ export * from './ytdlp.ts';
 export * from './ffmpeg.ts';
 export * from './data-api.ts';
 export * from './llm.ts';
+export * from './quota-counting-data-api.ts';
+

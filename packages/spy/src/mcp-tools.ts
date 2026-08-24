@@ -681,6 +681,155 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         note: typeof args['note'] === 'string' ? args['note'] : undefined,
       }),
     }),
+
+    // ── Spy Loop — 4 read tools (EXPOSED_TOOL_NAMES, requiredScopes spy.read) ───
+    wrap({
+      name: 'spy_topics_list',
+      description: 'Liệt kê tất cả topic spy đang theo dõi (active/paused/archived) với trạng thái inbox, tick cuối và keyword pending. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: async (_args) => {
+        // TODO: đọc từ spy.loop.listTopics() khi agy-1 ship
+        const loop = (spy as unknown as { loop?: { listTopics: () => Promise<unknown[]>; status: (id?: string) => Promise<unknown[]> } }).loop;
+        if (!loop) {
+          return { topics: [], note: 'spy.loop chưa khởi tạo — agy-1 chưa ship' };
+        }
+        const [topics, statuses] = await Promise.all([
+          loop.listTopics(),
+          loop.status(),
+        ]);
+        return { topics, statuses };
+      },
+    }),
+
+    wrap({
+      name: 'spy_loop_status',
+      description: 'Trạng thái loop theo topic: lastTick, nextTickAt, inbox counts, quota còn lại. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 32_768,
+      handler: async (args) => {
+        const loop = (spy as unknown as { loop?: { status: (id?: string) => Promise<unknown[]> } }).loop;
+        if (!loop) return { statuses: [], note: 'spy.loop chưa khởi tạo' };
+        const topicId = typeof args['topic_id'] === 'string' ? args['topic_id'] : undefined;
+        return { statuses: await loop.status(topicId) };
+      },
+    }),
+
+    wrap({
+      name: 'spy_loop_inbox',
+      description: 'Danh sách kênh chờ duyệt (InboxItem): thumbnail URLs, sub, median view, faceless badge, fit reasons. Phân trang. 0 quota. outputLimit 64k.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: async (args) => {
+        const loop = (spy as unknown as {
+          loop?: {
+            inbox: (params: {
+              topicId: string;
+              status?: string;
+              limit?: number;
+              cursor?: number;
+              sort?: string;
+            }) => Promise<unknown>;
+          }
+        }).loop;
+        if (!loop) return { items: [], total: 0, nextCursor: null, note: 'spy.loop chưa khởi tạo' };
+        const topicId = text(args['topic_id'], 'topic_id');
+        const status = typeof args['status'] === 'string' ? args['status'] : undefined;
+        const limit = typeof args['limit'] === 'number' ? Math.min(Math.max(args['limit'], 1), 100) : 50;
+        const cursor = typeof args['cursor'] === 'number' ? args['cursor'] : 0;
+        return loop.inbox({ topicId, status, limit, cursor });
+      },
+    }),
+
+    wrap({
+      name: 'spy_loop_report',
+      description: 'Đọc báo cáo spy loop theo topic và ngày. Trả markdown + summary JSON. Đóng dấu deliveredJson.mcp_read. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 120_000,
+      handler: async (args) => {
+        const loop = (spy as unknown as {
+          loop?: {
+            listReports: (params: { topicId?: string; limit?: number }) => Promise<Array<{
+              reportId: string;
+              reportDate: string;
+              summary: unknown;
+              markdown: string;
+              deliveredJson: Record<string, unknown>;
+            }>>;
+            markDelivered: (id: string, channel: string, ts: string) => Promise<void>;
+          }
+        }).loop;
+        if (!loop) return { report: null, note: 'spy.loop chưa khởi tạo' };
+        const topicId = typeof args['topic_id'] === 'string' ? args['topic_id'] : undefined;
+        const date = typeof args['date'] === 'string' ? args['date'] : undefined;
+        const reports = await loop.listReports({ topicId, limit: 50 });
+        const report = date
+          ? reports.find((r) => r.reportDate === date)
+          : reports[0];
+        if (!report) return { report: null };
+        // Đóng dấu mcp_read nếu chưa có
+        if (!report.deliveredJson['mcp_read']) {
+          await loop.markDelivered(report.reportId, 'mcp_read', new Date().toISOString());
+        }
+        return { report: { ...report, delivered: true } };
+      },
+    }),
+
+    // ── Spy Loop — 2 write tools (requiredScopes spy.loop.write, KHÔNG vào EXPOSED_TOOL_NAMES) ───
+    wrap({
+      name: 'spy_loop_decide',
+      description: '[Write] Duyệt / loại kênh trong inbox. requiredScopes: spy.loop.write — KHÔNG có trong allowlist MCP mặc định; chỉ user dùng qua HTTP.',
+      requiredScopes: ['spy.loop.write'],
+      outputLimitBytes: 16_384,
+      handler: async (args) => {
+        const loop = (spy as unknown as {
+          loop?: {
+            decide: (params: {
+              topicId: string;
+              channelIds: string[];
+              status: 'shortlisted' | 'rejected';
+              negativeKeyword?: string;
+              decidedBy?: string;
+            }) => Promise<unknown>;
+          }
+        }).loop;
+        if (!loop) throw new AppError('capability_missing', 'spy.loop chưa khởi tạo');
+        const topicId = text(args['topic_id'], 'topic_id');
+        const channelIds = stringList(args['channel_ids'], 'channel_ids');
+        const status = args['status'] === 'shortlisted' || args['status'] === 'rejected'
+          ? args['status']
+          : (() => { throw new AppError('invalid_input', 'status phải là shortlisted | rejected'); })();
+        return loop.decide({
+          topicId,
+          channelIds,
+          status,
+          negativeKeyword: typeof args['negative_keyword'] === 'string' ? args['negative_keyword'] : undefined,
+          decidedBy: 'agent',
+        });
+      },
+    }),
+
+    wrap({
+      name: 'spy_loop_tick',
+      description: '[Write] Kích hoạt một tick ngay lập tức cho topic. dryRun=true: chỉ lập kế hoạch, không gọi API. requiredScopes: spy.loop.write — KHÔNG có trong allowlist.',
+      requiredScopes: ['spy.loop.write'],
+      outputLimitBytes: 32_768,
+      handler: async (args) => {
+        const loop = (spy as unknown as {
+          loop?: {
+            tick: (params: { topicId: string; dryRun?: boolean }) => Promise<unknown>;
+            isRunning: (topicId: string) => boolean;
+          }
+        }).loop;
+        if (!loop) throw new AppError('capability_missing', 'spy.loop chưa khởi tạo');
+        const topicId = text(args['topic_id'], 'topic_id');
+        if (loop.isRunning(topicId)) {
+          throw new AppError('invalid_input', `Tick đang chạy cho topic ${topicId}`);
+        }
+        const dryRun = args['dry_run'] === true;
+        return loop.tick({ topicId, dryRun });
+      },
+    }),
   ];
 }
 

@@ -77,6 +77,8 @@ function mockDataApi(stats?: VideoStatistics | null): YouTubeDataApiPort {
         channelId: 'UCuAXFkgsw1L7xaCfnd5JJOw',
         channelTitle: 'Rick Astley',
         thumbnailUrl: `https://i.ytimg.com/vi/${VIDEO_ID}/hqdefault.jpg`,
+        defaultAudioLanguage: null,
+        defaultLanguage: null,
       };
       for (const id of ids) {
         if (id === VIDEO_ID) map.set(id, { ...row, videoId: id });

@@ -10,6 +10,7 @@
     "daemon": "bun packages/daemon/src/index.ts",
     "spy": "bun packages/spy/src/cli.ts",
     "writer:regate": "bun packages/daemon/src/regate-cli.ts",
+    "ui:dev": "bun --cwd packages/web dev",
     "ui:build": "bun --cwd packages/web vite build",
     "app:macos": "bunx @tauri-apps/cli dev",
     "app:build": "bun run ui:build && bunx @tauri-apps/cli build"

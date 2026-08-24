@@ -1,0 +1,12 @@
+KEY FINDINGS r-youtube-api (2026-08-20)
+- Quota confirmed; all non-search endpoints 1 unit. NEW: videos.batchGetStats (June 3 2026, 1 unit) for cheap stat refresh.
+- channelSections multipleChannels still works; sparse coverage.
+- subscriptions.list: 403 subscriptionForbidden expected for most channels (private by default).
+- search type=channel has no stats -> batch channels.list 50/unit. Prefer videos-first discovery (type=video + videoDuration + publishedAfter + order) then dedupe channelId.
+- Pagination = extra search call.
+- Fields exist: videos tags/defaultAudioLanguage/defaultLanguage; channels country/topicDetails.topicCategories/brandingSettings.channel.keywords (partial for 3rd-party).
+- relevanceLanguage biases only -> post-filter by defaultAudioLanguage + local langdetect on titles.
+- Thumbnails: no quota; ToS grey on derived data -> process in memory, store coarse flag only, no image files, re-derive within 30 days.
+- Autocomplete suggestqueries works today (client=firefox&ds=yt&hl=vi returns clean JSON); unofficial, feature flag.
+- Browser "Up next" scraping violates ToS; prefer vidIQ MCP similar_channels for related-channel signal.
+- Telegram: 4096 chars, HTML parse_mode, 1 msg/s per chat, 429 retry_after.

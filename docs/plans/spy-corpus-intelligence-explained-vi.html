@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spy Loop — Diễn giải workflow bằng tiếng Việt</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #60708a;
+      --canvas: #f3f6fb;
+      --paper: #ffffff;
+      --line: #d8e1ed;
+      --source: #047d70;
+      --source-soft: #e5f7f4;
+      --state: #2b65c8;
+      --state-soft: #eaf2ff;
+      --analysis: #8245ba;
+      --analysis-soft: #f4eafd;
+      --human: #a46100;
+      --human-soft: #fff4df;
+      --danger: #b43c51;
+      --danger-soft: #fff0f3;
+      --shadow: 0 15px 42px rgba(33, 53, 87, .09);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(180deg, #eef5ff 0, var(--canvas) 26rem);
+      font: 15px/1.62 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .hero, main { max-width: 1080px; margin: 0 auto; }
+    .hero { padding: 54px 26px 31px; }
+    .eyebrow { margin: 0 0 10px; color: var(--state); font-size: 12px; letter-spacing: .15em; font-weight: 850; text-transform: uppercase; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(33px, 5vw, 58px); line-height: 1.08; letter-spacing: -.04em; }
+    .lead { max-width: 850px; margin: 18px 0 0; color: #465875; font-size: 18px; }
+    .rule { display: inline-block; margin-top: 21px; padding: 8px 13px; border: 1px solid #b9ccef; border-radius: 11px; color: #2f569f; background: #f8fbff; font-size: 13px; font-weight: 750; }
+    main { padding: 0 26px 70px; }
+    .intro, .section, .aside-card { border: 1px solid var(--line); border-radius: 18px; background: var(--paper); box-shadow: var(--shadow); }
+    .intro { padding: 22px; }
+    .intro h2, .section h2, .aside-card h2 { margin: 0 0 9px; color: #172b4d; font-size: 22px; letter-spacing: -.02em; }
+    .intro p { margin: 0; color: var(--muted); }
+    .legend { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 15px; }
+    .legend span { display: inline-flex; gap: 7px; align-items: center; padding: 5px 9px; border-radius: 999px; background: #f7f9fc; color: #4c5e78; font-size: 12px; font-weight: 700; }
+    .dot { width: 9px; height: 9px; border-radius: 999px; }
+    .dot.source { background: var(--source); } .dot.state { background: var(--state); } .dot.analysis { background: var(--analysis); } .dot.human { background: var(--human); } .dot.danger { background: var(--danger); }
+    .flow { position: relative; margin: 23px 0 0 29px; padding-left: 44px; border-left: 3px solid #b6c5db; }
+    .step { position: relative; margin: 0 0 18px; padding: 22px; border: 1px solid var(--line); border-radius: 17px; background: var(--paper); box-shadow: var(--shadow); }
+    .step::before { position: absolute; left: -62px; top: 24px; display: grid; width: 35px; height: 35px; place-items: center; border: 3px solid var(--paper); border-radius: 50%; color: #fff; background: var(--state); box-shadow: 0 0 0 2px #b6c5db; content: attr(data-step); font-size: 13px; font-weight: 850; }
+    .step::after { position: absolute; bottom: -33px; left: -53px; color: #71829b; content: "↓"; font-size: 25px; font-weight: 700; }
+    .step:last-child::after { display: none; }
+    .step.source { border-left: 5px solid var(--source); } .step.source::before { background: var(--source); }
+    .step.state { border-left: 5px solid var(--state); } .step.state::before { background: var(--state); }
+    .step.analysis { border-left: 5px solid var(--analysis); } .step.analysis::before { background: var(--analysis); }
+    .step.human { border-left: 5px solid var(--human); } .step.human::before { background: var(--human); }
+    .step h3 { margin: 0; font-size: 19px; letter-spacing: -.018em; }
+    .tag { display: inline-block; margin: 0 0 6px; padding: 2px 7px; border-radius: 5px; color: var(--muted); background: #f1f4f8; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .summary { margin: 7px 0 0; color: #35445c; font-size: 15px; }
+    .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 15px 0 0; }
+    .fact { min-height: 84px; padding: 11px; border-radius: 11px; background: #f8fafc; }
+    .fact b { display: block; margin-bottom: 3px; color: #2d405c; font-size: 12px; }
+    .fact span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .say { margin: 15px 0 0; padding: 11px 13px; border-radius: 9px; color: #3f4f68; background: #f5f8fc; font-size: 13px; }
+    .say b { color: #203554; }
+    .section { margin-top: 24px; padding: 24px; }
+    .branch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 15px; }
+    .branch { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: #fbfcfe; }
+    .branch h3 { margin: 0 0 6px; font-size: 15px; }
+    .branch p { margin: 0; color: var(--muted); font-size: 13px; }
+    .branch.bad { border-color: #f0bcc6; background: var(--danger-soft); } .branch.bad h3 { color: var(--danger); }
+    .branch.good { border-color: #a9dbd4; background: var(--source-soft); } .branch.good h3 { color: var(--source); }
+    .branch.warn { border-color: #efcf91; background: var(--human-soft); } .branch.warn h3 { color: var(--human); }
+    .split { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; margin-top: 24px; }
+    .aside-card { padding: 22px; }
+    .aside-card ul { margin: 0; padding-left: 20px; color: #44566f; }
+    .aside-card li { margin: 8px 0; }
+    .aside-card.no { border-color: #efbdc6; background: var(--danger-soft); }
+    .aside-card.no h2 { color: var(--danger); }
+    .aside-card.yes { border-color: #abddd7; background: var(--source-soft); }
+    .aside-card.yes h2 { color: var(--source); }
+    .storage { width: 100%; margin-top: 15px; border-collapse: collapse; }
+    .storage th, .storage td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .storage th { color: #657792; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    .storage td { color: #40516a; font-size: 13px; }
+    .storage tr:last-child td { border-bottom: 0; }
+    code { padding: 1px 4px; border-radius: 4px; color: #294f94; background: #edf3ff; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .footer { margin-top: 20px; color: #71819a; font-size: 12px; }
+    @media (max-width: 760px) {
+      .hero { padding: 38px 18px 24px; }
+      main { padding: 0 18px 45px; }
+      .intro, .section, .aside-card, .step { border-radius: 14px; }
+      .flow { margin-left: 18px; padding-left: 33px; }
+      .step::before { left: -51px; }
+      .step::after { left: -43px; }
+      .facts, .branch-grid, .split { grid-template-columns: 1fr; }
+      .storage { display: block; overflow-x: auto; }
+    }
+    @media print {
+      body { background: #fff; }
+      .hero, main { max-width: none; padding-left: 0; padding-right: 0; }
+      .intro, .section, .aside-card, .step { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <p class="eyebrow">Spy P0 · sơ đồ bằng lời</p>
+    <h1>Hệ thống sẽ làm gì, theo thứ tự nào?</h1>
+    <p class="lead">Đây là bản đọc chậm của workflow: mỗi bước nói rõ dữ liệu đi vào, hệ thống xử lý gì, điều gì được lưu, và lúc nào user phải quyết định.</p>
+    <span class="rule">Nguyên tắc gốc: chỉ phân tích thứ hệ thống đã quan sát và còn evidence hợp lệ.</span>
+  </header>
+
+  <main>
+    <section class="intro" aria-labelledby="read-title">
+      <h2 id="read-title">Cách đọc sơ đồ</h2>
+      <p>Đi từ bước 1 xuống bước 8. Màu chỉ vai trò của bước, không phải mức độ ưu tiên.</p>
+      <div class="legend">
+        <span><i class="dot human"></i> User xác nhận hoặc quyết định</span>
+        <span><i class="dot state"></i> Corpus / trạng thái được lưu</span>
+        <span><i class="dot source"></i> Thu thập dữ liệu thô</span>
+        <span><i class="dot analysis"></i> Gemini Flash phân tích</span>
+        <span><i class="dot danger"></i> Đường bị cấm hoặc không đủ evidence</span>
+      </div>
+    </section>
+
+    <section class="flow" aria-label="Workflow diễn giải tám bước">
+      <article class="step human" data-step="1">
+        <span class="tag">User bắt đầu</span>
+        <h3>Chọn topic và đưa vào hạt giống có chủ đích</h3>
+        <p class="summary">User chọn chủ đề, keyword, hoặc URL/video/channel muốn đưa vào corpus. Đây là lúc hệ thống biết mình đang nghiên cứu điều gì, chứ chưa tự đi tìm rộng trên YouTube.</p>
+        <div class="facts"><div class="fact"><b>Đầu vào</b><span>Topic, ngôn ngữ, mục tiêu, URL hoặc keyword.</span></div><div class="fact"><b>Hệ thống làm</b><span>Kiểm tra actor có quyền trên topic và kiểm tra dữ liệu đầu vào hợp lệ.</span></div><div class="fact"><b>Chưa được làm</b><span>Không gọi provider intelligence, không tự tạo global watchlist.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> user nói “hãy nghiên cứu phần này”; hệ thống không tự đoán phần khác.</p>
+      </article>
+
+      <article class="step state" data-step="2">
+        <span class="tag">C3 · Nhập corpus</span>
+        <h3>Đưa video/kênh vào một lô nháp có bằng chứng</h3>
+        <p class="summary">Browser-assisted capture hoặc upload tạo một <em>batch draft</em>. Server tự kiểm tra URL/identity, ghi ai đã nhập, thời điểm capture và digest của evidence. Lô nháp chưa được xem là corpus chính thức.</p>
+        <div class="facts"><div class="fact"><b>Được lưu</b><span>Batch, item, URL chuẩn, identity, actor, thời gian, evidence digest.</span></div><div class="fact"><b>Trạng thái</b><span><code>draft</code>, hoặc <code>needs_identity</code> nếu chưa xác minh được channel.</span></div><div class="fact"><b>Rào chắn</b><span>Không có candidate/topic row nào được tạo trước confirm.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> đây là “giỏ hàng” có hóa đơn nguồn; chưa phải dữ liệu đã được hệ thống tin dùng.</p>
+      </article>
+
+      <article class="step human" data-step="3">
+        <span class="tag">Điểm quyết định thứ nhất</span>
+        <h3>User xác nhận lô corpus nào được dùng làm seed</h3>
+        <p class="summary">Sau khi xem lô nháp, user xác nhận hoặc hủy. Việc promote phải chạy trong một transaction: hoặc tất cả dữ liệu hợp lệ vào corpus, hoặc không có gì vào cả.</p>
+        <div class="facts"><div class="fact"><b>Nếu xác nhận</b><span>Tạo managed corpus membership và immutable provenance link.</span></div><div class="fact"><b>Nếu hủy</b><span>Không có candidate/input nào rò vào luồng phân tích.</span></div><div class="fact"><b>Ý nghĩa</b><span>Chỉ video đã confirm mới đủ tư cách làm seed C3.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> user chọn “đây là mẫu tôi thực sự muốn hệ thống học từ”.</p>
+      </article>
+
+      <article class="step source" data-step="4">
+        <span class="tag">yt-dlp · Dữ liệu thô</span>
+        <h3>Hệ thống tìm và đọc thông tin công khai bằng yt-dlp</h3>
+        <p class="summary">yt-dlp thực hiện search, inspect video/channel, tải transcript và thumbnail/frame. Mỗi lượt thu thập có giới hạn rõ ràng về số query, số kết quả, timeout và retry.</p>
+        <div class="facts"><div class="fact"><b>Quan sát thô</b><span>Title, channel, URL, view count, ngày đăng, raw tag nếu có.</span></div><div class="fact"><b>Evidence</b><span>Transcript segments, thumbnail/frame, adapter version và capture time.</span></div><div class="fact"><b>Nếu lỗi</b><span>Ghi <code>failed</code>/<code>unavailable</code>; không dùng giá trị cũ để giả vờ thành công.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> yt-dlp là người đi lấy “bản gốc”; Gemini chưa được phép diễn giải ở bước này.</p>
+      </article>
+
+      <article class="step source" data-step="5">
+        <span class="tag">C3 · Gợi ý liền kề</span>
+        <h3>Từ một seed corpus, lấy các gợi ý trực tiếp mà YouTube đang hiển thị</h3>
+        <p class="summary">C3 chỉ được quét quanh một video đã confirm. Nó lấy các item gợi ý trực tiếp: title, video ID/URL, channel nếu thấy được, vị trí quan sát và evidence capture.</p>
+        <div class="facts"><div class="fact"><b>Giới hạn cứng</b><span>Depth đúng bằng 1, tối đa 20 gợi ý cho mỗi seed.</span></div><div class="fact"><b>Được phép</b><span>Lưu seed → target để biết “gợi ý này đến từ video nào”.</span></div><div class="fact"><b>Bị cấm</b><span>Không lấy gợi ý của target mới; không crawler đệ quy; không lưu cookie/session.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> nhìn một vòng xung quanh mẫu tốt đã chọn, không phải đi cào cả YouTube.</p>
+      </article>
+
+      <article class="step human" data-step="6">
+        <span class="tag">Điểm quyết định thứ hai</span>
+        <h3>User chọn gợi ý nào đáng để nạp và enrich sâu</h3>
+        <p class="summary">Danh sách C3 vẫn là draft. User chọn từng item; các item được chọn mới được yt-dlp inspect sâu để lấy transcript, thumbnail và metadata cần phân tích.</p>
+        <div class="facts"><div class="fact"><b>Dedupe</b><span>Một target có thể được nhiều seed gợi ý, nhưng chỉ promote một thực thể; vẫn giữ mọi link nguồn.</span></div><div class="fact"><b>Identity thiếu</b><span>Không tự gọi API để resolve handle; giữ <code>needs_identity</code>.</span></div><div class="fact"><b>Không tự quyết</b><span>C3 không tự shortlist/reject vì mới chỉ là observation.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> hệ thống đưa gợi ý, còn user quyết “mẫu này có đáng tốn công đọc sâu không?”.</p>
+      </article>
+
+      <article class="step analysis" data-step="7">
+        <span class="tag">C2 · Local agy → Gemini Flash</span>
+        <h3>Gemini Flash phân tích ý nghĩa, không thay thế dữ liệu nguồn</h3>
+        <p class="summary">Local agy đưa cho Gemini một manifest gồm evidence công khai còn hiệu lực: metadata quan sát, transcript chunks, thumbnail/frame và analysis context đã được duyệt. Prompt policy cố định tách khỏi nội dung YouTube không tin cậy.</p>
+        <div class="facts"><div class="fact"><b>Gemini trả</b><span>Labels, hook/structure/voice insight, faceless verdict nếu đủ evidence, keyword candidates và trích dẫn.</span></div><div class="fact"><b>Phải lưu</b><span>Model, policy/input/result digest, evidence refs, attempt, lease, status, expiry.</span></div><div class="fact"><b>Không được gọi là</b><span>Search volume, rank, CTR, global trend hoặc “sự thật” không có evidence.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> Gemini nói “tôi thấy gì từ các bằng chứng này”, không nói “toàn thị trường YouTube đang như vậy”.</p>
+      </article>
+
+      <article class="step state" data-step="8">
+        <span class="tag">Inbox, report &amp; retention</span>
+        <h3>Đưa kết quả còn hiệu lực vào Inbox để user quyết</h3>
+        <p class="summary">Kết quả được gắn với <code>semantic_analysis_runs</code> và evidence của nó. User xem, shortlist, reject hoặc yêu cầu chạy lại. Báo cáo phải idempotent để restart không sinh dữ liệu trùng.</p>
+        <div class="facts"><div class="fact"><b>Ai quyết</b><span>User. P0 không tự promote/reject từ Gemini output.</span></div><div class="fact"><b>Sau 30 ngày</b><span>Raw public asset bị purge; result phái sinh chuyển <code>expired</code>/<code>unavailable</code>.</span></div><div class="fact"><b>Giữ lại</b><span>Audit tombstone/digest, không giữ kết quả hết evidence như live data.</span></div></div>
+        <p class="say"><b>Nói đơn giản:</b> Inbox là nơi user biến evidence thành quyết định; kết quả cũ sẽ tự “hết hạn dùng”.</p>
+      </article>
+    </section>
+
+    <section class="section" aria-labelledby="fail-title">
+      <h2 id="fail-title">Nếu có lỗi thì luồng đi đâu?</h2>
+      <div class="branch-grid">
+        <article class="branch bad"><h3>yt-dlp lỗi hoặc thiếu transcript</h3><p>Không lấp chỗ trống bằng suy đoán. Ghi trạng thái <code>unavailable</code> hoặc <code>failed</code>, kèm lý do và cho phép chạy lại có giới hạn.</p></article>
+        <article class="branch warn"><h3>Gemini timeout hoặc trả sai schema</h3><p>Ghi <code>semantic_analysis_runs.status = failed</code>. Không ghi profile <code>interpreted</code> giả; retry theo idempotency key và lease.</p></article>
+        <article class="branch good"><h3>Evidence hết hạn</h3><p>Artifact bị purge; analysis/métric phụ thuộc vào nó chuyển <code>expired</code> hoặc <code>unavailable</code>. Chỉ audit tombstone còn lại.</p></article>
+      </div>
+    </section>
+
+    <div class="split">
+      <section class="aside-card yes" aria-labelledby="yes-title">
+        <h2 id="yes-title">Những điều hệ thống được làm</h2>
+        <ul>
+          <li>Dùng yt-dlp để lấy dữ liệu công khai cần thiết cho topic/corpus.</li>
+          <li>Dùng browser-assisted C3 có user confirmation để lấy gợi ý trực tiếp quanh corpus.</li>
+          <li>Dùng local agy gọi Gemini Flash để phân tích text và hình ảnh đã có evidence.</li>
+          <li>Giữ provenance, digest, timestamp, retry state và retention cho mọi dữ liệu hệ thống tạo.</li>
+        </ul>
+      </section>
+      <section class="aside-card no" aria-labelledby="no-title">
+        <h2 id="no-title">Những điều hệ thống không được làm</h2>
+        <ul>
+          <li>Không dùng vidIQ hay provider intelligence ngoài, kể cả qua agent tool rồi dán kết quả vào tay.</li>
+          <li>Không ngầm fallback sang YouTube Data API trong P0.</li>
+          <li>Không browser crawl đệ quy, không giữ cookie/session capture và không tự tạo global index.</li>
+          <li>Không biến output Gemini thành auto-action hoặc market metric không có raw evidence.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="section" aria-labelledby="store-title">
+      <h2 id="store-title">Tóm tắt những gì được lưu</h2>
+      <table class="storage">
+        <thead><tr><th>Nhóm dữ liệu</th><th>Dùng để làm gì</th><th>Quy tắc tồn tại</th></tr></thead>
+        <tbody>
+          <tr><td>Corpus import / recommendation batch</td><td>Chứng minh item đến từ đâu, ai confirm, seed nào gợi ý</td><td>Draft trước confirm; provenance link bất biến</td></tr>
+          <tr><td>Raw observation / artifact</td><td>Title, channel, transcript, thumbnail, timestamps, digest</td><td>Public evidence tối đa 30 ngày</td></tr>
+          <tr><td><code>semantic_analysis_runs</code></td><td>Chứng minh Gemini phân tích input nào, bằng model/policy nào</td><td>Hết hạn theo evidence nguồn hết hạn sớm nhất</td></tr>
+          <tr><td>Inbox / report</td><td>Đưa evidence cho user ra quyết định</td><td>Idempotent; output hết evidence không được hiện như live result</td></tr>
+        </tbody>
+      </table>
+      <p class="footer">Bản này diễn giải design P0, không nói rằng các port/table/route mới đã được cài đặt xong.</p>
+    </section>
+  </main>
+</body>
+</html>

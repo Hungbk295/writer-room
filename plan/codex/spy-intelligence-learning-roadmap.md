@@ -1,164 +1,209 @@
 > **Agent:** codex
-> **Status:** planned — M0 complete; M1–M5 await selection
-> **Owns:** Roadmap và acceptance criteria cho Spy intelligence / Writer Spy MCP.
-> **Does not touch:** Writer generation, media production, global crawling, hoặc triển khai ngay trong plan này.
-> **Depends on:** `plan/claude/spy-discovery-design.md`, `packages/spy/**`, `packages/daemon/src/spy-mcp.ts`.
+> **Status:** active — v3: YT-DLP-first Corpus Intelligence Loop selected for P0
+> **Owns:** Intelligence contracts, factual hard gates, metric definitions, and acceptance criteria for Spy / Writer Spy MCP.
+> **Does not own:** Auto-Loop topic/review-state ownership, scheduler, UI implementation, Writer generation, media production, or global crawling. Spy owns source/evidence contracts for the YT-DLP-first corpus loop and the approved local Gemini Flash analysis route.
+> **Depends on:** [`../claude/spy-autoloop-design.md`](../claude/spy-autoloop-design.md) (v3, source of truth for discovery/review-state P0), `packages/spy/**`, `packages/daemon/src/spy-mcp.ts`.
 
-# Spy Intelligence — roadmap học từ vidIQ, làm theo corpus của mình
+# Spy Intelligence — roadmap tự chủ trên yt-dlp, corpus và Gemini Flash
 
-**Ngày khảo sát:** 2026-08-19  
-**Mục tiêu:** Chọn từng năng lực vidIQ có giá trị cho Writer Room, xây bản hẹp trên dữ liệu Spy sở hữu, và không biến Spy thành bản sao của một nền tảng dữ liệu toàn cầu.
+**Reconciled:** 2026-08-23
 
-## 1. Kết luận quyết định
+**Supersedes:** roadmap dated 2026-08-19.
+**Reason:** Auto-Loop P0 has established the topic/discovery contract and three user decisions are non-negotiable.
 
-vidIQ có ba lợi thế khó sao chép ở quy mô toàn cầu: ước lượng keyword demand, index kênh/video/thumbnail khổng lồ, và time-series view được thu liên tục. Spy không cần bắt chước quy mô đó.
+## 1. Non-negotiable boundaries
 
-Hướng đúng là **Spy Intelligence for our corpus**:
-
-1. Thu thập và giữ transcript/evidence của các kênh đã chọn.
-2. Tích luỹ snapshot chỉ số cho corpus đó.
-3. Tìm outlier, pattern nội dung, đối thủ và cơ hội viết có evidence.
-4. Chỉ đưa các kết quả đã có provenance sang Writer Room.
-
-Với keyword volume toàn YouTube hoặc similar search trên toàn thị trường, duy trì vidIQ như nguồn bên ngoài khi thật sự cần; không gắn nhãn kết quả thay thế là “volume” hay “global”.
-
-## 2. Baseline đã xác nhận
-
-| Vùng năng lực | Core Spy | Writer Spy MCP đang expose | Nhận định |
-| --- | --- | --- | --- |
-| Channel/video acquisition, transcript, run manifest | Có | Có | Dùng được ngay |
-| Channel videos, profile, outlier, title/hook/voice, comments | Có | Chưa expose | Khoảng cách product gần nhất cần giải quyết |
-| Discovery, corpus search, competitor watchlist, momentum | Có | Chưa expose | Phải tuân theo plan Discovery hiện có |
-| VPH theo cửa sổ và lịch sử video | Chưa có | Chưa có | `velocity` hiện chỉ là views/ngày trung bình |
-| Retention, traffic, revenue, audience của kênh sở hữu | Chưa có OAuth | Chưa có | Chỉ làm qua YouTube Analytics OAuth |
-| Thumbnail similarity/CTR benchmark toàn cầu | Không | Không | Chỉ cân nhắc trong corpus nội bộ |
-
-**Hard gate:** Không công bố “VPH realtime”, “search volume”, “CTR prediction” hay “global trend” khi không có nguồn dữ liệu tương ứng. Output phải chỉ rõ method, khoảng thời gian và nguồn.
-
-## 3. Bản đồ học từ vidIQ
-
-| Nhóm vidIQ | Bản Spy nên học | Quyết định |
+| Decision | Binding rule | Roadmap consequence |
 | --- | --- | --- |
-| Channel Audit / Scorecard | Một báo cáo evidence-first: top/bottom, cadence, metadata gaps, outlier, transcript coverage | Làm sau khi MCP read parity có mặt |
-| Outliers / Competitors | Baseline theo age cohort, tracked watchlist, new-upload/change alert | Ưu tiên cao |
-| Historical stats / Trend Alerts / real-time views | Poll snapshot + VPH 1h/24h/7d + threshold alert | Ưu tiên cao, nhưng sau Discovery corpus |
-| Daily Ideas | “Opportunity cards” từ outlier + format/topic/title + transcript evidence + niche fit | Làm cho Writer, không làm chatbot idea chung chung |
-| Keyword Research | Autocomplete/corpus title/query signals nếu cần | Không clone search volume/competition toàn cầu |
-| Similar videos / thumbnails | Search/embedding trong corpus đã Spy | Thử nghiệm sau khi corpus đủ lớn |
-| Channel Analytics / Best time to post | YouTube Analytics OAuth của kênh sở hữu | Phase sau, số liệu thật |
-| Script, thumbnail, voice, video, music, clip generation | Writer/production lane | Không đưa vào Spy |
+| C1 — source autonomy | Do not use vidIQ or any other external YouTube-intelligence data provider. The product must replace, not depend on, such a provider. | P0 raw observation comes from yt-dlp, user-confirmed C3/browser capture, and the local corpus. YouTube Data API is a deferred optional capability, never a hidden P0 fallback. |
+| C2 — Gemini Flash analysis | A local agy may call Gemini Flash to analyze approved raw metadata, transcript and thumbnail/frame assets. | Persist model/version, prompt-policy, input/evidence references, observation time and status. Deterministic parsing of IDs/URLs/timestamps stays outside Gemini; all semantic analysis is review-only until an explicit user-approved action policy exists. |
+| C3 — browser corpus + adjacent recommendations | Browser-assisted collection is allowed and important after the user confirms a corpus-import batch. It may capture direct YouTube suggestions around that confirmed corpus. | Every imported/captured item needs server-validated canonical URL/identity, capture time, batch/owner and provenance. Recommendations are depth 1 only, bounded per seed, draft before selective user confirmation; not anonymous/recursive background discovery and not a place to retain browser session secrets. |
 
-Nguồn khảo sát ngoài: [vidIQ Features](https://vidiq.com/features/), [Keyword Research](https://vidiq.com/features/keyword-tools/), [Outliers](https://vidiq.com/features/outliers/), [Trend Alerts](https://vidiq.com/features/trend-alerts/), [Channel Audit Help](https://support.vidiq.com/en/articles/10141815-channel-audit).
+For public, non-authorized channel/video data, raw data and every recomputable derivative have a **maximum rolling retention of 30 days**. Refresh within that window or delete it. A result must never outlive the public samples from which it was derived.
 
-## 4. Backlog lựa chọn — triển khai từng lát
+## 2. Decision and plan boundary
 
-### M0 — Đưa intelligence đã có ra đúng Writer Spy MCP *(complete 2026-08-19)*
+Spy is an evidence system for a bounded corpus, not a global YouTube index. It may observe, compare, and report signals from that corpus; it may not label an unobserved market-wide quantity as a measured fact.
 
-**Mục tiêu:** Agent và UI đọc được analysis hiện hữu mà không cần truy cập Spy SQLite trực tiếp.
+Auto-Loop owns topic configuration/persistence, `candidate_channels`, `topic_channels`, review state and report scheduling. This roadmap defines the source/evidence contract beneath that ownership: corpus membership, yt-dlp observations, C3 batches, Gemini analysis and their hard gates. It must not introduce a second candidate table, channel index, review status, or discovery loop.
 
-**Scope:** Mở rộng allowlist MCP theo read-first cho `spy_channel_videos`, `spy_channel_outliers`, `spy_channel_profile`, `spy_video_metrics`, `spy_title_patterns`, `spy_video_comments`, `spy_corpus_videos`, `spy_corpus_channels`, `spy_channel_momentum`, `spy_competitors_list`.
+This roadmap owns what can be truthfully captured and computed **inside the managed corpus**: yt-dlp observation, C3 recommendation provenance, Gemini analysis, change reports, time-series definitions, similarity contracts, Writer evidence contracts and the hard gates that validate them.
 
-**Không gồm:** mutation discovery/watchlist, OAuth, poller hoặc tính metric mới.
+### Evidence rules that apply to every milestone
+
+- Every number has `source`, `method`, observation window, timezone, `sampleCount`, and freshness/availability status. Missing evidence is `unavailable` or `insufficient_sample`, never a substituted heuristic.
+- Keep existing minimum-sample gates such as `MIN_VIDEOS_FOR_DISTRIBUTION` and `MIN_VIDEOS_FOR_CORRELATION`. Return `MetricValue{method}` (or the equivalent typed contract) rather than an unqualified number.
+- `validateEvidenceRefs` remains mandatory: an LLM claim must link to an existing segment, frame, quote, metadata snapshot, or named raw observation.
+- Spy produces evidence and bounded opportunities; Writer decides angle and script. There is no automated “copy competitor” route.
+
+## 3. Current baseline
+
+| Capability | State | Truth boundary |
+| --- | --- | --- |
+| yt-dlp search, inspect, transcript and thumbnail acquisition | Present, but API-first wiring remains | `YtDlpAdapter` exists; P0 still needs a source-mode switch so no Data API fallback is reachable. |
+| Browser corpus import | Design draft | Batch/item/immutable provenance contract exists on paper; no P0 implementation is claimed. |
+| C3 direct recommendations | Not implemented | Current yt-dlp adapter has no related/player-response capture API; introduce an explicit bounded capture port. |
+| Gemini Flash semantic analysis | Not implemented | Existing LLM port is text-only; P0 needs a multimodal evidence-bearing Gemini port. |
+| Auto-Loop topic discovery, review state, reports | Existing code, to be re-scoped | P0 loop becomes YT-DLP/C3/C2 first; Data API key is not a prerequisite. |
+| Change intelligence on managed channels | M1 next | Reads Auto-Loop tables; does not discover or approve channels. |
+| Public-video time-series and VPH | M2 specified, not implemented | Repeated yt-dlp view-count observations in the rolling 30-day corpus window; Data API polling is optional later. |
+| First-party retention, traffic, revenue, audience | M4 later | OAuth only for an authorized owned channel. |
+| Text/corpus similarity | Split M5a/M5b | Corpus-bounded; no claim of global similarity. |
+| Corpus semantic/visual analysis | P0-E design | Local agy calls Gemini Flash against retained corpus assets; every result is evidence-bearing and review-only. |
+
+### MCP surface currently proved by test
+
+`packages/daemon/test/spy-mcp.test.ts` asserts the exact sorted `tools/list` set of **22** tools: eight existing acquisition/evidence tools, ten M0 intelligence reads, and four Auto-Loop reads (`spy_topics_list`, `spy_loop_status`, `spy_loop_inbox`, `spy_loop_report`).
+
+The ten M0 intelligence additions are `spy_channel_videos`, `spy_channel_outliers`, `spy_channel_profile`, `spy_video_metrics`, `spy_title_patterns`, `spy_video_comments`, `spy_corpus_videos`, `spy_corpus_channels`, `spy_channel_momentum`, and `spy_competitors_list`.
+
+`spy_channel_start` and `spy_video_start` are pre-existing acquisition mutations and retain the `spy.start` scope. Thus a scope label is **not** a universal read-only guarantee. The server-side explicit allowlist is the gate that decides which tools can be reached at all; each admitted tool’s required scope is an additional constraint. In particular, `spy_loop_decide` and `spy_loop_tick` must remain absent from `tools/list` and a direct call must return “tool not found”.
+
+## 4. Delivery slices
+
+### P0 — Corpus Intelligence Loop *(selected; implementation not started)*
+
+**Outcome:** a reviewable vertical slice: user-confirmed corpus → yt-dlp raw observation → C3 direct suggestions → yt-dlp transcript/thumbnail enrichment → local agy/Gemini Flash analysis → Inbox/report.
+
+**P0-A — source mode:** inject a `YtDlpAcquisitionPort` for search, inspect, transcript and thumbnail. The P0 test fixture supplies a Data API port that throws if touched; no source path may silently fall back to it.
+
+**P0-B — corpus import:** browser/user-upload batches are actor-authorized, draft-first and atomic on confirm. Item identity/evidence is server-derived; missing verified channel identity remains `needs_identity` with zero API lookup.
+
+**P0-C — C3 recommendations:** a `RecommendationCapturePort` takes only a confirmed corpus seed; it records up to 20 direct suggestions at depth 1, as a draft batch. It does not recurse. Per-item user confirmation preserves seed→target provenance and never overloads generic source fields with a video ID.
+
+**P0-D — enrichment:** selected target video/channel observations use yt-dlp to capture metadata, transcript and thumbnail/frame artifacts. Raw platform observations are immutable inputs, not Gemini claims.
+
+**P0-E — C2 analysis:** a separate multimodal `GeminiFlashAnalysisPort` receives an input manifest and returns schema-validated labels/keyword candidates/evidence. Store analysis kind, model/version, policy version, immutable asset/transcript/snapshot refs, input-manifest digest, timestamp, raw-response digest when one exists, attempt/status and expiry in an analysis-run record; the existing `profiles` table alone lacks those audit fields. Expiry is the earliest expiry of supporting public evidence, not simply run creation plus 30 days. Normalized results must reference that run. A malformed response is not inserted as an `interpreted` profile. P0 writes only reviewable output.
+
+**P0-F — release gates:** NoDataApi, bounded acquisition, C3 draft/confirm isolation, immutable multi-seed provenance, restart/idempotency, 30-day artifact tombstones, C2 evidence schema and mutation-denylist gates must pass before release.
+
+### M0 — expose existing intelligence to Writer Spy MCP *(complete; reconciled 2026-08-22)*
+
+**Purpose:** Agents and UI can read existing Spy intelligence without direct SQLite access.
+
+**Scope completed:** The ten intelligence tools listed above, with provenance/sample gates and no credential exposure. The four P0 Auto-Loop reads are a separate read addition and are accounted for in the exact allowlist assertion.
+
+**Completion proof:** `bun test packages/daemon/test/spy-mcp.test.ts` asserts the sorted allowlist, selected schemas, read routing, and mutation denylist; `bun run typecheck` passes.
+
+**Decision:** M0 is closed. Future Auto-Loop read additions update the exact allowlist test and this inventory; they do not reopen M0.
+
+### M1 — change intelligence on Auto-Loop’s managed corpus
+
+**Purpose:** Make the approved/managed topic corpus useful for editorial decisions without creating another discovery or watchlist system.
+
+**Scope:** Report what changed since the prior valid observation for a `topic_channels` channel/video: new upload, cadence change, views-per-day average (not VPH), outlier/cohort change, scan coverage, and evidence freshness. Read topic membership/status from Auto-Loop; do not write it except through its owner flow.
+
+**Explicitly removed from M1:** Channel discovery, candidate intake, keyword expansion, a parallel watchlist, a parallel review status, and a separate channel index. Those are already Auto-Loop P0 responsibilities.
 
 **Acceptance criteria:**
 
-- MCP `tools/list` hiển thị các tool read-only được duyệt, schema input đầy đủ và không lộ credential.
-- Mọi response có `spyRunId`/video snapshot ID hoặc corpus provenance phù hợp.
-- Query corpus không gọi YouTube API và không tiêu quota.
-- Tool có dữ liệu không đủ trả `insufficient_sample`/`unavailable`, không trả số phỏng đoán như số thật.
+- Every delta identifies old and new raw observation/run, comparison window, method, and freshness.
+- A missing prior observation produces `unavailable`; average views/day is never labelled VPH.
+- Report/alert dedupe key is `topic + entity + rule + window`; retry cannot resend the same alert.
+- All third-party source and derived rows used by the report remain inside the 30-day rolling retention window.
 
-**Completion proof:** `packages/daemon/src/spy-mcp.ts` now exposes the 10 approved read tools only; `packages/daemon/test/spy-mcp.test.ts` asserts the allowlist, mutation denylist, schemas and read routing. `bun test packages/daemon/test/spy-mcp.test.ts` and `bun run typecheck` pass.
+**Decision:** M1 remains open but is deliberately narrowed; its discovery portion is closed as already owned by Auto-Loop.
 
-### M1 — Competitor & corpus intelligence
+### M5a — observed search/recommendation co-occurrence *(P1; promoted)*
 
-**Mục tiêu:** Biến kênh đã Spy thành danh sách quan sát có thể ra quyết định nội dung.
+**Purpose:** Build the first self-owned “similar channels/videos” signal from repeated co-occurrence in yt-dlp search observations and C3 direct-suggestion observations already made for a topic.
 
-**Scope:** Read/write watchlist có xác nhận người dùng; report về video mới, cadence, view/sub, velocity trung bình, outlier theo cohort; bảng “What changed since last scan”.
-
-**Dependency:** Hoàn tất hoặc kế thừa đúng schema/quota contract của `spy-discovery-design.md`; không tạo candidate/index song song.
+**Scope:** Store/recompute a bounded co-occurrence view from yt-dlp search observations, C3 seed→target observations and `topic_channel_sources`; return query/seed, window and counts that support each match. It is a similarity signal inside observed topic results, not a ranking or claim about all YouTube.
 
 **Acceptance criteria:**
 
-- Mỗi insight nêu run/snapshot cũ và mới, window thời gian, method.
-- Không gọi metric `velocity` là VPH.
-- Alert được dedupe bằng channel/video/rule/window; một lần scan không gửi lặp.
+- Each match includes contributing query IDs/terms, observed positions, timestamps, and a clear `method: serp_cooccurrence` label.
+- Search-result position is never presented as “rank”.
+- Every source observation declares its capture method (`ytdlp_search` or `corpus_suggestion`), canonical source URL/seed, timestamp and bounded capture limit.
+- Co-occurrence material is refreshed/recomputed or deleted within 30 days.
 
-### M2 — Time-series, VPH thật và trend alert
+**Decision:** This is the near-term, non-vision substitute for provider-supplied similar-channel signals and precedes generic similarity embedding work.
 
-**Mục tiêu:** Theo dõi đà tăng trưởng trong corpus, không dựa vào một snapshot.
+### M2 — public time-series, true VPH, and alert contract *(specified; build after M1/M5a data contract is stable)*
 
-**Scope:**
+**Purpose:** Measure public-video velocity within the managed corpus from more than one observation.
 
-- Bảng immutable `video_stat_points(source_video_id, sampled_at, view_count, like_count, comment_count)`.
-- Poller có quota budget, idempotency, retry/backoff, checkpoint và retention policy.
-- `spy_video_stats` trả samples + VPH cửa sổ 1h/24h/7d, cùng `sampleCount` và độ phủ thời gian.
-- Performance curve theo tuổi video và alert vượt/nghịch threshold.
+**Scope:** Re-observe eligible corpus video IDs with yt-dlp and keep raw public points only in a rolling 30-day window. Compute VPH at read time from valid points; it is not a permanent global metric. A future YouTube Data API backend may implement the same observation contract, but is not a prerequisite.
 
-**Không gồm:** VPH toàn YouTube hoặc kết luận trend toàn thị trường.
+**Core contract:**
 
-**Acceptance criteria:**
+- Raw point: `video_stat_points(source_video_id, sampled_at, view_count, like_count, comment_count, source='ytdlp')`, unique by video and sample instant/run id.
+- The collection planner dedupes eligible corpus IDs and sets an explicit run ceiling/concurrency; it records every attempted/succeeded/failed observation without silently substituting stale values.
+- VPH for a requested 1h/24h/7d window is `(end.view_count - start.view_count) / elapsed_hours`. Return it only with at least two valid raw points that bracket/cover the requested window according to a documented tolerance; otherwise return `unavailable` with the missing coverage reason.
+- Response includes requested and effective window, both sample timestamps/counts, timezone, last sample, freshness, source, method, and retention expiry. Never substitute average views/day for VPH.
+- Restart/idempotency keys prevent duplicate raw points, duplicate observation runs and duplicate threshold alerts. Backoff/retry must not manufacture a point.
+- Delete/refresh expired third-party points and recompute cached derivatives from the remaining raw window. Do not preserve a derived VPH, trend, faceless/style score, or alert fact after its supporting public samples expire.
 
-- VPH = `(views cuối − views đầu) / elapsed hours` và không được tính khi cửa sổ thiếu hai sample hợp lệ.
-- Mỗi output khai báo timezone, time window, last sampled time và status data freshness.
-- Job restart không tạo điểm trùng hoặc alert trùng.
-- Shorts/long-form tách benchmark; không so raw views qua các quy tắc đếm khác nhau.
+**Learn-value upgrade:** Replace only the existing coarse “recent upload views/day versus channel median” momentum component when valid M2 VPH coverage exists. Preserve the raw evidence/window on the score; if coverage is insufficient, retain the existing coarse method with an explicit method label rather than pretending it is VPH.
+
+**Non-scope:** Global trends, public CTR/impressions, and Analytics-only data. `impressions` and `impressionsClickThroughRate` remain `unavailable` until an authorized Analytics/Reports implementation verifies their availability and provenance.
 
 ### M3 — Writer opportunity cards
 
-**Mục tiêu:** Chuyển Spy evidence thành đầu vào hữu ích cho Writer, không tự động copy đối thủ.
+**Purpose:** Turn bounded evidence into reviewable editorial input, never a competitor-copy instruction.
 
-**Scope:** Card gồm: opportunity statement, cơ sở outlier/momentum, 2–5 evidence refs transcript/metadata, format/title pattern, novelty constraint và lý do fit với niche.
+**Scope:** An opportunity statement, observed signal, 2–5 reopenable evidence refs, format/title pattern, novelty constraint, niche-fit reason, and a separate “fact to verify” field where needed.
 
-**Dependency:** M0 + M1; M2 chỉ nâng điểm ưu tiên, không là điều kiện bắt buộc.
-
-**Acceptance criteria:**
-
-- Card không được tạo nếu thiếu evidence ref có thể mở lại.
-- Mỗi recommendation nêu rõ “signal quan sát” khác “fact cần kiểm chứng”.
-- Import vào Writer tạo Source Pack/snapshot immutable, không đọc Spy mutable state ở bước viết.
-
-### M4 — First-party Analytics OAuth
-
-**Mục tiêu:** Lấy dữ liệu chủ kênh chính xác: retention, traffic source, audience, revenue và best time to post.
-
-**Scope:** OAuth consent, encrypted token store, minimum scopes, reporting adapter và UI/MCP read surface cho đúng channel đã uỷ quyền.
+**Dependencies:** M0 + M1. M2 may raise priority but is not required.
 
 **Acceptance criteria:**
 
-- Không có token/analytics data vượt workspace/channel authorization.
-- Revenue chỉ hiển thị khi quyền và monetization cho phép.
-- Các report chỉ rõ date range và dimension; rate-limit/API errors là recoverable.
+- Do not create a card without reopenable evidence references.
+- Distinguish observation from hypothesis and label every numeric source/method.
+- Import to Writer creates an immutable Source Pack/snapshot; drafting does not read mutable Spy state.
 
-### M5 — Similarity nội bộ (chỉ khi corpus đủ lớn)
+### M4 — first-party Analytics OAuth
 
-**Mục tiêu:** Tìm video/thumbnail tương tự trong corpus đã thu để nghiên cứu packaging.
+**Purpose:** Read genuinely private/owner metrics—retention, traffic, audience, revenue, and best time to post—for only the channel that authorized access.
 
-**Scope:** Embedding transcript-title + thumbnail; kết quả nêu matched signals và giới hạn corpus.
+**Scope:** Consent, encrypted token storage, minimum scopes, reporting adapter, and a bounded UI/MCP read surface.
 
-**Gate vào phase:** đủ corpus đa dạng, có đánh giá relevance thủ công, và không dùng kết quả để khẳng định “similar trên toàn YouTube”.
+**Acceptance criteria:**
 
-## 5. Thứ tự nên chọn
+- Token and analytics data cannot cross workspace/channel authorization boundaries.
+- Revenue appears only when authorization and monetization permit it.
+- Reports declare date range/dimensions; rate limits and API failures are recoverable.
+- If a metric is unavailable for the authorized scope, return `unavailable`; do not estimate it from public data.
 
-1. **M0** — giá trị nhanh nhất; biến code đã có thành capability dùng được.
-2. **M1** — tạo workflow theo dõi đối thủ/corpus trước khi đầu tư metric mới.
-3. **M2** — nền cho VPH, trend alert và performance curve đáng tin.
-4. **M3** — chỉ bắt đầu khi evidence surface ổn định.
-5. **M4**, sau đó **M5** — cần authority/data maturity cao hơn.
+### M5b — corpus text/metadata embeddings + Gemini Flash analysis
 
-`spy-discovery-design.md` là source of truth cho discovery, quota ledger và corpus ingestion. Roadmap này không thay thế nó; M1/M2 chỉ được bắt đầu sau khi kiểm tra contract không chồng lấn.
+**Purpose:** Find semantically similar videos in the local corpus after manual relevance evaluation proves it helps.
 
-## 6. ADRs chờ chọn trước khi build
+**Scope:** Embeddings of title, transcript and permitted metadata plus Gemini Flash analysis over thumbnails/frames already admitted to the corpus. Each match exposes matched signals and the corpus boundary.
 
-- [ ] **ADR-SI-1 — MCP surface:** M0 expose read-only intelligence theo allowlist; mọi mutation (watchlist/discovery) cần tool riêng, scope riêng và confirmation.
-- [ ] **ADR-SI-2 — Time-series boundary:** Chỉ poll video/kênh trong tracked corpus; không xây crawler/index toàn YouTube.
-- [ ] **ADR-SI-3 — Writer boundary:** Spy tạo evidence/opportunity card; Writer quyết định angle và script, không nhận lệnh “copy” từ insight.
-- [ ] **ADR-SI-4 — Keyword boundary:** Giữ vidIQ/external provider cho estimated global demand; Spy chỉ phát hành corpus/autocomplete signal với nhãn rõ ràng.
-- [ ] **ADR-SI-5 — Analytics boundary:** First-party analytics chỉ qua OAuth kênh được uỷ quyền và tách khỏi public competitor data.
+**Analysis contract:** A local agy invokes Gemini Flash, then stores model/version, prompt-policy version, source asset/transcript references, input-manifest digest, observation timestamp, labels/keyword candidates, cited evidence and run status. It does not manufacture a YouTube-wide style or market fact. Raw public inputs and the derivative analysis expire with their 30-day evidence window; only an audit tombstone/digest may remain. The first release is review-only; promotion to any automatic action needs an explicit calibration dataset, error thresholds and user approval.
 
-## 7. Không làm
+**Entry gate and acceptance criteria:**
 
-- Clone toàn bộ vidIQ MCP hay index toàn cầu.
-- Keyword volume/competition giả mạo từ dữ liệu không có.
-- Poll không quota budget hoặc không có dedupe/retention.
-- Media generation, voice, thumbnail creation, script writing trong Spy.
-- Tự động áp dụng recommendation vào kênh hoặc Writer output.
+- Corpus is sufficiently diverse and manually evaluated for relevance before publishing matches.
+- Each result says it is corpus-bounded and exposes source snapshots/evidence.
+- No match is called similar “on YouTube”; visual classification remains corpus-bounded and cannot enter auto-triage before the calibration gate passes.
+
+## 5. Delivery order
+
+1. **P0-A/B** — yt-dlp-only source mode and actor-authorized corpus import are the foundations.
+2. **P0-C/D** — bounded C3 suggestions, then yt-dlp enrichment of selected items.
+3. **P0-E/F** — Gemini Flash review output plus deterministic gates. Data API quota work is explicitly deferred.
+4. **M1** — change intelligence on the one managed corpus.
+5. **M5a** — observed search/recommendation co-occurrence, the first self-owned similar signal.
+6. **M2** — repeated yt-dlp observations, valid VPH and retention-safe alerts.
+7. **M3**, **M4**, then **M5b** — evidence-first Writer cards, owned-channel OAuth, then broader corpus matching.
+
+## 6. ADR decisions
+
+- [x] **ADR-SI-1 — MCP surface:** The explicit daemon allowlist is the reachability gate. Required scopes constrain admitted tools but do not prove a global read-only surface (`spy.start` is currently present). Keep loop mutations off the Writer Spy MCP allowlist; test list exclusion and direct-call rejection.
+- [x] **ADR-SI-2 — public time-series boundary:** Poll only Auto-Loop managed corpus items; public raw samples and recomputable derivatives have a rolling 30-day retention window. No global crawler/index.
+- [x] **ADR-SI-3 — Writer boundary:** Spy creates evidence/opportunity cards; Writer owns editorial angle and script. No automated competitor copying.
+- [x] **ADR-SI-4 — keyword/demand boundary:** No provider-based demand, volume, competition, or global-trend estimate. First-party authorized Analytics is the only valid demand-like source; corpus-derived signals have an explicit `derived_corpus` method label.
+- [x] **ADR-SI-5 — Analytics boundary:** First-party analytics exists only via OAuth for the authorized owned channel and is separated from public competitor data.
+- [x] **ADR-SI-6 — source autonomy (C1):** No vidIQ or other external data provider is a dependency, including cold start or similarity. P0 uses yt-dlp, user-confirmed browser capture and existing corpus evidence; Data API is an optional later backend, never a hidden fallback.
+- [x] **ADR-SI-7 — Gemini Flash analysis (C2):** A local agy may call Gemini Flash only on captured metadata/transcript/thumbnail/frame evidence. Save source refs, input-manifest digest, model/prompt-policy version, timestamp and evidence. Until a user-approved action policy, outputs are review-only and cannot auto-reject or mutate corpus state.
+- [x] **ADR-SI-8 — browser corpus import and C3 suggestions:** Browser-assisted import is permitted after user confirmation of the corpus batch. C3 may capture direct recommendations around a confirmed seed, at depth 1 and a fixed per-seed ceiling. Save URL, capture time, batch/owner and immutable provenance; do not admit through a generic automatic/manual source label.
+- [x] **ADR-SI-9 — P0 source-plane choice:** Suspend the Data API quota coordinator as a P0 blocker. Preserve it as deferred code/ADR; P0 acceptance instead proves a throwing Data API port is never invoked.
+
+## 7. Explicit non-goals
+
+- A global YouTube index, demand/competition figure, CTR prediction, or “global trend” without its authorized source.
+- Any external YouTube intelligence data-provider dependency, untracked/recursive browser collection, or uncalibrated Gemini auto-action.
+- Unbounded yt-dlp/C3 collection, duplicate points/alerts, or retention beyond 30 days for public third-party data.
+- Media generation, thumbnail creation, voice, script writing, or automatic application of recommendations in Spy.

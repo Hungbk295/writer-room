@@ -4,6 +4,7 @@ import './styles.css';
 import { parseRoute, type Route } from './router.ts';
 import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
+import { SpyLoopPage } from './pages/SpyLoop.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
 import { WriterPage, WriterPackPage, WriterRunPage } from './pages/Writer.tsx';
 import { WriterV2Page, WriterV2RunPage } from './pages/WriterV2.tsx';
@@ -19,11 +20,62 @@ import { TurnBridge } from './features/turn-bridge/TurnBridge.tsx';
 import { getTerminalState, subscribeTerminals } from './components/terminal/terminalStore.ts';
 import { api } from './api.ts';
 
+const UI_FONT_SCALE_KEY = 'writer-room.ui-font-scale';
+const DEFAULT_FONT_SCALE = 1;
+const MIN_FONT_SCALE = 0.65;
+const MAX_FONT_SCALE = 1.6;
+const FONT_SCALE_STEP = 0.1;
+
+function readFontScale() {
+  try {
+    const saved = Number(window.localStorage.getItem(UI_FONT_SCALE_KEY));
+    return Number.isFinite(saved) && saved >= MIN_FONT_SCALE && saved <= MAX_FONT_SCALE
+      ? saved
+      : DEFAULT_FONT_SCALE;
+  } catch {
+    return DEFAULT_FONT_SCALE;
+  }
+}
+
 function App() {
   const [route, setRoute] = useState<Route>(parseRoute());
   const [health, setHealth] = useState<string>('…');
   const [writerCount, setWriterCount] = useState(0);
   const [termTick, setTermTick] = useState(0);
+  const [fontScale, setFontScale] = useState(readFontScale);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${Math.round(fontScale * 100)}%`;
+    try {
+      window.localStorage.setItem(UI_FONT_SCALE_KEY, String(fontScale));
+    } catch {
+      // Keep the selected size for the current session when storage is unavailable.
+    }
+  }, [fontScale]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+
+      const direction =
+        event.key === '+' || event.key === '=' || event.code === 'NumpadAdd'
+          ? 1
+          : event.key === '-' || event.code === 'NumpadSubtract'
+            ? -1
+            : 0;
+
+      if (direction !== 0) {
+        event.preventDefault();
+        setFontScale((current) => Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, current + direction * FONT_SCALE_STEP)));
+      } else if (event.key === '0' || event.code === 'Numpad0') {
+        event.preventDefault();
+        setFontScale(DEFAULT_FONT_SCALE);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   useEffect(() => subscribeTerminals(() => setTermTick((n) => n + 1)), []);
 
@@ -51,6 +103,9 @@ function App() {
   switch (route.name) {
     case 'spy':
       page = <SpyPage />;
+      break;
+    case 'spy-loop':
+      page = <SpyLoopPage topic={route.topic} />;
       break;
     case 'spy-run':
       page = <SpyRunPage id={route.id} />;

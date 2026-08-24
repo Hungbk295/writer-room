@@ -5,6 +5,8 @@
   "identifier": "com.dacthao.writerroom",
   "build": {
     "beforeBuildCommand": "bun run ui:build",
+    "beforeDevCommand": "bun --cwd packages/web dev",
+    "devUrl": "http://127.0.0.1:5178",
     "frontendDist": "../packages/web/dist"
   },
   "app": {

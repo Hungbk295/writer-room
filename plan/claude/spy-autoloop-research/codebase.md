@@ -1,0 +1,17 @@
+KEY FINDINGS r-codebase
+- SpyService fields: spy.store, spy.quota, spy.discovery; config <data>/config/spy.json (strict zod schema! unknown keys -> parse fail -> empty config -> LOSE API KEY). Use separate config/spy-loop.json.
+- Quota: QuotaLedger.consume(op) throws quota_exceeded; quotaDay() Pacific. BUT acquisition.ts scan + videosByIds/channelsByIds/comments DO NOT consume -> ledger undercounts. Fix: QuotaCountingDataApi decorator wrapping the port.
+- discoverChannels reads niche.json seedKeywords only (no arbitrary keywords). discoverVideos({query}) = 1 search call/keyword -> the loop's SEARCH primitive. niche.json doesn't exist yet -> invalid_input.
+- expandGraph({channelIds, includeSubscriptions}) seeds global by default -> loop passes topic channelIds. fetchPublicSubscriptions returns null on 403.
+- upsertCandidate keeps status/first_seen/discovered_from -> need topic_channel_sources to record keyword provenance.
+- CandidateStatus: new/shortlisted/rejected/scanned (no studied). decideCandidates rejects 'scanned'.
+- scanCandidates async: sets scanned immediately, returns operationId+spyRunId; wait via spy.wait(). unitsPerChannel = 1+ceil(n/50)*2.
+- No thumbnail/uploads_playlist_id stored on candidate_channels -> thumbnails for unscanned channel cost ~2 units (playlistItems+videos.list) or use https://i.ytimg.com/vi/<id>/hqdefault.jpg. tags_json stored only after scan.
+- Schema: SCHEMA_VERSION=4 in store.ts:19; DDL string with IF NOT EXISTS; bump to 5. terms/term_serp_snapshots tables DO NOT exist -> topic_keywords uses term_text directly in P0.
+- No timer pattern; write setInterval 60s scheduler in createHttpApp (spy not in harness.ts); loop_ticks UNIQUE(topic_id, quota_day) for idempotency.
+- lock.ts is daemon-wide pid lock; use in-memory Map per topic.
+- resolveRun matches sourceIdentity lowercase -> UC ids may not match; store spyRunId in topic_channels.
+- router.ts:26 parses #/spy/<x> as spy-run -> add 'loop' before.
+- API key set via PUT /api/settings/spy (http.ts:934).
+- File list P0: spy/src/{store.ts, topic.ts, faceless.ts, learn-value.ts, loop/planner.ts, loop/runner.ts, loop/report.ts, adapters/quota-counting-data-api.ts, mcp-tools.ts, index.ts}; daemon/src/spy/{loop-scheduler.ts, report-telegram.ts}, http.ts routes, spy-mcp.ts allowlist; web router.ts/api.ts/pages/SpyLoop.tsx/main.tsx. Tests: spy/test/loop.test.ts w/ FakeDataApi (discovery.test.ts:31), store.test.ts, daemon/test/spy-mcp.test.ts.
+- Don't hold store.transaction() across await.

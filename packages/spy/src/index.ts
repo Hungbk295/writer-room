@@ -7,6 +7,7 @@ import { OperationManager } from './operations.ts';
 import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
 import { HarvestService } from './harvest.ts';
+
 import { QuotaLedger } from './quota.ts';
 import { DiscoveryService } from './discovery.ts';
 import { nicheConfigSchema, NICHE_TEMPLATE, scoreChannelFit, type NicheConfig } from './niche.ts';
@@ -21,6 +22,9 @@ import {
   type YouTubeDataApiPort,
   type LlmPort,
 } from './adapters/index.ts';
+import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
+import { importTopicFiles } from './topic.ts';
+import { LoopRunner } from './loop/runner.ts';
 import {
   samplingPolicySchema,
   spyConfigSchema,
@@ -47,7 +51,15 @@ export * from './adapters/index.ts';
 export * from './quota.ts';
 export * from './niche.ts';
 export * from './discovery.ts';
+export * from './topic.ts';
+export * from './faceless.ts';
+export * from './learn-value.ts';
+export * from './loop/types.ts';
+export * from './loop/planner.ts';
+export * from './loop/report.ts';
+export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
+
 
 export interface SpyServiceOptions {
   dataRoot: string;
@@ -153,12 +165,20 @@ export class SpyService {
   readonly harvest: HarvestService;
   readonly quota: QuotaLedger;
   readonly discovery: DiscoveryService;
+  /** Loop runner — expose spy.loop.runTick, .status, .inbox, .decide, .listTopics, .report */
+  readonly loop: LoopRunner;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
   private readonly youtube: YoutubePort;
   private readonly media: MediaPort;
+  /** Adapter thô — CHỈ dùng để dựng decorator. Đừng gọi API trực tiếp qua nó. */
   private readonly dataApi: YouTubeDataApiPort;
+  /**
+   * Adapter đã bọc QuotaCountingDataApi. MỌI call Data API phải đi qua field này,
+   * nếu không ledger sẽ tưởng còn quota rồi ăn 403 thật (§2.2).
+   */
+  private readonly countingApi: YouTubeDataApiPort;
   private readonly dataApiAdapter: YouTubeDataApiAdapter | null;
   private readonly llm: LlmPort;
 
@@ -178,17 +198,33 @@ export class SpyService {
       this.dataApi = this.dataApiAdapter;
     }
     this.llm = opts.llm ?? new DeterministicStubLlm();
+    this.quota = new QuotaLedger(this.store);
+
+    // MỌI adapter đều được bọc — kể cả adapter inject từ test.
+    //
+    // Trước đây adapter inject được miễn bọc để tránh double-count, nhưng
+    // double-count chỉ tồn tại vì discovery.ts tự `quota.consume`. Gỡ nguyên nhân
+    // đó rồi thì miễn trừ này chỉ còn tác hại: test chạy trên một đường mà
+    // production không bao giờ đi, và hợp đồng fixture của codex (TraceDataApi
+    // phải đi qua đúng đường production) không viết được.
+    //
+    // Khác biệt duy nhất là nguồn capability: adapter thật cần key trong config;
+    // fake do test truyền vào TỰ NÓ là capability nên hasKey luôn true.
+    const countingApi = opts.dataApi
+      ? new QuotaCountingDataApi(opts.dataApi, this.quota, () => true)
+      : new QuotaCountingDataApi(this.dataApi, this.quota, () => Boolean(this.config.youtubeDataApiKey?.trim()));
+    this.countingApi = countingApi;
+
     this.acquisition = new AcquisitionService(
       this.store,
       this.artifacts,
       this.youtube,
-      this.dataApi,
+      countingApi,
       this.operations,
       this.config.sampling,
     );
     this.profile = new ProfileService(this.store, this.llm);
-    this.quota = new QuotaLedger(this.store);
-    this.discovery = new DiscoveryService(this.store, this.dataApi, this.quota);
+    this.discovery = new DiscoveryService(this.store, countingApi, this.quota);
     this.harvest = new HarvestService(
       this.store,
       this.youtube,
@@ -197,6 +233,16 @@ export class SpyService {
       this.artifacts,
       this.config.concurrency,
     );
+
+    // Loop runner. Không truyền `facelessJudge`: vision là việc của agent, thiết
+    // kế ở vòng riêng (§3) — P0 chỉ có faceless_hint text-only.
+    this.loop = new LoopRunner({
+      store: this.store,
+      quota: this.quota,
+      discovery: this.discovery,
+      dataApi: countingApi,
+      dataRoot: this.dataRoot,
+    });
   }
 
   async init(): Promise<void> {
@@ -207,7 +253,9 @@ export class SpyService {
     this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
     this.harvest.setConcurrency(this.config.concurrency);
     this.operations.reconcile();
+    await importTopicFiles(this.dataRoot, this.store);
   }
+
 
   channelSpy(input: ChannelSpyInput, ownerSubject = 'local'): StartedOp {
     return this.acquisition.channelSpy(input, ownerSubject);
@@ -637,7 +685,7 @@ export class SpyService {
     this.assertDataApi();
     if (videoIds.length === 0) throw new AppError('invalid_input', 'Cần ít nhất 1 video_id');
     if (videoIds.length > 50) throw new AppError('invalid_input', 'Tối đa 50 video_id mỗi lần');
-    const found = await this.dataApi.fetchVideoStatistics(videoIds);
+    const found = await this.countingApi.fetchVideoStatistics(videoIds);
     return {
       requested: videoIds.length,
       videos: videoIds.map((id) => found.get(id) ?? null).filter((v) => v !== null),
@@ -652,10 +700,10 @@ export class SpyService {
     if (channelIds.length > 50) throw new AppError('invalid_input', 'Tối đa 50 channel_id mỗi lần');
     const handles = channelIds.filter((id) => id.startsWith('@'));
     const ids = channelIds.filter((id) => !id.startsWith('@'));
-    const found = await this.dataApi.fetchChannelStatistics(ids);
+    const found = await this.countingApi.fetchChannelStatistics(ids);
     const resolved = [...found.values()];
     for (const handle of handles) {
-      const channel = await this.dataApi.resolveChannelByHandle?.(handle);
+      const channel = await this.countingApi.resolveChannelByHandle?.(handle);
       if (channel) resolved.push(channel);
     }
     return {
@@ -703,10 +751,10 @@ export class SpyService {
     includeReplies?: boolean;
   }) {
     this.assertDataApi();
-    if (!this.dataApi.fetchVideoComments) {
+    if (!this.countingApi.fetchVideoComments) {
       throw new AppError('capability_missing', 'Data API adapter không hỗ trợ comment');
     }
-    const threads = await this.dataApi.fetchVideoComments(input);
+    const threads = await this.countingApi.fetchVideoComments(input);
     return {
       scope: input.videoId ? { videoId: input.videoId } : { channelId: input.channelId },
       order: input.order ?? 'relevance',
@@ -886,8 +934,9 @@ export class SpyService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Đà tăng trưởng của một kênh — thay cho "growth 30 ngày" của vidIQ mà không
-   * cần time-series. Đọc từ corpus đã quét nên KHÔNG tốn quota.
+   * Đà tăng trưởng của một kênh — thay cho chỉ số "growth 30 ngày" mà vidIQ
+   * bán, nhưng tự tính và không cần time-series. Đọc từ corpus
+   * đã quét nên KHÔNG tốn quota.
    *
    * Khác biệt cần biết: đây là đà theo VIEW TÍCH LUỸ của video đăng gần đây,
    * không phải tăng trưởng subscriber. Sub growth bắt buộc phải có chuỗi thời

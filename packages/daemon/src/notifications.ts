@@ -9,7 +9,7 @@ import { open, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureDir } from './paths.ts';
 
-export type JobNotificationKind = 'training-lab' | 'writer' | 'writer-v2';
+export type JobNotificationKind = 'training-lab' | 'writer' | 'writer-v2' | 'spy-loop';
 
 export interface JobDoneNotification {
   /** Stable dedupe key: one terminal DONE notification for one job. */

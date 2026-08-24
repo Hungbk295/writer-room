@@ -17,6 +17,11 @@ export function Home() {
           <h2>Spy</h2>
           <p>Thu hoạch kênh, xếp velocity, lấy transcript và xem bằng chứng.</p>
         </a>
+        <a class="destination" href={href({ name: 'spy-loop' })}>
+          <div class="eyebrow">Auto-Loop</div>
+          <h2>Spy Loop</h2>
+          <p>Tìm kênh đối thủ tự động theo chủ đề — duyệt Inbox hàng ngày.</p>
+        </a>
         <a class="destination" href={href({ name: 'writer' })}>
           <div class="eyebrow">Staging</div>
           <h2>Writer</h2>
@@ -45,9 +50,10 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
       <a class="brand" href={href({ name: 'home' })}>
         Spy
       </a>
-      <nav class="nav">
+      <nav class="nav" aria-label="Điều hướng chính">
         <a class={is(['home'])} href={href({ name: 'home' })}>Home</a>
         <a class={is(['spy', 'spy-run'])} href={href({ name: 'spy' })}>Spy</a>
+        <a class={is(['spy-loop'])} href={href({ name: 'spy-loop' })}>Loop</a>
         <a class={is(['writer', 'writer-pack', 'writer-run'])} href={href({ name: 'writer' })}>
           Writer
           {writerCount > 0 && <span class="nav-badge">{writerCount}</span>}
@@ -72,6 +78,9 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
         <JobNotificationCenter />
         {/* Always-visible show/hide — same role as dna-spy sidebar "🖥 Terminal" */}
         <TerminalToggleButton />
+        <span class="font-shortcut" title="Ctrl/Cmd + hoặc − để đổi cỡ chữ; Ctrl/Cmd 0 để đặt lại">
+          Ctrl ±
+        </span>
       </nav>
     </header>
   );

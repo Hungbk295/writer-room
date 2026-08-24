@@ -5,9 +5,10 @@
  *   - search.list  → bucket riêng 100 call/ngày. CHỈ dùng để gieo hạt.
  *   - endpoint ID  → 10.000 unit/ngày. Mở rộng đồ thị và enrich thoải mái.
  *
- * `relatedToVideoId` đã bị YouTube gỡ 07/08/2023 nên không còn API "video liên
- * quan"; đường duy nhất còn rẻ để tìm kênh cùng niche là đồ thị featured
- * channels + public subscriptions.
+ * YouTube đã gỡ `relatedToVideoId` của search.list từ 07/08/2023, nên không
+ * còn API gợi ý video liên quan; đường duy nhất còn rẻ để tìm kênh cùng niche
+ * là đồ thị
+ * featured channels + public subscriptions.
  */
 import { AppError } from './errors.ts';
 import type { SpyStore, DiscoverySource } from './store.ts';
@@ -46,6 +47,13 @@ export interface ExpandGraphInput {
 }
 
 export class DiscoveryService {
+  /**
+   * `dataApi` PHẢI là adapter đã bọc `QuotaCountingDataApi` — decorator là chủ sổ
+   * quota DUY NHẤT (plan §2.2). Service này không được tự `quota.consume` nữa:
+   * trước đây nó consume tay và cũng nhận adapter đã bọc → mỗi search ghi 2 unit
+   * trong production, 1 unit trong test (test inject adapter thô, không bọc).
+   * `quota` chỉ còn dùng để đọc: `canAfford`/`status` khi lập kế hoạch và dry-run.
+   */
   constructor(
     private readonly store: SpyStore,
     private readonly dataApi: YouTubeDataApiPort,
@@ -106,7 +114,6 @@ export class DiscoveryService {
     for (const item of plan) {
       const market = markets.find((m) => m.id === item.market)!;
       for (const query of item.queries) {
-        this.quota.consume('search.list');
         const result = await search({
           q: query.q,
           type: 'video',
@@ -123,7 +130,6 @@ export class DiscoveryService {
       if (item.channelSearch) {
         const q = market.seedKeywords.slice(0, 3).join(' ');
         if (q) {
-          this.quota.consume('search.list');
           const result = await search({
             q,
             type: 'channel',
@@ -164,7 +170,6 @@ export class DiscoveryService {
       };
     }
     const search = this.requireSearch();
-    this.quota.consume('search.list');
     const result = await search({
       q: input.query,
       type: 'video',
@@ -231,7 +236,6 @@ export class DiscoveryService {
     const perSeed: Array<{ seed: string; featured: number; subscriptions: number | null }> = [];
 
     for (const seed of seeds) {
-      this.quota.consume('channelSections.list');
       const featured = await this.dataApi.fetchFeaturedChannels(seed);
       for (const channelId of featured) {
         if (!seen.has(channelId)) seen.set(channelId, { market: '', via: 'featured', from: seed });
@@ -239,7 +243,6 @@ export class DiscoveryService {
 
       let subsCount: number | null = null;
       if (input.includeSubscriptions && this.dataApi.fetchPublicSubscriptions) {
-        this.quota.consume('subscriptions.list');
         const subs = await this.dataApi.fetchPublicSubscriptions(seed);
         // null = kênh ẩn subscriptions (403). Đó là mặc định của YouTube, không phải lỗi.
         subsCount = subs === null ? null : subs.length;
@@ -300,7 +303,6 @@ export class DiscoveryService {
     }> = [];
 
     for (const batch of batches) {
-      this.quota.consume('channels.list');
       const stats = await this.dataApi.fetchChannelStatistics(batch);
       for (const channelId of batch) {
         const meta = seen.get(channelId)!;
