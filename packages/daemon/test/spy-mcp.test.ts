@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SpyService } from '@writer-room/spy';
-import type { VideoSnapshot } from '@writer-room/spy';
+import type { VideoSnapshot, YoutubePort } from '@writer-room/spy';
 import { McpSpyServer } from '../src/spy-mcp.ts';
 
 let root = '';
@@ -84,7 +84,7 @@ describe('Spy MCP server', () => {
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       'spy_channel_momentum', 'spy_channel_outliers', 'spy_channel_profile', 'spy_channel_start',
       'spy_channel_videos', 'spy_competitors_list', 'spy_corpus_channels', 'spy_corpus_videos',
-      'spy_find_videos', 'spy_get_status', 'spy_loop_inbox', 'spy_loop_report',
+      'spy_find_videos', 'spy_get_status', 'spy_global_video_search', 'spy_loop_inbox', 'spy_loop_report',
       'spy_loop_status', 'spy_read_transcript', 'spy_read_video_material',
       'spy_run_manifest', 'spy_title_patterns', 'spy_topics_list', 'spy_video_comments',
       'spy_video_metrics', 'spy_video_start', 'spy_wait',
@@ -110,6 +110,17 @@ describe('Spy MCP server', () => {
     expect(comments).toMatchObject({
       anyOf: [{ required: ['video_id'] }, { required: ['channel_id'] }],
       properties: { max_results: { minimum: 1, maximum: 100 }, order: { enum: ['relevance', 'time'] } },
+    });
+    const globalSearch = tools.find((tool) => tool.name === 'spy_global_video_search')!.inputSchema;
+    expect(globalSearch).toMatchObject({
+      additionalProperties: false,
+      required: ['query'],
+      properties: {
+        query: { minLength: 1, maxLength: 200 },
+        limit: { minimum: 1, maximum: 50, default: 20 },
+        language: { default: 'vi' },
+        region: { default: 'VN' },
+      },
     });
   });
 
@@ -141,6 +152,53 @@ describe('Spy MCP server', () => {
     };
     expect(corpus).toMatchObject({ count: 1, videos: [{ sourceVideoId: snapshot.sourceVideoId }] });
     expect(spy.store.listVideoSnapshots(spyRunId)).toHaveLength(1);
+  });
+
+  test('routes global keyword search and preserves provider provenance', async () => {
+    root = await mkdtemp(join(tmpdir(), 'writer-room-spy-mcp-global-search-'));
+    const youtube = {
+      async searchVideos(query: string, limit: number) {
+        expect({ query, limit }).toEqual({ query: 'tài chính việt nam', limit: 7 });
+        return [{
+          sourceVideoId: 'abc123def45',
+          canonicalUrl: 'https://www.youtube.com/watch?v=abc123def45',
+          title: 'Video tiếng Việt',
+          channelTitle: 'Kênh Việt',
+          channelId: 'UCviet',
+          viewCount: 987,
+          durationSec: 321,
+          publishedAt: '2026-08-03',
+          thumbnailUrl: null,
+        }];
+      },
+    } as YoutubePort;
+    spy = new SpyService({ dataRoot: join(root, 'spy'), youtube });
+    await spy.init();
+    server = new McpSpyServer(spy);
+    const info = await server.start();
+
+    const payload = await callMcp(info, 6, 'tools/call', {
+      name: 'spy_global_video_search', arguments: { query: 'tài chính việt nam', limit: 7 },
+    });
+    const result = JSON.parse(payload.result.content![0]!.text) as {
+      providerUsed: string; fallbackReason: string | null; videos: Array<Record<string, unknown>>;
+    };
+
+    expect(result).toMatchObject({
+      providerUsed: 'ytdlp',
+      localeHintsApplied: false,
+      fallbackReason: 'youtube_data_api_not_configured',
+      videos: [{
+        videoId: 'abc123def45',
+        title: 'Video tiếng Việt',
+        channelTitle: 'Kênh Việt',
+        canonicalUrl: 'https://www.youtube.com/watch?v=abc123def45',
+        viewCount: 987,
+        durationSec: 321,
+        publishedAt: '2026-08-03',
+      }],
+    });
+    expect(JSON.stringify(result)).not.toContain('youtubeDataApiKey');
   });
 
   /**

@@ -23,6 +23,7 @@ import { href } from '../router.ts';
 import { originLabel, statusBadgeClass } from './Training.tsx';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 import { EntityId, shortEntityId } from '../components/ui/EntityId.tsx';
+import { StudioSubNav } from '../components/StudioSubNav.tsx';
 
 function refKey(ref: RuleRef): string {
   return `${ref.formulaId}::${ref.ruleId}`;
@@ -81,9 +82,10 @@ export function StudioListPage() {
 
   return (
     <div>
+      <StudioSubNav currentTab="studio" />
       <div class="page-header">
         <div>
-          <h1 class="page-title">Formula Studio</h1>
+          <h1 class="page-title">Studio</h1>
           <p class="page-lead">
             Chọn rule từ nhiều video, xem chỗ trùng, ghép thành Formula cho một <strong>thể loại</strong>.
             Bước chọn và gom nhóm không tốn token.

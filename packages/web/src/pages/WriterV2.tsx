@@ -18,13 +18,15 @@ import {
   type WriterRunV2Summary,
 } from '../api.ts';
 import { href } from '../router.ts';
-import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 import { EntityId } from '../components/ui/EntityId.tsx';
 import { SourcePackExplorer } from '../components/SourcePackExplorer.tsx';
+import { WriterProgressBar } from '../components/WriterProgressBar.tsx';
 
 const AGENTS = ['codex', 'claude', 'grok', 'agy'] as const;
 
 const PHASE_LABEL: Record<string, string> = {
+  CONFIGURING: 'Đang cấu hình',
+  READY: 'Đã chuẩn bị — chờ duyệt',
   STUDY: '1. Đọc pack (STUDY)',
   WRITE: '2. Viết (WRITE)',
   GATE: '3. Gate tất định',
@@ -53,115 +55,40 @@ function styleBlurbOf(markdown: string): string | null {
 function statusClass(status: WriterRunV2['status']): string {
   if (status === 'DONE') return 'chip ok';
   if (status === 'RUNNING') return 'chip warn';
+  if (status === 'DRAFT') return 'chip';
   return 'chip bad';
 }
 
 export function WriterV2Page() {
-  const [packs, setPacks] = useState<WriterPackSummary[]>([]);
-  const [generalPacks, setGeneralPacks] = useState<GeneralPackSummary[]>([]);
-  const [formulas, setFormulas] = useState<FormulaSummary[]>([]);
   const [runs, setRuns] = useState<WriterRunV2Summary[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  const [title, setTitle] = useState('');
-  const [brief, setBrief] = useState('');
-  const [audience, setAudience] = useState('');
-  const [targetWords, setTargetWords] = useState('');
-  const [packId, setPackId] = useState('');
-  const [generalPack, setGeneralPack] = useState('');
-  const [formulaId, setFormulaId] = useState('');
-  const [agentId, setAgentId] = useState<string>('codex');
-  const [editorAgentId, setEditorAgentId] = useState<string>('claude');
-  const [starting, setStarting] = useState(false);
-  const [exploringSourcePack, setExploringSourcePack] = useState(false);
-  const [rerunningRunId, setRerunningRunId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(async () => {
-    const errors: string[] = [];
     try {
-      const d = await api.listWriterPacks();
-      setPacks(d.packs);
-      setPackId((prev) => prev || d.packs[0]?.id || '');
+      const d = await api.listWriterPostsV2();
+      setRuns(d.posts);
+      setError(null);
     } catch (err) {
-      errors.push(`Packs: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    try {
-      const d = await api.listGeneralPacks();
-      setGeneralPacks(d.packs);
-      setGeneralPack((prev) => prev || d.packs[0]?.path || '');
-    } catch (err) {
-      errors.push(`General packs: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    try {
-      const d = await api.listFormulas();
-      setFormulas(d.formulas);
-      setFormulaId((prev) => prev || d.formulas[0]?.id || '');
-    } catch (err) {
-      errors.push(`Formulas: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    try {
-      const d = await api.listWriterRunsV2();
-      setRuns(d.runs);
-    } catch {
       setRuns([]);
+      setError(err instanceof Error ? err.message : String(err));
     }
-    setError(errors.length > 0 ? errors.join(' · ') : null);
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const start = async () => {
+  const create = async () => {
     setError(null);
-    setStarting(true);
+    setCreating(true);
     try {
-      const run = await api.startWriterRunV2({
-        brief: brief.trim() || title.trim(),
-        ...(title.trim() ? { title: title.trim() } : {}),
-        ...(audience.trim() ? { audience: audience.trim() } : {}),
-        ...(targetWords.trim() ? { targetWords: Number(targetWords) } : {}),
-        packId,
-        generalPack,
-        formulaId,
-        agentId,
-        editorAgentId,
-      });
-      location.hash = href({ name: 'writer-v2-run', id: run.id });
+      const post = await api.createWriterPostV2();
+      location.hash = href({ name: 'writer-v2-run', id: post.id });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setStarting(false);
+      setCreating(false);
     }
   };
-
-  /** A failed attempt stays visible; ReRun always starts a distinct new article. */
-  const rerun = async (failed: WriterRunV2Summary) => {
-    if ((failed.status !== 'FAILED' && failed.status !== 'FAILED_GATE') || rerunningRunId) return;
-    setError(null);
-    setRerunningRunId(failed.id);
-    try {
-      // The list intentionally carries only its display fields. Reload the
-      // failed record so audience and every original input are preserved.
-      const source = await api.getWriterRunV2(failed.id);
-      const next = await api.startWriterRunV2({
-        brief: source.brief,
-        ...(source.requestedTitle ? { title: source.requestedTitle } : {}),
-        ...(source.audience ? { audience: source.audience } : {}),
-        ...(source.targetWords !== undefined ? { targetWords: source.targetWords } : {}),
-        packId: source.packId,
-        generalPack: source.generalPackPath,
-        formulaId: source.formulaId,
-        agentId: source.agentId,
-        editorAgentId: source.editorAgentId,
-      });
-      location.hash = href({ name: 'writer-v2-run', id: next.id });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRerunningRunId(null);
-    }
-  };
-
-  const canStart = Boolean((brief.trim() || title.trim()) && packId && generalPack && formulaId) && !starting;
 
   return (
     <div>
@@ -169,210 +96,205 @@ export function WriterV2Page() {
         <div>
           <h1 class="page-title">Writer v2</h1>
           <p class="page-lead">
-            Hai lượt gọi: đọc pack → viết. Sau đó gate tất định (code) → biên tập (agent khác) →
-            sửa một vòng → gate lại. Không qua gate thì không có DONE.
+            Mỗi post là một writer room: tạo nháp trước, cấu hình và review trong post, rồi mới Run.
           </p>
         </div>
-        <a class="btn secondary" href={href({ name: 'writer' })}>Writer v1 →</a>
+        <div class="row" style={{ gap: '0.5rem' }}>
+          <button class="btn teal" type="button" disabled={creating} onClick={() => void create()}>
+            {creating ? 'Đang tạo…' : 'Create writer post'}
+          </button>
+          <a class="btn secondary" href={href({ name: 'writer' })}>Source Packs →</a>
+        </div>
       </div>
 
       {error && <p class="error">{error}</p>}
 
       <section class="panel">
-        <h2>Bài mới</h2>
-        <div class="stack" style={{ gap: '0.85rem', marginTop: '0.75rem' }}>
-          <label class="field">
-            <span>Tiêu đề</span>
-            <input
-              type="text"
-              placeholder="Tiêu đề bài / working title…"
-              value={title}
-              onInput={(e) => setTitle((e.target as HTMLInputElement).value)}
-            />
-          </label>
-
-          <label class="field">
-            <span>Brief</span>
-            <textarea
-              rows={3}
-              placeholder="Bài này nói gì, cho ai, góc nào…"
-              value={brief}
-              onInput={(e) => setBrief((e.target as HTMLTextAreaElement).value)}
-            />
-          </label>
-
-          <label class="field">
-            <span>Khán giả (để STUDY chọn gap theo đúng người xem của mình)</span>
-            <input
-              type="text"
-              placeholder="vd. Người làm văn phòng, nhà đầu tư mới…"
-              value={audience}
-              onInput={(e) => setAudience((e.target as HTMLInputElement).value)}
-            />
-          </label>
-
-          <div class="form-grid-3">
-            <div class="field">
-              <span>Topic pack (nguồn dữ kiện duy nhất)</span>
-              <div class="field-action-group">
-                <select
-                  value={packId}
-                  onChange={(e) => setPackId((e.target as HTMLSelectElement).value)}
-                  disabled={packs.length === 0}
-                >
-                  {packs.length === 0 ? (
-                    <option value="">Chưa có Source Pack</option>
-                  ) : packs.map((p) => (
-                    <option key={p.id} value={p.id}>{p.title} · {p.videoCount} video</option>
-                  ))}
-                </select>
-                <button
-                  class="btn secondary"
-                  type="button"
-                  onClick={() => setExploringSourcePack(true)}
-                  title="Tìm video, lấy transcript và tạo Topic pack"
-                >
-                  Explore
-                </button>
-              </div>
-            </div>
-
-            <label class="field">
-              <span>General pack (cách làm, không phải dữ kiện)</span>
-              <select value={generalPack} onChange={(e) => setGeneralPack((e.target as HTMLSelectElement).value)}>
-                {generalPacks.map((p) => (
-                  <option key={p.path} value={p.path}>
-                    {p.title}{p.version ? ` · v${p.version}` : ''} · {p.wordCount} từ
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Formula (hợp đồng style)</span>
-              <select value={formulaId} onChange={(e) => setFormulaId((e.target as HTMLSelectElement).value)}>
-                {formulas.map((f) => (
-                  <option key={f.id} value={f.id}>{f.label} · v{f.version} · {f.ruleCount} rule</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <div class="form-grid-3">
-            <label class="field">
-              <span>Agent viết</span>
-              <select value={agentId} onChange={(e) => setAgentId((e.target as HTMLSelectElement).value)}>
-                {AGENTS.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Agent biên tập (nên khác agent viết)</span>
-              <select
-                value={editorAgentId}
-                onChange={(e) => setEditorAgentId((e.target as HTMLSelectElement).value)}
-              >
-                {AGENTS.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Số từ (bỏ trống = 800–1500)</span>
-              <input
-                type="number"
-                min={80}
-                max={20000}
-                step={50}
-                value={targetWords}
-                placeholder="1100"
-                onInput={(e) => setTargetWords((e.target as HTMLInputElement).value)}
-              />
-            </label>
-          </div>
-
-          {agentId === editorAgentId && (
-            <p class="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-              ⚠️ Cùng một agent vừa viết vừa chấm — lớp 1 mất tác dụng đối chứng.
-            </p>
-          )}
-          {generalPacks.length === 0 && (
-            <p class="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-              Chưa có general pack nào. Đặt file markdown vào <code>writer-room-data/general-packs/</code>.
-            </p>
-          )}
-          {packs.length === 0 && (
-            <p class="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
-              Chưa có Topic pack. Chọn <strong>Explore</strong> để tìm video, lấy transcript và Pack chúng lại.
-            </p>
-          )}
-          <button
-            class="btn teal"
-            type="button"
-            disabled={!canStart}
-            style={{ alignSelf: 'flex-start', height: '42px', padding: '0 1.5rem', fontWeight: 600 }}
-            onClick={() => void start()}
-          >
-            {starting ? 'Đang khởi động…' : '✍️ Bắt đầu'}
-          </button>
-        </div>
-      </section>
-
-      {exploringSourcePack && (
-        <SourcePackExplorer
-          onClose={() => setExploringSourcePack(false)}
-          onPacked={(pack) => {
-            setPacks((prev) => [pack, ...prev.filter((item) => item.id !== pack.id)]);
-            setPackId(pack.id);
-            setExploringSourcePack(false);
-          }}
-        />
-      )}
-
-      <section class="panel" style={{ marginTop: '1rem' }}>
-        <h2>Runs ({runs.length})</h2>
+        <h2>Writer posts ({runs.length})</h2>
         <ul class="list">
           {runs.map((run) => (
             <li key={run.id}>
               <div class="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
                 <div>
                   <a href={href({ name: 'writer-v2-run', id: run.id })}>
-                    <strong>{run.requestedTitle || run.brief}</strong>
+                    <strong>{run.requestedTitle || run.brief || 'Untitled writer post'}</strong>
                   </a>
-                  <div class="meta" style={{ marginTop: '0.15rem' }}>
+                  <div class="meta" style={{ marginTop: '0.15rem', display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <span class={statusClass(run.status)}>{run.status}</span>
                     <span>{PHASE_LABEL[run.phase] ?? run.phase}</span>
-                    <span>{run.packTitle}</span>
-                    <span>{run.generalPackPath}</span>
-                    <span>gate: {run.gateViolationCount} lỗi</span>
-                    <span>defect: {run.defectCount}</span>
+                    <span class="chip" style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem' }}>
+                      {run.phase === 'DONE' ? '100%' : run.phase === 'EDIT_REVIEW' ? '85%' : run.phase === 'GATE' ? '75%' : run.phase === 'WRITE' ? '52%' : run.phase === 'STUDY' ? '22%' : run.phase === 'READY' ? '10%' : '5%'}
+                    </span>
+                    {run.styledCount > 0 && (
+                      <span class="chip teal" style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem' }}>
+                        🎨 {run.styledCount} styled
+                      </span>
+                    )}
                     <span>{new Date(run.updatedAt).toLocaleString()}</span>
                   </div>
-                </div>
-                <div class="row" style={{ gap: '0.5rem' }}>
-                  {(run.status === 'FAILED' || run.status === 'FAILED_GATE') && (
-                    <button
-                      class="btn teal"
-                      type="button"
-                      disabled={rerunningRunId !== null}
-                      onClick={() => void rerun(run)}
-                    >
-                      {rerunningRunId === run.id ? 'Đang ReRun…' : '↻ ReRun'}
-                    </button>
-                  )}
-                  <DeleteButton
-                    onDelete={async () => {
-                      await api.deleteWriterRunV2(run.id);
-                      setRuns((prev) => prev.filter((r) => r.id !== run.id));
-                    }}
-                  />
                 </div>
               </div>
             </li>
           ))}
-          {runs.length === 0 && <li class="muted">Chưa có run nào.</li>}
+          {runs.length === 0 && <li class="muted">Chưa có writer post nào.</li>}
         </ul>
       </section>
     </div>
+  );
+}
+
+function HookPanel({
+  run,
+  configurationDirty,
+  onRun,
+}: {
+  run: WriterRunV2;
+  configurationDirty: boolean;
+  onRun: (next: WriterRunV2) => void;
+}) {
+  const questions = run.hookClarify?.questions ?? [];
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const saved = run.hookClarify?.answers ?? [];
+    setAnswers(questions.map((_, i) => saved[i] ?? ''));
+  }, [questions.join('\n')]);
+
+  const draft = run.status === 'DRAFT';
+  const generating = Boolean(run.generatingHook);
+  const canClarify = draft && Boolean(run.requestedTitle?.trim()) && !configurationDirty && !generating && !busy;
+  const canSuggest = draft && questions.length > 0 && answers.length === questions.length
+    && answers.every((a) => a.trim()) && !generating && !busy && !configurationDirty;
+  const errorText = localError ?? (
+    run.hookError ? `${run.hookError.code}: ${run.hookError.reason}` : null
+  );
+
+  const clarify = async () => {
+    if (!canClarify) return;
+    setLocalError(null);
+    setBusy(true);
+    try {
+      onRun(await api.startHookClarify(run.id));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const suggest = async () => {
+    if (!canSuggest) return;
+    setLocalError(null);
+    setBusy(true);
+    try {
+      onRun(await api.startHookSuggest(run.id, answers.map((a) => a.trim())));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pick = async (selectedId: string) => {
+    if (!draft || generating || busy) return;
+    setLocalError(null);
+    setBusy(true);
+    try {
+      onRun(await api.selectWriterHook(run.id, selectedId));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section class="panel" style={{ marginTop: '1rem' }}>
+      <h2>Hook mở bài</h2>
+      <p class="muted" style={{ marginTop: '0.35rem' }}>
+        Agent hỏi vài câu cho rõ title, rồi gợi ý 3–5 hook. Chọn một mới được Run.
+      </p>
+
+      {run.generatingHook && (
+        <p style={{ marginTop: '0.5rem' }}>
+          <span class="chip warn">
+            {run.generatingHook.step === 'clarify' ? '⏳ Đang hỏi làm rõ title…' : '⏳ Đang gợi ý hook…'}
+          </span>
+        </p>
+      )}
+      {errorText && <p class="error" style={{ fontSize: '0.85rem' }}>{errorText}</p>}
+
+      {run.selectedHook && (
+        <div style={{ marginTop: '0.6rem' }}>
+          <span class="chip ok">Đã chọn · {run.selectedHook.typeLabel}</span>
+          <p style={{ marginTop: '0.4rem', fontSize: '0.95rem' }}>{run.selectedHook.text}</p>
+        </div>
+      )}
+
+      {questions.length > 0 && draft && !run.hookCandidates && (
+        <div class="stack" style={{ gap: '0.65rem', marginTop: '0.75rem' }}>
+          {questions.map((q, i) => (
+            <label class="field" key={`${i}-${q.slice(0, 24)}`}>
+              <span>{q}</span>
+              <textarea
+                rows={2}
+                value={answers[i] ?? ''}
+                disabled={generating || busy}
+                onInput={(e) => {
+                  const value = (e.target as HTMLTextAreaElement).value;
+                  setAnswers((prev) => {
+                    const next = [...prev];
+                    next[i] = value;
+                    return next;
+                  });
+                }}
+              />
+            </label>
+          ))}
+          <button class="btn teal" type="button" disabled={!canSuggest} onClick={() => void suggest()}>
+            {busy && run.generatingHook?.step === 'suggest' ? 'Đang gợi ý…' : 'Gợi ý hook'}
+          </button>
+        </div>
+      )}
+
+      {(run.hookCandidates ?? []).length > 0 && (
+        <ul class="list" style={{ marginTop: '0.75rem' }}>
+          {(run.hookCandidates ?? []).map((c) => {
+            const selected = run.selectedHook?.id === c.id;
+            return (
+              <li key={c.id}>
+                <button
+                  class={selected ? 'btn teal' : 'btn secondary'}
+                  type="button"
+                  disabled={!draft || generating || busy}
+                  style={{ width: '100%', justifyContent: 'flex-start', textAlign: 'left', whiteSpace: 'normal' }}
+                  onClick={() => void pick(c.id)}
+                >
+                  <strong>{c.typeLabel}</strong>
+                  <div style={{ marginTop: '0.25rem', fontWeight: 400 }}>{c.text}</div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {draft && (
+        <div class="row" style={{ gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+          <button class="btn secondary" type="button" disabled={!canClarify} onClick={() => void clarify()}>
+            {questions.length > 0 ? 'Hỏi lại title' : 'Làm rõ title'}
+          </button>
+          {configurationDirty && (
+            <span class="muted" style={{ fontSize: '0.85rem' }}>Save configuration trước khi hỏi hook.</span>
+          )}
+          {!run.requestedTitle?.trim() && (
+            <span class="muted" style={{ fontSize: '0.85rem' }}>Cần Title đã Save.</span>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -400,8 +322,24 @@ function GateView({ result, index }: { result: GateResult; index: number }) {
 export function WriterV2RunPage({ id }: { id: string }) {
   const [run, setRun] = useState<WriterRunV2 | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [packs, setPacks] = useState<WriterPackSummary[]>([]);
+  const [generalPacks, setGeneralPacks] = useState<GeneralPackSummary[]>([]);
+  const [formulas, setFormulas] = useState<FormulaSummary[]>([]);
+  const [title, setTitle] = useState('');
+  const [brief, setBrief] = useState('');
+  const [audience, setAudience] = useState('');
+  const [targetWords, setTargetWords] = useState('');
+  const [packId, setPackId] = useState('');
+  const [generalPack, setGeneralPack] = useState('');
+  const [formulaId, setFormulaId] = useState('');
+  const [agentId, setAgentId] = useState<string>('codex');
+  const [editorAgentId, setEditorAgentId] = useState<string>('claude');
+  const [saving, setSaving] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const [exploringSourcePack, setExploringSourcePack] = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [continuing, setContinuing] = useState(false);
+  const [runningRoom, setRunningRoom] = useState(false);
   const [pollKey, setPollKey] = useState(0);
   const [copiedScript, setCopiedScript] = useState(false);
   const [styles, setStyles] = useState<ChannelStyleSummary[]>([]);
@@ -417,6 +355,19 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [styledMarkdown, setStyledMarkdown] = useState<string | null>(null);
   const [loadingStyled, setLoadingStyled] = useState(false);
   const [copiedStyled, setCopiedStyled] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void Promise.all([api.listWriterPacks(), api.listGeneralPacks(), api.listFormulas()])
+      .then(([packData, generalData, formulaData]) => {
+        if (!alive) return;
+        setPacks(packData.packs);
+        setGeneralPacks(generalData.packs);
+        setFormulas(formulaData.formulas);
+      })
+      .catch((err) => { if (alive) setError(err instanceof Error ? err.message : String(err)); });
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -451,11 +402,13 @@ export function WriterV2RunPage({ id }: { id: string }) {
     let timer: number | undefined;
     const tick = async () => {
       try {
-        const data = await api.getWriterRunV2(id);
+        const data = await api.getWriterPostV2(id);
         if (!alive) return;
         setRun(data);
         // A restyle runs while the run stays DONE, so status alone can't drive the poll.
-        if (data.status === 'RUNNING' || data.restyling) timer = window.setTimeout(() => void tick(), 2000);
+        if (data.status === 'RUNNING' || data.restyling || data.generatingHook) {
+          timer = window.setTimeout(() => void tick(), 2000);
+        }
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : String(err));
       }
@@ -467,7 +420,20 @@ export function WriterV2RunPage({ id }: { id: string }) {
     };
   }, [id, pollKey]);
 
-  if (error) {
+  useEffect(() => {
+    if (!run) return;
+    setTitle(run.requestedTitle ?? '');
+    setBrief(run.brief);
+    setAudience(run.audience ?? '');
+    setTargetWords(run.targetWords === undefined ? '' : String(run.targetWords));
+    setPackId(run.packId);
+    setGeneralPack(run.generalPackPath);
+    setFormulaId(run.formulaId);
+    setAgentId(run.agentId);
+    setEditorAgentId(run.editorAgentId);
+  }, [run?.id]);
+
+  if (!run && error) {
     return (
       <div>
         <p class="error">{error}</p>
@@ -479,11 +445,44 @@ export function WriterV2RunPage({ id }: { id: string }) {
 
   const script = run.finalScript ?? run.draft?.script ?? null;
   const canRerun = run.status === 'FAILED' || run.status === 'FAILED_GATE';
-  // This is the recoverable shape: STUDY committed, but WRITE never committed.
-  // The server also checks that the orphaned draft file exists and is readable.
-  const canContinueWrite = run.status === 'FAILED' && run.phase === 'FAILED' && Boolean(run.study) && !run.draft;
+  const configurationDirty = run.status === 'DRAFT' && (
+    title.trim() !== (run.requestedTitle ?? '')
+    || brief.trim() !== run.brief
+    || audience.trim() !== (run.audience ?? '')
+    || targetWords.trim() !== (run.targetWords === undefined ? '' : String(run.targetWords))
+    || packId !== run.packId
+    || generalPack !== run.generalPackPath
+    || formulaId !== run.formulaId
+    || agentId !== run.agentId
+    || editorAgentId !== run.editorAgentId
+  );
+  const canRunRoom = run.status === 'DRAFT'
+    && run.phase === 'READY'
+    && !configurationDirty
+    && Boolean(run.selectedHook)
+    && !run.generatingHook;
+  // The server either commits a valid orphan STUDY artifact and advances to
+  // WRITE, or explicitly retries STUDY when the interrupted turn wrote none.
+  // Boot recovery may also leave study set + FAILED with no draft — Continue
+  // then dispatches WRITE on the same post.
+  const canRecoverStudy = !run.study && (
+    (run.status === 'RUNNING' && run.phase === 'STUDY')
+    || (run.status === 'FAILED' && run.phase === 'FAILED')
+  );
+  const canContinueAfterStudy = Boolean(run.study) && !run.draft && (
+    (run.status === 'FAILED' && run.phase === 'FAILED')
+    || (run.status === 'RUNNING' && run.phase === 'WRITE')
+  );
+  const canContinueWrite = canRecoverStudy
+    || canContinueAfterStudy
+    || (run.status === 'FAILED' && run.phase === 'FAILED' && Boolean(run.study) && !run.draft);
   // Restyle rewrites a finished article; there is nothing to rewrite before DONE.
   const canRestyle = run.status === 'DONE' && Boolean(run.finalScript);
+  const displayedRestyleError = restyleError ?? (
+    !restyling && run.restyleError
+      ? `${run.restyleError.code}: ${run.restyleError.reason}`
+      : null
+  );
   const styledVersions = [...(run.styled ?? [])].sort((a, b) => b.version - a.version);
 
   const rerun = async () => {
@@ -526,6 +525,83 @@ export function WriterV2RunPage({ id }: { id: string }) {
     }
   };
 
+  const runRoom = async () => {
+    if (!canRunRoom || runningRoom) return;
+    setError(null);
+    setRunningRoom(true);
+    try {
+      const next = await api.runWriterPostV2(run.id);
+      setRun(next);
+      setPollKey((value) => value + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunningRoom(false);
+    }
+  };
+
+  const saveConfiguration = async () => {
+    if (run.status !== 'DRAFT' || saving) return;
+    setError(null);
+    setSaving(true);
+    try {
+      const next = await api.updateWriterPostV2(run.id, {
+        brief,
+        ...(title.trim() ? { title: title.trim() } : {}),
+        ...(audience.trim() ? { audience: audience.trim() } : {}),
+        ...(targetWords.trim() ? { targetWords: Number(targetWords) } : {}),
+        packId,
+        generalPack,
+        formulaId,
+        agentId,
+        editorAgentId,
+      });
+      setRun(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const createEditableCopy = async () => {
+    if (run.status === 'DRAFT' || duplicating) return;
+    setError(null);
+    setDuplicating(true);
+    let createdId: string | null = null;
+    try {
+      const post = await api.createWriterPostV2();
+      createdId = post.id;
+      const copy = await api.updateWriterPostV2(post.id, {
+        brief: run.brief,
+        title: run.requestedTitle || run.brief || 'Bản nháp Writer v2',
+        ...(run.audience ? { audience: run.audience } : {}),
+        ...(run.targetWords !== undefined ? { targetWords: run.targetWords } : {}),
+        packId: run.packId,
+        generalPack: run.generalPackPath,
+        formulaId: run.formulaId,
+        agentId: run.agentId,
+        editorAgentId: run.editorAgentId,
+      });
+      location.hash = href({ name: 'writer-v2-run', id: copy.id });
+    } catch (err) {
+      if (createdId) await api.deleteWriterRunV2(createdId).catch(() => undefined);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
+  const downloadTextFile = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const copyArticle = async () => {
     if (!script) return;
     try {
@@ -536,6 +612,13 @@ export function WriterV2RunPage({ id }: { id: string }) {
     }
   };
 
+  const exportArticleTxt = () => {
+    if (!script) return;
+    const baseName = (run.requestedTitle || run.brief || 'writer-post').trim();
+    const safeName = baseName.replace(/[^\w\s\u00C0-\u1EF9.-]/gi, '_').replace(/\s+/g, '-').slice(0, 80) || 'writer-post';
+    downloadTextFile(script, `${safeName}.txt`);
+  };
+
   const restyle = async () => {
     if (!canRestyle || restyling || !styleId || run.restyling) return;
     setRestyleError(null);
@@ -543,6 +626,9 @@ export function WriterV2RunPage({ id }: { id: string }) {
     try {
       const next = await api.restyleWriterRunV2(run.id, styleId);
       setRun(next);
+      if (!next.restyling && next.restyleError) {
+        setRestyleError(`${next.restyleError.code}: ${next.restyleError.reason}`);
+      }
       // The run stays DONE while restyling, so the poll must be restarted by hand.
       setPollKey((value) => value + 1);
     } catch (err) {
@@ -583,22 +669,48 @@ export function WriterV2RunPage({ id }: { id: string }) {
     }
   };
 
+  const exportStyledTxt = (version: number, styleName: string) => {
+    if (!styledMarkdown) return;
+    const baseName = (run.requestedTitle || run.brief || 'writer-post').trim();
+    const safeName = baseName.replace(/[^\w\s\u00C0-\u1EF9.-]/gi, '_').replace(/\s+/g, '-').slice(0, 60) || 'writer-post';
+    const safeStyle = styleName.replace(/[^\w\s\u00C0-\u1EF9.-]/gi, '_').replace(/\s+/g, '-');
+    downloadTextFile(styledMarkdown, `${safeName}_styled-v${version}-${safeStyle}.txt`);
+  };
+
   return (
     <div>
       <div class="page-header">
         <div>
           <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            <h1 class="page-title" style={{ marginBottom: 0 }}>{run.requestedTitle || run.brief}</h1>
+            <h1 class="page-title writer-v2-post-title" style={{ marginBottom: 0 }}>
+              {run.requestedTitle || run.brief || 'Untitled writer post'}
+            </h1>
             <span class={statusClass(run.status)}>{run.status}</span>
             <EntityId id={run.id} label="ID run" />
           </div>
           <p class="page-lead" style={{ marginBottom: 0 }}>
-            {PHASE_LABEL[run.phase] ?? run.phase} · pack: {run.packTitle} · general: {run.generalPackPath}
-            {run.generalPackVersion ? ` v${run.generalPackVersion}` : ''} · formula v{run.formulaVersion} ·
-            viết: {run.agentId} · biên tập: {run.editorAgentId}
+            {PHASE_LABEL[run.phase] ?? run.phase} · writer: {run.agentId} · editor: {run.editorAgentId}
           </p>
+          <WriterProgressBar run={run} />
         </div>
         <div class="row" style={{ gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          {run.status === 'DRAFT' && (
+            <button
+              class="btn teal"
+              type="button"
+              disabled={!canRunRoom || runningRoom || saving}
+              title={
+                !canRunRoom && run.status === 'DRAFT' && run.phase === 'READY' && !run.selectedHook
+                  ? 'Chọn một hook trước khi Run'
+                  : canRunRoom
+                    ? 'Dispatch STUDY bằng đúng configuration đã Save'
+                    : 'Save đủ configuration trước khi Run'
+              }
+              onClick={() => void runRoom()}
+            >
+              {runningRoom ? 'Đang đưa vào lane…' : '▶ Run Writer v2'}
+            </button>
+          )}
           {canRestyle && styles.length === 0 && (
             <span class="muted" style={{ fontSize: '0.85rem' }}>
               Chưa có style kênh — tạo một file <code>.md</code> trong{' '}
@@ -643,8 +755,24 @@ export function WriterV2RunPage({ id }: { id: string }) {
             </>
           )}
           {canContinueWrite && (
-            <button class="btn teal" type="button" disabled={continuing || rerunning} onClick={() => void continueWrite()}>
-              {continuing ? 'Đang tiếp tục WRITE…' : '▶ Tiếp tục WRITE'}
+            <button
+              class="btn teal"
+              type="button"
+              disabled={continuing || rerunning}
+              title={
+                canRecoverStudy
+                  ? 'Cứu artifact STUDY dở hoặc chạy lại STUDY trên cùng post'
+                  : 'Tiếp tục WRITE từ STUDY đã cứu / bản nháp dở sau khi daemon restart'
+              }
+              onClick={() => void continueWrite()}
+            >
+              {continuing
+                ? 'Đang tiếp tục…'
+                : canRecoverStudy
+                  ? '↻ Cứu/tiếp tục STUDY'
+                  : canContinueAfterStudy
+                    ? '▶ Tiếp tục WRITE (sau khôi phục)'
+                    : '▶ Tiếp tục WRITE'}
             </button>
           )}
           {canRerun && (
@@ -653,14 +781,198 @@ export function WriterV2RunPage({ id }: { id: string }) {
             </button>
           )}
           <a class="btn secondary" href={href({ name: 'writer-v2' })}>← Writer v2</a>
-          {restyleError && (
-            <p class="error" style={{ margin: 0, flexBasis: '100%', fontSize: '0.85rem' }}>{restyleError}</p>
+          {displayedRestyleError && (
+            <p class="error" style={{ margin: 0, flexBasis: '100%', fontSize: '0.85rem' }}>{displayedRestyleError}</p>
           )}
         </div>
       </div>
 
+      {error && <p class="error">{error}</p>}
+
       {run.errorReason && (
         <p class="error" style={{ whiteSpace: 'pre-wrap' }}>{run.errorCode}: {run.errorReason}</p>
+      )}
+
+      <section class="panel" style={{ marginTop: '1rem' }}>
+          <h2>Post configuration</h2>
+          <div class="stack" style={{ gap: '0.85rem', marginTop: '0.75rem' }}>
+            <label class="field">
+              <span>Title</span>
+              <input
+                value={title}
+                disabled={run.status !== 'DRAFT'}
+                onInput={(e) => setTitle((e.target as HTMLInputElement).value)}
+              />
+            </label>
+            <label class="field">
+              <span>Brief</span>
+              <textarea
+                rows={3}
+                value={brief}
+                disabled={run.status !== 'DRAFT'}
+                onInput={(e) => setBrief((e.target as HTMLTextAreaElement).value)}
+              />
+            </label>
+            <label class="field">
+              <span>Audience</span>
+              <input
+                value={audience}
+                disabled={run.status !== 'DRAFT'}
+                onInput={(e) => setAudience((e.target as HTMLInputElement).value)}
+              />
+            </label>
+            <div class="form-grid-3">
+              <div class="field">
+                <span>Topic / Source Pack</span>
+                <div class="field-action-group">
+                  <select
+                    value={packId}
+                    disabled={run.status !== 'DRAFT'}
+                    onChange={(e) => setPackId((e.target as HTMLSelectElement).value)}
+                  >
+                    <option value="">Chọn Source Pack…</option>
+                    {packId && !packs.some((pack) => pack.id === packId) && (
+                      <option value={packId}>{run.packTitle || packId}</option>
+                    )}
+                    {packs.map((pack) => (
+                      <option key={pack.id} value={pack.id}>{pack.title} · {pack.videoCount} video</option>
+                    ))}
+                  </select>
+                  {run.status === 'DRAFT' && (
+                    <button class="btn secondary" type="button" onClick={() => setExploringSourcePack(true)}>
+                      Explore
+                    </button>
+                  )}
+                </div>
+              </div>
+              <label class="field">
+                <span>General Pack</span>
+                <select
+                  value={generalPack}
+                  disabled={run.status !== 'DRAFT'}
+                  onChange={(e) => setGeneralPack((e.target as HTMLSelectElement).value)}
+                >
+                  <option value="">Chọn General Pack…</option>
+                  {generalPack && !generalPacks.some((pack) => pack.path === generalPack) && (
+                    <option value={generalPack}>{generalPack}</option>
+                  )}
+                  {generalPacks.map((pack) => (
+                    <option key={pack.path} value={pack.path}>
+                      {pack.title}{pack.version ? ` · v${pack.version}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label class="field">
+                <span>Formula</span>
+                <select
+                  value={formulaId}
+                  disabled={run.status !== 'DRAFT'}
+                  onChange={(e) => setFormulaId((e.target as HTMLSelectElement).value)}
+                >
+                  <option value="">Chọn Formula…</option>
+                  {formulaId && !formulas.some((formula) => formula.id === formulaId) && (
+                    <option value={formulaId}>{formulaId} · v{run.formulaVersion}</option>
+                  )}
+                  {formulas.map((formula) => (
+                    <option key={formula.id} value={formula.id}>{formula.label} · v{formula.version}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div class="form-grid-3">
+              <label class="field">
+                <span>Writer agent</span>
+                <select
+                  value={agentId}
+                  disabled={run.status !== 'DRAFT'}
+                  onChange={(e) => setAgentId((e.target as HTMLSelectElement).value)}
+                >
+                  {AGENTS.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+                </select>
+              </label>
+              <label class="field">
+                <span>Editor agent</span>
+                <select
+                  value={editorAgentId}
+                  disabled={run.status !== 'DRAFT'}
+                  onChange={(e) => setEditorAgentId((e.target as HTMLSelectElement).value)}
+                >
+                  {AGENTS.map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+                </select>
+              </label>
+              <label class="field">
+                <span>Target words</span>
+                <input
+                  type="number"
+                  min={200}
+                  max={20000}
+                  value={targetWords}
+                  disabled={run.status !== 'DRAFT'}
+                  onInput={(e) => setTargetWords((e.target as HTMLInputElement).value)}
+                />
+              </label>
+            </div>
+            {run.status === 'DRAFT' && agentId === editorAgentId && (
+              <p class="muted" style={{ margin: 0 }}>Writer và editor đang dùng cùng một agent.</p>
+            )}
+            {run.status === 'DRAFT' ? (
+              <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <button class="btn secondary" type="button" disabled={saving} onClick={() => void saveConfiguration()}>
+                  {saving ? 'Đang lưu…' : run.phase === 'CONFIGURING' ? 'Save configuration' : 'Update configuration'}
+                </button>
+                <span class={run.phase === 'READY' ? 'chip ok' : 'chip warn'}>
+                  {configurationDirty
+                    ? 'Có thay đổi chưa Save — Run bị khóa'
+                    : run.phase === 'READY' ? 'READY — đã pin, chờ review' : 'CONFIGURING — Run bị khóa'}
+                </span>
+              </div>
+            ) : (
+              <div class="row" style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  class="btn secondary"
+                  type="button"
+                  disabled={duplicating}
+                  onClick={() => void createEditableCopy()}
+                >
+                  {duplicating ? 'Đang tạo bản nháp…' : 'Tạo bản nháp để sửa'}
+                </button>
+                <span class="chip">Config của run này đã khóa</span>
+              </div>
+            )}
+          </div>
+
+          <h3 style={{ marginTop: '1rem' }}>Pinned configuration</h3>
+          <div class="meta" style={{ alignItems: 'flex-start' }}>
+            <span>Source: {run.packId || '—'}{run.packHash ? ` · sha256 ${run.packHash}` : ''}</span>
+            <span>General: {run.generalPackPath || '—'}{run.generalPackVersion ? ` · v${run.generalPackVersion}` : ''}{run.generalPackHash ? ` · sha256 ${run.generalPackHash}` : ''}</span>
+            <span>Formula: {run.formulaId || '—'}{run.formulaVersion ? ` · v${run.formulaVersion}` : ''}{run.formulaHash ? ` · sha256 ${run.formulaHash}` : ''}</span>
+          </div>
+          <p class="muted" style={{ marginBottom: 0 }}>
+            {run.status === 'DRAFT'
+              ? <>Create và Save không chạy agent. Làm rõ title, chọn hook, rồi mới <strong>Run Writer v2</strong>.</>
+              : <>Run đã bắt đầu nên config này là read-only. Tạo bản nháp mới nếu cần thay đổi mà không làm sai lịch sử run.</>}
+          </p>
+      </section>
+
+      <HookPanel
+        run={run}
+        configurationDirty={configurationDirty}
+        onRun={(next) => {
+          setRun(next);
+          setPollKey((value) => value + 1);
+        }}
+      />
+
+      {exploringSourcePack && (
+        <SourcePackExplorer
+          onClose={() => setExploringSourcePack(false)}
+          onPacked={(pack) => {
+            setPacks((prev) => [pack, ...prev.filter((item) => item.id !== pack.id)]);
+            setPackId(pack.id);
+            setExploringSourcePack(false);
+          }}
+        />
       )}
 
       {run.study && (
@@ -712,21 +1024,42 @@ export function WriterV2RunPage({ id }: { id: string }) {
           )}
           <div style={{ position: 'relative' }}>
             <pre class="pre" style={{ margin: 0, paddingTop: '3.8rem' }}>{script}</pre>
-            <button
-              class="btn"
-              type="button"
-              onClick={() => void copyArticle()}
+            <div
               style={{
                 position: 'absolute',
                 top: '0.7rem',
                 right: '0.7rem',
-                background: 'rgba(255, 255, 255, 0.12)',
-                borderColor: 'rgba(255, 255, 255, 0.28)',
-                color: '#e8edf5',
+                display: 'flex',
+                gap: '0.4rem',
+                alignItems: 'center',
               }}
             >
-              {copiedScript ? '✓ Đã copy' : '⧉ Copy bài viết'}
-            </button>
+              <button
+                class="btn"
+                type="button"
+                onClick={() => void copyArticle()}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.12)',
+                  borderColor: 'rgba(255, 255, 255, 0.28)',
+                  color: '#e8edf5',
+                }}
+              >
+                {copiedScript ? '✓ Đã copy' : '⧉ Copy bài viết'}
+              </button>
+              <button
+                class="btn"
+                type="button"
+                onClick={exportArticleTxt}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.12)',
+                  borderColor: 'rgba(255, 255, 255, 0.28)',
+                  color: '#e8edf5',
+                }}
+                title="Tải bài viết về máy dạng file .txt"
+              >
+                ⬇ Export .txt
+              </button>
+            </div>
           </div>
           <div class="row" style={{ gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
             {run.draft.beatAnchors.map((a, i) => (
@@ -803,21 +1136,42 @@ export function WriterV2RunPage({ id }: { id: string }) {
                       ) : styledMarkdown !== null && (
                         <>
                           <pre class="pre" style={{ margin: 0, paddingTop: '3.8rem' }}>{styledMarkdown}</pre>
-                          <button
-                            class="btn"
-                            type="button"
-                            onClick={() => void copyStyled()}
+                          <div
                             style={{
                               position: 'absolute',
                               top: '0.7rem',
                               right: '0.7rem',
-                              background: 'rgba(255, 255, 255, 0.12)',
-                              borderColor: 'rgba(255, 255, 255, 0.28)',
-                              color: '#e8edf5',
+                              display: 'flex',
+                              gap: '0.4rem',
+                              alignItems: 'center',
                             }}
                           >
-                            {copiedStyled ? '✓ Đã copy' : '⧉ Copy bản styled'}
-                          </button>
+                            <button
+                              class="btn"
+                              type="button"
+                              onClick={() => void copyStyled()}
+                              style={{
+                                background: 'rgba(255, 255, 255, 0.12)',
+                                borderColor: 'rgba(255, 255, 255, 0.28)',
+                                color: '#e8edf5',
+                              }}
+                            >
+                              {copiedStyled ? '✓ Đã copy' : '⧉ Copy bản styled'}
+                            </button>
+                            <button
+                              class="btn"
+                              type="button"
+                              onClick={() => exportStyledTxt(s.version, s.styleId)}
+                              style={{
+                                background: 'rgba(255, 255, 255, 0.12)',
+                                borderColor: 'rgba(255, 255, 255, 0.28)',
+                                color: '#e8edf5',
+                              }}
+                              title="Tải bản styled về máy dạng file .txt"
+                            >
+                              ⬇ Export .txt
+                            </button>
+                          </div>
                         </>
                       )}
                     </div>

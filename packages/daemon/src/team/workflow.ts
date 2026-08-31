@@ -290,8 +290,8 @@ export class TeamWorkflow {
     const taskNote = job?.taskNote ?? (next.reason === 'assignment' ? this.deps.store.getAssignment(agentId)?.task : undefined);
     const persistentInteractive = job?.persistentInteractive === true;
     // Hard gate (plan §3.2): a persistent interactive orchestrated turn has no
-    // headless prompt to fall back on — the pane is told to do exactly this task,
-    // and `buildInjectLine` embeds it. A missing task would wake the agent into a
+    // headless prompt to fall back on — the pane fetches exactly this task through
+    // Team MCP after `buildInjectLine` wakes it. A missing task would wake the agent into a
     // turn that says nothing to do; fail fast and settle instead of emitting a
     // spawnTurn that can never make progress. Mirrors the spec-build catch block
     // below (same audit/publish path, no `dispatchNext` — a queued sibling turn
@@ -314,7 +314,7 @@ export class TeamWorkflow {
           reason: next.reason,
           messageCursor: next.messageCursor,
           resumeSessionRef: job?.freshContext ? undefined : this.deps.store.resumeRef(agentId),
-          // assignment turn: nhúng task thẳng vào prompt — agent không MCP vẫn nhận việc
+          // Headless assignment turns embed the task in their process prompt.
           taskNote,
           // tin nhắn chưa đọc nhúng thẳng vào prompt — mention turn không còn rỗng
           // nghĩa với agent chưa/không nối được MCP (nguyên nhân chính "agents

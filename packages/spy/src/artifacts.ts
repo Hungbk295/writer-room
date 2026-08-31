@@ -125,4 +125,20 @@ export class ArtifactStore {
   async read(ref: ArtifactRef, maximumBytes = 8 * 1024 * 1024): Promise<Buffer> {
     return readFile(await this.resolve(ref, maximumBytes));
   }
+
+  /**
+   * Remove a verified artifact only after the caller has proved no live record
+   * still references its content hash. This class does not decide retention.
+   */
+  async purge(ref: ArtifactRef): Promise<boolean> {
+    let path: string;
+    try {
+      path = await this.resolve(ref, Number.MAX_SAFE_INTEGER);
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'asset_unavailable') return false;
+      throw error;
+    }
+    await unlink(path);
+    return true;
+  }
 }

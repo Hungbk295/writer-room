@@ -15,6 +15,7 @@ import { RuleList } from './Training.tsx';
 import { describeErrorCode } from '../features/training/FormulaDiscoveryAction.tsx';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 import { EntityId, shortEntityId } from '../components/ui/EntityId.tsx';
+import { StudioSubNav } from '../components/StudioSubNav.tsx';
 
 function agentLabel(id: DefaultAgentId): string {
   return DEFAULT_AGENT_OPTIONS.find((o) => o.id === id)?.label ?? id;
@@ -61,6 +62,7 @@ export function TrainingLabPage() {
 
   return (
     <div>
+      <StudioSubNav currentTab="lab" />
       <h1 class="page-title">Training Lab</h1>
       <p class="page-lead">
         Vòng lặp viết lại → chấm → căn chỉnh cho từng video đã có Formula — tối đa 3 vòng mỗi video.

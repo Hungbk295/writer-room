@@ -17,14 +17,19 @@ import {
   FfmpegAdapter,
   YouTubeDataApiAdapter,
   DeterministicStubLlm,
+  UnavailableGeminiFlashAnalysisPort,
+  UnavailableRecommendationCapturePort,
   type YoutubePort,
   type MediaPort,
   type YouTubeDataApiPort,
   type LlmPort,
+  type GeminiFlashAnalysisPort,
+  type RecommendationCapturePort,
 } from './adapters/index.ts';
 import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
+import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import {
   samplingPolicySchema,
   spyConfigSchema,
@@ -54,6 +59,7 @@ export * from './discovery.ts';
 export * from './topic.ts';
 export * from './faceless.ts';
 export * from './learn-value.ts';
+export * from './corpus-intelligence.ts';
 export * from './loop/types.ts';
 export * from './loop/planner.ts';
 export * from './loop/report.ts';
@@ -68,6 +74,37 @@ export interface SpyServiceOptions {
   media?: MediaPort;
   dataApi?: YouTubeDataApiPort;
   llm?: LlmPort;
+  recommendationCapture?: RecommendationCapturePort;
+  geminiFlash?: GeminiFlashAnalysisPort;
+}
+
+export interface GlobalVideoSearchInput {
+  query: string;
+  limit?: number;
+  /** YouTube relevanceLanguage hint. Defaults to Vietnamese. */
+  language?: string;
+  /** YouTube ISO 3166-1 alpha-2 region hint. Defaults to Vietnam. */
+  region?: string;
+}
+
+export interface GlobalVideoSearchResult {
+  query: string;
+  limit: number;
+  language: string;
+  region: string;
+  providerUsed: 'youtube_data_api' | 'ytdlp';
+  /** True only when Data API received relevanceLanguage/regionCode hints. */
+  localeHintsApplied: boolean;
+  fallbackReason: string | null;
+  videos: Array<{
+    videoId: string;
+    title: string;
+    channelTitle: string;
+    canonicalUrl: string;
+    viewCount: number;
+    durationSec: number;
+    publishedAt: string | null;
+  }>;
 }
 
 function defaultConfigPath(dataRoot: string): string {
@@ -167,6 +204,8 @@ export class SpyService {
   readonly discovery: DiscoveryService;
   /** Loop runner — expose spy.loop.runTick, .status, .inbox, .decide, .listTopics, .report */
   readonly loop: LoopRunner;
+  /** P0 evidence/review plane; does not reuse legacy Auto-Loop candidate state. */
+  readonly corpus: CorpusIntelligenceService;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
@@ -188,7 +227,9 @@ export class SpyService {
     this.artifacts = new ArtifactStore(join(this.dataRoot, 'artifacts'));
     this.store = new SpyStore(join(this.dataRoot, 'spy.sqlite'));
     this.operations = new OperationManager(this.store);
-    this.youtube = opts.youtube ?? new YtDlpAdapter();
+    // Desktop installers bundle yt-dlp next to the daemon.  Development keeps
+    // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
+    this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
     this.media = opts.media ?? new FfmpegAdapter();
     if (opts.dataApi) {
       this.dataApi = opts.dataApi;
@@ -232,6 +273,13 @@ export class SpyService {
       this.llm,
       this.artifacts,
       this.config.concurrency,
+    );
+    this.corpus = new CorpusIntelligenceService(
+      this.store,
+      this.artifacts,
+      this.youtube,
+      opts.recommendationCapture ?? new UnavailableRecommendationCapturePort(),
+      opts.geminiFlash ?? new UnavailableGeminiFlashAnalysisPort(),
     );
 
     // Loop runner. Không truyền `facelessJudge`: vision là việc của agent, thiết
@@ -741,6 +789,116 @@ export class SpyService {
         publishedAt: video.publishedAt,
       };
     });
+  }
+
+  /**
+   * One-shot keyword search for agents. This is intentionally separate from
+   * `searchVideosForSourcePack`: the Source Pack picker remains yt-dlp-only,
+   * while this global search prefers the configured Data API and reports the
+   * provider/fallback decision in every response.
+   */
+  async globalVideoSearch(input: GlobalVideoSearchInput): Promise<GlobalVideoSearchResult> {
+    const query = typeof input.query === 'string' ? input.query.trim() : '';
+    if (!query) throw new AppError('invalid_input', 'query không được rỗng');
+    if (query.length > 200) throw new AppError('invalid_input', 'query tối đa 200 ký tự');
+
+    const limit = input.limit ?? 20;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new AppError('invalid_input', 'limit phải là số nguyên trong 1..50');
+    }
+    const rawLanguage: unknown = input.language ?? 'vi';
+    if (typeof rawLanguage !== 'string') {
+      throw new AppError('invalid_input', 'language phải là string');
+    }
+    const language = rawLanguage.trim().toLowerCase();
+    if (!/^[a-z]{2}$/.test(language)) {
+      throw new AppError('invalid_input', 'language phải là mã ISO 639-1 gồm 2 chữ cái');
+    }
+    const rawRegion: unknown = input.region ?? 'VN';
+    if (typeof rawRegion !== 'string') {
+      throw new AppError('invalid_input', 'region phải là string');
+    }
+    const region = rawRegion.trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(region)) {
+      throw new AppError('invalid_input', 'region phải là mã ISO 3166-1 alpha-2 gồm 2 chữ cái');
+    }
+
+    const base = { query, limit, language, region };
+    const dataApiAvailable = this.dataApiAdapter === null || Boolean(this.config.youtubeDataApiKey?.trim());
+    if (dataApiAvailable) {
+      try {
+        if (!this.countingApi.search) {
+          throw new AppError('capability_missing', 'YouTube Data API provider không hỗ trợ search');
+        }
+        const searched = await this.countingApi.search({
+          q: query,
+          type: 'video',
+          order: 'relevance',
+          maxResults: limit,
+          relevanceLanguage: language,
+          regionCode: region,
+        });
+        const hits = searched.hits.filter(
+          (hit): hit is typeof hit & { videoId: string } => hit.kind === 'video' && Boolean(hit.videoId),
+        );
+        const videoIds = [...new Set(hits.map((hit) => hit.videoId))];
+        const statistics = await this.countingApi.fetchVideoStatistics(videoIds);
+        return {
+          ...base,
+          providerUsed: 'youtube_data_api',
+          localeHintsApplied: true,
+          fallbackReason: null,
+          videos: hits.map((hit) => {
+            const stats = statistics.get(hit.videoId);
+            return {
+              videoId: hit.videoId,
+              title: stats?.title ?? hit.title ?? hit.videoId,
+              channelTitle: stats?.channelTitle ?? hit.channelTitle ?? '',
+              canonicalUrl: `https://www.youtube.com/watch?v=${hit.videoId}`,
+              viewCount: stats?.viewCount ?? 0,
+              durationSec: stats?.durationSec ?? 0,
+              publishedAt: stats?.publishedAt ?? hit.publishedAt ?? null,
+            };
+          }),
+        };
+      } catch (error) {
+        // Input validation is caller-owned and must never silently change provider.
+        if (error instanceof AppError && error.code === 'invalid_input') throw error;
+        return this.globalVideoSearchWithYtDlp(
+          base,
+          error instanceof AppError
+            ? `youtube_data_api_${error.code}`
+            : 'youtube_data_api_provider_failure',
+        );
+      }
+    }
+
+    return this.globalVideoSearchWithYtDlp(base, 'youtube_data_api_not_configured');
+  }
+
+  private async globalVideoSearchWithYtDlp(
+    base: Pick<GlobalVideoSearchResult, 'query' | 'limit' | 'language' | 'region'>,
+    fallbackReason: string,
+  ): Promise<GlobalVideoSearchResult> {
+    if (!this.youtube.searchVideos) {
+      throw new AppError('capability_missing', 'yt-dlp adapter không hỗ trợ tìm video');
+    }
+    const videos = await this.youtube.searchVideos(base.query, base.limit);
+    return {
+      ...base,
+      providerUsed: 'ytdlp',
+      localeHintsApplied: false,
+      fallbackReason,
+      videos: videos.map((video) => ({
+        videoId: video.sourceVideoId,
+        title: video.title,
+        channelTitle: video.channelTitle,
+        canonicalUrl: video.canonicalUrl,
+        viewCount: video.viewCount,
+        durationSec: video.durationSec,
+        publishedAt: video.publishedAt,
+      })),
+    };
   }
 
   async videoComments(input: {

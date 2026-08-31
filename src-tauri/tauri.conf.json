@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "identifier": "com.dacthao.writerroom",
   "build": {
-    "beforeBuildCommand": "bun run ui:build",
+    "beforeBuildCommand": "bun run ui:build && bun run package:prepare",
     "beforeDevCommand": "bun --cwd packages/web dev",
     "devUrl": "http://127.0.0.1:5178",
     "frontendDist": "../packages/web/dist"
@@ -18,7 +18,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": "all",
+    "resources": ["resources"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

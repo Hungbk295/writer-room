@@ -252,6 +252,7 @@ export interface WriterRunSummary {
   brief: string;
   requestedTitle?: string;
   targetWords?: number;
+  audience?: string;
   packTitle: string;
   profileLabel: string;
   profileId: string;
@@ -303,7 +304,15 @@ export interface EditorDefect {
   note: string;
 }
 
-export type WriterV2Phase = 'STUDY' | 'WRITE' | 'GATE' | 'EDIT_REVIEW' | 'REPAIR' | 'DONE' | 'FAILED';
+export type WriterV2Phase = 'CONFIGURING' | 'READY' | 'STUDY' | 'WRITE' | 'GATE' | 'EDIT_REVIEW' | 'REPAIR' | 'DONE' | 'FAILED';
+
+export type WriterV2ActiveRoleKind = 'author' | 'critic' | 'gate' | 'none';
+
+export interface WriterV2ActiveRole {
+  kind: WriterV2ActiveRoleKind;
+  label: string;
+  agentId?: string;
+}
 
 /** One channel-voice style file. Its `path` is the id sent back when restyling. */
 export interface ChannelStyleSummary {
@@ -336,7 +345,7 @@ export interface StyledVersion {
 
 export interface WriterRunV2 {
   id: string;
-  status: 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
+  status: 'DRAFT' | 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
   phase: WriterV2Phase;
   brief: string;
   requestedTitle?: string;
@@ -344,6 +353,7 @@ export interface WriterRunV2 {
   audience?: string;
   packId: string;
   packTitle: string;
+  packHash?: string;
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
@@ -368,10 +378,20 @@ export interface WriterRunV2 {
   restyling?: { version: number; styleId: string; startedAt: string };
   restyleError?: { code: string; reason: string; at: string };
   styled?: StyledVersion[];
+  generatingHook?: { step: 'clarify' | 'suggest'; attempt: number; startedAt: string };
+  hookTurnAttempt?: number;
+  hookClarify?: { questions: string[]; answers?: string[] };
+  hookCandidates?: Array<{ id: string; type: string; typeLabel: string; text: string }>;
+  selectedHook?: { id: string; type: string; typeLabel: string; text: string };
+  hookLibraryHash?: string;
+  hookError?: { code: string; reason: string; at: string };
   createdAt: string;
   updatedAt: string;
   errorCode?: string;
   errorReason?: string;
+  /** Weighted Director-board progress (0–100). Computed by daemon on read. */
+  progressPercent?: number;
+  activeRole?: WriterV2ActiveRole;
 }
 
 export interface WriterRunV2Summary {
@@ -381,11 +401,16 @@ export interface WriterRunV2Summary {
   brief: string;
   requestedTitle?: string;
   targetWords?: number;
+  audience?: string;
   packId: string;
   packTitle: string;
+  packHash?: string;
   generalPackPath: string;
+  generalPackHash: string;
+  generalPackVersion: number | null;
   formulaId: string;
   formulaVersion: number;
+  formulaHash: string;
   agentId: string;
   editorAgentId: string;
   createdAt: string;
@@ -394,6 +419,8 @@ export interface WriterRunV2Summary {
   gateViolationCount: number;
   defectCount: number;
   styledCount: number;
+  progressPercent?: number;
+  activeRole?: WriterV2ActiveRole;
 }
 
 export interface WriterEditRecord {
@@ -909,6 +936,116 @@ export interface LoopStatus {
   } | null;
 }
 
+export type LoopCapabilityState = 'available' | 'unavailable' | 'legacy' | 'not_configured';
+
+export interface LoopCapability {
+  id: string;
+  label: string;
+  state: LoopCapabilityState;
+  detail: string;
+}
+
+export interface LoopCapabilityStatus {
+  phase: '0.1';
+  readOnly: true;
+  generatedAt: string;
+  capabilities: LoopCapability[];
+}
+
+export interface P0ArtifactRef {
+  hash: string;
+  relativePath: string;
+  byteLength: number;
+  mimeType: string;
+}
+
+export interface P0CorpusImportItem {
+  id: string;
+  batchId: string;
+  submittedUrl: string;
+  canonicalUrl: string;
+  sourceVideoId: string;
+  identityStatus: 'verified' | 'needs_identity';
+  capturedAt: string;
+  expiresAt: string;
+  status: 'draft' | 'confirmed' | 'rejected';
+  promotedMembershipId: string | null;
+}
+
+export interface P0CorpusImportBatch {
+  id: string;
+  topicId: string;
+  status: 'draft' | 'confirmed' | 'rejected';
+  createdAt: string;
+  items: P0CorpusImportItem[];
+}
+
+export interface P0EvidenceRecord {
+  id: string;
+  kind: 'metadata' | 'transcript' | 'thumbnail';
+  status: 'available' | 'unavailable' | 'failed' | 'expired';
+  method: string;
+  observedAt: string;
+  expiresAt: string;
+  detail: Record<string, unknown>;
+}
+
+export interface P0AnalysisRun {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'expired';
+  model: string;
+  createdAt: string;
+  expiresAt: string;
+  result: { labels: string[]; keywordCandidates: string[]; claims: Array<{ text: string; evidenceIds: string[] }> } | null;
+  failureCode: string | null;
+  failureReason: string | null;
+}
+
+export interface P0Membership {
+  id: string;
+  canonicalUrl: string;
+  sourceVideoId: string;
+  status: 'confirmed' | 'expired';
+  identityStatus: 'verified' | 'needs_identity';
+  createdFromKind: 'corpus_import' | 'recommendation';
+  evidence: P0EvidenceRecord[];
+  analyses: P0AnalysisRun[];
+}
+
+export interface P0RecommendationObservation {
+  id: string;
+  fromVideoId: string;
+  targetVideoId: string;
+  targetCanonicalUrl: string;
+  targetTitle: string | null;
+  targetChannelTitle: string | null;
+  observedPosition: number;
+  status: 'draft' | 'confirmed' | 'rejected' | 'expired';
+  expiresAt: string;
+}
+
+export interface P0RecommendationBatch {
+  id: string;
+  fromVideoId: string;
+  seedCanonicalUrl: string;
+  status: 'capturing' | 'draft' | 'failed' | 'expired';
+  captureMethod: string | null;
+  capturedAt: string | null;
+  expiresAt: string | null;
+  failureReason: string | null;
+  observations: P0RecommendationObservation[];
+}
+
+export interface P0CorpusOverview {
+  topicId: string;
+  enabled: boolean;
+  imports: P0CorpusImportBatch[];
+  memberships: P0Membership[];
+  recommendationBatches: P0RecommendationBatch[];
+  loopRuns: Array<{ id: string; status: 'running' | 'completed' | 'failed' | 'blocked'; phase: string; resumeIndex: number; errorMessage: string | null; createdAt: string }>;
+  reports: Array<{ id: string; loopRunId: string; summary: Record<string, unknown>; createdAt: string }>;
+}
+
 export interface InboxItem {
   channelId: string;
   title: string | null;
@@ -1254,23 +1391,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ label }),
     }),
-  listWriterRuns: () => request<{ runs: WriterRunSummary[] }>('/api/writer/runs'),
-  getWriterRun: (id: string) =>
-    request<WriterRun>(`/api/writer/runs/${encodeURIComponent(id)}`),
-  startWriterRun: (body: {
-    brief: string;
-    title?: string;
-    targetWords?: number;
-    packId: string;
-    profileId: string;
-    agentId?: string;
-  }) =>
-    request<WriterRun>('/api/writer/runs', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  deleteWriterRun: (id: string) =>
-    request<{ ok: boolean }>(`/api/writer/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
 
   // ── Write Loop v2 ────────────────────────────────────────────────────────
   listGeneralPacks: () => request<{ packs: GeneralPackSummary[] }>('/api/writer/general-packs'),
@@ -1293,6 +1414,56 @@ export const api = {
     editorAgentId?: string;
   }) =>
     request<WriterRunV2>('/api/writer/v2/runs', { method: 'POST', body: JSON.stringify(body) }),
+  listWriterPostsV2: () => request<{ posts: WriterRunV2Summary[] }>('/api/writer/v2/posts'),
+  getWriterPostV2: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}`),
+  createWriterPostV2: () =>
+    request<WriterRunV2>('/api/writer/v2/posts', { method: 'POST', body: JSON.stringify({}) }),
+  updateWriterPostV2: (id: string, body: {
+    brief: string;
+    title?: string;
+    audience?: string;
+    targetWords?: number;
+    packId: string;
+    generalPack: string;
+    formulaId: string;
+    agentId: string;
+    editorAgentId: string;
+  }) => request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  }),
+  runWriterPostV2: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}/run`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
+  startHookClarify: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}/hook/clarify`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
+  startHookSuggest: (id: string, answers: string[]) =>
+    request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}/hook/suggest`, {
+      method: 'POST', body: JSON.stringify({ answers }),
+    }),
+  selectWriterHook: (id: string, selectedId: string) =>
+    request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}/hook/selection`, {
+      method: 'PUT', body: JSON.stringify({ selectedId }),
+    }),
+  createWriterRoomV2: (body: {
+    brief: string;
+    title?: string;
+    audience?: string;
+    targetWords?: number;
+    packId: string;
+    generalPack: string;
+    formulaId: string;
+    agentId?: string;
+    editorAgentId?: string;
+  }) =>
+    request<WriterRunV2>('/api/writer/v2/rooms', { method: 'POST', body: JSON.stringify(body) }),
+  runWriterRoomV2: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/rooms/${encodeURIComponent(id)}/run`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
   /** Resume only a failed WRITE after STUDY succeeded; it creates WRITE attempt 2. */
   continueWriterRunV2: (id: string) =>
     request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}/continue`, {
@@ -1460,6 +1631,50 @@ export const api = {
 
   loopStatus: (topicId: string) =>
     request<LoopStatus>(`/api/spy/loop/status?topic=${encodeURIComponent(topicId)}`),
+
+  loopCapabilities: () =>
+    request<LoopCapabilityStatus>('/api/spy/loop/capabilities'),
+
+  p0CorpusOverview: (topicId: string) =>
+    request<P0CorpusOverview>(`/api/spy/p0/overview?topic=${encodeURIComponent(topicId)}`),
+  p0ImportCorpusVideo: (body: { topicId: string; url: string; idempotencyKey: string }) =>
+    request<{ batch: P0CorpusImportBatch; reused: boolean }>('/api/spy/p0/corpus-imports', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  p0DecideCorpusImport: (batchId: string, decision: 'confirm' | 'reject') =>
+    request<{ batch: P0CorpusImportBatch; memberships?: P0Membership[] }>(
+      `/api/spy/p0/corpus-imports/${encodeURIComponent(batchId)}/${decision}`, { method: 'POST', body: JSON.stringify({}) },
+    ),
+  p0CaptureSuggestions: (body: { topicId: string; seedMembershipId: string; idempotencyKey: string }) =>
+    request<{ batch: P0RecommendationBatch; reused: boolean }>('/api/spy/p0/recommendation-captures', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  p0DecideSuggestion: (observationId: string, decision: 'confirm' | 'reject') =>
+    request<{ observation: P0RecommendationObservation; membership: P0Membership | null }>(
+      `/api/spy/p0/recommendation-observations/${encodeURIComponent(observationId)}/${decision}`, { method: 'POST', body: JSON.stringify({}) },
+    ),
+  p0EnrichMembership: (membershipId: string) =>
+    request<{ evidence: P0EvidenceRecord[] }>(`/api/spy/p0/memberships/${encodeURIComponent(membershipId)}/enrich`, {
+      method: 'POST', body: JSON.stringify({}),
+    }),
+  p0AnalysisManifest: (membershipId: string) =>
+    request<{
+      digest: string; expiresAt: string; policyVersion: string | null;
+      target: { membershipId: string | null; canonicalUrl: string | null; sourceVideoId: string | null };
+      evidence: Array<{ evidenceId: string | null; kind: string | null; method: string | null; observedAt: string | null; expiresAt: string | null; detail: Record<string, string | number> }>;
+    }>(
+      `/api/spy/p0/memberships/${encodeURIComponent(membershipId)}/analysis-manifest`,
+    ),
+  p0AnalyzeMembership: (membershipId: string, body: { topicId: string; idempotencyKey: string }) =>
+    request<{ run: P0AnalysisRun; reused: boolean }>(`/api/spy/p0/memberships/${encodeURIComponent(membershipId)}/analyze`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  p0SetLoopEnabled: (topicId: string, enabled: boolean) =>
+    request<{ enabled: boolean }>('/api/spy/p0/controls', { method: 'POST', body: JSON.stringify({ topicId, enabled }) }),
+  p0ManualTick: (topicId: string, idempotencyKey: string) =>
+    request<{ run: { id: string; status: string; phase: string }; report: { id: string } | null; reused: boolean }>('/api/spy/p0/tick', {
+      method: 'POST', body: JSON.stringify({ topicId, idempotencyKey }),
+    }),
 
   loopInbox: (params: { topic: string; status?: string; limit?: number; cursor?: number; sort?: string }) => {
     const q = new URLSearchParams({ topic: params.topic });

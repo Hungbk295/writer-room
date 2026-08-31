@@ -10,7 +10,11 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureDir, writerRoot } from '../paths.ts';
-import type { WriterRunV2 } from './writer-run-v2.ts';
+import {
+  computeWriterV2Progress,
+  type WriterRunV2,
+  type WriterV2ActiveRole,
+} from './writer-run-v2.ts';
 
 export interface WriterRunV2Summary {
   id: string;
@@ -19,11 +23,16 @@ export interface WriterRunV2Summary {
   brief: string;
   requestedTitle?: string;
   targetWords?: number;
+  audience?: string;
   packId: string;
   packTitle: string;
+  packHash?: string;
   generalPackPath: string;
+  generalPackHash: string;
+  generalPackVersion: number | null;
   formulaId: string;
   formulaVersion: number;
+  formulaHash: string;
   agentId: string;
   editorAgentId: string;
   createdAt: string;
@@ -33,6 +42,9 @@ export interface WriterRunV2Summary {
   defectCount: number;
   /** How many restyled versions this run has produced (0 for every pre-restyle run). */
   styledCount: number;
+  /** Weighted Director-board progress (0–100). Computed on read, not persisted. */
+  progressPercent: number;
+  activeRole: WriterV2ActiveRole;
 }
 
 function runsDir(dataDir?: string): string {
@@ -86,6 +98,7 @@ export async function getWriterRunV2(id: string, dataDir?: string): Promise<Writ
 
 function summarize(run: WriterRunV2): WriterRunV2Summary {
   const latestGate = run.gateResults.at(-1);
+  const progress = computeWriterV2Progress(run);
   return {
     id: run.id,
     status: run.status,
@@ -93,11 +106,16 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     brief: run.brief,
     ...(run.requestedTitle ? { requestedTitle: run.requestedTitle } : {}),
     ...(run.targetWords !== undefined ? { targetWords: run.targetWords } : {}),
+    ...(run.audience ? { audience: run.audience } : {}),
     packId: run.packId,
     packTitle: run.packTitle,
+    ...(run.packHash ? { packHash: run.packHash } : {}),
     generalPackPath: run.generalPackPath,
+    generalPackHash: run.generalPackHash,
+    generalPackVersion: run.generalPackVersion,
     formulaId: run.formulaId,
     formulaVersion: run.formulaVersion,
+    formulaHash: run.formulaHash,
     agentId: run.agentId,
     editorAgentId: run.editorAgentId,
     createdAt: run.createdAt,
@@ -106,6 +124,8 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     gateViolationCount: latestGate?.violations.length ?? 0,
     defectCount: run.editorDefects?.length ?? 0,
     styledCount: run.styled?.length ?? 0,
+    progressPercent: progress.progressPercent,
+    activeRole: progress.activeRole,
   };
 }
 

@@ -99,6 +99,39 @@ afterEach(() => {
 });
 
 describe('LaneScheduler — commit rule + clone lifecycle', () => {
+  test('a follow-up job can use a fresh budget scope under the same batch id', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    await dispatchAndSettle(
+      harness,
+      scheduler,
+      baseParams({ itemId: 'original', maxTurns: 1, budgetScope: 'original-scope' }),
+      'ok',
+    );
+
+    const exhausted = await scheduler.dispatchItem(baseParams({
+      itemId: 'blocked-follow-up',
+      attempt: 2,
+      maxTurns: 1,
+      budgetScope: 'original-scope',
+    }));
+    expect(exhausted.status).toBe('WAITING_LANE');
+    expect(exhausted.reason).toContain('maxTurns');
+
+    const fresh = await dispatchAndSettle(
+      harness,
+      scheduler,
+      baseParams({
+        itemId: 'fresh-follow-up',
+        attempt: 3,
+        maxTurns: 1,
+        budgetScope: 'follow-up-scope',
+      }),
+      'ok',
+    );
+    expect(fresh.dispatch.status).toBe('RUNNING');
+    expect(fresh.settled.outcome).toBe('COMMITTED');
+  });
+
   test('stages companion source files outside the compact JSON envelope', async () => {
     const scheduler = harness.pipeline.scheduler;
     const sourceText = '# Source\n\nMột dòng có thể được Read theo dòng.\n';

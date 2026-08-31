@@ -27,7 +27,7 @@
  *    perform compliance. One repair, then a human.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FormulaArtifact } from '@writer-room/training-core';
 import { normalizeFormula } from '@writer-room/training-core';
@@ -45,7 +45,9 @@ import {
 } from './deterministic-gate.ts';
 import { getChannelStyle } from './channel-style.ts';
 import { getGeneralPack } from './general-pack.ts';
-import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
+import { clearHookState } from './hook-board.ts';
+import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
+import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
 import { validateWriterVideoPlan, type WriterVideoPlan } from './video-plan.ts';
 
@@ -75,9 +77,10 @@ const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 
-const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source';
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length';
-const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2';
+const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1';
+const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
+const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
 
@@ -141,6 +144,8 @@ export interface StyledVersion {
 }
 
 export type WriterV2Phase =
+  | 'CONFIGURING'
+  | 'READY'
   | 'STUDY'
   | 'WRITE'
   | 'GATE'
@@ -151,7 +156,8 @@ export type WriterV2Phase =
 
 export interface WriterRunV2 {
   id: string;
-  status: 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
+  /** DRAFT means the human has prepared and pinned a room, but no agent/lane was used. */
+  status: 'DRAFT' | 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
   phase: WriterV2Phase;
   brief: string;
   requestedTitle?: string;
@@ -161,6 +167,8 @@ export interface WriterRunV2 {
   /** Topic pack — the ONLY source of facts. Required. */
   packId: string;
   packTitle: string;
+  /** Pinned topic-pack content hash. Blank only for legacy/configuring drafts. */
+  packHash?: string;
   /** e.g. `hieu-tv.md`, relative to the general-packs root. Required. */
   generalPackPath: string;
   generalPackHash: string;
@@ -187,6 +195,17 @@ export interface WriterRunV2 {
    * still the DONE run it was; only the side operation failed. */
   restyleError?: { code: string; reason: string; at: string };
   styled?: StyledVersion[];
+  /**
+   * Pre-write hook loop. Optional on every run written before this existed.
+   * Status stays DRAFT while any of these are in flight.
+   */
+  generatingHook?: { step: 'clarify' | 'suggest'; attempt: number; startedAt: string };
+  hookTurnAttempt?: number;
+  hookClarify?: HookClarify;
+  hookCandidates?: HookCandidate[];
+  selectedHook?: SelectedHook;
+  hookLibraryHash?: string;
+  hookError?: { code: string; reason: string; at: string };
   createdAt: string;
   updatedAt: string;
   errorCode?: string;
@@ -209,6 +228,129 @@ async function notifyWriterV2Done(run: WriterRunV2, dataDir: string): Promise<vo
 interface WriterV2Deps {
   scheduler: LaneScheduler;
   dataDir: string;
+}
+
+/** Director-board role pill: who (if anyone) owns the live turn. */
+export type WriterV2ActiveRoleKind = 'author' | 'critic' | 'gate' | 'none';
+
+export interface WriterV2ActiveRole {
+  kind: WriterV2ActiveRoleKind;
+  /** e.g. `Author: codex`, `Critic: claude`, `Gate`, or `—`. */
+  label: string;
+  agentId?: string;
+}
+
+export interface WriterV2ProgressView {
+  /** Weighted overall percent in 0–100 (see `computeWriterV2Progress`). */
+  progressPercent: number;
+  activeRole: WriterV2ActiveRole;
+}
+
+/**
+ * Weighted phase progress (Director Board pattern).
+ *
+ * Ranges:
+ *   0–10 CONFIGURING/READY · 10–35 STUDY · 35–70 WRITE ·
+ *   70–80 GATE · 80–95 EDIT_REVIEW/REPAIR · 95–100 DONE
+ */
+export function computeWriterV2Progress(
+  run: Pick<
+    WriterRunV2,
+    | 'status'
+    | 'phase'
+    | 'agentId'
+    | 'editorAgentId'
+    | 'study'
+    | 'draft'
+    | 'gateResults'
+    | 'editorDefects'
+    | 'restyling'
+  >,
+): WriterV2ProgressView {
+  const author = (agentId: string): WriterV2ActiveRole => ({
+    kind: 'author',
+    label: `Author: ${agentId}`,
+    agentId,
+  });
+  const critic = (agentId: string): WriterV2ActiveRole => ({
+    kind: 'critic',
+    label: `Critic: ${agentId}`,
+    agentId,
+  });
+  const gateRole: WriterV2ActiveRole = { kind: 'gate', label: 'Gate' };
+  const none: WriterV2ActiveRole = { kind: 'none', label: '—' };
+
+  if (run.restyling) {
+    return { progressPercent: 97, activeRole: author(run.agentId) };
+  }
+
+  let progressPercent: number;
+  switch (run.phase) {
+    case 'CONFIGURING':
+      progressPercent = 5;
+      break;
+    case 'READY':
+      progressPercent = 10;
+      break;
+    case 'STUDY':
+      progressPercent = 22;
+      break;
+    case 'WRITE':
+      progressPercent = 52;
+      break;
+    case 'GATE':
+      progressPercent = 75;
+      break;
+    case 'EDIT_REVIEW':
+      progressPercent = 85;
+      break;
+    case 'REPAIR':
+      progressPercent = 90;
+      break;
+    case 'DONE':
+      progressPercent = 100;
+      break;
+    case 'FAILED':
+      if (!run.study) progressPercent = 15;
+      else if (!run.draft) progressPercent = 40;
+      else if ((run.editorDefects?.length ?? 0) > 0) progressPercent = 88;
+      else if ((run.gateResults.at(-1)?.violations.length ?? 0) > 0) progressPercent = 75;
+      else progressPercent = 50;
+      break;
+    default:
+      progressPercent = 0;
+  }
+
+  if (run.status === 'FAILED_GATE') progressPercent = 75;
+  if (run.status === 'DONE' && run.phase === 'DONE') progressPercent = 100;
+
+  let activeRole: WriterV2ActiveRole = none;
+  if (run.status === 'RUNNING') {
+    switch (run.phase) {
+      case 'STUDY':
+      case 'WRITE':
+      case 'REPAIR':
+        activeRole = author(run.agentId);
+        break;
+      case 'EDIT_REVIEW':
+        activeRole = critic(run.editorAgentId);
+        break;
+      case 'GATE':
+        activeRole = gateRole;
+        break;
+      default:
+        activeRole = none;
+    }
+  }
+
+  return { progressPercent, activeRole };
+}
+
+/** Attach progress fields for API responses without persisting them. */
+export function withWriterV2Progress<T extends WriterRunV2>(
+  run: T,
+): T & WriterV2ProgressView {
+  return { ...run, ...computeWriterV2Progress(run) };
 }
 
 function envelopeHash(envelope: unknown): string {
@@ -510,13 +652,15 @@ function buildStudyPrompt(opts: {
   audience: string;
   formulaLabel: string;
   videoIds: string[];
+  selectedHook?: SelectedHook;
 }): string {
   return [
     '# Writer v2 — STUDY (read the pack, pick the gap, commit to facts)',
     '',
-    'You are NOT writing the piece in this turn. First read the WHOLE normal Markdown',
-    'source file `input/topic-pack.md`; it is the authoritative topic pack and source of',
-    'facts. Then read `input/envelope.json` for the compact contract, title/brief and',
+    'You are NOT writing the piece in this turn. First read EVERY Markdown file listed',
+    'in `input/envelope.json` at `topicPack.contentFiles`, in the listed order. These',
+    'files are consecutive byte-exact parts of the authoritative topic pack; together',
+    'they are the only source of facts. Then use the compact contract, title/brief and',
     'pack metadata. The assignment message gives absolute paths if this PTY has an older',
     'working directory — use those absolute paths, not a guessed relative directory.',
     'Do not open Chrome, a browser, Playwright or `file://`: the local Markdown file is',
@@ -531,6 +675,17 @@ function buildStudyPrompt(opts: {
     '## Brief',
     opts.brief,
     '',
+    ...(opts.selectedHook
+      ? [
+          '## Selected opening hook (human-picked — do not replace)',
+          `Type: ${opts.selectedHook.typeLabel} (\`${opts.selectedHook.type}\`)`,
+          opts.selectedHook.text,
+          'Beat 1 must plant this debt. `endingPayoff.resolvesOpening` must pay THIS debt,',
+          'not a different image or question. Do not copy placeholder figures like `[X]%`',
+          'into `factsLedger` — only pack-verbatim quotes belong there.',
+          '',
+        ]
+      : []),
     '## What to produce',
     '',
     '1. `coverageMap` — one entry per source video in the pack, saying what it actually',
@@ -573,6 +728,38 @@ function buildStudyPrompt(opts: {
   ].join('\n');
 }
 
+/**
+ * Split a large source into UTF-8-safe, byte-exact consecutive parts. Agent Read
+ * paginates by physical line, so a single transcript paragraph can exceed its
+ * per-call token ceiling even when offset/limit requests only one line. Joining
+ * the returned strings always reconstructs the canonical source exactly: no
+ * whitespace is inserted, removed or normalized, preserving verbatim evidence.
+ */
+export function splitExactSourceParts(
+  content: string,
+  maxBytes = STUDY_SOURCE_PART_MAX_BYTES,
+): string[] {
+  if (!Number.isInteger(maxBytes) || maxBytes < 4) {
+    throw new Error('maxBytes must be an integer >= 4');
+  }
+  if (content.length === 0) return [''];
+  const parts: string[] = [];
+  let current = '';
+  let currentBytes = 0;
+  for (const char of content) {
+    const charBytes = Buffer.byteLength(char, 'utf8');
+    if (current && currentBytes + charBytes > maxBytes) {
+      parts.push(current);
+      current = '';
+      currentBytes = 0;
+    }
+    current += char;
+    currentBytes += charBytes;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
 function buildWritePrompt(opts: {
   title: string;
   brief: string;
@@ -582,6 +769,7 @@ function buildWritePrompt(opts: {
   wordRange: { minWords: number; maxWords: number };
   forbiddenNames: string[];
   generalPackPath: string;
+  selectedHook?: SelectedHook;
 }): string {
   return [
     '# Writer v2 — WRITE (one pass, outline + ledger + the channel general pack)',
@@ -597,6 +785,18 @@ function buildWritePrompt(opts: {
     '',
     `## Brief\n${opts.brief}`,
     '',
+    ...(opts.selectedHook
+      ? [
+          '## Selected opening hook (human-picked — open with this)',
+          `Type: ${opts.selectedHook.typeLabel} (\`${opts.selectedHook.type}\`)`,
+          opts.selectedHook.text,
+          'The first sentences must be this opening (you may smooth wording). Do not paste',
+          'placeholders like `[X]%` or `[N] năm` into the script — replace them with a',
+          'ledger figure or drop the number. Say in `outlineChanges` whether you kept the',
+          'hook or adjusted it for sourced figures.',
+          '',
+        ]
+      : []),
     `## Audience: ${opts.audience}`,
     `## Length: ${opts.wordRange.minWords}-${opts.wordRange.maxWords} words`,
     'Before writing `out/result.json`, count ONLY `script` with',
@@ -679,7 +879,13 @@ function buildWriteContinuationPrompt(opts: {
   ].join('\n');
 }
 
-function buildEditReviewPrompt(opts: { hasGateViolations: boolean }): string {
+function buildEditReviewPrompt(opts: {
+  hasGateViolations: boolean;
+  selectedHook?: SelectedHook;
+}): string {
+  const hookDebt = opts.selectedHook
+    ? `4. Does the ending pay the debt this opening planted — "${opts.selectedHook.text}"? Same number, question or image, not a different one.`
+    : '4. Does the ending pay the debt the hook created — the same number, question or image?';
   return [
     '# Writer v2 — EDIT REVIEW (read it as a viewer, then as an editor)',
     '',
@@ -697,7 +903,7 @@ function buildEditReviewPrompt(opts: { hasGateViolations: boolean }): string {
     '   the same answer, the progression is flat.',
     '3. Try deleting or swapping 2-3 sections. If the piece barely changes, the structure is',
     '   a taxonomy, not a journey.',
-    '4. Does the ending pay the debt the hook created — the same number, question or image?',
+    hookDebt,
     '5. **Read the last 20% again on its own.** A one-pass script decays there: repetition,',
     '   summary instead of payoff, an ending that restates rather than resolves.',
     '6. Is the prose dry — all rule, no life? That is a real MEDIUM defect, not a nitpick.',
@@ -848,7 +1054,58 @@ export function defaultEditorAgent(writerAgent: DefaultAgentId): DefaultAgentId 
 
 export async function startWriterRunV2(
   deps: WriterV2Deps,
-  input: {
+  input: WriterV2RoomInput,
+): Promise<WriterRunV2> {
+  const room = await createWriterRoomV2(deps, input);
+  // One-shot API / tests skip the human hook loop. The Writer post UI never
+  // calls this; `runWriterRoomV2` still requires a selected hook.
+  if (!room.selectedHook) {
+    const text = (room.requestedTitle ?? room.brief).trim();
+    room.selectedHook = {
+      id: 'start-run',
+      type: 'direct-question',
+      typeLabel: 'Câu hỏi trực diện',
+      text,
+    };
+    room.updatedAt = new Date().toISOString();
+    await saveWriterRunV2(room, deps.dataDir);
+  }
+  return runWriterRoomV2(deps, room.id);
+}
+
+/** Create the durable post shell only. No dependency lookup, lane or provider. */
+export async function createWriterPostV2(deps: WriterV2Deps): Promise<WriterRunV2> {
+  const now = new Date().toISOString();
+  const post: WriterRunV2 = {
+    id: randomUUID(),
+    status: 'DRAFT',
+    phase: 'CONFIGURING',
+    brief: '',
+    packId: '',
+    packTitle: '',
+    generalPackPath: '',
+    generalPackHash: '',
+    generalPackVersion: null,
+    formulaId: '',
+    formulaVersion: 0,
+    formulaHash: '',
+    agentId: 'codex',
+    editorAgentId: 'claude',
+    study: null,
+    draft: null,
+    gateResults: [],
+    editorDefects: null,
+    finalScript: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await saveWriterRunV2(post, deps.dataDir);
+  return post;
+}
+
+/** The user-facing preflight contract: it resolves and pins every dependency,
+ * but deliberately does not create a clone or call `requestTurn`. */
+export interface WriterV2RoomInput {
     brief: string;
     title?: string;
     audience?: string;
@@ -858,23 +1115,43 @@ export async function startWriterRunV2(
     formulaId: string;
     agentId?: DefaultAgentId;
     editorAgentId?: DefaultAgentId;
-  },
+}
+
+export interface WriterV2PostConfigInput {
+  brief: string;
+  title?: string;
+  audience?: string;
+  targetWords?: number;
+  packId: string;
+  generalPack: string;
+  formulaId: string;
+  agentId: DefaultAgentId;
+  editorAgentId: DefaultAgentId;
+}
+
+export function pinWriterPackHash(pack: WriterPack): string {
+  return createHash('sha256').update(pack.markdown).digest('hex');
+}
+
+/** Replace a DRAFT post's saved configuration. This is persistence-only. */
+export async function updateWriterPostV2(
+  deps: WriterV2Deps,
+  postId: string,
+  input: WriterV2PostConfigInput,
 ): Promise<WriterRunV2> {
+  const post = await getWriterRunV2(postId, deps.dataDir);
+  if (!post) throw new Error('Writer v2 post không tồn tại');
+  if (post.status !== 'DRAFT') {
+    throw new Error(`Chỉ cập nhật được post DRAFT (hiện: ${post.status})`);
+  }
+  if (input.agentId === input.editorAgentId) {
+    throw new Error('writer agent và editor agent phải khác nhau');
+  }
+
   const brief = input.brief.trim();
-  if (!brief) throw new Error('brief bắt buộc');
-  if (!input.packId?.trim()) throw new Error('packId bắt buộc — v2 luôn cần topic pack');
-  if (!input.generalPack?.trim()) throw new Error('generalPack bắt buộc — vd "hieu-tv.md"');
-  if (!input.formulaId?.trim()) throw new Error('formulaId bắt buộc — formula là hợp đồng style của v2');
-
-  const pack = await getWriterPack(input.packId, deps.dataDir);
-  if (!pack) throw new Error('Source Pack không tồn tại');
-
-  const generalPack = await getGeneralPack(input.generalPack, deps.dataDir);
-  if (!generalPack) throw new Error(`General pack không tồn tại: ${input.generalPack}`);
-
-  const formula = await getFormula(input.formulaId, deps.dataDir);
-  if (!formula) throw new Error('Formula không tồn tại');
-
+  const packId = input.packId.trim();
+  const generalPackPath = input.generalPack.trim();
+  const formulaId = input.formulaId.trim();
   let targetWords: number | undefined;
   if (input.targetWords !== undefined && input.targetWords !== null) {
     const n = Number(input.targetWords);
@@ -883,6 +1160,51 @@ export async function startWriterRunV2(
     targetWords = Math.round(n);
   }
 
+  const pack = packId ? await getWriterPack(packId, deps.dataDir) : null;
+  if (packId && !pack) throw new Error('Source Pack không tồn tại');
+  const generalPack = generalPackPath ? await getGeneralPack(generalPackPath, deps.dataDir) : null;
+  if (generalPackPath && !generalPack) throw new Error(`General pack không tồn tại: ${generalPackPath}`);
+  const formula = formulaId ? await getFormula(formulaId, deps.dataDir) : null;
+  if (formulaId && !formula) throw new Error('Formula không tồn tại');
+  const normalized = formula ? normalizeFormula(formula) : null;
+
+  const previousTitle = (post.requestedTitle ?? '').trim();
+  post.brief = brief;
+  const requestedTitle = input.title?.trim();
+  if (requestedTitle) post.requestedTitle = requestedTitle;
+  else delete post.requestedTitle;
+  const audience = input.audience?.trim();
+  if (audience) post.audience = audience;
+  else delete post.audience;
+  if (targetWords !== undefined) post.targetWords = targetWords;
+  else delete post.targetWords;
+  post.packId = pack?.id ?? '';
+  post.packTitle = pack ? (pack.title || pack.channelTitle || 'Source Pack') : '';
+  if (pack) post.packHash = pinWriterPackHash(pack);
+  else delete post.packHash;
+  post.generalPackPath = generalPack?.path ?? '';
+  post.generalPackHash = generalPack?.hash ?? '';
+  post.generalPackVersion = generalPack?.version ?? null;
+  post.formulaId = normalized?.id ?? '';
+  post.formulaVersion = normalized?.version ?? 0;
+  post.formulaHash = formula ? pinFormulaHash(formula) : '';
+  post.agentId = input.agentId;
+  post.editorAgentId = input.editorAgentId;
+  post.phase = requestedTitle && brief && pack && generalPack && formula ? 'READY' : 'CONFIGURING';
+  // Title is the input the hook loop was generated against. Changing it
+  // silently keeping an old selection would open the wrong video.
+  if (previousTitle !== (requestedTitle ?? '')) {
+    clearHookState(post);
+  }
+  post.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(post, deps.dataDir);
+  return post;
+}
+
+export async function createWriterRoomV2(
+  deps: WriterV2Deps,
+  input: WriterV2RoomInput,
+): Promise<WriterRunV2> {
   const agentId: DefaultAgentId =
     input.agentId && (DEFAULT_AGENT_IDS as readonly string[]).includes(input.agentId)
       ? input.agentId
@@ -891,37 +1213,67 @@ export async function startWriterRunV2(
     input.editorAgentId && (DEFAULT_AGENT_IDS as readonly string[]).includes(input.editorAgentId)
       ? input.editorAgentId
       : defaultEditorAgent(agentId);
+  const post = await createWriterPostV2(deps);
+  try {
+    return await updateWriterPostV2(deps, post.id, {
+      brief: input.brief,
+      title: input.title ?? input.brief,
+      ...(input.audience !== undefined ? { audience: input.audience } : {}),
+      ...(input.targetWords !== undefined ? { targetWords: input.targetWords } : {}),
+      packId: input.packId,
+      generalPack: input.generalPack,
+      formulaId: input.formulaId,
+      agentId,
+      editorAgentId,
+    });
+  } catch (err) {
+    // This shell was created inside this helper and has never been returned to a
+    // caller. Remove it so an invalid legacy /runs or /rooms request cannot leave
+    // a ghost post behind in the user's list.
+    await deleteWriterRunV2(post.id, deps.dataDir);
+    throw err;
+  }
+}
 
-  const now = new Date().toISOString();
-  const normalized = normalizeFormula(formula);
-  const run: WriterRunV2 = {
-    id: randomUUID(),
-    status: 'RUNNING',
-    phase: 'STUDY',
-    brief,
-    ...(input.title?.trim() ? { requestedTitle: input.title.trim() } : {}),
-    ...(targetWords !== undefined ? { targetWords } : {}),
-    ...(input.audience?.trim() ? { audience: input.audience.trim() } : {}),
-    packId: pack.id,
-    packTitle: pack.title || pack.channelTitle || 'Source Pack',
-    generalPackPath: generalPack.path,
-    generalPackHash: generalPack.hash,
-    generalPackVersion: generalPack.version,
-    formulaId: normalized.id,
-    formulaVersion: normalized.version,
-    formulaHash: pinFormulaHash(formula),
-    agentId,
-    editorAgentId,
-    study: null,
-    draft: null,
-    gateResults: [],
-    editorDefects: null,
-    finalScript: null,
-    createdAt: now,
-    updatedAt: now,
-  };
+/** Start exactly one reviewed room. A DRAFT is idempotently protected from
+ * accidental background execution: only this explicit transition may dispatch. */
+export async function runWriterRoomV2(deps: WriterV2Deps, runId: string): Promise<WriterRunV2> {
+  const run = await getWriterRunV2(runId, deps.dataDir);
+  if (!run) throw new Error('Writer v2 room không tồn tại');
+  if (run.status !== 'DRAFT' || run.phase !== 'READY') {
+    throw new Error(`Chỉ chạy được room DRAFT/READY (hiện: ${run.status}/${run.phase})`);
+  }
+  const pack = await getWriterPack(run.packId, deps.dataDir);
+  if (!pack) throw new Error('Source Pack của room không còn tồn tại');
+  if (!run.requestedTitle?.trim() || !run.brief.trim() || !run.packId || !run.generalPackPath || !run.formulaId) {
+    throw new Error('Writer v2 post chưa đủ cấu hình để Run');
+  }
+  if (run.agentId === run.editorAgentId) {
+    throw new Error('writer agent và editor agent phải khác nhau');
+  }
+  if (!run.selectedHook?.text.trim()) {
+    throw new Error('Chưa chọn hook — làm rõ title và chọn một hook trước khi Run');
+  }
+  if (run.generatingHook) {
+    throw new Error('Đang gợi ý hook; chờ xong rồi Run');
+  }
+  if (!run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+    throw new Error('Source Pack đã thay đổi sau khi Save; hãy Update configuration để pin lại');
+  }
+  const generalPack = await getGeneralPack(run.generalPackPath, deps.dataDir);
+  if (!generalPack || generalPack.hash !== run.generalPackHash) {
+    throw new Error('General Pack đã thay đổi sau khi Save; hãy Update configuration để pin lại');
+  }
+  const formula = await getFormula(run.formulaId, deps.dataDir);
+  if (!formula) throw new Error('Formula của room không còn tồn tại');
+  if (pinFormulaHash(formula) !== run.formulaHash) {
+    throw new Error('Formula đã thay đổi sau khi Save; hãy Update configuration để pin lại');
+  }
+
+  run.status = 'RUNNING';
+  run.phase = 'STUDY';
+  run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
-
   await dispatchStudy(deps, run, pack, formula);
   return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
 }
@@ -935,10 +1287,17 @@ async function dispatchStudy(
   run: WriterRunV2,
   pack: WriterPack,
   formula: FormulaArtifact,
+  options: { attempt?: number; freshContext?: boolean } = {},
 ): Promise<void> {
   const videoIds = packVideoIds(pack);
   const title = run.requestedTitle ?? run.brief;
   const audience = run.audience ?? DEFAULT_AUDIENCE;
+  const sourceParts = splitExactSourceParts(pack.markdown);
+  const partNumberWidth = Math.max(3, String(sourceParts.length).length);
+  const sourceFiles = sourceParts.map((content, index) => ({
+    path: `topic-pack/part-${String(index + 1).padStart(partNumberWidth, '0')}-of-${String(sourceParts.length).padStart(partNumberWidth, '0')}.md`,
+    content,
+  }));
   // Keep the envelope compact. The large topic pack is staged as line-readable
   // Markdown next to it; embedding it as a JSON string would escape every newline
   // and create one unreadable physical line for agent Read tools.
@@ -952,13 +1311,15 @@ async function dispatchStudy(
     },
     title,
     brief: run.brief,
+    ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     topicPack: {
       id: pack.id,
       title: pack.title,
       channelTitle: pack.channelTitle,
       videoIds,
       channelIsNotNarrator: true,
-      contentFile: 'input/topic-pack.md',
+      contentFiles: sourceFiles.map((file) => `input/${file.path}`),
+      reconstruction: 'concatenate contentFiles in listed order with no separator',
       warnings: pack.warnings,
     },
     instructions: {
@@ -973,7 +1334,7 @@ async function dispatchStudy(
     batchId: run.id,
     itemId: WRITER_V2_ITEM_ID,
     stage: STUDY_STAGE,
-    attempt: 1,
+    attempt: options.attempt ?? 1,
     templateId: run.agentId,
     promptMarkdown: buildStudyPrompt({
       title,
@@ -981,13 +1342,15 @@ async function dispatchStudy(
       audience,
       formulaLabel: formulaContractView(formula).label || run.packTitle,
       videoIds,
+      ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     }),
     envelope,
-    inputFiles: [{ path: 'topic-pack.md', content: pack.markdown }],
+    inputFiles: sourceFiles,
     inputHashes: [envelopeHash(envelope), contentHash(pack.markdown)],
     promptVersion: STUDY_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,
+    freshContext: options.freshContext,
     validateContent: (parsed) => {
       const v = validateStudyArtifact(parsed, { packMarkdown: pack.markdown, videoIds });
       return v.ok ? { ok: true as const } : { ok: false as const, errorCode: v.errorCode, reason: v.reason };
@@ -1065,6 +1428,7 @@ async function dispatchWrite(
     },
     title: run.requestedTitle ?? run.brief,
     brief: run.brief,
+    ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     outline: study.outline,
     factsLedger: study.factsLedger,
     gap: study.gap,
@@ -1108,6 +1472,7 @@ async function dispatchWrite(
       wordRange,
       forbiddenNames,
       generalPackPath: generalPack.path,
+      ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     })}${continuation
       ? buildWriteContinuationPrompt({ previousWordCount: continuation.previousWordCount, wordRange })
       : ''}`,
@@ -1141,9 +1506,11 @@ async function dispatchWrite(
 }
 
 /**
- * Continue exactly the WRITE portion of a failed v2 run. STUDY is already
- * committed, so this creates WRITE attempt 2 from the orphaned attempt-1 draft
- * rather than reading the topic pack again or starting a second article.
+ * Resume the interrupted stage of an existing post without creating a second
+ * article. A valid orphan STUDY artifact advances directly to WRITE; when the
+ * interrupted STUDY produced no artifact, explicit Continue starts STUDY
+ * attempt 2 using the same pinned configuration and the Read-safe source parts.
+ * A failed WRITE still creates WRITE attempt 2 from its orphaned draft.
  */
 export async function continueWriterRunV2(
   deps: WriterV2Deps,
@@ -1151,16 +1518,90 @@ export async function continueWriterRunV2(
 ): Promise<WriterRunV2> {
   const run = await getWriterRunV2(runId, deps.dataDir);
   if (!run) throw new Error('Writer v2 run không tồn tại');
-  if (run.status === 'RUNNING') {
+  const canRecoverStudyArtifact = !run.study && (
+    (run.status === 'RUNNING' && run.phase === 'STUDY')
+    || (run.status === 'FAILED' && run.phase === 'FAILED')
+  );
+  if (canRecoverStudyArtifact) {
+    if (deps.scheduler.getLiveCloneCount() > 0) {
+      throw new Error('STUDY agent vẫn còn live; chỉ recovery sau khi restart daemon và liveClones=0');
+    }
+    const studyResultPath = join(
+      deps.dataDir,
+      'workspaces',
+      'pipeline',
+      run.id,
+      WRITER_V2_ITEM_ID,
+      'attempts',
+      '1',
+      STUDY_STAGE,
+      'out',
+      'result.json',
+    );
+    let parsed: unknown;
+    let hasStudyArtifact = true;
+    try {
+      parsed = JSON.parse(await readFile(studyResultPath, 'utf8')) as unknown;
+    } catch {
+      hasStudyArtifact = false;
+    }
+    const pack = await getWriterPack(run.packId, deps.dataDir);
+    if (!pack || !run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+      throw new Error('Source Pack không còn khớp pin của run; từ chối recovery STUDY');
+    }
+    if (!hasStudyArtifact) {
+      const formula = await getFormula(run.formulaId, deps.dataDir);
+      if (!formula || !run.formulaHash || pinFormulaHash(formula) !== run.formulaHash) {
+        throw new Error('Formula không còn khớp pin của run; từ chối retry STUDY');
+      }
+      run.status = 'RUNNING';
+      run.phase = 'STUDY';
+      delete run.errorCode;
+      delete run.errorReason;
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      // A daemon restart rotates the Team MCP URL/token. Replace the old pane
+      // instead of resuming a CLI process that still holds stale MCP config.
+      await dispatchStudy(deps, run, pack, formula, { attempt: 2, freshContext: true });
+      return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+    }
+    const validated = validateStudyArtifact(parsed, {
+      packMarkdown: pack.markdown,
+      videoIds: packVideoIds(pack),
+    });
+    if (!validated.ok) {
+      throw new Error(`Artifact STUDY không hợp lệ (${validated.errorCode}): ${validated.reason}`);
+    }
+    run.study = validated.study;
+    run.status = 'RUNNING';
+    run.phase = 'WRITE';
+    delete run.errorCode;
+    delete run.errorReason;
+    run.updatedAt = new Date().toISOString();
+    await saveWriterRunV2(run, deps.dataDir);
+    await dispatchWrite(deps, run);
+    return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+  }
+  const canResumeWriteFromStudy = Boolean(run.study)
+    && !run.draft
+    && (
+      (run.status === 'FAILED' && run.phase === 'FAILED')
+      || (run.status === 'RUNNING' && run.phase === 'WRITE' && deps.scheduler.getLiveCloneCount() === 0)
+    );
+
+  if (run.status === 'RUNNING' && !canResumeWriteFromStudy) {
     throw new Error(`Run đang ${run.phase}; chờ turn hiện tại settle trước khi tiếp tục`);
   }
-  if (run.status !== 'FAILED' || run.phase !== 'FAILED') {
+  if (!canResumeWriteFromStudy) {
     throw new Error(`Chỉ tiếp tục được Writer v2 run FAILED ở WRITE (hiện: ${run.status}/${run.phase})`);
   }
   if (!run.study || run.draft) {
     throw new Error('Run này không phải lỗi WRITE sau STUDY; hãy dùng ReRun bài mới');
   }
 
+  // Prefer an orphan WRITE draft (attempt 1 left `out/result.json` with a script)
+  // so Continue keeps the same article. Only when that file is missing/empty do we
+  // dispatch a fresh WRITE from the rescued STUDY (boot-recovery path).
   const previousResultPath = join(
     deps.dataDir,
     'workspaces',
@@ -1173,31 +1614,37 @@ export async function continueWriterRunV2(
     'out',
     'result.json',
   );
-  let previous: Partial<WriterV2Draft> | null;
+  let previousDraft = '';
   try {
-    previous = JSON.parse(await readFile(previousResultPath, 'utf8')) as Partial<WriterV2Draft>;
+    const previous = JSON.parse(await readFile(previousResultPath, 'utf8')) as Partial<WriterV2Draft>;
+    previousDraft = typeof previous?.script === 'string' ? previous.script.trim() : '';
   } catch {
-    throw new Error('Không đọc được bản nháp WRITE dở dang; hãy dùng ReRun bài mới');
+    previousDraft = '';
   }
-  const previousDraft = typeof previous?.script === 'string' ? previous.script.trim() : '';
-  if (!previousDraft) {
-    throw new Error('Bản nháp WRITE dở dang không có `script`; hãy dùng ReRun bài mới');
+
+  const pack = await getWriterPack(run.packId, deps.dataDir);
+  if (!pack || !run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+    throw new Error('Source Pack không còn khớp pin của run; từ chối tiếp tục WRITE');
   }
 
   run.status = 'RUNNING';
   run.phase = 'WRITE';
-  run.errorCode = undefined;
-  run.errorReason = undefined;
+  delete run.errorCode;
+  delete run.errorReason;
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
 
-  await dispatchWrite(deps, run, {
-    attempt: 2,
-    continuation: {
-      previousDraft,
-      previousWordCount: countScriptWords(previousDraft),
-    },
-  });
+  if (previousDraft) {
+    await dispatchWrite(deps, run, {
+      attempt: 2,
+      continuation: {
+        previousDraft,
+        previousWordCount: countScriptWords(previousDraft),
+      },
+    });
+  } else {
+    await dispatchWrite(deps, run);
+  }
   return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
 }
 
@@ -1246,6 +1693,7 @@ async function dispatchEditReview(deps: WriterV2Deps, run: WriterRunV2): Promise
     title: draft.title,
     outline: study.outline,
     script: draft.script,
+    ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     ...(violations.length > 0
       ? { gateViolations: violations.map((v) => ({ code: v.code, detail: v.detail, quote: v.quote })) }
       : {}),
@@ -1257,7 +1705,10 @@ async function dispatchEditReview(deps: WriterV2Deps, run: WriterRunV2): Promise
     stage: EDIT_REVIEW_STAGE,
     attempt: 1,
     templateId: run.editorAgentId,
-    promptMarkdown: buildEditReviewPrompt({ hasGateViolations: violations.length > 0 }),
+    promptMarkdown: buildEditReviewPrompt({
+      hasGateViolations: violations.length > 0,
+      ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
+    }),
     envelope,
     inputHashes: [envelopeHash(envelope)],
     promptVersion: EDIT_REVIEW_PROMPT_VERSION,
@@ -1418,44 +1869,8 @@ async function handleWriterV2Settle(deps: WriterV2Deps, event: ItemSettledResult
         await failRun(deps, run, validated.errorCode, validated.reason);
         return;
       }
-      run.draft = validated.draft;
-      run.phase = 'GATE';
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-
-      // Layer 0.
-      const gate = await runGateForRun(deps, run);
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-
-      if (event.stage === REPAIR_STAGE) {
-        // After a repair only the gate runs again: a second editor round teaches
-        // compliance theatre, and the human is the right next reader.
-        if (gate.passed) {
-          run.status = 'DONE';
-          run.phase = 'DONE';
-          run.finalScript = validated.draft.script;
-          run.updatedAt = new Date().toISOString();
-          await saveWriterRunV2(run, deps.dataDir);
-          await notifyWriterV2Done(run, deps.dataDir);
-          return;
-        }
-        await failRun(
-          deps,
-          run,
-          'WRITER_V2_GATE',
-          `Gate vẫn đỏ sau một vòng sửa:\n${formatGateViolations(gate.violations)}`,
-          'FAILED_GATE',
-        );
-        return;
-      }
-
-      // First pass: the editor always runs, clean gate or not — it sees what code
-      // cannot (flat progression, a dead last 20%, an ending that doesn't pay).
-      run.phase = 'EDIT_REVIEW';
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-      await dispatchEditReview(deps, run);
+      // First pass always goes to the editor after the gate; repair only re-gates.
+      await advanceAfterDraft(deps, run, validated.draft, event.stage === REPAIR_STAGE);
       return;
     }
 
@@ -1471,26 +1886,7 @@ async function handleWriterV2Settle(deps: WriterV2Deps, event: ItemSettledResult
         await failRun(deps, run, validated.errorCode, validated.reason);
         return;
       }
-      run.editorDefects = validated.defects;
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-
-      const gate = run.gateResults.at(-1);
-      const gateClean = gate?.passed ?? false;
-      if (gateClean && validated.defects.length === 0) {
-        run.status = 'DONE';
-        run.phase = 'DONE';
-        run.finalScript = draft.script;
-        run.updatedAt = new Date().toISOString();
-        await saveWriterRunV2(run, deps.dataDir);
-        await notifyWriterV2Done(run, deps.dataDir);
-        return;
-      }
-
-      run.phase = 'REPAIR';
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-      await dispatchRepair(deps, run);
+      await advanceAfterEditorReview(deps, run, validated.defects);
       return;
     }
 
@@ -1832,6 +2228,10 @@ async function dispatchRestyle(
     promptVersion: RESTYLE_PROMPT_VERSION,
     sessionGroup: RESTYLE_PTY_SESSION_GROUP,
     interactivePty: true,
+    // Restyle is a later, human-triggered job. It must not inherit the original
+    // article batch's elapsed-time budget (real failure: a DONE run older than
+    // 120 minutes silently produced WAITING_LANE on every Restyle click).
+    budgetScope: `${run.id}:restyle:${version}`,
     // The author pane of the original run may have died days ago, and its CLI
     // context is about writing the piece, not restyling it.
     freshContext: true,
@@ -1906,6 +2306,400 @@ async function handleRestyleSettle(dataDir: string, event: ItemSettledResult): P
     title: validated.title,
     script: validated.script,
   });
+}
+
+function stageAttemptDir(
+  dataDir: string,
+  runId: string,
+  attempt: number,
+  stage: string,
+): string {
+  return join(
+    dataDir,
+    'workspaces',
+    'pipeline',
+    runId,
+    WRITER_V2_ITEM_ID,
+    'attempts',
+    String(attempt),
+    stage,
+  );
+}
+
+/** Newest attempt that still has a readable `out/result.json` for this stage. */
+async function latestStageResult(
+  dataDir: string,
+  runId: string,
+  stage: string,
+): Promise<{ attempt: number; parsed: unknown } | null> {
+  const attemptsRoot = join(dataDir, 'workspaces', 'pipeline', runId, WRITER_V2_ITEM_ID, 'attempts');
+  let names: string[];
+  try {
+    names = await readdir(attemptsRoot);
+  } catch {
+    return null;
+  }
+  const attempts = names
+    .map((name) => Number(name))
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => b - a);
+  for (const attempt of attempts) {
+    try {
+      const raw = await readFile(
+        join(stageAttemptDir(dataDir, runId, attempt, stage), 'out', 'result.json'),
+        'utf8',
+      );
+      return { attempt, parsed: JSON.parse(raw) as unknown };
+    } catch {
+      // try an older attempt
+    }
+  }
+  return null;
+}
+
+async function markWriterInterrupted(
+  dataDir: string,
+  run: WriterRunV2,
+  errorCode: string,
+  errorReason: string,
+): Promise<void> {
+  run.status = 'FAILED';
+  run.phase = 'FAILED';
+  run.errorCode = errorCode;
+  run.errorReason = errorReason;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, dataDir);
+}
+
+/**
+ * After a draft settles (WRITE or REPAIR): run Layer 0, then either finish, fail the
+ * gate, or dispatch EDIT_REVIEW. Shared by the live settle path and boot recovery so
+ * a rescued `out/result.json` cannot take a different branch than a live turn.
+ */
+async function advanceAfterDraft(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  draft: WriterV2Draft,
+  fromRepair: boolean,
+): Promise<void> {
+  run.draft = draft;
+  run.phase = 'GATE';
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+
+  const gate = await runGateForRun(deps, run);
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+
+  if (fromRepair) {
+    if (gate.passed) {
+      run.status = 'DONE';
+      run.phase = 'DONE';
+      run.finalScript = draft.script;
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      await notifyWriterV2Done(run, deps.dataDir);
+      return;
+    }
+    await failRun(
+      deps,
+      run,
+      'WRITER_V2_GATE',
+      `Gate vẫn đỏ sau một vòng sửa:\n${formatGateViolations(gate.violations)}`,
+      'FAILED_GATE',
+    );
+    return;
+  }
+
+  run.phase = 'EDIT_REVIEW';
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+  await dispatchEditReview(deps, run);
+}
+
+async function advanceAfterEditorReview(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  defects: EditorDefect[],
+): Promise<void> {
+  const draft = run.draft;
+  if (!draft) {
+    await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'draft missing when the editor settled');
+    return;
+  }
+  run.editorDefects = defects;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+
+  const gate = run.gateResults.at(-1);
+  const gateClean = gate?.passed ?? false;
+  if (gateClean && defects.length === 0) {
+    run.status = 'DONE';
+    run.phase = 'DONE';
+    run.finalScript = draft.script;
+    run.updatedAt = new Date().toISOString();
+    await saveWriterRunV2(run, deps.dataDir);
+    await notifyWriterV2Done(run, deps.dataDir);
+    return;
+  }
+
+  run.phase = 'REPAIR';
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+  await dispatchRepair(deps, run);
+}
+
+/**
+ * Boot recovery for the main Writer v2 stages (STUDY → WRITE → GATE → EDIT → REPAIR).
+ *
+ * After `reconcileOnBoot`, every in-flight ledger row is INTERRUPTED and no settle
+ * event fires — so a run left `status: RUNNING` is a zombie unless we either commit a
+ * finished `out/result.json` or mark the run FAILED so Continue can resume it.
+ *
+ * When `scheduler` is provided (daemon boot), a valid artifact advances exactly as a
+ * live settle would, including dispatching the next agent stage. Without a scheduler,
+ * zombies are only cleared to FAILED/`*_INTERRUPTED` (safe for unit tests).
+ *
+ * Restyle recovery stays in `recoverInterruptedRestyles` — a side operation on DONE.
+ */
+export async function recoverInterruptedWriterRuns(
+  dataDir: string,
+  scheduler?: LaneScheduler,
+): Promise<void> {
+  const summaries = await listWriterRunsV2(dataDir);
+  for (const summary of summaries) {
+    try {
+      const run = await getWriterRunV2(summary.id, dataDir);
+      if (!run || run.status !== 'RUNNING') continue;
+      // Restyle keeps status DONE; hook loop keeps DRAFT. Neither is a main-loop zombie.
+      if (run.restyling) continue;
+      if (run.generatingHook) continue;
+
+      const deps: WriterV2Deps | null = scheduler
+        ? { scheduler, dataDir }
+        : null;
+
+      switch (run.phase) {
+        case 'STUDY': {
+          const found = await latestStageResult(dataDir, run.id, STUDY_STAGE);
+          if (!found) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'STUDY_INTERRUPTED',
+              'STUDY bị ngắt (daemon restart) và không có out/result.json — bấm Continue để chạy lại.',
+            );
+            break;
+          }
+          const pack = await getWriterPack(run.packId, dataDir);
+          if (!pack || !run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'STUDY_INTERRUPTED',
+              'STUDY bị ngắt; Source Pack không còn khớp pin của run.',
+            );
+            break;
+          }
+          const validated = validateStudyArtifact(found.parsed, {
+            packMarkdown: pack.markdown,
+            videoIds: packVideoIds(pack),
+          });
+          if (!validated.ok) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'STUDY_INTERRUPTED',
+              `STUDY bị ngắt; out/result.json không hợp lệ (${validated.errorCode}): ${validated.reason}`,
+            );
+            break;
+          }
+          run.study = validated.study;
+          run.status = 'RUNNING';
+          run.phase = 'WRITE';
+          delete run.errorCode;
+          delete run.errorReason;
+          run.updatedAt = new Date().toISOString();
+          await saveWriterRunV2(run, dataDir);
+          if (deps) {
+            await dispatchWrite(deps, run);
+            console.log(`[writer-v2] cứu được STUDY của run ${run.id} → WRITE sau daemon restart`);
+          } else {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'STUDY_INTERRUPTED',
+              'STUDY đã cứu được artifact nhưng thiếu scheduler để tiếp tục WRITE — bấm Continue.',
+            );
+          }
+          break;
+        }
+
+        case 'WRITE': {
+          const found = await latestStageResult(dataDir, run.id, WRITE_STAGE);
+          if (!found || !run.study) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'WRITE_INTERRUPTED',
+              'WRITE bị ngắt (daemon restart) — bấm Continue nếu còn bản nháp dở, hoặc ReRun.',
+            );
+            break;
+          }
+          const pack = await getWriterPack(run.packId, dataDir);
+          if (!pack) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'WRITE_INTERRUPTED',
+              'WRITE bị ngắt; Source Pack đã biến mất.',
+            );
+            break;
+          }
+          const validated = validateWriterV2Draft(found.parsed, {
+            outline: run.study.outline,
+            wordRange: wordRangeFor(run),
+            forbiddenNames: forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title }),
+            requireOutlineChanges: true,
+          });
+          if (!validated.ok) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'WRITE_INTERRUPTED',
+              `WRITE bị ngắt; out/result.json không hợp lệ (${validated.errorCode}): ${validated.reason}`,
+            );
+            break;
+          }
+          if (!deps) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'WRITE_INTERRUPTED',
+              'WRITE đã có artifact nhưng thiếu scheduler để chạy gate — bấm Continue/ReRun.',
+            );
+            break;
+          }
+          await advanceAfterDraft(deps, run, validated.draft, false);
+          console.log(`[writer-v2] cứu được WRITE của run ${run.id} sau daemon restart`);
+          break;
+        }
+
+        case 'GATE': {
+          if (!run.draft || !deps) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'GATE_INTERRUPTED',
+              'GATE bị ngắt giữa chừng — bấm ReRun hoặc mở lại post để kiểm tra draft.',
+            );
+            break;
+          }
+          await advanceAfterDraft(deps, run, run.draft, Boolean(run.repairAttempted));
+          console.log(`[writer-v2] tiếp tục GATE của run ${run.id} sau daemon restart`);
+          break;
+        }
+
+        case 'EDIT_REVIEW': {
+          const found = await latestStageResult(dataDir, run.id, EDIT_REVIEW_STAGE);
+          if (!found || !run.draft) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'EDIT_REVIEW_INTERRUPTED',
+              'EDIT_REVIEW bị ngắt (daemon restart) và không có out/result.json hợp lệ.',
+            );
+            break;
+          }
+          const validated = validateEditorReview(found.parsed, run.draft.script);
+          if (!validated.ok) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'EDIT_REVIEW_INTERRUPTED',
+              `EDIT_REVIEW bị ngắt; out/result.json không hợp lệ (${validated.errorCode}): ${validated.reason}`,
+            );
+            break;
+          }
+          if (!deps) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'EDIT_REVIEW_INTERRUPTED',
+              'EDIT_REVIEW đã có artifact nhưng thiếu scheduler để tiếp tục.',
+            );
+            break;
+          }
+          await advanceAfterEditorReview(deps, run, validated.defects);
+          console.log(`[writer-v2] cứu được EDIT_REVIEW của run ${run.id} sau daemon restart`);
+          break;
+        }
+
+        case 'REPAIR': {
+          const found = await latestStageResult(dataDir, run.id, REPAIR_STAGE);
+          if (!found || !run.study) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'REPAIR_INTERRUPTED',
+              'REPAIR bị ngắt (daemon restart) — kiểm tra draft và ReRun nếu cần.',
+            );
+            break;
+          }
+          const pack = await getWriterPack(run.packId, dataDir);
+          if (!pack) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'REPAIR_INTERRUPTED',
+              'REPAIR bị ngắt; Source Pack đã biến mất.',
+            );
+            break;
+          }
+          const validated = validateWriterV2Draft(found.parsed, {
+            outline: run.study.outline,
+            wordRange: wordRangeFor(run),
+            forbiddenNames: forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title }),
+            requireOutlineChanges: false,
+          });
+          if (!validated.ok) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'REPAIR_INTERRUPTED',
+              `REPAIR bị ngắt; out/result.json không hợp lệ (${validated.errorCode}): ${validated.reason}`,
+            );
+            break;
+          }
+          if (!deps) {
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'REPAIR_INTERRUPTED',
+              'REPAIR đã có artifact nhưng thiếu scheduler để chạy gate.',
+            );
+            break;
+          }
+          await advanceAfterDraft(deps, run, validated.draft, true);
+          console.log(`[writer-v2] cứu được REPAIR của run ${run.id} sau daemon restart`);
+          break;
+        }
+
+        default:
+          await markWriterInterrupted(
+            dataDir,
+            run,
+            'WRITER_V2_INTERRUPTED',
+            `Run bị ngắt ở phase ${run.phase} sau daemon restart.`,
+          );
+      }
+    } catch (err) {
+      console.error(
+        `[writer-v2] recoverInterruptedWriterRuns bỏ qua run ${summary.id}:`,
+        (err as Error).message,
+      );
+    }
+  }
 }
 
 /**

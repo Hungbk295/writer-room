@@ -49,6 +49,17 @@ export function generalPacksRoot(root = dataRoot()): string {
 }
 
 /**
+ * Staging area for general-pack MCP drafts (agent-generated TASTE DNA / per-video
+ * entries that have already passed deterministic grounding validation but have not
+ * been reviewed and committed into the pinned channel file yet). Separate from
+ * `generalPacksRoot` so a half-reviewed draft can never be picked up as the live
+ * pack a writer run hashes and pins.
+ */
+export function generalPackStagingRoot(root = dataRoot()): string {
+  return join(generalPacksRoot(root), '.staging');
+}
+
+/**
  * Channel styles (Writer v2 restyle) — one hand-curated markdown file per style
  * (`nhan-vat-xuyen-suot.md`), telling the writer HOW the user's own channel
  * sounds: person and address, cast, beat labels, rhetorical budgets, ending
@@ -59,6 +70,16 @@ export function generalPacksRoot(root = dataRoot()): string {
  */
 export function channelStylesRoot(root = dataRoot()): string {
   return join(root, 'channel-styles');
+}
+
+/**
+ * Competitor hook libraries (Writer v2 pre-write). One markdown file of hook
+ * formulas mined from other channels — craft frames only, never facts. The
+ * agent reads this when suggesting a few openings; the UI does not browse it.
+ * Same plain-file store as general packs / channel styles, pinned by hash.
+ */
+export function hookLibrariesRoot(root = dataRoot()): string {
+  return join(root, 'hook-libraries');
 }
 
 /** Root for Training (SDD 002 §M1) persisted Formula artifacts — mirrors

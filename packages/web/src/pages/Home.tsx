@@ -54,23 +54,29 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
         <a class={is(['home'])} href={href({ name: 'home' })}>Home</a>
         <a class={is(['spy', 'spy-run'])} href={href({ name: 'spy' })}>Spy</a>
         <a class={is(['spy-loop'])} href={href({ name: 'spy-loop' })}>Loop</a>
-        <a class={is(['writer', 'writer-pack', 'writer-run'])} href={href({ name: 'writer' })}>
-          Writer
+        <a class={is(['writer', 'writer-pack'])} href={href({ name: 'writer' })}>
+          Source Packs
           {writerCount > 0 && <span class="nav-badge">{writerCount}</span>}
         </a>
         <a class={is(['writer-v2', 'writer-v2-run'])} href={href({ name: 'writer-v2' })}>
-          Writer v2
+          Writer
         </a>
         <a class={is(['channel-styles'])} href={href({ name: 'channel-styles' })}>
           Style kênh
         </a>
-        <a class={is(['training-formulas', 'training-formula'])} href={href({ name: 'training-formulas' })}>
-          Formula
-        </a>
-        <a class={is(['training-lab', 'training-lab-run'])} href={href({ name: 'training-lab' })}>
-          Training Lab
-        </a>
-        <a class={is(['studio', 'studio-session', 'studio-profiles', 'studio-profile'])} href={href({ name: 'studio' })}>
+        <a
+          class={is([
+            'studio',
+            'studio-session',
+            'studio-profiles',
+            'studio-profile',
+            'training-formulas',
+            'training-formula',
+            'training-lab',
+            'training-lab-run',
+          ])}
+          href={href({ name: 'studio' })}
+        >
           Studio
         </a>
         <a class={is(['agents'])} href={href({ name: 'agents' })}>Agents</a>

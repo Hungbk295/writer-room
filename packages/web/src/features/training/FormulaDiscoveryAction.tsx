@@ -10,7 +10,8 @@ import {
 } from '../../api.ts';
 import { href } from '../../router.ts';
 import { useFormulaDiscoveryPoll } from '../../hooks.ts';
-import { termSubmitLineWithAutoRetry } from '../../components/terminal/terminalApi.ts';
+import { termSnapshot, termSubmitLineWithAutoRetry } from '../../components/terminal/terminalApi.ts';
+import { waitForPtyReady } from '../../components/terminal/ptyQuiet.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type Phase = 'idle' | 'preflighting' | 'blocked' | 'running' | 'done' | 'failed';
@@ -231,19 +232,22 @@ export function InteractiveFormulaDiscoveryAction({ video }: { video: SpyVideoRo
         readOnly: false,
       });
       if (result.initialMessage) {
-        // The CLI's TUI needs a moment to finish booting before it will accept
-        // typed input — same precedent as the interactive-launch bugs found earlier
-        // today, verified by hand: sending too early is silently swallowed.
+        // Every interactive CLI can have a silent pre-boot gap. Require one
+        // real output batch and a stable composer window before injecting the
+        // first formula-discovery message; a fixed sleep is not a readiness
+        // signal and previously let Enter get swallowed by the TUI.
         const message = result.initialMessage;
-        setTimeout(() => {
-          void termSubmitLineWithAutoRetry(sessionId, message, {
-            onAutoRetry: () => console.info('[formula-discovery] retried Enter after quiet PTY window'),
-            onRetryError: (err) => console.warn('[formula-discovery] quiet-window Enter retry failed', err),
-          }).catch((err) => {
-            setError(err instanceof Error ? err.message : 'Không gửi được nhiệm vụ vào PTY');
-            setPhase('failed');
-          });
-        }, 1200);
+        const ready = await waitForPtyReady({
+          readSequence: async () => (await termSnapshot(sessionId)).sequence,
+          settleMs: 1_000,
+          minWaitMs: 3_000,
+          maxWaitMs: 15_000,
+        });
+        if (!ready) throw new Error('Interactive CLI PTY chưa sẵn sàng sau 15 giây');
+        await termSubmitLineWithAutoRetry(sessionId, message, {
+          onAutoRetry: () => console.info('[formula-discovery] retried Enter after quiet PTY window'),
+          onRetryError: (err) => console.warn('[formula-discovery] quiet-window Enter retry failed', err),
+        });
       }
       setFormulaId(result.formulaId);
       setPhase('started');

@@ -10,6 +10,7 @@ export type ErrorCode =
   | 'quota_exceeded'
   | 'forbidden'
   | 'unauthorized'
+  | 'conflict'
   | 'insufficient_sample'
   | 'malformed_provider_output'
   | 'internal';

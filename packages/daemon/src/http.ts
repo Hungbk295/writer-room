@@ -4,7 +4,20 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AgentDefinition, TeamGuardConfig } from '@writer-room/shared';
-import { SpyService } from '@writer-room/spy';
+import {
+  AppError,
+  SpyService,
+  type CorpusIntelligenceOverview,
+  type P0CorpusImportBatch,
+  type P0CorpusImportItem,
+  type P0CorpusMembership,
+  type P0EvidenceRecord,
+  type P0LoopRun,
+  type P0RecommendationCaptureBatch,
+  type P0RecommendationObservation,
+  type P0Report,
+  type P0SemanticAnalysisRun,
+} from '@writer-room/spy';
 import { acquireLock, releaseLock } from './lock.ts';
 import {
   APP_ROOT,
@@ -34,12 +47,14 @@ import {
 } from './source-pack-sessions.ts';
 import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { McpSpyServer } from './spy-mcp.ts';
+import { McpGeneralPackServer } from './general-pack-mcp.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
 import { createJobDoneNotification, listJobNotifications, markJobNotificationRead } from './notifications.ts';
 import { handleGetSpyLoopConfig, handlePutSpyLoopConfig, loadSpyLoopConfig } from './spy/loop-config.ts';
 import { LoopScheduler } from './spy/loop-scheduler.ts';
 import { sendTelegramReport } from './spy/report-telegram.ts';
 import { createSpyLoopAdapter, type SpyLoopAdapter } from './spy/loop-contract.ts';
+import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -77,23 +92,29 @@ import {
 } from './training/studio.ts';
 import { registerStudioSynthesizeSettleListener, startStudioSynthesize } from './training/studio-synthesize.ts';
 import { getProfile, listProfiles, saveProfile } from './training/profile-store.ts';
+
 import {
-  continueWriterFromSalvagedDraft,
-  DEFAULT_AGENT_IDS as WRITER_DEFAULT_AGENT_IDS,
-  registerWriterSettleListener,
-  startWriterRun,
-  type DefaultAgentId as WriterAgentId,
-} from './writer/writer-run.ts';
-import { deleteWriterRun, getWriterRun, listWriterRuns } from './writer/run-store.ts';
-import {
+  createWriterPostV2,
+  createWriterRoomV2,
   continueWriterRunV2,
   readStyledVersion,
   recoverInterruptedRestyles,
+  recoverInterruptedWriterRuns,
   registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
+  runWriterRoomV2,
   startRestyle,
   startWriterRunV2,
+  updateWriterPostV2,
+  withWriterV2Progress,
 } from './writer/writer-run-v2.ts';
+import {
+  recoverInterruptedHooks,
+  registerWriterV2HookListener,
+  selectHook,
+  startHookClarify,
+  startHookSuggest,
+} from './writer/hook-board.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2 } from './writer/run-store-v2.ts';
 import { getGeneralPack, listGeneralPacks } from './writer/general-pack.ts';
 import { getChannelStyle, listChannelStyles } from './writer/channel-style.ts';
@@ -128,6 +149,218 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
+/** P0 accepts only metadata/URLs. Never let a browser page/receipt be posted here. */
+async function readP0Body(req: Request, maximumBytes = 32 * 1024): Promise<Record<string, unknown>> {
+  const contentLength = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    throw new AppError('quota_exceeded', `P0 request vượt giới hạn ${maximumBytes} bytes`);
+  }
+  if (!req.body) return {};
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel();
+        throw new AppError('quota_exceeded', `P0 request vượt giới hạn ${maximumBytes} bytes`);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    const text = new TextDecoder().decode(Buffer.concat(chunks));
+    const parsed: unknown = JSON.parse(text || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    throw new AppError('invalid_input', 'P0 body phải là JSON object hợp lệ');
+  }
+}
+
+/** There is no multi-user auth route yet; do not accept actor/owner in JSON. */
+const P0_LOCAL_OWNER_SUBJECT = 'local-desktop';
+
+// P0 persistence records are intentionally richer than the local web contract:
+// they contain owner/idempotency data and artifact paths required for recovery.
+// Never serialize those rows directly over HTTP.  The UI gets only review-safe
+// metadata and normalized Gemini output, never an artifact path, raw receipt,
+// provider response, owner, or request digest.
+function p0SafeText(value: unknown, max = 1_000): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.slice(0, max) : null;
+}
+
+function p0SafeEvidenceDetail(detail: Record<string, unknown>): Record<string, string | number> {
+  const allowed = ['sourceVideoId', 'title', 'channelTitle', 'language', 'source', 'segmentCount', 'mimeType', 'reason'];
+  const output: Record<string, string | number> = {};
+  for (const key of allowed) {
+    const value = detail[key];
+    if (typeof value === 'number' && Number.isFinite(value)) output[key] = value;
+    else {
+      const text = p0SafeText(value, 300);
+      if (text) output[key] = text;
+    }
+  }
+  return output;
+}
+
+function p0PublicImportItem(item: P0CorpusImportItem) {
+  return {
+    id: item.id, batchId: item.batchId, submittedUrl: item.submittedUrl, canonicalUrl: item.canonicalUrl,
+    sourceVideoId: item.sourceVideoId, identityStatus: item.identityStatus, capturedAt: item.capturedAt,
+    expiresAt: item.expiresAt, status: item.status, promotedMembershipId: item.promotedMembershipId,
+  };
+}
+
+function p0PublicImportBatch(batch: P0CorpusImportBatch, items: P0CorpusImportItem[] = []) {
+  return { id: batch.id, topicId: batch.topicId, status: batch.status, createdAt: batch.createdAt, items: items.map(p0PublicImportItem) };
+}
+
+function p0PublicEvidence(record: P0EvidenceRecord) {
+  return {
+    id: record.id, kind: record.kind, status: record.status, method: record.method,
+    observedAt: record.observedAt, expiresAt: record.expiresAt, detail: p0SafeEvidenceDetail(record.detail),
+  };
+}
+
+function p0PublicAnalysis(run: P0SemanticAnalysisRun) {
+  const result = run.result && typeof run.result === 'object' ? run.result : null;
+  const labels = Array.isArray(result?.['labels']) ? result['labels'].map((value) => p0SafeText(value, 120)).filter(Boolean) : [];
+  const keywordCandidates = Array.isArray(result?.['keywordCandidates']) ? result['keywordCandidates'].map((value) => p0SafeText(value, 120)).filter(Boolean) : [];
+  const claims = Array.isArray(result?.['claims'])
+    ? result['claims'].flatMap((value) => {
+      if (!value || typeof value !== 'object') return [];
+      const claim = value as Record<string, unknown>;
+      const text = p0SafeText(claim['text']);
+      if (!text) return [];
+      const evidenceIds = Array.isArray(claim['evidence'])
+        ? claim['evidence'].flatMap((ref) => ref && typeof ref === 'object' && typeof (ref as Record<string, unknown>)['evidenceId'] === 'string'
+          ? [(ref as Record<string, unknown>)['evidenceId'] as string]
+          : [])
+        : [];
+      return [{ text, evidenceIds }];
+    })
+    : [];
+  return {
+    id: run.id, status: run.status, model: run.model, createdAt: run.createdAt, completedAt: run.completedAt,
+    expiresAt: run.expiresAt, result: result ? { labels, keywordCandidates, claims } : null,
+    failureCode: run.failureCode,
+    // Provider error text can contain transport details.  The code is enough
+    // for the product surface; daemon logs keep the original diagnostic.
+    failureReason: run.failureCode ? 'Gemini review không hoàn tất; xem mã lỗi.' : null,
+  };
+}
+
+function p0PublicMembership(membership: P0CorpusMembership, evidence: P0EvidenceRecord[] = [], analyses: P0SemanticAnalysisRun[] = []) {
+  return {
+    id: membership.id, canonicalUrl: membership.canonicalUrl, sourceVideoId: membership.sourceVideoId,
+    status: membership.status, identityStatus: membership.identityStatus, createdFromKind: membership.createdFromKind,
+    evidence: evidence.map(p0PublicEvidence), analyses: analyses.map(p0PublicAnalysis),
+  };
+}
+
+function p0PublicObservation(observation: P0RecommendationObservation) {
+  return {
+    id: observation.id, fromVideoId: observation.fromVideoId, targetVideoId: observation.targetVideoId,
+    targetCanonicalUrl: observation.targetCanonicalUrl, targetTitle: observation.targetTitle,
+    targetChannelTitle: observation.targetChannelTitle, observedPosition: observation.observedPosition,
+    status: observation.status, expiresAt: observation.expiresAt,
+  };
+}
+
+function p0PublicRecommendationBatch(batch: P0RecommendationCaptureBatch, observations: P0RecommendationObservation[] = []) {
+  return {
+    id: batch.id, fromVideoId: batch.fromVideoId, seedCanonicalUrl: batch.seedCanonicalUrl,
+    status: batch.status, captureMethod: batch.captureMethod, capturedAt: batch.capturedAt,
+    expiresAt: batch.expiresAt, failureCode: batch.failureCode,
+    failureReason: batch.failureCode ? 'C3 capture không hoàn tất; xem mã lỗi.' : null,
+    observations: observations.map(p0PublicObservation),
+  };
+}
+
+function p0PublicSummary(summary: Record<string, unknown>): Record<string, unknown> {
+  const numericKeys = ['memberCount', 'enriched', 'analyzed', 'unavailable'];
+  const output: Record<string, unknown> = {};
+  for (const key of numericKeys) {
+    if (typeof summary[key] === 'number' && Number.isFinite(summary[key])) output[key] = summary[key];
+  }
+  if (summary['suggestionCapture'] === 'user-triggered_only') output['suggestionCapture'] = 'user-triggered_only';
+  if (Array.isArray(summary['failed'])) {
+    output['failed'] = summary['failed'].flatMap((entry) => entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>)['code'] === 'string'
+      ? [{ code: (entry as Record<string, unknown>)['code'] }]
+      : []);
+  }
+  return output;
+}
+
+function p0PublicLoopRun(run: P0LoopRun) {
+  return {
+    id: run.id, status: run.status, phase: run.phase, resumeIndex: run.resumeIndex,
+    summary: p0PublicSummary(run.summary), errorCode: run.errorCode,
+    errorMessage: run.errorCode ? 'P0 tick không hoàn tất; xem mã lỗi.' : null,
+    createdAt: run.createdAt, completedAt: run.completedAt,
+  };
+}
+
+function p0PublicReport(report: P0Report) {
+  return { id: report.id, loopRunId: report.loopRunId, summary: p0PublicSummary(report.summary), createdAt: report.createdAt };
+}
+
+function p0PublicOverview(overview: CorpusIntelligenceOverview) {
+  return {
+    topicId: overview.topicId, enabled: overview.enabled,
+    imports: overview.imports.map((entry) => p0PublicImportBatch(entry, entry.items)),
+    memberships: overview.memberships.map((entry) => p0PublicMembership(entry, entry.evidence, entry.analyses)),
+    recommendationBatches: overview.recommendationBatches.map((entry) => p0PublicRecommendationBatch(entry, entry.observations)),
+    loopRuns: overview.loopRuns.map(p0PublicLoopRun), reports: overview.reports.map(p0PublicReport),
+  };
+}
+
+function p0PublicAnalysisManifest(value: ReturnType<SpyService['corpus']['buildAnalysisManifest']>) {
+  const source = value.manifest;
+  const target = source['target'] && typeof source['target'] === 'object' ? source['target'] as Record<string, unknown> : {};
+  const evidence = Array.isArray(source['evidence']) ? source['evidence'] : [];
+  return {
+    digest: value.digest,
+    expiresAt: value.expiresAt,
+    policyVersion: p0SafeText(source['policyVersion'], 120),
+    target: { membershipId: p0SafeText(target['membershipId'], 120), canonicalUrl: p0SafeText(target['canonicalUrl'], 500), sourceVideoId: p0SafeText(target['sourceVideoId'], 120) },
+    evidence: evidence.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const item = entry as Record<string, unknown>;
+      return [{
+        evidenceId: p0SafeText(item['evidenceId'], 120), kind: p0SafeText(item['kind'], 40), method: p0SafeText(item['method'], 120),
+        observedAt: p0SafeText(item['observedAt'], 80), expiresAt: p0SafeText(item['expiresAt'], 80),
+        detail: p0SafeEvidenceDetail(item['detail'] && typeof item['detail'] === 'object' ? item['detail'] as Record<string, unknown> : {}),
+      }];
+    }),
+  };
+}
+
+function decodeP0PathId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new AppError('invalid_input', 'P0 route id không hợp lệ');
+  }
+}
+
+/** Do not reflect provider transport, credentials, URLs, or raw model output through the P0 API. */
+function p0PublicErrorMessage(errorValue: AppError): string {
+  if (errorValue.code === 'provider_error' || errorValue.code === 'internal') {
+    return 'P0 provider không hoàn tất; xem daemon log để chẩn đoán.';
+  }
+  return errorValue.message;
+}
+
 function contentType(path: string): string {
   if (path.endsWith('.html')) return 'text/html; charset=utf-8';
   if (path.endsWith('.js')) return 'text/javascript; charset=utf-8';
@@ -140,11 +373,14 @@ function contentType(path: string): string {
 export interface HttpApp {
   spy: SpyService;
   spyMcp: McpSpyServer | null;
+  generalPackMcp: McpGeneralPackServer | null;
   harness: AgentHarness;
   startedAt: number;
   webRoot: string;
   loopScheduler: LoopScheduler | null;
   loop: SpyLoopAdapter | null;
+  /** Hourly retention sweep for public P0 artifacts; optional for isolated route tests. */
+  p0RetentionTimer?: ReturnType<typeof setInterval>;
 }
 
 export async function createHttpApp(): Promise<HttpApp> {
@@ -161,10 +397,18 @@ export async function createHttpApp(): Promise<HttpApp> {
   // agent harness so newly prepared agent configs contain the live endpoint.
   const spyMcp = SPY_FEATURE.enabled ? new McpSpyServer(spy) : null;
   if (spyMcp) await spyMcp.start();
+  // General Pack MCP owns its own least-privilege surface too (Write Loop v2
+  // Phase 2 tooling) — mounted alongside Spy MCP, not folded into it, same
+  // "narrow surface per concern" reasoning as the comment on McpSpyServer.
+  const generalPackMcp = SPY_FEATURE.enabled ? new McpGeneralPackServer(spy, root) : null;
+  if (generalPackMcp) await generalPackMcp.start();
   const harness = await createAgentHarness({
     dataDir: root,
     defaultProjectRoot: APP_ROOT,
-    appMcpProvision: () => spyMcp?.info() ?? null,
+    appMcpProvision: () => ({
+      ...(spyMcp?.info() ? { writer_room: spyMcp.info()! } : {}),
+      ...(generalPackMcp?.info() ? { general_pack: generalPackMcp.info()! } : {}),
+    }),
   });
 
   // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
@@ -183,15 +427,12 @@ export async function createHttpApp(): Promise<HttpApp> {
   // needed, SYNTHESIZE's envelope is just cluster statements, never a transcript.
   registerStudioSynthesizeSettleListener(harness.pipeline.scheduler, { dataDir: root });
 
-  // Writer thin slice (FM2): single writer-draft settle → persist draft on run.
-  registerWriterSettleListener(harness.pipeline.scheduler, { dataDir: root });
-
-  // Write Loop v2: STUDY → WRITE → gate → editor → repair → gate. Runs beside the
-  // v1 listener above; each ignores the other's stages (v2 owns `*-v2`).
+  // Write Loop v2: STUDY → WRITE → gate → editor → repair → gate.
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: root });
   // Separate listener on purpose: a restyle runs against a run that is already DONE,
   // and handleWriterV2Settle returns early for anything whose status is not RUNNING.
   registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: root });
+  registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: root });
   // …and because that listener only ever fires on `onItemSettled`, a restyle that was
   // in flight when the daemon went down would never settle at all: `reconcileOnBoot`
   // (already run inside `createAgentHarness` above, so the ledger is terminal by now
@@ -199,6 +440,13 @@ export async function createHttpApp(): Promise<HttpApp> {
   // per boot — commit the agent's `out/result.json` if it is there and valid, otherwise
   // clear the stuck flag with a RESTYLE_INTERRUPTED reason. Fire-and-forget: a slow
   // filesystem must not delay the port opening.
+  // Main loop first (STUDY/WRITE/GATE/EDIT/REPAIR), then restyle side-ops on DONE runs.
+  void recoverInterruptedWriterRuns(root, harness.pipeline.scheduler).catch((err) => {
+    console.error('[writer-v2] recoverInterruptedWriterRuns failed:', (err as Error).message);
+  });
+  void recoverInterruptedHooks(root).catch((err) => {
+    console.error('[writer-v2] recoverInterruptedHooks failed:', (err as Error).message);
+  });
   void recoverInterruptedRestyles(root).catch((err) => {
     console.error('[writer-v2] recoverInterruptedRestyles failed:', (err as Error).message);
   });
@@ -230,12 +478,25 @@ export async function createHttpApp(): Promise<HttpApp> {
     loopScheduler.start();
   }
 
-  const webRoot = resolve(APP_ROOT, 'packages/web/dist');
-  return { spy, spyMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop };
+  // Retention is independent of collection.  A paused/kill-switched P0 loop
+  // must still remove public artifacts once their 30-day window ends.
+  const runP0Retention = () => {
+    void spy.corpus.expirePublicEvidence().catch((err) => {
+      console.error('[spy-p0] retention sweep failed:', err instanceof Error ? err.message : String(err));
+    });
+  };
+  runP0Retention();
+  const p0RetentionTimer = setInterval(runP0Retention, 60 * 60 * 1000);
+
+  // Desktop releases ship the UI next to the daemon binary.  Source/dev mode
+  // keeps the existing workspace location.  Never place mutable user data here:
+  // application resources are read-only on macOS and often protected on Windows.
+  const webRoot = resolve(process.env.WRITER_ROOM_WEB_ROOT || join(APP_ROOT, 'packages/web/dist'));
+  return { spy, spyMcp, generalPackMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, p0RetentionTimer };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
-  const { spy, spyMcp, harness, startedAt, webRoot, loop, loopScheduler } = app;
+  const { spy, spyMcp, generalPackMcp, harness, startedAt, webRoot, loop, loopScheduler } = app;
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -249,6 +510,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           ok: true,
           spy: SPY_FEATURE.enabled,
           spyMcp: spyMcp ? { url: spyMcp.info()?.url ?? null } : null,
+          generalPackMcp: generalPackMcp ? { url: generalPackMcp.info()?.url ?? null } : null,
           agents: harness.listAgents().length,
           teamMcp: mcp ? { url: mcp.url } : null,
           uptimeMs: Date.now() - startedAt,
@@ -260,6 +522,13 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && pathname === '/api/spy/mcp') {
         const info = spyMcp?.info();
         if (!info) return error('Spy MCP đang tắt', 404);
+        return json(info);
+      }
+
+      // Same purpose as /api/spy/mcp, for the General Pack MCP.
+      if (method === 'GET' && pathname === '/api/general-pack/mcp') {
+        const info = generalPackMcp?.info();
+        if (!info) return error('General Pack MCP đang tắt', 404);
         return json(info);
       }
 
@@ -1293,75 +1562,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(profile);
       }
 
-      // ── Writer runs (FM2 thin slice) ───────────────────────────
-      if (method === 'GET' && pathname === '/api/writer/runs') {
-        return json({ runs: await listWriterRuns() });
-      }
-      if (method === 'POST' && pathname === '/api/writer/runs') {
-        const body = await readBody(req);
-        const brief = String(body['brief'] ?? '').trim();
-        const packId = String(body['packId'] ?? '').trim();
-        const profileId = String(body['profileId'] ?? '').trim();
-        if (!brief) return error('brief bắt buộc');
-        if (!packId) return error('packId bắt buộc');
-        if (!profileId) return error('profileId bắt buộc — Writer chỉ nhận WRITER_READY_PROFILE');
-        const rawAgent = body['agentId'];
-        if (rawAgent !== undefined && !(WRITER_DEFAULT_AGENT_IDS as readonly string[]).includes(String(rawAgent))) {
-          return error(`agentId không hợp lệ — phải là một trong: ${WRITER_DEFAULT_AGENT_IDS.join(', ')}`);
-        }
-        const rawTitle = body['title'];
-        const title = typeof rawTitle === 'string' ? rawTitle.trim() : undefined;
-        let targetWords: number | undefined;
-        if (body['targetWords'] !== undefined && body['targetWords'] !== null && body['targetWords'] !== '') {
-          const n = Number(body['targetWords']);
-          if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
-          targetWords = n;
-        }
-        try {
-          const run = await startWriterRun(
-            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
-            {
-              brief,
-              ...(title ? { title } : {}),
-              ...(targetWords !== undefined ? { targetWords } : {}),
-              packId,
-              profileId,
-              agentId: rawAgent !== undefined ? String(rawAgent) as WriterAgentId : undefined,
-            },
-          );
-          return json(run, 201);
-        } catch (err) {
-          return error(err instanceof Error ? err.message : 'Không start được Writer run', 400);
-        }
-      }
 
-      const writerRunContinueMatch = /^\/api\/writer\/runs\/([^/]+)\/continue$/.exec(pathname);
-      if (method === 'POST' && writerRunContinueMatch) {
-        const runId = decodeURIComponent(writerRunContinueMatch[1]!);
-        try {
-          const run = await continueWriterFromSalvagedDraft(
-            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
-            runId,
-          );
-          return json(run);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : 'Không continue được Writer run';
-          const status = /không tồn tại/i.test(msg) ? 404 : 400;
-          return error(msg, status);
-        }
-      }
-
-      const writerRunMatch = /^\/api\/writer\/runs\/([^/]+)$/.exec(pathname);
-      if (method === 'GET' && writerRunMatch) {
-        const run = await getWriterRun(decodeURIComponent(writerRunMatch[1]!));
-        if (!run) return error('Writer run không tồn tại', 404);
-        return json(run);
-      }
-      if (method === 'DELETE' && writerRunMatch) {
-        const ok = await deleteWriterRun(decodeURIComponent(writerRunMatch[1]!));
-        if (!ok) return error('Writer run không tồn tại', 404);
-        return json({ ok: true });
-      }
 
       // ── General packs (Write Loop v2) ─────────────────────────
       // Read-only over `writer-room-data/general-packs/*.md`: the file is authored and
@@ -1391,6 +1592,119 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       }
 
       // ── Writer v2 runs (Write Loop v2) ────────────────────────
+      // `posts` is the UI-owned contract: creation only persists an empty DRAFT.
+      // Configuration and dispatch are separate explicit requests so neither Create
+      // nor Save can acquire a lane or invoke an agent/provider.
+      if (method === 'GET' && pathname === '/api/writer/v2/posts') {
+        return json({ posts: await listWriterRunsV2(dataRoot()) });
+      }
+      if (method === 'POST' && pathname === '/api/writer/v2/posts') {
+        return json(withWriterV2Progress(await createWriterPostV2(
+          { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+        )), 201);
+      }
+      const writerV2HookClarifyMatch = /^\/api\/writer\/v2\/posts\/([^/]+)\/hook\/clarify$/.exec(pathname);
+      if (method === 'POST' && writerV2HookClarifyMatch) {
+        const postId = decodeURIComponent(writerV2HookClarifyMatch[1]!);
+        try {
+          return json(withWriterV2Progress(await startHookClarify(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() }, postId,
+          )));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không làm rõ title được';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
+        }
+      }
+      const writerV2HookSuggestMatch = /^\/api\/writer\/v2\/posts\/([^/]+)\/hook\/suggest$/.exec(pathname);
+      if (method === 'POST' && writerV2HookSuggestMatch) {
+        const postId = decodeURIComponent(writerV2HookSuggestMatch[1]!);
+        const body = await readBody(req);
+        const answers = Array.isArray(body['answers']) ? body['answers'].map((a) => String(a ?? '')) : [];
+        try {
+          return json(withWriterV2Progress(await startHookSuggest(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() }, postId, answers,
+          )));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không gợi ý hook được';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
+        }
+      }
+      const writerV2HookSelectMatch = /^\/api\/writer\/v2\/posts\/([^/]+)\/hook\/selection$/.exec(pathname);
+      if (method === 'PUT' && writerV2HookSelectMatch) {
+        const postId = decodeURIComponent(writerV2HookSelectMatch[1]!);
+        const body = await readBody(req);
+        const selectedId = typeof body['selectedId'] === 'string' ? body['selectedId'] : '';
+        if (!selectedId.trim()) return error('selectedId bắt buộc');
+        try {
+          return json(withWriterV2Progress(await selectHook(dataRoot(), postId, selectedId)));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không chọn hook được';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
+        }
+      }
+      const writerV2PostRunMatch = /^\/api\/writer\/v2\/posts\/([^/]+)\/run$/.exec(pathname);
+      if (method === 'POST' && writerV2PostRunMatch) {
+        const postId = decodeURIComponent(writerV2PostRunMatch[1]!);
+        try {
+          return json(withWriterV2Progress(await runWriterRoomV2(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() }, postId,
+          )));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không chạy được Writer v2 post';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
+        }
+      }
+      const writerV2PostMatch = /^\/api\/writer\/v2\/posts\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && writerV2PostMatch) {
+        const post = await getWriterRunV2(decodeURIComponent(writerV2PostMatch[1]!), dataRoot());
+        if (!post) return error('Writer v2 post không tồn tại', 404);
+        return json(withWriterV2Progress(post));
+      }
+      if (method === 'PUT' && writerV2PostMatch) {
+        const postId = decodeURIComponent(writerV2PostMatch[1]!);
+        const current = await getWriterRunV2(postId, dataRoot());
+        if (!current) return error('Writer v2 post không tồn tại', 404);
+        const body = await readBody(req);
+        const agentId = body['agentId'] === undefined ? current.agentId : body['agentId'];
+        const editorAgentId = body['editorAgentId'] === undefined ? current.editorAgentId : body['editorAgentId'];
+        if (!isDefaultAgentId(agentId)) {
+          return error(`agentId không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+        }
+        if (!isDefaultAgentId(editorAgentId)) {
+          return error(`editorAgentId không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+        }
+        let targetWords: number | undefined;
+        if (body['targetWords'] !== undefined && body['targetWords'] !== null && body['targetWords'] !== '') {
+          const n = Number(body['targetWords']);
+          if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
+          targetWords = n;
+        }
+        try {
+          const post = await updateWriterPostV2(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+            postId,
+            {
+              brief: String(body['brief'] ?? ''),
+              ...(typeof body['title'] === 'string' ? { title: body['title'] } : {}),
+              ...(typeof body['audience'] === 'string' ? { audience: body['audience'] } : {}),
+              ...(targetWords !== undefined ? { targetWords } : {}),
+              packId: String(body['packId'] ?? ''),
+              generalPack: String(body['generalPack'] ?? ''),
+              formulaId: String(body['formulaId'] ?? ''),
+              agentId,
+              editorAgentId,
+            },
+          );
+          return json(withWriterV2Progress(post));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không lưu được Writer v2 post', 400);
+        }
+      }
+      if (method === 'DELETE' && writerV2PostMatch) {
+        const ok = await deleteWriterRunV2(decodeURIComponent(writerV2PostMatch[1]!), dataRoot());
+        if (!ok) return error('Writer v2 post không tồn tại', 404);
+        return json({ ok: true });
+      }
       if (method === 'GET' && pathname === '/api/writer/v2/runs') {
         return json({ runs: await listWriterRunsV2(dataRoot()) });
       }
@@ -1433,9 +1747,64 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
               ...(isDefaultAgentId(body['editorAgentId']) ? { editorAgentId: body['editorAgentId'] } : {}),
             },
           );
-          return json(run, 201);
+          return json(withWriterV2Progress(run), 201);
         } catch (err) {
           return error(err instanceof Error ? err.message : 'Không start được Writer v2 run', 400);
+        }
+      }
+      // A room is the reviewed, pinned configuration before a Writer v2 agent is
+      // allowed to occupy a lane. Keeping it separate from /runs makes accidental
+      // UI/API submits harmless until the human explicitly presses Run.
+      if (method === 'POST' && pathname === '/api/writer/v2/rooms') {
+        const body = await readBody(req);
+        const brief = String(body['brief'] ?? '').trim();
+        const packId = String(body['packId'] ?? '').trim();
+        const generalPack = String(body['generalPack'] ?? '').trim();
+        const formulaId = String(body['formulaId'] ?? '').trim();
+        if (!brief) return error('brief bắt buộc');
+        if (!packId) return error('packId bắt buộc');
+        if (!generalPack) return error('generalPack bắt buộc — vd "hieu-tv.md"');
+        if (!formulaId) return error('formulaId bắt buộc — v2 dùng Formula làm hợp đồng style');
+        for (const key of ['agentId', 'editorAgentId'] as const) {
+          const raw = body[key];
+          if (raw !== undefined && !isDefaultAgentId(raw)) {
+            return error(`${key} không hợp lệ — phải là một trong: ${DEFAULT_AGENT_IDS.join(', ')}`);
+          }
+        }
+        let targetWords: number | undefined;
+        if (body['targetWords'] !== undefined && body['targetWords'] !== null && body['targetWords'] !== '') {
+          const n = Number(body['targetWords']);
+          if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
+          targetWords = n;
+        }
+        try {
+          const room = await createWriterRoomV2(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
+            {
+              brief, packId, generalPack, formulaId,
+              ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
+              ...(typeof body['audience'] === 'string' && body['audience'].trim()
+                ? { audience: body['audience'].trim() } : {}),
+              ...(targetWords !== undefined ? { targetWords } : {}),
+              ...(isDefaultAgentId(body['agentId']) ? { agentId: body['agentId'] } : {}),
+              ...(isDefaultAgentId(body['editorAgentId']) ? { editorAgentId: body['editorAgentId'] } : {}),
+            },
+          );
+          return json(withWriterV2Progress(room), 201);
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không tạo được Writer v2 room', 400);
+        }
+      }
+      const writerV2RoomRunMatch = /^\/api\/writer\/v2\/rooms\/([^/]+)\/run$/.exec(pathname);
+      if (method === 'POST' && writerV2RoomRunMatch) {
+        const roomId = decodeURIComponent(writerV2RoomRunMatch[1]!);
+        try {
+          return json(withWriterV2Progress(await runWriterRoomV2(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() }, roomId,
+          )));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không chạy được Writer v2 room';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
         }
       }
       const writerV2RunContinueMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/continue$/.exec(pathname);
@@ -1446,7 +1815,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             runId,
           );
-          return json(run);
+          return json(withWriterV2Progress(run));
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Không tiếp tục được Writer v2 run';
           const status = /không tồn tại/i.test(msg) ? 404 : 400;
@@ -1465,7 +1834,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             runId,
             styleId,
           );
-          return json(run);
+          return json(withWriterV2Progress(run));
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Không restyle được Writer v2 run';
           const status = /không tồn tại/i.test(msg) ? 404 : 400;
@@ -1486,7 +1855,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && writerV2RunMatch) {
         const run = await getWriterRunV2(decodeURIComponent(writerV2RunMatch[1]!), dataRoot());
         if (!run) return error('Writer v2 run không tồn tại', 404);
-        return json(run);
+        return json(withWriterV2Progress(run));
       }
       if (method === 'DELETE' && writerV2RunMatch) {
         const ok = await deleteWriterRunV2(decodeURIComponent(writerV2RunMatch[1]!), dataRoot());
@@ -1496,6 +1865,129 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
 
 
       // ── Spy Loop — Topics ─────────────────────────────────────
+      if (method === 'GET' && pathname === '/api/spy/loop/capabilities') {
+        const config = await loadSpyLoopConfig(dataRoot());
+        return json(describeLoopCapabilities({
+          spyFeatureEnabled: SPY_FEATURE.enabled,
+          loopReady: loop !== null,
+          schedulerReady: loopScheduler !== null,
+          legacyDataApiConfigured: Boolean(spy.config.youtubeDataApiKey?.trim()),
+          legacyAutoLoopEnabled: config.enabled,
+        }));
+      }
+
+      // ── Spy P0 Corpus Intelligence (separate from legacy Auto-Loop) ────
+      if (method === 'GET' && pathname === '/api/spy/p0/overview') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const topicId = url.searchParams.get('topic') ?? '';
+        return json(p0PublicOverview(spy.corpus.overview(topicId)));
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/p0/corpus-imports') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readP0Body(req);
+        const result = await spy.corpus.importVideoDraft({
+          topicId: typeof body['topicId'] === 'string' ? body['topicId'] : '',
+          submittedUrl: typeof body['url'] === 'string' ? body['url'] : '',
+          ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+          idempotencyKey: typeof body['idempotencyKey'] === 'string' ? body['idempotencyKey'] : undefined,
+        });
+        return json({ batch: p0PublicImportBatch(result.batch, result.items), reused: result.reused }, result.reused ? 200 : 201);
+      }
+
+      const p0ImportDecisionMatch = /^\/api\/spy\/p0\/corpus-imports\/([^/]+)\/(confirm|reject)$/.exec(pathname);
+      if (method === 'POST' && p0ImportDecisionMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const batchId = decodeP0PathId(p0ImportDecisionMatch[1]!);
+        if (p0ImportDecisionMatch[2] === 'confirm') {
+          const result = spy.corpus.confirmCorpusImport({ batchId, ownerSubject: P0_LOCAL_OWNER_SUBJECT });
+          return json({
+            batch: p0PublicImportBatch(result.batch),
+            memberships: result.memberships.map((membership) => p0PublicMembership(membership)),
+          });
+        }
+        return json({ batch: p0PublicImportBatch(spy.corpus.rejectCorpusImport({ batchId, ownerSubject: P0_LOCAL_OWNER_SUBJECT })) });
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/p0/recommendation-captures') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readP0Body(req);
+        // C3's public contract is fixed at direct depth-one / twenty-or-fewer.
+        // Reject a malformed client attempt instead of treating it as omitted.
+        if (Object.hasOwn(body, 'depth') && body['depth'] !== 1) {
+          throw new AppError('invalid_input', 'C3 chỉ hỗ trợ depth = 1');
+        }
+        if (Object.hasOwn(body, 'limit') && body['limit'] !== 20) {
+          throw new AppError('invalid_input', 'C3 limit cố định là 20; không nhận giá trị client khác');
+        }
+        const result = await spy.corpus.captureSuggestions({
+          topicId: typeof body['topicId'] === 'string' ? body['topicId'] : '',
+          seedMembershipId: typeof body['seedMembershipId'] === 'string' ? body['seedMembershipId'] : '',
+          ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+          idempotencyKey: typeof body['idempotencyKey'] === 'string' ? body['idempotencyKey'] : undefined,
+          depth: Object.hasOwn(body, 'depth') ? 1 : undefined,
+          limit: Object.hasOwn(body, 'limit') ? 20 : undefined,
+        });
+        return json({ batch: p0PublicRecommendationBatch(result.batch, result.observations), reused: result.reused }, result.reused ? 200 : 201);
+      }
+
+      const p0RecommendationDecisionMatch = /^\/api\/spy\/p0\/recommendation-observations\/([^/]+)\/(confirm|reject)$/.exec(pathname);
+      if (method === 'POST' && p0RecommendationDecisionMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const result = spy.corpus.decideSuggestion({
+          observationId: decodeP0PathId(p0RecommendationDecisionMatch[1]!), ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+          decision: p0RecommendationDecisionMatch[2] === 'confirm' ? 'confirmed' : 'rejected',
+        });
+        return json({ observation: p0PublicObservation(result.observation), membership: result.membership ? p0PublicMembership(result.membership) : null });
+      }
+
+      const p0MembershipEnrichMatch = /^\/api\/spy\/p0\/memberships\/([^/]+)\/enrich$/.exec(pathname);
+      if (method === 'POST' && p0MembershipEnrichMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const evidence = await spy.corpus.enrichMembership({
+          membershipId: decodeP0PathId(p0MembershipEnrichMatch[1]!), ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+        });
+        return json({ evidence: evidence.map(p0PublicEvidence) });
+      }
+
+      const p0MembershipManifestMatch = /^\/api\/spy\/p0\/memberships\/([^/]+)\/analysis-manifest$/.exec(pathname);
+      if (method === 'GET' && p0MembershipManifestMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        return json(p0PublicAnalysisManifest(spy.corpus.buildAnalysisManifest({ membershipId: decodeP0PathId(p0MembershipManifestMatch[1]!) })));
+      }
+
+      const p0MembershipAnalyzeMatch = /^\/api\/spy\/p0\/memberships\/([^/]+)\/analyze$/.exec(pathname);
+      if (method === 'POST' && p0MembershipAnalyzeMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readP0Body(req);
+        const result = await spy.corpus.analyzeMembership({
+          topicId: typeof body['topicId'] === 'string' ? body['topicId'] : '',
+          membershipId: decodeP0PathId(p0MembershipAnalyzeMatch[1]!), ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+          idempotencyKey: typeof body['idempotencyKey'] === 'string' ? body['idempotencyKey'] : undefined,
+        });
+        return json({ run: p0PublicAnalysis(result.run), reused: result.reused }, result.reused ? 200 : 201);
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/p0/controls') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readP0Body(req);
+        if (typeof body['topicId'] !== 'string' || typeof body['enabled'] !== 'boolean') {
+          return error('topicId và enabled boolean bắt buộc');
+        }
+        return json({ enabled: spy.corpus.setLoopEnabled({ topicId: body['topicId'], enabled: body['enabled'] }) });
+      }
+
+      if (method === 'POST' && pathname === '/api/spy/p0/tick') {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const body = await readP0Body(req);
+        const result = await spy.corpus.runManualTick({
+          topicId: typeof body['topicId'] === 'string' ? body['topicId'] : '',
+          ownerSubject: P0_LOCAL_OWNER_SUBJECT,
+          idempotencyKey: typeof body['idempotencyKey'] === 'string' ? body['idempotencyKey'] : undefined,
+        });
+        return json({ run: p0PublicLoopRun(result.run), report: result.report ? p0PublicReport(result.report) : null, reused: result.reused }, result.reused ? 200 : 201);
+      }
+
       if (method === 'GET' && pathname === '/api/spy/topics') {
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (!loop) return error('Spy Loop chưa khởi tạo', 503);
@@ -1936,9 +2428,18 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
 
       return error('Not found', 404);
     } catch (err) {
+      if (err instanceof AppError) {
+        const status = err.code === 'not_found' ? 404
+          : err.code === 'forbidden' ? 403
+            : err.code === 'conflict' ? 409
+              : err.code === 'capability_missing' ? 503
+                : err.code === 'quota_exceeded' ? 413
+                  : 400;
+        return error(pathname.startsWith('/api/spy/p0/') ? p0PublicErrorMessage(err) : err.message, status);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const status = /không tồn tại|not found/i.test(message) ? 404 : 500;
-      return error(message, status);
+      return error(pathname.startsWith('/api/spy/p0/') ? 'P0 provider không hoàn tất; xem daemon log để chẩn đoán.' : message, status);
     }
   };
 }
@@ -1964,17 +2465,21 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
 
   const mcp = app.harness.teamMcpInfo();
   const spyMcp = app.spyMcp?.info();
+  const generalPackMcp = app.generalPackMcp?.info();
   console.log(`Writer Room http://127.0.0.1:${server.port}`);
   console.log(`data: ${dataRoot()}`);
   console.log(`spy: ${SPY_FEATURE.enabled ? 'on' : 'off'}`);
   console.log(`agents: ${app.harness.listAgents().map((a) => a.id).join(', ')}`);
   console.log(`team-mcp: ${mcp?.url ?? 'off'}`);
   console.log(`spy-mcp: ${spyMcp?.url ?? 'off'}`);
+  console.log(`general-pack-mcp: ${generalPackMcp?.url ?? 'off'}`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
+    if (app.p0RetentionTimer) clearInterval(app.p0RetentionTimer);
     app.loopScheduler?.dispose();
     app.spyMcp?.stop();
+    app.generalPackMcp?.stop();
     app.harness.dispose();
     await releaseLock();
     process.exit(0);

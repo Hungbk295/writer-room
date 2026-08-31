@@ -1,9 +1,9 @@
 /**
  * Interactive inject-line tests (plan inject-real-message-interactive).
  *
- * Unit tests: buildInjectLine embeds a PTY-safe real task for persistent
- * interactive orchestrated turns, keeps the legacy MCP wake lines untouched for
- * headless/team turns, and honors the 8 KiB task / 12 KiB total caps.
+ * Unit tests: buildInjectLine emits a PTY-safe Team-MCP wake line for persistent
+ * interactive orchestrated turns, keeps the legacy wake lines untouched for
+ * headless/team turns, and stays below Claude Code's 1024-byte composer limit.
  *
  * Integration: the workflow hard gate (plan §3.2) fails a persistent interactive
  * orchestrated turn with no taskNote before any spawnTurn, mirroring the
@@ -17,8 +17,7 @@ import type { AgentDefinition } from '@writer-room/shared';
 import {
   buildInjectLine,
   toSafeInteractiveText,
-  TASK_INJECT_MAX_BYTES,
-  INJECT_TEXT_MAX_BYTES,
+  INTERACTIVE_INJECT_MAX_BYTES,
 } from '../src/agents/index.ts';
 import { createAgentHarness, type AgentHarness } from '../src/harness.ts';
 import type { TeamEvent } from '../src/team/workflow.ts';
@@ -38,14 +37,15 @@ const AGENT: AgentDefinition = {
 };
 
 describe('buildInjectLine', () => {
-  test('embeds the real task for persistent interactive orchestrated turns', () => {
+  test('uses a short Team-MCP wake line for persistent interactive orchestrated turns', () => {
     const line = buildInjectLine(AGENT, 'assignment', 0, true, true, 42, 'Viết file out/result.json');
-    expect(line).toContain('NHIỆM VỤ: Viết file out/result.json');
     expect(line).toContain('team_turn_complete (agentId "codex", turnId 42, status "done")');
-    expect(line).not.toContain('team_get_assignment');
+    expect(line).toContain('team_get_assignment (agentId "codex")');
+    expect(line).not.toContain('Viết file out/result.json');
     expect(line).not.toContain('team_read_messages');
     expect(line).not.toContain('team_send_message (channel');
-    expect(line).toContain('Chỉ làm nhiệm vụ trên; không đọc chat cũ, không team_send_message');
+    expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(INTERACTIVE_INJECT_MAX_BYTES);
+    expect(line.indexOf('team_turn_complete')).toBeLessThan(line.indexOf('team_get_assignment'));
   });
 
   test('falls back to the orchestrator wake line when taskNote is missing', () => {
@@ -87,27 +87,19 @@ describe('buildInjectLine', () => {
     expect(safe).toContain('[31m');
   });
 
-  test('PTY-safety is applied inside the interactive embed', () => {
+  test('task content is never pasted into the interactive composer', () => {
     const line = buildInjectLine(AGENT, 'assignment', 0, true, true, 42, 'Viết file\r\nout/result.json\tesc\u001b');
     expect(line).not.toMatch(/[\r\n\t\u001b]/);
-    expect(line).toContain('NHIỆM VỤ: Viết file out/result.json esc');
+    expect(line).not.toContain('out/result.json');
+    expect(line).toContain('team_get_assignment');
   });
 
-  test('a task over the 8 KiB cap is truncated on a UTF-8 boundary with a marker', () => {
-    const task = 't'.repeat(TASK_INJECT_MAX_BYTES + 2048);
+  test('a huge task still produces a wake line below the Claude 1024-byte paste limit', () => {
+    const task = 'ế'.repeat(50_000);
     const line = buildInjectLine(AGENT, 'assignment', 0, true, true, 42, task);
-    expect(line).toContain('… [task truncated; call team_get_assignment for the full assignment]');
-    expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(INJECT_TEXT_MAX_BYTES);
-  });
-
-  test('a multi-byte char is never split mid-code-point at the cap', () => {
-    const base = 'abc';
-    const task = base + 'ế'.repeat(INJECT_TEXT_MAX_BYTES);
-    const line = buildInjectLine(AGENT, 'assignment', 0, true, true, 42, task);
-    const withoutMarker = line.replace('… [task truncated; call team_get_assignment for the full assignment]', '');
-    expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(INJECT_TEXT_MAX_BYTES);
-    expect(withoutMarker).not.toMatch(/\uFFFD/); // no replacement char
-    expect(withoutMarker).not.toMatch(/[\uD800-\uDFFF]/); // no lone surrogate
+    expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(INTERACTIVE_INJECT_MAX_BYTES);
+    expect(line.length).toBeLessThan(task.length);
+    expect(line).toContain('team_turn_complete');
   });
 });
 
@@ -142,7 +134,7 @@ describe('workflow hard gate for persistent interactive orchestrated turns (plan
     unsub();
   });
 
-  test('emits a spawnTurn with the embedded task when taskNote is present', async () => {
+  test('emits a spawnTurn with a bounded MCP wake line when taskNote is present', async () => {
     const events: TeamEvent[] = [];
     const unsub = harness.subscribe((e) => events.push(e));
     const task = 'Viết file out/result.json trong itemRunDir';
@@ -159,9 +151,10 @@ describe('workflow hard gate for persistent interactive orchestrated turns (plan
     if (spawn?.kind === 'spawnTurn') {
       expect(spawn.interactiveRequired).toBe(true);
       expect(spawn.forceHeadless).toBe(false);
-      expect(spawn.injectText).toContain('NHIỆM VỤ:');
-      expect(spawn.injectText).toContain(task);
-      expect(spawn.injectText).not.toContain('team_get_assignment');
+      expect(spawn.injectText).not.toContain(task);
+      expect(spawn.injectText).toContain('team_get_assignment');
+      expect(spawn.injectText).toContain(`turnId ${r.turnId}`);
+      expect(Buffer.byteLength(spawn.injectText, 'utf8')).toBeLessThanOrEqual(INTERACTIVE_INJECT_MAX_BYTES);
     }
     unsub();
   });

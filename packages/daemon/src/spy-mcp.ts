@@ -19,6 +19,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_wait',
   'spy_run_manifest',
   'spy_find_videos',
+  'spy_global_video_search',
   'spy_read_transcript',
   'spy_read_video_material',
   // M0: existing intelligence, deliberately read-only. Keep discovery,
@@ -85,6 +86,17 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       match: { type: 'string', enum: ['exact', 'contains'] },
     },
     required: ['spy_run_id', 'titles'],
+  },
+  spy_global_video_search: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      query: { type: 'string', minLength: 1, maxLength: 200 },
+      limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+      language: { type: 'string', pattern: '^[A-Za-z]{2}$', default: 'vi' },
+      region: { type: 'string', pattern: '^[A-Za-z]{2}$', default: 'VN' },
+    },
+    required: ['query'],
   },
   spy_read_transcript: {
     type: 'object',

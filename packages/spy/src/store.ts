@@ -16,7 +16,7 @@ import type {
   VideoTranscript,
 } from './schema.ts';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -343,6 +343,183 @@ CREATE INDEX IF NOT EXISTS idx_daily_reports_topic_date
 -- khác nhau trong UNIQUE, mà topic_id NULL = báo cáo tổng cũng chỉ được có một.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_reports_topic_date
   ON daily_reports(COALESCE(topic_id, ''), report_date);
+
+-- v6: Corpus Intelligence P0. These tables are intentionally separate from
+-- Auto-Loop candidate/topic/inbox tables: a draft evidence item must never
+-- become a competitor candidate merely because it was observed.
+CREATE TABLE IF NOT EXISTS p0_corpus_import_batches (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  owner_subject TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','confirmed','rejected')),
+  created_at TEXT NOT NULL,
+  decided_at TEXT,
+  UNIQUE(owner_subject, topic_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_import_batches_topic ON p0_corpus_import_batches(topic_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_corpus_import_items (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES p0_corpus_import_batches(id),
+  submitted_url TEXT NOT NULL,
+  canonical_url TEXT NOT NULL,
+  source_video_id TEXT NOT NULL,
+  identity_status TEXT NOT NULL CHECK(identity_status IN ('verified','needs_identity')),
+  evidence_artifact_json TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','confirmed','rejected')),
+  promoted_membership_id TEXT,
+  UNIQUE(batch_id, source_video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_import_items_batch ON p0_corpus_import_items(batch_id, status);
+
+CREATE TABLE IF NOT EXISTS p0_corpus_memberships (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  entity_kind TEXT NOT NULL CHECK(entity_kind IN ('video')),
+  canonical_url TEXT NOT NULL,
+  source_video_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('confirmed','expired')),
+  identity_status TEXT NOT NULL CHECK(identity_status IN ('verified','needs_identity')),
+  created_from_kind TEXT NOT NULL CHECK(created_from_kind IN ('corpus_import','recommendation')),
+  created_from_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT NOT NULL,
+  UNIQUE(topic_id, entity_kind, source_video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_memberships_topic_status ON p0_corpus_memberships(topic_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_recommendation_capture_batches (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  seed_membership_id TEXT NOT NULL REFERENCES p0_corpus_memberships(id),
+  from_video_id TEXT NOT NULL,
+  seed_canonical_url TEXT NOT NULL,
+  owner_subject TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  requested_depth INTEGER NOT NULL CHECK(requested_depth = 1),
+  requested_limit INTEGER NOT NULL CHECK(requested_limit BETWEEN 1 AND 20),
+  capture_method TEXT,
+  adapter_version TEXT,
+  capture_artifact_json TEXT,
+  capture_digest TEXT,
+  captured_at TEXT,
+  expires_at TEXT,
+  status TEXT NOT NULL CHECK(status IN ('capturing','draft','failed','expired')),
+  failure_code TEXT,
+  failure_reason TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(owner_subject, topic_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_recommendation_batches_seed
+  ON p0_recommendation_capture_batches(topic_id, seed_membership_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_recommendation_observations (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES p0_recommendation_capture_batches(id),
+  seed_membership_id TEXT NOT NULL REFERENCES p0_corpus_memberships(id),
+  from_video_id TEXT NOT NULL,
+  target_video_id TEXT NOT NULL,
+  target_canonical_url TEXT NOT NULL,
+  target_title TEXT,
+  target_channel_id TEXT,
+  target_channel_title TEXT,
+  target_identity_status TEXT NOT NULL CHECK(target_identity_status IN ('verified','needs_identity')),
+  observed_position INTEGER NOT NULL CHECK(observed_position >= 1),
+  capture_artifact_digest TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','confirmed','rejected','expired')),
+  promoted_membership_id TEXT,
+  decided_by TEXT,
+  decided_at TEXT,
+  UNIQUE(batch_id, target_video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_recommendation_observations_batch
+  ON p0_recommendation_observations(batch_id, status, observed_position);
+
+CREATE TABLE IF NOT EXISTS p0_evidence_records (
+  id TEXT PRIMARY KEY,
+  membership_id TEXT NOT NULL REFERENCES p0_corpus_memberships(id),
+  kind TEXT NOT NULL CHECK(kind IN ('metadata','transcript','thumbnail')),
+  status TEXT NOT NULL CHECK(status IN ('available','unavailable','failed','expired')),
+  method TEXT NOT NULL,
+  adapter_version TEXT NOT NULL,
+  artifact_json TEXT,
+  artifact_digest TEXT,
+  observed_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(membership_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_evidence_membership ON p0_evidence_records(membership_id, kind);
+
+CREATE TABLE IF NOT EXISTS p0_semantic_analysis_runs (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  membership_id TEXT NOT NULL REFERENCES p0_corpus_memberships(id),
+  owner_subject TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  input_manifest_json TEXT NOT NULL,
+  input_manifest_digest TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  model TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','completed','failed','expired')),
+  result_json TEXT,
+  raw_response_artifact_json TEXT,
+  raw_response_digest TEXT,
+  failure_code TEXT,
+  failure_reason TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  expires_at TEXT NOT NULL,
+  UNIQUE(owner_subject, topic_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_analysis_membership ON p0_semantic_analysis_runs(membership_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_loop_controls (
+  topic_id TEXT PRIMARY KEY REFERENCES topics(topic_id),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS p0_loop_runs (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  owner_subject TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','completed','failed','blocked')),
+  phase TEXT NOT NULL,
+  resume_index INTEGER NOT NULL DEFAULT 0,
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(owner_subject, topic_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_p0_loop_runs_topic ON p0_loop_runs(topic_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_reports (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  loop_run_id TEXT NOT NULL UNIQUE REFERENCES p0_loop_runs(id),
+  summary_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_p0_reports_topic ON p0_reports(topic_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS p0_artifact_tombstones (
+  artifact_hash TEXT PRIMARY KEY,
+  purged_at TEXT NOT NULL,
+  reason TEXT NOT NULL
+);
 `;
 
 
@@ -487,6 +664,162 @@ export interface CorpusChannelRow {
   withTranscript: number;
 }
 
+// ---------------------------------------------------------------------------
+// P0 Corpus Intelligence rows. They deliberately mirror only P0's managed
+// corpus/evidence plane; legacy Auto-Loop candidate and Inbox rows stay owned
+// by their existing workflow.
+// ---------------------------------------------------------------------------
+
+export type P0ImportStatus = 'draft' | 'confirmed' | 'rejected';
+export type P0MembershipStatus = 'confirmed' | 'expired';
+export type P0RecommendationBatchStatus = 'capturing' | 'draft' | 'failed' | 'expired';
+export type P0RecommendationStatus = 'draft' | 'confirmed' | 'rejected' | 'expired';
+export type P0EvidenceStatus = 'available' | 'unavailable' | 'failed' | 'expired';
+export type P0AnalysisStatus = 'running' | 'completed' | 'failed' | 'expired';
+
+export interface P0CorpusImportBatch {
+  id: string;
+  topicId: string;
+  ownerSubject: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  status: P0ImportStatus;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface P0CorpusImportItem {
+  id: string;
+  batchId: string;
+  submittedUrl: string;
+  canonicalUrl: string;
+  sourceVideoId: string;
+  identityStatus: 'verified' | 'needs_identity';
+  evidenceArtifact: ArtifactRef;
+  evidenceDigest: string;
+  capturedAt: string;
+  expiresAt: string;
+  status: P0ImportStatus;
+  promotedMembershipId: string | null;
+}
+
+export interface P0CorpusMembership {
+  id: string;
+  topicId: string;
+  entityKind: 'video';
+  canonicalUrl: string;
+  sourceVideoId: string;
+  status: P0MembershipStatus;
+  identityStatus: 'verified' | 'needs_identity';
+  createdFromKind: 'corpus_import' | 'recommendation';
+  createdFromId: string;
+  createdAt: string;
+  confirmedAt: string;
+}
+
+export interface P0RecommendationCaptureBatch {
+  id: string;
+  topicId: string;
+  seedMembershipId: string;
+  fromVideoId: string;
+  seedCanonicalUrl: string;
+  ownerSubject: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  requestedDepth: 1;
+  requestedLimit: number;
+  captureMethod: string | null;
+  adapterVersion: string | null;
+  captureArtifact: ArtifactRef | null;
+  captureDigest: string | null;
+  capturedAt: string | null;
+  expiresAt: string | null;
+  status: P0RecommendationBatchStatus;
+  failureCode: string | null;
+  failureReason: string | null;
+  createdAt: string;
+}
+
+export interface P0RecommendationObservation {
+  id: string;
+  batchId: string;
+  seedMembershipId: string;
+  fromVideoId: string;
+  targetVideoId: string;
+  targetCanonicalUrl: string;
+  targetTitle: string | null;
+  targetChannelId: string | null;
+  targetChannelTitle: string | null;
+  targetIdentityStatus: 'verified' | 'needs_identity';
+  observedPosition: number;
+  captureArtifactDigest: string;
+  observedAt: string;
+  expiresAt: string;
+  status: P0RecommendationStatus;
+  promotedMembershipId: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+}
+
+export interface P0EvidenceRecord {
+  id: string;
+  membershipId: string;
+  kind: 'metadata' | 'transcript' | 'thumbnail';
+  status: P0EvidenceStatus;
+  method: string;
+  adapterVersion: string;
+  artifact: ArtifactRef | null;
+  artifactDigest: string | null;
+  observedAt: string;
+  expiresAt: string;
+  detail: Record<string, unknown>;
+}
+
+export interface P0SemanticAnalysisRun {
+  id: string;
+  topicId: string;
+  membershipId: string;
+  ownerSubject: string;
+  idempotencyKey: string;
+  inputManifest: Record<string, unknown>;
+  inputManifestDigest: string;
+  policyVersion: string;
+  model: string;
+  status: P0AnalysisStatus;
+  result: Record<string, unknown> | null;
+  rawResponseArtifact: ArtifactRef | null;
+  rawResponseDigest: string | null;
+  failureCode: string | null;
+  failureReason: string | null;
+  attempt: number;
+  createdAt: string;
+  completedAt: string | null;
+  expiresAt: string;
+}
+
+export interface P0LoopRun {
+  id: string;
+  topicId: string;
+  ownerSubject: string;
+  idempotencyKey: string;
+  status: 'running' | 'completed' | 'failed' | 'blocked';
+  phase: string;
+  resumeIndex: number;
+  summary: Record<string, unknown>;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface P0Report {
+  id: string;
+  topicId: string;
+  loopRunId: string;
+  summary: Record<string, unknown>;
+  createdAt: string;
+}
+
 type Row = Record<string, unknown>;
 
 function candidateFromRow(row: Row): CandidateChannel {
@@ -521,6 +854,125 @@ function nowIso(): string {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function artifactFromJson(value: unknown): ArtifactRef | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = parseJson<ArtifactRef>(value);
+  if (
+    !parsed || typeof parsed.hash !== 'string' || typeof parsed.relativePath !== 'string'
+    || typeof parsed.byteLength !== 'number' || typeof parsed.mimeType !== 'string'
+  ) {
+    throw new AppError('internal', 'Artifact manifest P0 không hợp lệ trong database');
+  }
+  return parsed;
+}
+
+function p0ImportBatchFromRow(row: Row): P0CorpusImportBatch {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), ownerSubject: String(row['owner_subject']),
+    idempotencyKey: String(row['idempotency_key']), requestDigest: String(row['request_digest']),
+    status: String(row['status']) as P0ImportStatus, createdAt: String(row['created_at']),
+    decidedAt: nullableString(row['decided_at']),
+  };
+}
+
+function p0ImportItemFromRow(row: Row): P0CorpusImportItem {
+  const artifact = artifactFromJson(row['evidence_artifact_json']);
+  if (!artifact) throw new AppError('internal', 'Corpus import item thiếu evidence artifact');
+  return {
+    id: String(row['id']), batchId: String(row['batch_id']), submittedUrl: String(row['submitted_url']),
+    canonicalUrl: String(row['canonical_url']), sourceVideoId: String(row['source_video_id']),
+    identityStatus: String(row['identity_status']) as P0CorpusImportItem['identityStatus'],
+    evidenceArtifact: artifact, evidenceDigest: String(row['evidence_digest']),
+    capturedAt: String(row['captured_at']), expiresAt: String(row['expires_at']),
+    status: String(row['status']) as P0ImportStatus, promotedMembershipId: nullableString(row['promoted_membership_id']),
+  };
+}
+
+function p0MembershipFromRow(row: Row): P0CorpusMembership {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), entityKind: 'video',
+    canonicalUrl: String(row['canonical_url']), sourceVideoId: String(row['source_video_id']),
+    status: String(row['status']) as P0MembershipStatus,
+    identityStatus: String(row['identity_status']) as P0CorpusMembership['identityStatus'],
+    createdFromKind: String(row['created_from_kind']) as P0CorpusMembership['createdFromKind'],
+    createdFromId: String(row['created_from_id']), createdAt: String(row['created_at']),
+    confirmedAt: String(row['confirmed_at']),
+  };
+}
+
+function p0RecommendationBatchFromRow(row: Row): P0RecommendationCaptureBatch {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), seedMembershipId: String(row['seed_membership_id']),
+    fromVideoId: String(row['from_video_id']), seedCanonicalUrl: String(row['seed_canonical_url']),
+    ownerSubject: String(row['owner_subject']), idempotencyKey: String(row['idempotency_key']),
+    requestDigest: String(row['request_digest']), requestedDepth: 1,
+    requestedLimit: Number(row['requested_limit']), captureMethod: nullableString(row['capture_method']),
+    adapterVersion: nullableString(row['adapter_version']), captureArtifact: artifactFromJson(row['capture_artifact_json']),
+    captureDigest: nullableString(row['capture_digest']), capturedAt: nullableString(row['captured_at']),
+    expiresAt: nullableString(row['expires_at']), status: String(row['status']) as P0RecommendationBatchStatus,
+    failureCode: nullableString(row['failure_code']), failureReason: nullableString(row['failure_reason']),
+    createdAt: String(row['created_at']),
+  };
+}
+
+function p0RecommendationObservationFromRow(row: Row): P0RecommendationObservation {
+  return {
+    id: String(row['id']), batchId: String(row['batch_id']), seedMembershipId: String(row['seed_membership_id']),
+    fromVideoId: String(row['from_video_id']), targetVideoId: String(row['target_video_id']),
+    targetCanonicalUrl: String(row['target_canonical_url']), targetTitle: nullableString(row['target_title']),
+    targetChannelId: nullableString(row['target_channel_id']), targetChannelTitle: nullableString(row['target_channel_title']),
+    targetIdentityStatus: String(row['target_identity_status']) as P0RecommendationObservation['targetIdentityStatus'],
+    observedPosition: Number(row['observed_position']), captureArtifactDigest: String(row['capture_artifact_digest']),
+    observedAt: String(row['observed_at']), expiresAt: String(row['expires_at']),
+    status: String(row['status']) as P0RecommendationStatus,
+    promotedMembershipId: nullableString(row['promoted_membership_id']), decidedBy: nullableString(row['decided_by']),
+    decidedAt: nullableString(row['decided_at']),
+  };
+}
+
+function p0EvidenceFromRow(row: Row): P0EvidenceRecord {
+  return {
+    id: String(row['id']), membershipId: String(row['membership_id']),
+    kind: String(row['kind']) as P0EvidenceRecord['kind'], status: String(row['status']) as P0EvidenceStatus,
+    method: String(row['method']), adapterVersion: String(row['adapter_version']), artifact: artifactFromJson(row['artifact_json']),
+    artifactDigest: nullableString(row['artifact_digest']), observedAt: String(row['observed_at']),
+    expiresAt: String(row['expires_at']), detail: parseJson<Record<string, unknown>>(row['detail_json']),
+  };
+}
+
+function p0AnalysisFromRow(row: Row): P0SemanticAnalysisRun {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), membershipId: String(row['membership_id']),
+    ownerSubject: String(row['owner_subject']), idempotencyKey: String(row['idempotency_key']),
+    inputManifest: parseJson<Record<string, unknown>>(row['input_manifest_json']),
+    inputManifestDigest: String(row['input_manifest_digest']), policyVersion: String(row['policy_version']),
+    model: String(row['model']), status: String(row['status']) as P0AnalysisStatus,
+    result: row['result_json'] === null ? null : parseJson<Record<string, unknown>>(row['result_json']),
+    rawResponseArtifact: artifactFromJson(row['raw_response_artifact_json']),
+    rawResponseDigest: nullableString(row['raw_response_digest']), failureCode: nullableString(row['failure_code']),
+    failureReason: nullableString(row['failure_reason']), attempt: Number(row['attempt']),
+    createdAt: String(row['created_at']), completedAt: nullableString(row['completed_at']),
+    expiresAt: String(row['expires_at']),
+  };
+}
+
+function p0LoopRunFromRow(row: Row): P0LoopRun {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), ownerSubject: String(row['owner_subject']),
+    idempotencyKey: String(row['idempotency_key']), status: String(row['status']) as P0LoopRun['status'],
+    phase: String(row['phase']), resumeIndex: Number(row['resume_index']), summary: parseJson<Record<string, unknown>>(row['summary_json']),
+    errorCode: nullableString(row['error_code']), errorMessage: nullableString(row['error_message']),
+    createdAt: String(row['created_at']), completedAt: nullableString(row['completed_at']),
+  };
+}
+
+function p0ReportFromRow(row: Row): P0Report {
+  return {
+    id: String(row['id']), topicId: String(row['topic_id']), loopRunId: String(row['loop_run_id']),
+    summary: parseJson<Record<string, unknown>>(row['summary_json']), createdAt: String(row['created_at']),
+  };
 }
 
 function operationFromRow(row: Row): Operation {
@@ -2113,5 +2565,504 @@ export class SpyStore {
     delivered[key] = value;
     this.database.prepare('UPDATE daily_reports SET delivered_json=? WHERE report_id=?')
       .run(JSON.stringify(delivered), reportId);
+  }
+
+  // ── P0 Corpus Intelligence store ───────────────────────────────────────
+
+  getP0CorpusImportBatch(id: string): P0CorpusImportBatch | null {
+    const row = this.database.prepare('SELECT * FROM p0_corpus_import_batches WHERE id=?').get(id) as Row | undefined;
+    return row ? p0ImportBatchFromRow(row) : null;
+  }
+
+  getP0CorpusImportByIdempotency(ownerSubject: string, topicId: string, idempotencyKey: string): P0CorpusImportBatch | null {
+    const row = this.database.prepare(
+      'SELECT * FROM p0_corpus_import_batches WHERE owner_subject=? AND topic_id=? AND idempotency_key=?',
+    ).get(ownerSubject, topicId, idempotencyKey) as Row | undefined;
+    return row ? p0ImportBatchFromRow(row) : null;
+  }
+
+  /**
+   * The local UI can lose a successful response and regenerate its request
+   * UUID.  While a canonical video is still draft/confirmed, reattach rather
+   * than creating a second pending import for the same corpus fact.
+   */
+  getActiveP0CorpusImportByVideo(topicId: string, sourceVideoId: string): P0CorpusImportBatch | null {
+    const row = this.database.prepare(
+      `SELECT b.* FROM p0_corpus_import_batches b
+       JOIN p0_corpus_import_items i ON i.batch_id=b.id
+       WHERE b.topic_id=? AND i.source_video_id=? AND b.status IN ('draft','confirmed')
+       ORDER BY b.created_at ASC, b.id ASC LIMIT 1`,
+    ).get(topicId, sourceVideoId) as Row | undefined;
+    return row ? p0ImportBatchFromRow(row) : null;
+  }
+
+  listP0CorpusImportBatches(topicId: string): P0CorpusImportBatch[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_corpus_import_batches WHERE topic_id=? ORDER BY created_at DESC, id',
+    ).all(topicId) as Row[]).map(p0ImportBatchFromRow);
+  }
+
+  createP0CorpusImportBatch(input: Omit<P0CorpusImportBatch, 'id' | 'createdAt' | 'decidedAt' | 'status'> & { id?: string }): P0CorpusImportBatch {
+    const id = input.id ?? randomUUID();
+    const createdAt = nowIso();
+    this.database.prepare(
+      `INSERT INTO p0_corpus_import_batches
+       (id,topic_id,owner_subject,idempotency_key,request_digest,status,created_at)
+       VALUES (?,?,?,?,?,'draft',?)`,
+    ).run(id, input.topicId, input.ownerSubject, input.idempotencyKey, input.requestDigest, createdAt);
+    return this.getP0CorpusImportBatch(id)!;
+  }
+
+  insertP0CorpusImportItem(input: Omit<P0CorpusImportItem, 'id' | 'status' | 'promotedMembershipId'> & { id?: string }): P0CorpusImportItem {
+    const id = input.id ?? randomUUID();
+    this.database.prepare(
+      `INSERT INTO p0_corpus_import_items
+       (id,batch_id,submitted_url,canonical_url,source_video_id,identity_status,evidence_artifact_json,evidence_digest,captured_at,expires_at,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'draft')`,
+    ).run(
+      id, input.batchId, input.submittedUrl, input.canonicalUrl, input.sourceVideoId, input.identityStatus,
+      JSON.stringify(input.evidenceArtifact), input.evidenceDigest, input.capturedAt, input.expiresAt,
+    );
+    const row = this.database.prepare('SELECT * FROM p0_corpus_import_items WHERE id=?').get(id) as Row;
+    return p0ImportItemFromRow(row);
+  }
+
+  listP0CorpusImportItems(batchId: string): P0CorpusImportItem[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_corpus_import_items WHERE batch_id=? ORDER BY id',
+    ).all(batchId) as Row[]).map(p0ImportItemFromRow);
+  }
+
+  confirmP0CorpusImportBatch(input: { batchId: string; ownerSubject: string }): { batch: P0CorpusImportBatch; memberships: P0CorpusMembership[] } {
+    return this.transaction(() => {
+      const batch = this.getP0CorpusImportBatch(input.batchId);
+      if (!batch) throw new AppError('not_found', 'Corpus import batch không tồn tại');
+      if (batch.ownerSubject !== input.ownerSubject) throw new AppError('forbidden', 'Không có quyền confirm corpus import batch này');
+      const items = this.listP0CorpusImportItems(batch.id);
+      if (batch.status === 'rejected') throw new AppError('invalid_input', 'Corpus import batch đã bị reject');
+      const memberships: P0CorpusMembership[] = [];
+      const now = nowIso();
+      for (const item of items) {
+        let membership = this.getP0CorpusMembershipByVideo(batch.topicId, item.sourceVideoId);
+        if (!membership) {
+          const id = randomUUID();
+          this.database.prepare(
+            `INSERT INTO p0_corpus_memberships
+             (id,topic_id,entity_kind,canonical_url,source_video_id,status,identity_status,created_from_kind,created_from_id,created_at,confirmed_at)
+             VALUES (?,?,'video',? ,?,'confirmed',?,'corpus_import',?,?,?)`,
+          ).run(id, batch.topicId, item.canonicalUrl, item.sourceVideoId, item.identityStatus, item.id, now, now);
+          membership = this.getP0CorpusMembership(id)!;
+        }
+        this.database.prepare(
+          `UPDATE p0_corpus_import_items SET status='confirmed', promoted_membership_id=? WHERE id=?`,
+        ).run(membership.id, item.id);
+        memberships.push(membership);
+      }
+      this.database.prepare(
+        `UPDATE p0_corpus_import_batches SET status='confirmed', decided_at=? WHERE id=?`,
+      ).run(now, batch.id);
+      return { batch: this.getP0CorpusImportBatch(batch.id)!, memberships };
+    });
+  }
+
+  rejectP0CorpusImportBatch(input: { batchId: string; ownerSubject: string }): P0CorpusImportBatch {
+    return this.transaction(() => {
+      const batch = this.getP0CorpusImportBatch(input.batchId);
+      if (!batch) throw new AppError('not_found', 'Corpus import batch không tồn tại');
+      if (batch.ownerSubject !== input.ownerSubject) throw new AppError('forbidden', 'Không có quyền reject corpus import batch này');
+      if (batch.status === 'confirmed') throw new AppError('invalid_input', 'Corpus import batch đã confirm không thể reject');
+      const now = nowIso();
+      this.database.prepare("UPDATE p0_corpus_import_items SET status='rejected' WHERE batch_id=?").run(batch.id);
+      this.database.prepare("UPDATE p0_corpus_import_batches SET status='rejected', decided_at=? WHERE id=?").run(now, batch.id);
+      return this.getP0CorpusImportBatch(batch.id)!;
+    });
+  }
+
+  getP0CorpusMembership(id: string): P0CorpusMembership | null {
+    const row = this.database.prepare('SELECT * FROM p0_corpus_memberships WHERE id=?').get(id) as Row | undefined;
+    return row ? p0MembershipFromRow(row) : null;
+  }
+
+  getP0CorpusMembershipByVideo(topicId: string, sourceVideoId: string): P0CorpusMembership | null {
+    const row = this.database.prepare(
+      "SELECT * FROM p0_corpus_memberships WHERE topic_id=? AND entity_kind='video' AND source_video_id=?",
+    ).get(topicId, sourceVideoId) as Row | undefined;
+    return row ? p0MembershipFromRow(row) : null;
+  }
+
+  listP0CorpusMemberships(topicId: string): P0CorpusMembership[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_corpus_memberships WHERE topic_id=? ORDER BY confirmed_at DESC, id',
+    ).all(topicId) as Row[]).map(p0MembershipFromRow);
+  }
+
+  getP0RecommendationBatch(id: string): P0RecommendationCaptureBatch | null {
+    const row = this.database.prepare('SELECT * FROM p0_recommendation_capture_batches WHERE id=?').get(id) as Row | undefined;
+    return row ? p0RecommendationBatchFromRow(row) : null;
+  }
+
+  getP0RecommendationByIdempotency(ownerSubject: string, topicId: string, idempotencyKey: string): P0RecommendationCaptureBatch | null {
+    const row = this.database.prepare(
+      'SELECT * FROM p0_recommendation_capture_batches WHERE owner_subject=? AND topic_id=? AND idempotency_key=?',
+    ).get(ownerSubject, topicId, idempotencyKey) as Row | undefined;
+    return row ? p0RecommendationBatchFromRow(row) : null;
+  }
+
+  /** One direct-suggestion surface may be under review for a seed at a time. */
+  getActiveP0RecommendationBatchForSeed(topicId: string, seedMembershipId: string): P0RecommendationCaptureBatch | null {
+    const row = this.database.prepare(
+      `SELECT * FROM p0_recommendation_capture_batches
+       WHERE topic_id=? AND seed_membership_id=? AND status IN ('capturing','draft')
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(topicId, seedMembershipId) as Row | undefined;
+    return row ? p0RecommendationBatchFromRow(row) : null;
+  }
+
+  createP0RecommendationBatch(input: {
+    topicId: string; seedMembershipId: string; fromVideoId: string; seedCanonicalUrl: string;
+    ownerSubject: string; idempotencyKey: string; requestDigest: string;
+  }): P0RecommendationCaptureBatch {
+    const id = randomUUID();
+    this.database.prepare(
+      `INSERT INTO p0_recommendation_capture_batches
+       (id,topic_id,seed_membership_id,from_video_id,seed_canonical_url,owner_subject,idempotency_key,request_digest,requested_depth,requested_limit,status,created_at)
+       VALUES (?,?,?,?,?,?,?,?,1,20,'capturing',?)`,
+    ).run(id, input.topicId, input.seedMembershipId, input.fromVideoId, input.seedCanonicalUrl, input.ownerSubject, input.idempotencyKey, input.requestDigest, nowIso());
+    return this.getP0RecommendationBatch(id)!;
+  }
+
+  finalizeP0RecommendationBatch(input: {
+    batchId: string; captureMethod: string; adapterVersion: string; captureArtifact: ArtifactRef;
+    capturedAt: string; expiresAt: string;
+    observations: Array<Omit<P0RecommendationObservation, 'id' | 'batchId' | 'status' | 'promotedMembershipId' | 'decidedBy' | 'decidedAt'>>;
+  }): P0RecommendationCaptureBatch {
+    return this.transaction(() => {
+      const batch = this.getP0RecommendationBatch(input.batchId);
+      if (!batch) throw new AppError('not_found', 'Recommendation capture batch không tồn tại');
+      if (batch.status !== 'capturing') throw new AppError('invalid_input', 'Recommendation capture batch không còn ở trạng thái capturing');
+      const insert = this.database.prepare(
+        `INSERT INTO p0_recommendation_observations
+         (id,batch_id,seed_membership_id,from_video_id,target_video_id,target_canonical_url,target_title,target_channel_id,target_channel_title,target_identity_status,observed_position,capture_artifact_digest,observed_at,expires_at,status)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'draft')`,
+      );
+      for (const observation of input.observations) {
+        insert.run(
+          randomUUID(), batch.id, observation.seedMembershipId, observation.fromVideoId, observation.targetVideoId,
+          observation.targetCanonicalUrl, observation.targetTitle, observation.targetChannelId, observation.targetChannelTitle,
+          observation.targetIdentityStatus, observation.observedPosition, observation.captureArtifactDigest,
+          observation.observedAt, observation.expiresAt,
+        );
+      }
+      this.database.prepare(
+        `UPDATE p0_recommendation_capture_batches
+         SET capture_method=?,adapter_version=?,capture_artifact_json=?,capture_digest=?,captured_at=?,expires_at=?,status='draft'
+         WHERE id=?`,
+      ).run(input.captureMethod, input.adapterVersion, JSON.stringify(input.captureArtifact), input.captureArtifact.hash, input.capturedAt, input.expiresAt, batch.id);
+      return this.getP0RecommendationBatch(batch.id)!;
+    });
+  }
+
+  failP0RecommendationBatch(input: { batchId: string; code: string; reason: string }): P0RecommendationCaptureBatch {
+    const batch = this.getP0RecommendationBatch(input.batchId);
+    if (!batch) throw new AppError('not_found', 'Recommendation capture batch không tồn tại');
+    if (batch.status === 'capturing') {
+      this.database.prepare(
+        "UPDATE p0_recommendation_capture_batches SET status='failed', failure_code=?, failure_reason=? WHERE id=?",
+      ).run(input.code, input.reason.slice(0, 1000), batch.id);
+    }
+    return this.getP0RecommendationBatch(batch.id)!;
+  }
+
+  listP0RecommendationBatches(topicId: string): P0RecommendationCaptureBatch[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_recommendation_capture_batches WHERE topic_id=? ORDER BY created_at DESC, id',
+    ).all(topicId) as Row[]).map(p0RecommendationBatchFromRow);
+  }
+
+  listP0RecommendationObservations(batchId: string): P0RecommendationObservation[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_recommendation_observations WHERE batch_id=? ORDER BY observed_position, id',
+    ).all(batchId) as Row[]).map(p0RecommendationObservationFromRow);
+  }
+
+  getP0RecommendationObservation(id: string): P0RecommendationObservation | null {
+    const row = this.database.prepare('SELECT * FROM p0_recommendation_observations WHERE id=?').get(id) as Row | undefined;
+    return row ? p0RecommendationObservationFromRow(row) : null;
+  }
+
+  decideP0RecommendationObservation(input: { observationId: string; ownerSubject: string; decision: 'confirmed' | 'rejected' }): { observation: P0RecommendationObservation; membership: P0CorpusMembership | null } {
+    return this.transaction(() => {
+      const observation = this.getP0RecommendationObservation(input.observationId);
+      if (!observation) throw new AppError('not_found', 'Recommendation observation không tồn tại');
+      const batch = this.getP0RecommendationBatch(observation.batchId);
+      if (!batch) throw new AppError('internal', 'Recommendation batch không tồn tại');
+      if (batch.ownerSubject !== input.ownerSubject) throw new AppError('forbidden', 'Không có quyền review suggestion này');
+      if (observation.status !== 'draft') throw new AppError('invalid_input', 'Suggestion không còn ở trạng thái draft');
+      const now = nowIso();
+      if (input.decision === 'rejected') {
+        this.database.prepare(
+          "UPDATE p0_recommendation_observations SET status='rejected', decided_by=?, decided_at=? WHERE id=?",
+        ).run(input.ownerSubject, now, observation.id);
+        return { observation: this.getP0RecommendationObservation(observation.id)!, membership: null };
+      }
+      let membership = this.getP0CorpusMembershipByVideo(batch.topicId, observation.targetVideoId);
+      if (!membership) {
+        const id = randomUUID();
+        this.database.prepare(
+          `INSERT INTO p0_corpus_memberships
+           (id,topic_id,entity_kind,canonical_url,source_video_id,status,identity_status,created_from_kind,created_from_id,created_at,confirmed_at)
+           VALUES (?,?,'video',? ,?,'confirmed',?,'recommendation',?,?,?)`,
+        ).run(id, batch.topicId, observation.targetCanonicalUrl, observation.targetVideoId, observation.targetIdentityStatus, observation.id, now, now);
+        membership = this.getP0CorpusMembership(id)!;
+      }
+      this.database.prepare(
+        "UPDATE p0_recommendation_observations SET status='confirmed', promoted_membership_id=?, decided_by=?, decided_at=? WHERE id=?",
+      ).run(membership.id, input.ownerSubject, now, observation.id);
+      return { observation: this.getP0RecommendationObservation(observation.id)!, membership };
+    });
+  }
+
+  getP0EvidenceRecord(membershipId: string, kind: P0EvidenceRecord['kind']): P0EvidenceRecord | null {
+    const row = this.database.prepare('SELECT * FROM p0_evidence_records WHERE membership_id=? AND kind=?').get(membershipId, kind) as Row | undefined;
+    return row ? p0EvidenceFromRow(row) : null;
+  }
+
+  listP0EvidenceRecords(membershipId: string): P0EvidenceRecord[] {
+    return (this.database.prepare('SELECT * FROM p0_evidence_records WHERE membership_id=? ORDER BY kind').all(membershipId) as Row[]).map(p0EvidenceFromRow);
+  }
+
+  upsertP0EvidenceRecord(input: Omit<P0EvidenceRecord, 'id'> & { id?: string }): P0EvidenceRecord {
+    const existing = this.getP0EvidenceRecord(input.membershipId, input.kind);
+    const id = existing?.id ?? input.id ?? randomUUID();
+    this.database.prepare(
+      `INSERT INTO p0_evidence_records
+       (id,membership_id,kind,status,method,adapter_version,artifact_json,artifact_digest,observed_at,expires_at,detail_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(membership_id,kind) DO UPDATE SET
+         status=excluded.status,method=excluded.method,adapter_version=excluded.adapter_version,
+         artifact_json=excluded.artifact_json,artifact_digest=excluded.artifact_digest,
+         observed_at=excluded.observed_at,expires_at=excluded.expires_at,detail_json=excluded.detail_json`,
+    ).run(
+      id, input.membershipId, input.kind, input.status, input.method, input.adapterVersion,
+      input.artifact ? JSON.stringify(input.artifact) : null, input.artifactDigest,
+      input.observedAt, input.expiresAt, JSON.stringify(input.detail),
+    );
+    return this.getP0EvidenceRecord(input.membershipId, input.kind)!;
+  }
+
+  getP0SemanticAnalysisRun(id: string): P0SemanticAnalysisRun | null {
+    const row = this.database.prepare('SELECT * FROM p0_semantic_analysis_runs WHERE id=?').get(id) as Row | undefined;
+    return row ? p0AnalysisFromRow(row) : null;
+  }
+
+  getP0SemanticAnalysisByIdempotency(ownerSubject: string, topicId: string, idempotencyKey: string): P0SemanticAnalysisRun | null {
+    const row = this.database.prepare(
+      'SELECT * FROM p0_semantic_analysis_runs WHERE owner_subject=? AND topic_id=? AND idempotency_key=?',
+    ).get(ownerSubject, topicId, idempotencyKey) as Row | undefined;
+    return row ? p0AnalysisFromRow(row) : null;
+  }
+
+  /** Dedupes a review independently of a client retry key. */
+  getP0SemanticAnalysisByManifest(input: {
+    topicId: string; membershipId: string; inputManifestDigest: string; policyVersion: string; model: string;
+  }): P0SemanticAnalysisRun | null {
+    const row = this.database.prepare(
+      `SELECT * FROM p0_semantic_analysis_runs
+       WHERE topic_id=? AND membership_id=? AND input_manifest_digest=? AND policy_version=? AND model=?
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(input.topicId, input.membershipId, input.inputManifestDigest, input.policyVersion, input.model) as Row | undefined;
+    return row ? p0AnalysisFromRow(row) : null;
+  }
+
+  createP0SemanticAnalysisRun(input: Omit<P0SemanticAnalysisRun, 'id' | 'status' | 'result' | 'rawResponseArtifact' | 'rawResponseDigest' | 'failureCode' | 'failureReason' | 'attempt' | 'createdAt' | 'completedAt'>): P0SemanticAnalysisRun {
+    const id = randomUUID();
+    this.database.prepare(
+      `INSERT INTO p0_semantic_analysis_runs
+       (id,topic_id,membership_id,owner_subject,idempotency_key,input_manifest_json,input_manifest_digest,policy_version,model,status,created_at,expires_at)
+       VALUES (?,?,?,?,?,?,?,?,?,'running',?,?)`,
+    ).run(
+      id, input.topicId, input.membershipId, input.ownerSubject, input.idempotencyKey,
+      JSON.stringify(input.inputManifest), input.inputManifestDigest, input.policyVersion, input.model, nowIso(), input.expiresAt,
+    );
+    return this.getP0SemanticAnalysisRun(id)!;
+  }
+
+  completeP0SemanticAnalysisRun(input: { id: string; result: Record<string, unknown>; rawResponseArtifact: ArtifactRef | null }): P0SemanticAnalysisRun {
+    const run = this.getP0SemanticAnalysisRun(input.id);
+    if (!run) throw new AppError('not_found', 'Gemini analysis run không tồn tại');
+    this.database.prepare(
+      `UPDATE p0_semantic_analysis_runs
+       SET status='completed',result_json=?,raw_response_artifact_json=?,raw_response_digest=?,completed_at=? WHERE id=?`,
+    ).run(
+      JSON.stringify(input.result), input.rawResponseArtifact ? JSON.stringify(input.rawResponseArtifact) : null,
+      input.rawResponseArtifact?.hash ?? null, nowIso(), input.id,
+    );
+    return this.getP0SemanticAnalysisRun(input.id)!;
+  }
+
+  failP0SemanticAnalysisRun(input: { id: string; code: string; reason: string }): P0SemanticAnalysisRun {
+    const run = this.getP0SemanticAnalysisRun(input.id);
+    if (!run) throw new AppError('not_found', 'Gemini analysis run không tồn tại');
+    if (run.status === 'running') {
+      this.database.prepare(
+        "UPDATE p0_semantic_analysis_runs SET status='failed',failure_code=?,failure_reason=?,completed_at=? WHERE id=?",
+      ).run(input.code, input.reason.slice(0, 1000), nowIso(), input.id);
+    }
+    return this.getP0SemanticAnalysisRun(input.id)!;
+  }
+
+  listP0SemanticAnalysisRuns(topicId: string): P0SemanticAnalysisRun[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_semantic_analysis_runs WHERE topic_id=? ORDER BY created_at DESC, id',
+    ).all(topicId) as Row[]).map(p0AnalysisFromRow);
+  }
+
+  setP0LoopEnabled(topicId: string, enabled: boolean): boolean {
+    this.database.prepare(
+      `INSERT INTO p0_loop_controls(topic_id,enabled,updated_at) VALUES (?,?,?)
+       ON CONFLICT(topic_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at`,
+    ).run(topicId, enabled ? 1 : 0, nowIso());
+    return enabled;
+  }
+
+  isP0LoopEnabled(topicId: string): boolean {
+    const row = this.database.prepare('SELECT enabled FROM p0_loop_controls WHERE topic_id=?').get(topicId) as Row | undefined;
+    return row ? Number(row['enabled']) === 1 : false;
+  }
+
+  getP0LoopRun(id: string): P0LoopRun | null {
+    const row = this.database.prepare('SELECT * FROM p0_loop_runs WHERE id=?').get(id) as Row | undefined;
+    return row ? p0LoopRunFromRow(row) : null;
+  }
+
+  getP0LoopRunByIdempotency(ownerSubject: string, topicId: string, idempotencyKey: string): P0LoopRun | null {
+    const row = this.database.prepare(
+      'SELECT * FROM p0_loop_runs WHERE owner_subject=? AND topic_id=? AND idempotency_key=?',
+    ).get(ownerSubject, topicId, idempotencyKey) as Row | undefined;
+    return row ? p0LoopRunFromRow(row) : null;
+  }
+
+  listP0LoopRuns(topicId: string): P0LoopRun[] {
+    return (this.database.prepare(
+      'SELECT * FROM p0_loop_runs WHERE topic_id=? ORDER BY created_at DESC, id',
+    ).all(topicId) as Row[]).map(p0LoopRunFromRow);
+  }
+
+  getActiveP0LoopRun(topicId: string): P0LoopRun | null {
+    const row = this.database.prepare(
+      `SELECT * FROM p0_loop_runs WHERE topic_id=? AND status='running'
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+    ).get(topicId) as Row | undefined;
+    return row ? p0LoopRunFromRow(row) : null;
+  }
+
+  createP0LoopRun(input: { topicId: string; ownerSubject: string; idempotencyKey: string }): P0LoopRun {
+    const id = randomUUID();
+    const createdAt = nowIso();
+    this.database.prepare(
+      `INSERT INTO p0_loop_runs(id,topic_id,owner_subject,idempotency_key,status,phase,resume_index,summary_json,created_at)
+       VALUES (?,?,?,?,'running','enrich',0,'{}',?)`,
+    ).run(id, input.topicId, input.ownerSubject, input.idempotencyKey, createdAt);
+    return this.getP0LoopRun(id)!;
+  }
+
+  updateP0LoopRun(input: {
+    id: string; status?: P0LoopRun['status']; phase?: string; resumeIndex?: number;
+    summary?: Record<string, unknown>; errorCode?: string | null; errorMessage?: string | null;
+  }): P0LoopRun {
+    const current = this.getP0LoopRun(input.id);
+    if (!current) throw new AppError('not_found', 'P0 loop run không tồn tại');
+    const status = input.status ?? current.status;
+    const completedAt = ['completed', 'failed', 'blocked'].includes(status) ? nowIso() : null;
+    this.database.prepare(
+      `UPDATE p0_loop_runs SET status=?,phase=?,resume_index=?,summary_json=?,error_code=?,error_message=?,completed_at=? WHERE id=?`,
+    ).run(
+      status, input.phase ?? current.phase, input.resumeIndex ?? current.resumeIndex,
+      JSON.stringify(input.summary ?? current.summary), input.errorCode ?? current.errorCode,
+      input.errorMessage ?? current.errorMessage, completedAt, input.id,
+    );
+    return this.getP0LoopRun(input.id)!;
+  }
+
+  insertP0ReportOnce(input: { topicId: string; loopRunId: string; summary: Record<string, unknown> }): { report: P0Report; created: boolean } {
+    return this.transaction(() => {
+      const existing = this.database.prepare('SELECT * FROM p0_reports WHERE loop_run_id=?').get(input.loopRunId) as Row | undefined;
+      if (existing) return { report: p0ReportFromRow(existing), created: false };
+      const id = randomUUID();
+      this.database.prepare(
+        'INSERT INTO p0_reports(id,topic_id,loop_run_id,summary_json,created_at) VALUES (?,?,?,?,?)',
+      ).run(id, input.topicId, input.loopRunId, JSON.stringify(input.summary), nowIso());
+      return { report: p0ReportFromRow(this.database.prepare('SELECT * FROM p0_reports WHERE id=?').get(id) as Row), created: true };
+    });
+  }
+
+  getP0ReportByLoopRun(loopRunId: string): P0Report | null {
+    const row = this.database.prepare('SELECT * FROM p0_reports WHERE loop_run_id=?').get(loopRunId) as Row | undefined;
+    return row ? p0ReportFromRow(row) : null;
+  }
+
+  listP0Reports(topicId: string): P0Report[] {
+    return (this.database.prepare('SELECT * FROM p0_reports WHERE topic_id=? ORDER BY created_at DESC').all(topicId) as Row[]).map(p0ReportFromRow);
+  }
+
+  /** Mark expired P0 facts first; physical artifact removal is performed by ArtifactStore afterwards. */
+  expireP0PublicEvidence(now: string): ArtifactRef[] {
+    const refs = new Map<string, ArtifactRef>();
+    const collect = (sql: string) => {
+      for (const row of this.database.prepare(sql).all(now) as Row[]) {
+        const ref = artifactFromJson(row['artifact_json']);
+        if (ref) refs.set(ref.hash, ref);
+      }
+    };
+    collect('SELECT evidence_artifact_json AS artifact_json FROM p0_corpus_import_items WHERE expires_at<=?');
+    collect('SELECT capture_artifact_json AS artifact_json FROM p0_recommendation_capture_batches WHERE expires_at<=?');
+    collect('SELECT artifact_json FROM p0_evidence_records WHERE expires_at<=?');
+    collect('SELECT raw_response_artifact_json AS artifact_json FROM p0_semantic_analysis_runs WHERE expires_at<=?');
+    this.transaction(() => {
+      this.database.prepare("UPDATE p0_recommendation_capture_batches SET status='expired' WHERE expires_at IS NOT NULL AND expires_at<=?").run(now);
+      this.database.prepare("UPDATE p0_recommendation_observations SET status='expired' WHERE expires_at<=?").run(now);
+      this.database.prepare("UPDATE p0_evidence_records SET status='expired' WHERE expires_at<=?").run(now);
+      this.database.prepare("UPDATE p0_semantic_analysis_runs SET status='expired' WHERE expires_at<=? AND status IN ('running','completed','failed')").run(now);
+      this.database.prepare(
+        `UPDATE p0_corpus_memberships SET status='expired'
+         WHERE status='confirmed' AND (
+           (created_from_kind='corpus_import' AND EXISTS (
+             SELECT 1 FROM p0_corpus_import_items i WHERE i.id=p0_corpus_memberships.created_from_id AND i.expires_at<=?
+           )) OR
+           (created_from_kind='recommendation' AND EXISTS (
+             SELECT 1 FROM p0_recommendation_observations r WHERE r.id=p0_corpus_memberships.created_from_id AND r.expires_at<=?
+           ))
+         )`,
+      ).run(now, now);
+    });
+    return [...refs.values()];
+  }
+
+  /** Protect content-addressed files still referenced by any live P0 or legacy frame record. */
+  isArtifactHashLive(hash: string, now: string): boolean {
+    const scalar = (sql: string) => Number((this.database.prepare(sql).get(hash, now) as Row | undefined)?.['n'] ?? 0);
+    const p0Live = [
+      "SELECT COUNT(*) AS n FROM p0_corpus_import_items WHERE evidence_digest=? AND expires_at>?",
+      "SELECT COUNT(*) AS n FROM p0_recommendation_capture_batches WHERE capture_digest=? AND expires_at>?",
+      "SELECT COUNT(*) AS n FROM p0_evidence_records WHERE artifact_digest=? AND expires_at>?",
+      "SELECT COUNT(*) AS n FROM p0_semantic_analysis_runs WHERE raw_response_digest=? AND expires_at>?",
+    ].some((sql) => scalar(sql) > 0);
+    if (p0Live) return true;
+    const legacyQueries = [
+      "SELECT COUNT(*) AS n FROM frame_samples WHERE json_extract(artifact_json, '$.hash')=?",
+      "SELECT COUNT(*) AS n FROM video_snapshots WHERE json_extract(thumbnail_json, '$.hash')=?",
+    ];
+    return legacyQueries.some((sql) => Number((this.database.prepare(sql).get(hash) as Row | undefined)?.['n'] ?? 0) > 0);
+  }
+
+  recordP0ArtifactTombstone(hash: string, reason: string): void {
+    this.database.prepare(
+      `INSERT INTO p0_artifact_tombstones(artifact_hash,purged_at,reason) VALUES (?,?,?)
+       ON CONFLICT(artifact_hash) DO NOTHING`,
+    ).run(hash, nowIso(), reason.slice(0, 120));
+  }
+
+  hasP0ArtifactTombstone(hash: string): boolean {
+    return Boolean(this.database.prepare('SELECT 1 FROM p0_artifact_tombstones WHERE artifact_hash=?').get(hash));
   }
 }

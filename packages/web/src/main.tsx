@@ -6,7 +6,7 @@ import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
 import { SpyLoopPage } from './pages/SpyLoop.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
-import { WriterPage, WriterPackPage, WriterRunPage } from './pages/Writer.tsx';
+import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
 import { WriterV2Page, WriterV2RunPage } from './pages/WriterV2.tsx';
 import { ChannelStylesPage } from './pages/ChannelStyles.tsx';
 import { FormulasPage, FormulaPage } from './pages/Training.tsx';
@@ -92,7 +92,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (route.name === 'writer' || route.name === 'writer-pack' || route.name === 'writer-run') {
+    if (route.name === 'writer' || route.name === 'writer-pack') {
       void api.listWriterPacks()
         .then((d) => setWriterCount(d.packs.length))
         .catch(() => undefined);
@@ -115,9 +115,6 @@ function App() {
       break;
     case 'writer-pack':
       page = <WriterPackPage id={route.id} />;
-      break;
-    case 'writer-run':
-      page = <WriterRunPage id={route.id} />;
       break;
     case 'writer-v2':
       page = <WriterV2Page />;

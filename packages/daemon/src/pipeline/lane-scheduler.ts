@@ -52,6 +52,13 @@ export interface DispatchItemParams {
   /** Per-dispatch override of the scoped-budget placeholder defaults (see class doc). */
   maxTurns?: number;
   maxDurationMinutes?: number;
+  /**
+   * Admission-budget identity. Defaults to `batchId` for normal pipeline stages.
+   * Follow-up jobs that can start long after a batch completed (for example a
+   * human-triggered Restyle) must use their own scope so the original batch age
+   * cannot reject fresh work with maxDurationMinutes.
+   */
+  budgetScope?: string;
   /** Forwarded to `agent-pool.ts`'s `acquireClone` — see its doc comment. When set, this
    * dispatch's clone id is stable across `attempt`, letting the underlying CLI session
    * resume turn over turn instead of starting fresh (SDD §12a session-continuity fix,
@@ -148,7 +155,12 @@ interface TurnRegistryEntry {
  * a different batch-wide default). 40 turns / 120 minutes gives a multi-item batch
  * meaningful headroom (many stages × several items) while still bounding a runaway
  * loop, without pretending to know the real Training/Writer stage counts yet. */
-const DEFAULT_MAX_PARALLEL = 3;
+/**
+ * Shared cap for all interactive pipeline work. Eight is deliberately a capacity
+ * ceiling, not a promise that every provider account can sustain eight model
+ * sessions; the admission queue still owns the operational policy above it.
+ */
+const DEFAULT_MAX_PARALLEL = 8;
 const DEFAULT_MAX_TURNS = 40;
 const DEFAULT_MAX_DURATION_MINUTES = 120;
 
@@ -401,7 +413,7 @@ export class LaneScheduler {
       stallMs: params.interactivePty ? undefined : STALL_MS,
       timeoutMs: params.interactivePty ? INTERACTIVE_PTY_TIMEOUT_MS : TIMEOUT_MS,
       budget: {
-        scope: batchId,
+        scope: params.budgetScope ?? batchId,
         maxTurns: params.maxTurns ?? this.defaultMaxTurns,
         maxDurationMinutes: params.maxDurationMinutes ?? this.defaultMaxDurationMinutes,
         cooldownSeconds: 0,

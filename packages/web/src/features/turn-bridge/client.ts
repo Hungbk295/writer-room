@@ -41,7 +41,7 @@ import {
   termSnapshot,
   termSubmitLineWithAutoRetry,
 } from '../../components/terminal/terminalApi.ts';
-import { waitForPtyQuiet } from '../../components/terminal/ptyQuiet.ts';
+import { waitForPtyQuiet, waitForPtyReady } from '../../components/terminal/ptyQuiet.ts';
 import { terminals } from '../../components/terminal/terminalStore.ts';
 
 type SpawnTurnEvent = Extract<TeamEvent, { kind: 'spawnTurn' }>;
@@ -253,6 +253,7 @@ export function startTurnBridge(): () => void {
     try {
       if (event.restartInteractive) await replaceInteractivePane(event.agentId);
       let sessionId = liveInteractivePaneForAgent(event.agentId);
+      let launchedFreshPane = false;
       if (!sessionId) {
         sessionId = await terminals.launchTab({
           executable: event.spec.executable,
@@ -267,6 +268,7 @@ export function startTurnBridge(): () => void {
           title: `${event.agentId} · PTY`,
         });
         interactivePaneByAgent.set(event.agentId, sessionId);
+        launchedFreshPane = true;
       }
       interactiveTurnToSessionId.set(event.turnId, sessionId);
       interactiveSessionToTurnId.set(sessionId, event.turnId);
@@ -284,13 +286,34 @@ export function startTurnBridge(): () => void {
       const paneOwnsTurn = () => interactiveTurnToSessionId.get(event.turnId) === pane;
       void (async () => {
         try {
-          await waitForPtyQuiet({
-            readSequence: async () => (await termSnapshot(pane)).sequence,
-            settleMs: 600,
-            minWaitMs: 800,
-            maxWaitMs: 8_000,
-            isActive: paneOwnsTurn,
-          });
+          const readSequence = async () => (await termSnapshot(pane)).sequence;
+          if (launchedFreshPane) {
+            // Any newly-created interactive CLI (Claude, Codex, Agy, Grok or
+            // Gemini) can be silent before its TUI has painted its first
+            // frame. `waitForPtyQuiet` used to treat that pre-boot silence as
+            // readiness and paste the wake line too early; the CLI could then
+            // swallow Enter while mounting its composer. Require real output
+            // followed by a stable window for every adapter, and fail closed
+            // if the TUI never becomes ready.
+            const ready = await waitForPtyReady({
+              readSequence,
+              settleMs: 1_000,
+              minWaitMs: 3_000,
+              maxWaitMs: 15_000,
+              isActive: paneOwnsTurn,
+            });
+            if (!ready && paneOwnsTurn()) {
+              throw new Error('Interactive CLI PTY chưa sẵn sàng sau 15 giây; không inject assignment');
+            }
+          } else {
+            await waitForPtyQuiet({
+              readSequence,
+              settleMs: 600,
+              minWaitMs: 800,
+              maxWaitMs: 8_000,
+              isActive: paneOwnsTurn,
+            });
+          }
           if (!paneOwnsTurn()) return;
           const cancelRetry = await termSubmitLineWithAutoRetry(pane, event.injectText, {
             isActive: paneOwnsTurn,

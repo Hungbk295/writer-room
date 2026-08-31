@@ -9,7 +9,6 @@ function notificationHref(notification: JobDoneNotification): string {
     case 'training-lab':
       return href({ name: 'training-lab-run', id: notification.jobId });
     case 'writer':
-      return href({ name: 'writer-run', id: notification.jobId });
     case 'writer-v2':
       return href({ name: 'writer-v2-run', id: notification.jobId });
   }

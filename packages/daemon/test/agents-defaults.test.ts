@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentConfigStore } from '../src/agents/config.ts';
@@ -152,6 +152,27 @@ describe('default agents', () => {
       expect(preview.agentId).toBe('claude');
       // Adapter resolves short names to absolute PATH entries when available.
       expect(preview.executable === 'claude' || preview.executable.endsWith('/claude')).toBe(true);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test('orchestrated interactive launch exposes Team MCP only', async () => {
+    const harness = await createAgentHarness({
+      dataDir: dir,
+      defaultProjectRoot: dir,
+      appMcpProvision: () => ({ writer_room: { url: 'http://127.0.0.1:9/mcp', token: 'spy-secret' } }),
+    });
+    try {
+      const spec = await harness.agents.prepareLaunch('claude', join(dir, 'workspaces'));
+      const config = JSON.parse(readFileSync(join(dir, 'agents', 'mcp-claude.json'), 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(Object.keys(config.mcpServers)).toEqual(['team']);
+      const allowed = spec.args[spec.args.indexOf('--allowedTools') + 1];
+      expect(allowed).toContain('mcp__team__team_get_assignment');
+      expect(allowed).toContain('mcp__team__team_turn_complete');
+      expect(allowed).not.toContain('writer_room');
     } finally {
       harness.dispose();
     }

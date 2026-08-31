@@ -360,6 +360,7 @@ describe('Spy Loop cold start', () => {
     const app: HttpApp = {
       spy: service,
       spyMcp: null,
+      generalPackMcp: null,
       harness: {} as unknown as HttpApp['harness'],
       startedAt: Date.now(),
       webRoot: '',

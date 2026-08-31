@@ -6,6 +6,7 @@ import { href } from '../router.ts';
 import { isTauri } from '../components/terminal/terminalApi.ts';
 import { DeleteButton } from '../components/ui/DeleteButton.tsx';
 import { EntityId } from '../components/ui/EntityId.tsx';
+import { StudioSubNav } from '../components/StudioSubNav.tsx';
 
 /** ADR-14: `origin` replaced `scope`. Shown in Vietnamese because it is the one
  * thing that tells the user whether a Formula came from one video, from refining
@@ -118,6 +119,7 @@ export function FormulasPage() {
 
   return (
     <div>
+      <StudioSubNav currentTab="formulas" />
       <h1 class="page-title">Formula</h1>
       <p class="page-lead">
         Pattern/style rút ra từ transcript video, kèm bằng chứng trích dẫn — bấm{' '}

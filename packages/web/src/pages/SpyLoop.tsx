@@ -14,7 +14,9 @@ import {
   type InboxItem,
   type Keyword,
   type KeywordStatus,
+  type LoopCapabilityStatus,
   type LoopStatus,
+  type P0CorpusOverview,
   type StoredReport,
   type ReportSummaryJson,
   type SpyLoopSettings,
@@ -64,6 +66,191 @@ function tickStatusChip(status: string) {
             status === 'running' ? 'writer' :
             status === 'failed' ? 'bad' : 'warn';
   return <Chip variant={v}>{status}</Chip>;
+}
+
+function capabilityChip(state: 'available' | 'unavailable' | 'legacy' | 'not_configured') {
+  const variant = state === 'available' ? 'default'
+    : state === 'legacy' ? 'warn'
+      : state === 'not_configured' ? 'writer'
+        : 'bad';
+  const label = state === 'available' ? 'Sẵn sàng'
+    : state === 'legacy' ? 'Legacy / deferred'
+      : state === 'not_configured' ? 'Chưa cấu hình'
+        : 'Chưa làm';
+  return <Chip variant={variant}>{label}</Chip>;
+}
+
+function p0RequestId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `p0-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// ─── P0CapabilityPanel (Phase 0.1) ──────────────────────────────────────────
+function P0CapabilityPanel() {
+  const [status, setStatus] = useState<LoopCapabilityStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (IS_MOCK) {
+      setStatus({
+        phase: '0.1',
+        readOnly: true,
+        generatedAt: new Date().toISOString(),
+        capabilities: [
+          { id: 'loop_runtime', label: 'Loop runtime hiện tại', state: 'available', detail: 'Mock chỉ để review bố cục UI.' },
+          { id: 'p0_ytdlp_source', label: 'Nguồn P0: yt-dlp-first', state: 'unavailable', detail: 'P0-A chưa nối vào LoopRunner.' },
+          { id: 'legacy_data_api', label: 'Đường Data API cũ', state: 'legacy', detail: 'Không phải fallback của P0.' },
+        ],
+      });
+      return;
+    }
+    void api.loopCapabilities()
+      .then(setStatus)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  return (
+    <Panel class="stack" style={{ margin: '1rem 0' }}>
+      <Row style={{ justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1rem' }}>Trạng thái P0 — review trước khi bật loop</h2>
+          <p class="muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0' }}>
+            Chỉ đọc trạng thái runtime/config. Bảng này không gọi collector và không đổi dữ liệu.
+          </p>
+        </div>
+        {status && <Chip variant="warn">Phase {status.phase}</Chip>}
+      </Row>
+      {error && <p class="error">Không đọc được trạng thái P0: {error}</p>}
+      {!status && !error && <p class="muted">Đang kiểm tra capability…</p>}
+      {status && (
+        <div style={{ display: 'grid', gap: '0.6rem', gridTemplateColumns: 'repeat(auto-fit, minmax(15rem, 1fr))' }}>
+          {status.capabilities.map((item) => (
+            <div key={item.id} style={{ border: '1px solid var(--border, #333)', borderRadius: '0.5rem', padding: '0.7rem' }}>
+              <Row style={{ justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <strong style={{ fontSize: '0.85rem' }}>{item.label}</strong>
+                {capabilityChip(item.state)}
+              </Row>
+              <p class="muted" style={{ fontSize: '0.78rem', margin: '0.45rem 0 0' }}>{item.detail}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ─── P0CorpusIntelligencePanel ────────────────────────────────────────────
+// Intentionally separate from the legacy Inbox: P0 drafts are evidence for
+// review, never candidate/topic rows. Every mutation is an explicit click.
+function P0CorpusIntelligencePanel({ topicId }: { topicId: string }) {
+  const [overview, setOverview] = useState<P0CorpusOverview | null>(null);
+  const [videoUrl, setVideoUrl] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<{ membershipId: string; digest: string; expiresAt: string } | null>(null);
+
+  const reload = async () => {
+    if (!topicId) return;
+    const next = await api.p0CorpusOverview(topicId);
+    setOverview(next);
+  };
+  useEffect(() => { void reload().catch((err) => setError(err instanceof Error ? err.message : String(err))); }, [topicId]);
+
+  const mutate = async (key: string, work: () => Promise<unknown>) => {
+    setBusy(key); setError(null);
+    try { await work(); await reload(); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setBusy(null); }
+  };
+
+  if (!topicId) return null;
+  return (
+    <Panel class="stack" style={{ margin: '1rem 0' }}>
+      <Row style={{ justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: '1rem' }}>P0 Corpus Intelligence — review plane</h2>
+          <p class="muted" style={{ margin: '0.25rem 0 0', fontSize: '0.8rem' }}>
+            Draft không vào Inbox legacy. C3/Gemini chỉ chạy khi port được cấu hình; không có fallback Data API/search.
+          </p>
+        </div>
+        <Chip variant={overview?.enabled ? 'default' : 'warn'}>{overview?.enabled ? 'Manual loop enabled' : 'Kill-switch đang chặn loop'}</Chip>
+      </Row>
+      {error && <p class="error">{error}</p>}
+      <Row style={{ gap: '0.5rem', alignItems: 'end', flexWrap: 'wrap' }}>
+        <Field label="YouTube video URL để import Draft" style={{ flex: '1 1 28rem' }}>
+          <Input value={videoUrl} onInput={(event) => setVideoUrl((event.currentTarget as HTMLInputElement).value)} placeholder="https://www.youtube.com/watch?v=…" />
+        </Field>
+        <button class="btn primary" disabled={!videoUrl.trim() || busy !== null} onClick={() => void mutate('import', async () => {
+          await api.p0ImportCorpusVideo({ topicId, url: videoUrl, idempotencyKey: p0RequestId() }); setVideoUrl('');
+        })}>{busy === 'import' ? 'Đang tạo…' : 'Tạo Corpus Draft'}</button>
+        <button class="btn secondary" disabled={busy !== null} onClick={() => void mutate('control', () => api.p0SetLoopEnabled(topicId, !(overview?.enabled ?? false)))}>
+          {overview?.enabled ? 'Bật kill-switch' : 'Cho phép manual loop'}
+        </button>
+        <button class="btn secondary" disabled={busy !== null || !overview?.enabled} onClick={() => void mutate('tick', () => api.p0ManualTick(topicId, p0RequestId()))}>
+          {busy === 'tick' ? 'Đang chạy…' : 'Run P0 manual tick'}
+        </button>
+      </Row>
+
+      {!overview && <p class="muted">Đang tải P0 corpus…</p>}
+      {overview?.imports.map((batch) => (
+        <div key={batch.id} style={{ borderTop: '1px solid var(--border, #333)', paddingTop: '0.75rem' }}>
+          <Row style={{ justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <strong>Import {batch.status}</strong><span class="muted">{fmtDate(batch.createdAt)}</span>
+          </Row>
+          {batch.items.map((item) => <p key={item.id} class="muted" style={{ margin: '0.35rem 0' }}>{item.canonicalUrl} · {item.status} · evidence hết hạn {fmtDate(item.expiresAt)}</p>)}
+          {batch.status === 'draft' && <Row style={{ gap: '0.5rem' }}>
+            <button class="btn primary" disabled={busy !== null} onClick={() => void mutate(`import-confirm-${batch.id}`, () => api.p0DecideCorpusImport(batch.id, 'confirm'))}>Confirm corpus</button>
+            <button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`import-reject-${batch.id}`, () => api.p0DecideCorpusImport(batch.id, 'reject'))}>Reject</button>
+          </Row>}
+        </div>
+      ))}
+
+      {overview?.memberships.map((membership) => (
+        <div key={membership.id} style={{ borderTop: '1px solid var(--border, #333)', paddingTop: '0.75rem' }}>
+          <Row style={{ justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <strong>Confirmed seed · {membership.sourceVideoId}</strong>
+            <span class="muted">{membership.createdFromKind}</span>
+          </Row>
+          <p class="muted" style={{ margin: '0.3rem 0' }}>{membership.canonicalUrl}</p>
+          <p class="muted" style={{ margin: '0.3rem 0' }}>
+            Evidence: {membership.evidence.length === 0 ? 'chưa enrich' : membership.evidence.map((item) => `${item.kind}:${item.status}`).join(' · ')}
+          </p>
+          <Row style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button class="btn secondary" disabled={busy !== null || membership.createdFromKind !== 'corpus_import' || membership.status !== 'confirmed'} title={membership.createdFromKind !== 'corpus_import' ? 'C3 không recurse từ suggestion đã confirm' : undefined} onClick={() => void mutate(`capture-${membership.id}`, () => api.p0CaptureSuggestions({ topicId, seedMembershipId: membership.id, idempotencyKey: p0RequestId() }))}>Lấy gợi ý trực tiếp (C3)</button>
+            <button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`enrich-${membership.id}`, () => api.p0EnrichMembership(membership.id))}>Enrich yt-dlp</button>
+            <button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`manifest-${membership.id}`, async () => {
+              const result = await api.p0AnalysisManifest(membership.id); setManifest({ membershipId: membership.id, digest: result.digest, expiresAt: result.expiresAt });
+            })}>Xem Gemini manifest</button>
+            <button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`analyze-${membership.id}`, () => api.p0AnalyzeMembership(membership.id, { topicId, idempotencyKey: p0RequestId() }))}>Run Gemini review</button>
+          </Row>
+          {manifest?.membershipId === membership.id && <p class="muted" style={{ margin: '0.45rem 0' }}>Manifest {manifest.digest.slice(0, 12)}… · expiry {fmtDate(manifest.expiresAt)}</p>}
+          {membership.analyses.map((run) => <div key={run.id} class="muted" style={{ margin: '0.35rem 0' }}>
+            <p style={{ margin: 0 }}>Gemini {run.status} · {run.model}{run.failureReason ? ` · ${run.failureReason}` : ''}</p>
+            {run.result && <p style={{ margin: '0.2rem 0 0' }}>Labels: {run.result.labels.join(', ') || '—'} · Keywords: {run.result.keywordCandidates.join(', ') || '—'} · Claims: {run.result.claims.length}</p>}
+          </div>)}
+        </div>
+      ))}
+
+      {overview?.recommendationBatches.map((batch) => (
+        <div key={batch.id} style={{ borderTop: '1px solid var(--border, #333)', paddingTop: '0.75rem' }}>
+          <strong>C3 batch · {batch.status} · depth 1 · {batch.observations.length}/20</strong>
+          <p class="muted" style={{ margin: '0.3rem 0' }}>Seed {batch.fromVideoId} · {batch.captureMethod ?? batch.failureReason ?? 'capture chưa hoàn tất'}</p>
+          {batch.observations.map((item) => <Row key={item.id} style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', margin: '0.35rem 0' }}>
+            <span class="muted">#{item.observedPosition} · {item.targetTitle ?? item.targetVideoId} · {item.status}</span>
+            {item.status === 'draft' && <><button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`suggest-confirm-${item.id}`, () => api.p0DecideSuggestion(item.id, 'confirm'))}>Confirm</button><button class="btn secondary" disabled={busy !== null} onClick={() => void mutate(`suggest-reject-${item.id}`, () => api.p0DecideSuggestion(item.id, 'reject'))}>Reject</button></>}
+          </Row>)}
+        </div>
+      ))}
+
+      {overview?.loopRuns.map((run) => <p key={run.id} class="muted" style={{ borderTop: '1px solid var(--border, #333)', paddingTop: '0.55rem', margin: 0 }}>
+        P0 tick {run.status} · {run.phase} · checkpoint {run.resumeIndex}{run.errorMessage ? ` · ${run.errorMessage}` : ''}
+      </p>)}
+      {overview?.reports.map((report) => <p key={report.id} class="muted" style={{ margin: 0 }}>
+        P0 report {report.id.slice(0, 8)}… · {fmtDate(report.createdAt)}
+      </p>)}
+    </Panel>
+  );
 }
 
 // ─── TopicSwitcher ────────────────────────────────────────────────────────────
@@ -1230,6 +1417,8 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
 
       {loadErr && <p class="error" style={{ marginTop: '1rem' }}>{loadErr}</p>}
 
+      <P0CapabilityPanel />
+
       {topics.length > 0 && (
         <TopicSwitcher topics={topics} current={currentTopicId} onChange={setCurrentTopicId} />
       )}
@@ -1239,6 +1428,8 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
 
       {currentTopicId && (
         <>
+          <P0CorpusIntelligencePanel topicId={currentTopicId} />
+
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '1rem' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <LoopKpiRow status={loopStatus} />

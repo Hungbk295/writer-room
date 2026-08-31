@@ -20,22 +20,38 @@ import type { PipelineLedgerRow } from '../../src/pipeline/ledger.ts';
 import { listJobNotifications } from '../../src/notifications.ts';
 import { saveFormula } from '../../src/training/storage.ts';
 import { createWriterPack } from '../../src/writer-packs.ts';
+import {
+  HOOK_CLARIFY_STAGE,
+  HOOK_SUGGEST_STAGE,
+  recoverInterruptedHooks,
+  registerWriterV2HookListener,
+  selectHook,
+  startHookClarify,
+  startHookSuggest,
+} from '../../src/writer/hook-board.ts';
 import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from '../../src/writer/run-store-v2.ts';
 import {
+  computeWriterV2Progress,
+  createWriterPostV2,
+  createWriterRoomV2,
   continueWriterRunV2,
   EDIT_REVIEW_STAGE,
   readStyledVersion,
   recoverInterruptedRestyles,
+  recoverInterruptedWriterRuns,
   REPAIR_STAGE,
   registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
+  runWriterRoomV2,
   RESTYLE_STAGE,
   startRestyle,
   startWriterRunV2,
   STUDY_STAGE,
+  splitExactSourceParts,
   validateEditorReview,
   validateStudyArtifact,
   validateWriterV2Draft,
+  updateWriterPostV2,
   WRITE_STAGE,
   WRITER_V2_ITEM_ID,
 } from '../../src/writer/writer-run-v2.ts';
@@ -92,8 +108,15 @@ beforeEach(async () => {
   });
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: dir });
   registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: dir });
+  registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: dir });
   mkdirSync(join(dir, 'channel-styles'), { recursive: true });
   writeFileSync(join(dir, 'channel-styles', STYLE_ID), CHANNEL_STYLE, 'utf8');
+  mkdirSync(join(dir, 'hook-libraries'), { recursive: true });
+  writeFileSync(
+    join(dir, 'hook-libraries', 'anh-ba-ong-chu.md'),
+    '# Hook đối thủ\n<!-- version: 1 -->\n\nKhung crisis-by-hour, forked-paths, stat-open.\n',
+    'utf8',
+  );
   mkdirSync(join(dir, 'general-packs'), { recursive: true });
   writeFileSync(
     join(dir, 'general-packs', 'hieu-tv.md'),
@@ -262,7 +285,214 @@ async function startRun(): Promise<string> {
   return run.id;
 }
 
+describe('Writer v2 post — create, configure, review, then explicit run', () => {
+  async function fixtures(): Promise<{ packId: string }> {
+    const pack = await createWriterPack(
+      { title: 'Room pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' }, dir,
+    );
+    await saveFormula(makeFormula(), dir);
+    return { packId: pack.id };
+  }
+
+  test('creates a blank DRAFT post without a clone or turn', async () => {
+    const post = await createWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+    );
+    expect(post.status).toBe('DRAFT');
+    expect(post.phase).toBe('CONFIGURING');
+    expect(post.brief).toBe('');
+    expect(post.packId).toBe('');
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
+    expect(harness.workflow.status().totalTurns).toBe(0);
+  });
+
+  test('saves and reloads the exact pinned configuration without dispatching', async () => {
+    const { packId } = await fixtures();
+    const post = await createWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+    );
+    const saved = await updateWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+      {
+        brief: 'Kiểm tra post trước khi chạy', title: 'Một title đã chuẩn bị',
+        audience: 'Người đi làm', targetWords: 1_234,
+        packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
+        agentId: 'codex', editorAgentId: 'claude',
+      },
+    );
+    expect(saved.status).toBe('DRAFT');
+    expect(saved.phase).toBe('READY');
+    expect(saved.requestedTitle).toBe('Một title đã chuẩn bị');
+    expect(saved.audience).toBe('Người đi làm');
+    expect(saved.targetWords).toBe(1_234);
+    expect(saved.packId).toBe(packId);
+    expect(saved.packHash).toHaveLength(64);
+    expect(saved.generalPackPath).toBe('hieu-tv.md');
+    expect(saved.generalPackHash).toHaveLength(64);
+    expect(saved.generalPackVersion).toBe(1);
+    expect(saved.formulaId).toBe('formula-v2-test');
+    expect(saved.formulaVersion).toBe(3);
+    expect(saved.formulaHash).toHaveLength(64);
+    expect((await getWriterRunV2(post.id, dir))).toEqual(saved);
+    const listed = (await listWriterRunsV2(dir)).find((item) => item.id === post.id);
+    expect(listed?.audience).toBe('Người đi làm');
+    expect(listed?.packHash).toBe(saved.packHash);
+    expect(listed?.generalPackHash).toBe(saved.generalPackHash);
+    expect(listed?.formulaHash).toBe(saved.formulaHash);
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
+    expect(harness.workflow.status().totalTurns).toBe(0);
+  });
+
+  test('rejects Run for incomplete config without dispatching', async () => {
+    const post = await createWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+    );
+    await updateWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+      {
+        brief: 'Có brief nhưng thiếu pack', packId: '', generalPack: '', formulaId: '',
+        agentId: 'codex', editorAgentId: 'claude',
+      },
+    );
+    await expect(runWriterRoomV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+    )).rejects.toThrow('Chỉ chạy được room DRAFT/READY');
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
+    expect(harness.workflow.status().totalTurns).toBe(0);
+  });
+
+  test('dispatches exactly one STUDY clone only after Run on a complete saved post', async () => {
+    const { packId } = await fixtures();
+    const post = await createWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+    );
+    await updateWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+      {
+        brief: 'Kiểm tra room trước khi chạy', title: 'Một title đã chuẩn bị',
+        packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
+        agentId: 'codex', editorAgentId: 'claude',
+      },
+    );
+    await expect(runWriterRoomV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+    )).rejects.toThrow(/Chưa chọn hook/);
+
+    const ready = (await getWriterRunV2(post.id, dir))!;
+    ready.selectedHook = {
+      id: 'h1',
+      type: 'direct-question',
+      typeLabel: 'Câu hỏi trực diện',
+      text: 'Bạn có bao giờ tính tổng khoản cố định chưa?',
+    };
+    await saveWriterRunV2(ready, dir);
+
+    const started = await runWriterRoomV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+    );
+    expect(started.status).toBe('RUNNING');
+    expect(started.phase).toBe('STUDY');
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(1);
+    expect(harness.workflow.status().totalTurns).toBe(1);
+    await expect(runWriterRoomV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+    )).rejects.toThrow('Chỉ chạy được room DRAFT/READY');
+  });
+
+  test('legacy configured room helper remains compatible and does not dispatch', async () => {
+    const { packId } = await fixtures();
+    const room = await createWriterRoomV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+      {
+        brief: 'Legacy external caller', packId, generalPack: 'hieu-tv.md',
+        formulaId: 'formula-v2-test', agentId: 'codex',
+      },
+    );
+    expect(room.status).toBe('DRAFT');
+    expect(room.phase).toBe('READY');
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
+  });
+
+  test('recovers a validated orphan STUDY only after restart, then dispatches WRITE once', async () => {
+    const runId = await startRun();
+    await waitForLedgerRow(runId, STUDY_STAGE, 1);
+    await Bun.write(
+      join(itemRunDir(runId, STUDY_STAGE, 1), 'out', 'result.json'),
+      JSON.stringify(STUDY_RESULT),
+    );
+
+    await expect(continueWriterRunV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, runId,
+    )).rejects.toThrow('STUDY agent vẫn còn live');
+
+    harness.dispose();
+    harness = await createAgentHarness({ dataDir: dir, defaultProjectRoot: dir });
+    registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: dir });
+    registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: dir });
+    registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: dir });
+
+    // The old daemon watchdog may have marked the run FAILED before the owner
+    // restarts. Recovery accepts that shape too, but still revalidates the file.
+    const interrupted = (await getWriterRunV2(runId, dir))!;
+    interrupted.status = 'FAILED';
+    interrupted.phase = 'FAILED';
+    interrupted.errorCode = 'AGENT_TIMEOUT';
+    interrupted.errorReason = 'turn timed out before team_turn_complete';
+    await saveWriterRunV2(interrupted, dir);
+
+    const recovered = await continueWriterRunV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, runId,
+    );
+    expect(recovered.status).toBe('RUNNING');
+    expect(recovered.phase).toBe('WRITE');
+    expect(recovered.study?.gap).toBe(STUDY_RESULT.gap);
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(1);
+    expect(harness.workflow.status().totalTurns).toBe(1);
+    await waitForLedgerRow(runId, WRITE_STAGE, 1);
+  });
+
+  test('retries an interrupted STUDY with no artifact as attempt 2 on the same post', async () => {
+    const runId = await startRun();
+    await waitForLedgerRow(runId, STUDY_STAGE, 1);
+
+    await expect(continueWriterRunV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, runId,
+    )).rejects.toThrow('STUDY agent vẫn còn live');
+
+    harness.dispose();
+    harness = await createAgentHarness({ dataDir: dir, defaultProjectRoot: dir });
+    let restartInteractive: boolean | undefined;
+    harness.subscribe((event) => {
+      if (event.kind === 'spawnTurn') restartInteractive = event.restartInteractive;
+    });
+    registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: dir });
+    registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: dir });
+    registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: dir });
+
+    const retried = await continueWriterRunV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, runId,
+    );
+    expect(retried.status).toBe('RUNNING');
+    expect(retried.phase).toBe('STUDY');
+    expect(retried.study).toBeNull();
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(1);
+    await waitForLedgerRow(runId, STUDY_STAGE, 2);
+    expect(await waitUntil(
+      () => restartInteractive,
+      (value) => value !== undefined,
+    )).toBe(true);
+  });
+});
+
 describe('Writer v2 — STUDY validation', () => {
+  test('stages giant physical lines as byte-exact Read-safe parts', () => {
+    const source = `# Pack\n\n${'nghề kiếm tiền '.repeat(20_000)}\n🙂 evidence cuối`;
+    const parts = splitExactSourceParts(source, 16_000);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.join('')).toBe(source);
+    expect(parts.every((part) => Buffer.byteLength(part, 'utf8') <= 16_000)).toBe(true);
+  });
+
   test('a ledger quote that is not verbatim in the pack is rejected', () => {
     const result = validateStudyArtifact(
       { ...STUDY_RESULT, factsLedger: [{ fact: 'x', quote: 'câu này không có trong pack' }] },
@@ -408,13 +638,19 @@ describe('Writer v2 — end to end', () => {
   test('STUDY → WRITE → GATE → EDIT_REVIEW → DONE when everything is clean', async () => {
     const runId = await startRun();
 
-    // The large source must stay as ordinary Markdown, never as one escaped JSON
-    // string line. This is the contract Claude/Codex Read can actually paginate.
-    expect(await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'topic-pack.md')).text()).toBe(PACK_MARKDOWN);
+    // The source stays byte-exact but is split below Read's per-call ceiling. A
+    // transcript may contain one enormous physical line that offset/limit cannot
+    // paginate, so the envelope owns the ordered part list.
     const studyEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'envelope.json')).text(),
-    ) as { topicPack: { contentFile: string; markdown?: string } };
-    expect(studyEnvelope.topicPack.contentFile).toBe('input/topic-pack.md');
+    ) as { topicPack: { contentFiles: string[]; markdown?: string } };
+    const stagedParts = await Promise.all(
+      studyEnvelope.topicPack.contentFiles.map((relativePath) =>
+        Bun.file(join(itemRunDir(runId, STUDY_STAGE), relativePath)).text()),
+    );
+    const stagedPack = stagedParts.join('');
+    expect(stagedPack).toBe(PACK_MARKDOWN);
+    expect(studyEnvelope.topicPack.contentFiles).toHaveLength(1);
     expect(studyEnvelope.topicPack.markdown).toBeUndefined();
 
     expect((await completeStage(runId, STUDY_STAGE, STUDY_RESULT)).outcome).toBe('COMMITTED');
@@ -875,3 +1111,312 @@ describe('Writer v2 — restyle', () => {
     });
   });
 });
+
+describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
+  test('computeWriterV2Progress follows Director Board weights', () => {
+    const base = {
+      agentId: 'codex' as const,
+      editorAgentId: 'claude' as const,
+      study: null,
+      draft: null,
+      gateResults: [] as [],
+      editorDefects: null,
+    };
+    expect(computeWriterV2Progress({ ...base, status: 'DRAFT', phase: 'READY' }).progressPercent).toBe(10);
+    expect(computeWriterV2Progress({ ...base, status: 'RUNNING', phase: 'STUDY' })).toEqual({
+      progressPercent: 22,
+      activeRole: { kind: 'author', label: 'Author: codex', agentId: 'codex' },
+    });
+    expect(computeWriterV2Progress({ ...base, status: 'RUNNING', phase: 'WRITE' }).progressPercent).toBe(52);
+    expect(computeWriterV2Progress({ ...base, status: 'RUNNING', phase: 'GATE' }).activeRole.kind).toBe('gate');
+    expect(computeWriterV2Progress({ ...base, status: 'RUNNING', phase: 'EDIT_REVIEW' }).activeRole).toEqual({
+      kind: 'critic',
+      label: 'Critic: claude',
+      agentId: 'claude',
+    });
+    expect(computeWriterV2Progress({ ...base, status: 'DONE', phase: 'DONE' }).progressPercent).toBe(100);
+  });
+
+  test('recoverInterruptedWriterRuns clears a zombie STUDY with no artifact', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'wr-writer-v2-recover-'));
+    try {
+      const h = await createAgentHarness({ dataDir: tmp, defaultProjectRoot: tmp });
+      registerWriterV2SettleListener(h.pipeline.scheduler, { dataDir: tmp });
+      mkdirSync(join(tmp, 'general-packs'), { recursive: true });
+      writeFileSync(join(tmp, 'general-packs', 'hieu-tv.md'), '# gp\n<!-- version: 1 -->\n', 'utf8');
+      const formula = makeFormula();
+      await saveFormula(formula, tmp);
+      const pack = await createWriterPack({
+        title: 'Pack',
+        channelTitle: 'Ch',
+        markdown: PACK_MARKDOWN,
+        videoIds: [VIDEO_ID],
+      }, tmp);
+      const run = await createWriterRoomV2(
+        { scheduler: h.pipeline.scheduler, dataDir: tmp },
+        {
+          brief: 'brief',
+          title: 'title',
+          packId: pack.id,
+          generalPack: 'hieu-tv.md',
+          formulaId: formula.id,
+          agentId: 'codex',
+          editorAgentId: 'claude',
+        },
+      );
+      run.selectedHook = {
+        id: 'h1', type: 'direct-question', typeLabel: 'Câu hỏi trực diện', text: 'title',
+      };
+      await saveWriterRunV2(run, tmp);
+      await runWriterRoomV2({ scheduler: h.pipeline.scheduler, dataDir: tmp }, run.id);
+      h.dispose();
+
+      const zombie = (await getWriterRunV2(run.id, tmp))!;
+      expect(zombie.status).toBe('RUNNING');
+      expect(zombie.phase).toBe('STUDY');
+
+      await recoverInterruptedWriterRuns(tmp);
+
+      const after = (await getWriterRunV2(run.id, tmp))!;
+      expect(after.status).toBe('FAILED');
+      expect(after.phase).toBe('FAILED');
+      expect(after.errorCode).toBe('STUDY_INTERRUPTED');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('recoverInterruptedWriterRuns commits a finished STUDY artifact and can continue WRITE', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'wr-writer-v2-recover-study-'));
+    let h: AgentHarness | undefined;
+    try {
+      h = await createAgentHarness({ dataDir: tmp, defaultProjectRoot: tmp });
+      registerWriterV2SettleListener(h.pipeline.scheduler, { dataDir: tmp });
+      mkdirSync(join(tmp, 'general-packs'), { recursive: true });
+      writeFileSync(
+        join(tmp, 'general-packs', 'hieu-tv.md'),
+        [
+          '# Hieu TV',
+          '<!-- version: 1 -->',
+          '',
+          '## TASTE DNA',
+          '1. Chính sách cá nhân.',
+          '',
+          '## Ví dụ | 200k views | 20 phút',
+          '- **Hook**: mở bằng ngân sách',
+        ].join('\n'),
+        'utf8',
+      );
+      const formula = makeFormula();
+      await saveFormula(formula, tmp);
+      const pack = await createWriterPack({
+        title: 'Pack',
+        channelTitle: 'Ch',
+        markdown: PACK_MARKDOWN,
+        videoIds: [VIDEO_ID],
+      }, tmp);
+      const room = await createWriterRoomV2(
+        { scheduler: h.pipeline.scheduler, dataDir: tmp },
+        {
+          brief: 'brief',
+          title: 'title',
+          packId: pack.id,
+          generalPack: 'hieu-tv.md',
+          formulaId: formula.id,
+          agentId: 'codex',
+          editorAgentId: 'claude',
+        },
+      );
+      room.selectedHook = {
+        id: 'h1', type: 'direct-question', typeLabel: 'Câu hỏi trực diện', text: 'title',
+      };
+      await saveWriterRunV2(room, tmp);
+      await runWriterRoomV2({ scheduler: h.pipeline.scheduler, dataDir: tmp }, room.id);
+      await Bun.write(
+        join(tmp, 'workspaces', 'pipeline', room.id, WRITER_V2_ITEM_ID, 'attempts', '1', STUDY_STAGE, 'out', 'result.json'),
+        JSON.stringify(STUDY_RESULT),
+      );
+      h.dispose();
+      h = undefined;
+
+      // Without scheduler: commit STUDY into the record and clear the RUNNING zombie.
+      await recoverInterruptedWriterRuns(tmp);
+      const rescued = (await getWriterRunV2(room.id, tmp))!;
+      expect(rescued.study?.gap).toBe(STUDY_RESULT.gap);
+      expect(rescued.status).toBe('FAILED');
+      expect(rescued.errorCode).toBe('STUDY_INTERRUPTED');
+
+      h = await createAgentHarness({ dataDir: tmp, defaultProjectRoot: tmp });
+      registerWriterV2SettleListener(h.pipeline.scheduler, { dataDir: tmp });
+      const continued = await continueWriterRunV2(
+        { scheduler: h.pipeline.scheduler, dataDir: tmp },
+        room.id,
+      );
+      expect(continued.status).toBe('RUNNING');
+      expect(continued.phase).toBe('WRITE');
+      expect(continued.study?.gap).toBe(STUDY_RESULT.gap);
+    } finally {
+      h?.dispose();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Writer v2 hook loop (clarify → suggest → select)', () => {
+  const deps = () => ({ scheduler: harness.pipeline.scheduler, dataDir: dir });
+
+  async function readyPost(): Promise<string> {
+    const pack = await createWriterPack(
+      { title: 'Room pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' },
+      dir,
+    );
+    await saveFormula(makeFormula(), dir);
+    const post = await createWriterPostV2(deps());
+    await updateWriterPostV2(deps(), post.id, {
+      brief: 'Vì sao lương tăng mà vẫn hết tiền',
+      title: 'Lương tăng, quyền chọn giảm',
+      packId: pack.id,
+      generalPack: 'hieu-tv.md',
+      formulaId: 'formula-v2-test',
+      agentId: 'codex',
+      editorAgentId: 'claude',
+    });
+    return post.id;
+  }
+
+  test('clarify stays DRAFT, then commits questions', async () => {
+    const postId = await readyPost();
+    const started = await startHookClarify(deps(), postId);
+    expect(started.status).toBe('DRAFT');
+    expect(started.generatingHook?.step).toBe('clarify');
+    expect(started.generatingHook?.attempt).toBe(1);
+
+    const envelope = JSON.parse(
+      await Bun.file(join(itemRunDir(postId, HOOK_CLARIFY_STAGE, 1), 'input', 'envelope.json')).text(),
+    ) as { title: string };
+    expect(envelope.title).toBe('Lương tăng, quyền chọn giảm');
+
+    expect((await completeStage(postId, HOOK_CLARIFY_STAGE, {
+      questions: ['Video này nói với ai?', 'Món nợ mở bài là gì?'],
+    }, 1)).outcome).toBe('COMMITTED');
+
+    const after = await waitUntil(
+      () => getWriterRunV2(postId, dir),
+      (r) => r?.hookClarify?.questions?.length === 2 && !r.generatingHook,
+    );
+    expect(after!.status).toBe('DRAFT');
+    expect(after!.hookClarify!.questions).toEqual(['Video này nói với ai?', 'Món nợ mở bài là gì?']);
+  });
+
+  test('suggest writes 3–5 candidates; select pins one; STUDY envelope carries it', async () => {
+    const postId = await readyPost();
+    await startHookClarify(deps(), postId);
+    await completeStage(postId, HOOK_CLARIFY_STAGE, {
+      questions: ['Ai xem?', 'Góc nào?'],
+    }, 1);
+    await waitUntil(() => getWriterRunV2(postId, dir), (r) => Boolean(r?.hookClarify));
+
+    const suggesting = await startHookSuggest(deps(), postId, ['Người đi làm', 'Câu hỏi tự soi']);
+    expect(suggesting.status).toBe('DRAFT');
+    expect(suggesting.generatingHook?.step).toBe('suggest');
+    const lib = await Bun.file(
+      join(itemRunDir(postId, HOOK_SUGGEST_STAGE, 2), 'input', 'hook-library.md'),
+    ).text();
+    expect(lib).toContain('Hook đối thủ');
+
+    await completeStage(postId, HOOK_SUGGEST_STAGE, {
+      candidates: [
+        { id: 'h1', type: 'direct-question', text: 'Bạn có bao giờ tính tổng khoản cố định chưa?' },
+        { id: 'h2', type: 'crisis-by-hour', text: 'Hai giờ sáng, một người mở app ngân hàng.' },
+        { id: 'h3', type: 'forked-paths', text: 'Hai người cùng lương mười năm trước.' },
+      ],
+    }, 2);
+    const listed = await waitUntil(
+      () => getWriterRunV2(postId, dir),
+      (r) => (r?.hookCandidates?.length ?? 0) === 3 && !r?.generatingHook,
+    );
+    expect(listed!.status).toBe('DRAFT');
+
+    const picked = await selectHook(dir, postId, 'h1');
+    expect(picked.selectedHook).toEqual({
+      id: 'h1',
+      type: 'direct-question',
+      typeLabel: 'Câu hỏi trực diện',
+      text: 'Bạn có bao giờ tính tổng khoản cố định chưa?',
+    });
+
+    const started = await runWriterRoomV2(deps(), postId);
+    expect(started.phase).toBe('STUDY');
+    const studyEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(postId, STUDY_STAGE, 1), 'input', 'envelope.json')).text(),
+    ) as { selectedHook?: { text: string } };
+    expect(studyEnvelope.selectedHook?.text).toBe('Bạn có bao giờ tính tổng khoản cố định chưa?');
+    const studyPrompt = await Bun.file(join(itemRunDir(postId, STUDY_STAGE, 1), 'prompt.md')).text();
+    expect(studyPrompt).toContain('Bạn có bao giờ tính tổng khoản cố định chưa?');
+
+    await completeStage(postId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(postId, dir), (r) => r?.phase === 'WRITE');
+    const writeRow = await waitForLedgerRow(postId, WRITE_STAGE, 1);
+    const writeSettled = waitForSettled(harness.pipeline.scheduler, WRITE_STAGE, 1);
+    harness.workflow.turnComplete(Number(writeRow.turnId), { exitCode: -1 });
+    await writeSettled;
+  });
+
+  test('changing title clears hook state; failed suggest does not fail the post', async () => {
+    const postId = await readyPost();
+    const post = (await getWriterRunV2(postId, dir))!;
+    post.selectedHook = {
+      id: 'h1', type: 'direct-question', typeLabel: 'Câu hỏi trực diện', text: 'hook cũ',
+    };
+    post.hookClarify = { questions: ['x?'], answers: ['y'] };
+    await saveWriterRunV2(post, dir);
+
+    await updateWriterPostV2(deps(), postId, {
+      brief: post.brief,
+      title: 'Title mới hoàn toàn',
+      packId: post.packId,
+      generalPack: post.generalPackPath,
+      formulaId: post.formulaId,
+      agentId: post.agentId,
+      editorAgentId: post.editorAgentId,
+    });
+    const cleared = (await getWriterRunV2(postId, dir))!;
+    expect(cleared.selectedHook).toBeUndefined();
+    expect(cleared.hookClarify).toBeUndefined();
+
+    await startHookClarify(deps(), postId);
+    await completeStage(postId, HOOK_CLARIFY_STAGE, { questions: ['Ai?'] }, 1);
+    await waitUntil(() => getWriterRunV2(postId, dir), (r) => Boolean(r?.hookClarify));
+    await startHookSuggest(deps(), postId, ['Người đi làm']);
+    const row = await waitForLedgerRow(postId, HOOK_SUGGEST_STAGE, 2);
+    const settled = waitForSettled(harness.pipeline.scheduler, HOOK_SUGGEST_STAGE, 2);
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
+    expect((await settled).outcome).toBe('FAILED');
+    const after = await waitUntil(() => getWriterRunV2(postId, dir), (r) => r?.hookError !== undefined);
+    expect(after!.status).toBe('DRAFT');
+    expect(after!.generatingHook).toBeUndefined();
+    expect(after!.hookError!.code).toBe('AGENT_EXIT');
+  });
+
+  test('recoverInterruptedHooks commits a finished clarify result', async () => {
+    const postId = await readyPost();
+    await startHookClarify(deps(), postId);
+    await Bun.write(
+      join(itemRunDir(postId, HOOK_CLARIFY_STAGE, 1), 'out', 'result.json'),
+      JSON.stringify({ questions: ['Còn thiếu góc nào?'] }),
+    );
+    const stuck = (await getWriterRunV2(postId, dir))!;
+    expect(stuck.generatingHook?.step).toBe('clarify');
+    await recoverInterruptedHooks(dir);
+    const rescued = (await getWriterRunV2(postId, dir))!;
+    expect(rescued.status).toBe('DRAFT');
+    expect(rescued.generatingHook).toBeUndefined();
+    expect(rescued.hookClarify?.questions).toEqual(['Còn thiếu góc nào?']);
+
+    const row = await waitForLedgerRow(postId, HOOK_CLARIFY_STAGE, 1);
+    const settled = waitForSettled(harness.pipeline.scheduler, HOOK_CLARIFY_STAGE, 1);
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
+    await settled;
+  });
+});
+

@@ -95,7 +95,11 @@ export class AgentManager {
     private cfg: AgentConfigStore,
     private dataDir: string,
     private teamMcpInfo: () => McpServerInfo | null,
-    private appMcpProvision: (agentId: string) => McpServerInfo | null = () => null,
+    /** Named app-capability MCP servers (e.g. `writer_room` for Spy, `general_pack`
+     * for the General Pack MCP) — a map, not a single value, so more than one
+     * narrow-surface app MCP can be mounted per agent without widening any one
+     * of them. */
+    private appMcpProvision: (agentId: string) => Record<string, McpServerInfo> = () => ({}),
     /** Allowed roots for overrideCwd (workspace dirs under app data). */
     private workspaceRoots: () => string[] = () => [join(this.dataDir, 'workspaces')],
   ) {}
@@ -179,10 +183,10 @@ export class AgentManager {
 
   private mcpConnections(agentId: string, includeApp: boolean): Record<string, McpServerInfo> {
     const team = this.teamMcpInfo();
-    const app = includeApp ? this.appMcpProvision(agentId) : null;
+    const app = includeApp ? this.appMcpProvision(agentId) : {};
     return {
       ...(team ? { team } : {}),
-      ...(app ? { writer_room: app } : {}),
+      ...app,
     };
   }
 
@@ -369,7 +373,12 @@ export class AgentManager {
     if (agent.workingDirectoryMode === 'isolated-worktree') {
       await ensureWorktree(agent.projectRoot, this.dataDir, agent.id);
     }
-    const connections = this.mcpConnections(agent.id, true);
+    // A staged interactive pipeline turn is deliberately least-privilege: its
+    // inputs already live in the stage workspace and the only remote capability
+    // it needs is Team MCP to fetch/complete the assignment. Exposing the app MCP
+    // here let a Writer STUDY turn bypass its filesystem-only evidence contract.
+    const orchestrated = Boolean(overrideCwd?.trim());
+    const connections = this.mcpConnections(agent.id, !orchestrated);
     const mcpPath = this.writeMcpConfig(agentId, connections);
     const ctx = this.ctx(agent, mcpPath, connections);
     if (overrideCwd?.trim()) {
@@ -381,7 +390,13 @@ export class AgentManager {
       }
       ctx.cwd = target;
       ctx.orchestrated = true;
-      ctx.allowedTools = ['Read', 'Edit', 'Write', 'mcp__team'];
+      ctx.allowedTools = [
+        'Read',
+        'Edit',
+        'Write',
+        'mcp__team__team_get_assignment',
+        'mcp__team__team_turn_complete',
+      ];
     }
     if (agent.adapter === 'gemini') this.writeGeminiSettings(ctx.cwd, connections);
     if (agent.adapter === 'agy') this.writeAgyMcpConfig(ctx.cwd, connections);
@@ -480,31 +495,9 @@ export function toSafeInteractiveText(value: string): string {
     .trim();
 }
 
-function utf8Bytes(value: string): number {
-  return Buffer.byteLength(value, 'utf8');
-}
-
-/** Truncate on a UTF-8 code-point boundary so a multi-byte char is never split. */
-function truncateUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
-  if (utf8Bytes(value) <= maxBytes) return { text: value, truncated: false };
-  let out = '';
-  let bytes = 0;
-  for (const ch of value) {
-    const len = Buffer.byteLength(ch, 'utf8');
-    if (bytes + len > maxBytes) break;
-    out += ch;
-    bytes += len;
-  }
-  return { text: out, truncated: true };
-}
-
-/** Marker telling the agent the embed was cut and where to find the full task. */
-const TRUNCATE_MARKER = '… [task truncated; call team_get_assignment for the full assignment]';
-
-/** 8 KiB for the embedded taskNote portion of an inject line. */
-export const TASK_INJECT_MAX_BYTES = 8 * 1024;
-/** 12 KiB for the entire injectText. */
-export const INJECT_TEXT_MAX_BYTES = 12 * 1024;
+/** Claude Code 2.1.x truncates one interactive composer paste at 1024 bytes.
+ * Stay one byte below that hard edge for every persistent PTY wake line. */
+export const INTERACTIVE_INJECT_MAX_BYTES = 1023;
 
 export function buildInjectLine(
   agent: AgentDefinition,
@@ -518,21 +511,21 @@ export function buildInjectLine(
   const completion = interactiveTurnId === undefined
     ? `gọi team_update_status (agentId "${agent.id}", status "idle").`
     : `sau khi ghi artifact, gọi team_turn_complete (agentId "${agent.id}", turnId ${interactiveTurnId}, status "done"); nếu không thể hoàn tất thì status "failed". Không gọi team_update_status để thay thế.`;
-  // Persistent interactive orchestrated assignment: embed the real task so the
-  // agent knows its target even if MCP team_get_assignment is unreachable. This
-  // branch requires a live turnId (interactive pane) — a headless orchestrated
-  // turn keeps the MCP wake line below, so that event payload is unchanged.
+  // Persistent interactive assignments use a SHORT wake line. The full task is
+  // already stored transactionally in TeamStore before dispatch. A real Claude
+  // TUI silently cut a 1,025-byte paste between the artifact path and the final
+  // team_turn_complete instruction, leaving a valid result.json permanently
+  // non-terminal. Keep completion first, fetch the task through Team MCP, and
+  // hard-gate the line below the observed 1,024-byte composer limit.
   if (orchestrated && hasAssignment && interactiveTurnId !== undefined && taskNote?.trim()) {
-    const prefix = `[writer-room orchestrator · ${reason}] NHIỆM VỤ: `;
-    const suffix = ` Chỉ làm nhiệm vụ trên; không đọc chat cũ, không team_send_message, không mention agent khác. Khi xong, ${completion}`;
-    // Reserve the marker's own bytes so the WHOLE injectText stays ≤ 12 KiB, not
-    // just the task portion (plan §3.1 cap 3).
-    const taskBudget = Math.max(1, Math.min(
-      TASK_INJECT_MAX_BYTES,
-      INJECT_TEXT_MAX_BYTES - utf8Bytes(prefix) - utf8Bytes(suffix) - utf8Bytes(` ${TRUNCATE_MARKER}`),
-    ));
-    const { text, truncated } = truncateUtf8(toSafeInteractiveText(taskNote), taskBudget);
-    return `${prefix}${text}${truncated ? ` ${TRUNCATE_MARKER}` : ''}${suffix}`;
+    const line = `[writer-room orchestrator · ${reason} · turn ${interactiveTurnId}] `
+      + `Khi xong BẮT BUỘC ${completion} Trước tiên gọi team_get_assignment `
+      + `(agentId "${agent.id}"), chỉ làm assignment đó; không đọc chat cũ, `
+      + 'không team_send_message, không dùng MCP ngoài team.';
+    if (Buffer.byteLength(line, 'utf8') > INTERACTIVE_INJECT_MAX_BYTES) {
+      throw new Error(`interactive inject vượt ${INTERACTIVE_INJECT_MAX_BYTES} bytes`);
+    }
+    return line;
   }
   if (hasAssignment) {
     if (orchestrated) {

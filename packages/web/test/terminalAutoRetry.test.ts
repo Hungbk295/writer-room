@@ -10,7 +10,7 @@ import {
   PTY_ENTER_RECOVERY_BACKOFF_MS,
   schedulePtyEnterRecovery,
 } from '../src/components/terminal/terminalAutoRetry.ts';
-import { waitForPtyQuiet } from '../src/components/terminal/ptyQuiet.ts';
+import { waitForPtyQuiet, waitForPtyReady } from '../src/components/terminal/ptyQuiet.ts';
 
 /** One pending timer at a time is all the recovery loop ever holds. */
 function testTimer() {
@@ -202,6 +202,57 @@ test('waitForPtyQuiet gives up at maxWaitMs on a TUI that never stops drawing', 
     delay: clock.delay,
     now: clock.now,
   });
+  expect(clock.time).toBe(1_000);
+});
+
+test('waitForPtyReady does not mistake pre-boot silence for a loaded CLI', async () => {
+  const clock = fakeClock();
+  const ready = await waitForPtyReady({
+    readSequence: async () => 0,
+    settleMs: 400,
+    minWaitMs: 800,
+    maxWaitMs: 1_200,
+    pollMs: 200,
+    delay: clock.delay,
+    now: clock.now,
+  });
+
+  expect(ready).toBe(false);
+  expect(clock.time).toBe(1_200);
+});
+
+test('waitForPtyReady waits through a cold-start gap before accepting a stable composer', async () => {
+  const clock = fakeClock();
+  const ready = await waitForPtyReady({
+    // The old quiet-only gate returned at 800ms, before this simulated Claude
+    // process paints its first frame at 1000ms.
+    readSequence: async () => (clock.time < 1_000 ? 0 : 1),
+    settleMs: 400,
+    minWaitMs: 800,
+    maxWaitMs: 2_500,
+    pollMs: 200,
+    delay: clock.delay,
+    now: clock.now,
+  });
+
+  expect(ready).toBe(true);
+  expect(clock.time).toBe(1_400);
+});
+
+test('waitForPtyReady fails closed when startup output never settles', async () => {
+  const clock = fakeClock();
+  let sequence = 0;
+  const ready = await waitForPtyReady({
+    readSequence: async () => ++sequence,
+    settleMs: 400,
+    minWaitMs: 400,
+    maxWaitMs: 1_000,
+    pollMs: 200,
+    delay: clock.delay,
+    now: clock.now,
+  });
+
+  expect(ready).toBe(false);
   expect(clock.time).toBe(1_000);
 });
 

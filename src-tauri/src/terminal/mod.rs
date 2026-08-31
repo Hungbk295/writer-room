@@ -120,7 +120,10 @@ pub struct TerminalManager {
 
 impl TerminalManager {
     pub fn new() -> Self {
-        Self { sessions: Mutex::new(HashMap::new()), next_id: AtomicU64::new(1) }
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+        }
     }
 
     /// Core create — không phụ thuộc Tauri, test được trực tiếp.
@@ -145,7 +148,12 @@ impl TerminalManager {
         let cols = if req.cols >= 40 { req.cols } else { 120 };
         let rows = if req.rows >= 10 { req.rows } else { 30 };
         let pair = pty
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("openpty: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&req.executable);
@@ -176,13 +184,22 @@ impl TerminalManager {
             cmd.env("LINES", rows.to_string());
         }
 
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn: {e}"))?;
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("spawn: {e}"))?;
         drop(pair.slave);
         let pid = child.process_id().ok_or("no pid")?;
         let killer = child.clone_killer();
 
-        let reader = pair.master.try_clone_reader().map_err(|e| format!("reader: {e}"))?;
-        let writer = pair.master.take_writer().map_err(|e| format!("writer: {e}"))?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("writer: {e}"))?;
 
         let id = format!("term-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let running = Arc::new(AtomicBool::new(true));
@@ -210,7 +227,10 @@ impl TerminalManager {
 
         // waiter: chờ child exit → cập nhật trạng thái + báo lên
         std::thread::spawn(move || {
-            let code = child.wait().ok().map(|st: portable_pty::ExitStatus| st.exit_code());
+            let code = child
+                .wait()
+                .ok()
+                .map(|st: portable_pty::ExitStatus| st.exit_code());
             running.store(false, Ordering::SeqCst);
             on_exit(code);
         });
@@ -234,7 +254,8 @@ impl TerminalManager {
         }
         use std::io::Write as _;
         let mut w = s.writer.lock().unwrap();
-        w.write_all(data.as_bytes()).map_err(|e| format!("write: {e}"))?;
+        w.write_all(data.as_bytes())
+            .map_err(|e| format!("write: {e}"))?;
         w.flush().map_err(|e| format!("flush: {e}"))
     }
 
@@ -247,7 +268,12 @@ impl TerminalManager {
             .master
             .lock()
             .unwrap()
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("resize: {e}"));
         result
     }
@@ -292,7 +318,10 @@ impl TerminalManager {
     pub fn snapshot(&self, session_id: &str) -> Result<TerminalSnapshot, String> {
         let s = self.get(session_id)?;
         let out = s.output.lock().unwrap();
-        Ok(TerminalSnapshot { sequence: out.seq, data: B64.encode(out.ring.contents()) })
+        Ok(TerminalSnapshot {
+            sequence: out.seq,
+            data: B64.encode(out.ring.contents()),
+        })
     }
 
     /// Reattach: swap sink + snapshot dưới cùng một lock — mọi chunk sau
@@ -301,7 +330,10 @@ impl TerminalManager {
         let s = self.get(session_id)?;
         let mut out = s.output.lock().unwrap();
         out.sink = sink;
-        Ok(TerminalSnapshot { sequence: out.seq, data: B64.encode(out.ring.contents()) })
+        Ok(TerminalSnapshot {
+            sequence: out.seq,
+            data: B64.encode(out.ring.contents()),
+        })
     }
 }
 
@@ -371,7 +403,10 @@ pub mod commands {
 
     fn channel_sink(ch: Channel<OutputChunk>) -> Sink {
         Box::new(move |seq, bytes| {
-            let _ = ch.send(OutputChunk { sequence: seq, data: B64.encode(bytes) });
+            let _ = ch.send(OutputChunk {
+                sequence: seq,
+                data: B64.encode(bytes),
+            });
         })
     }
 
@@ -393,7 +428,11 @@ pub mod commands {
                 let sid = id_for_exit.lock().unwrap().clone().unwrap_or_default();
                 let _ = app.emit(
                     "terminal://exit",
-                    TerminalExitEvent { session_id: sid, exit_code: code, turn_id },
+                    TerminalExitEvent {
+                        session_id: sid,
+                        exit_code: code,
+                        turn_id,
+                    },
                 );
             }),
         )?;
@@ -421,7 +460,10 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub fn terminal_kill(state: State<'_, TerminalManager>, session_id: String) -> Result<(), String> {
+    pub fn terminal_kill(
+        state: State<'_, TerminalManager>,
+        session_id: String,
+    ) -> Result<(), String> {
         state.kill(&session_id)
     }
 
@@ -457,14 +499,23 @@ mod tests {
     fn collecting_sink() -> (Sink, Arc<Mutex<Vec<u8>>>) {
         let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let b = Arc::clone(&buf);
-        (Box::new(move |_seq, bytes| b.lock().unwrap().extend_from_slice(bytes)), buf)
+        (
+            Box::new(move |_seq, bytes| b.lock().unwrap().extend_from_slice(bytes)),
+            buf,
+        )
     }
 
     fn shell_request(script: &str, read_only: bool) -> TerminalCreateRequest {
         #[cfg(unix)]
-        let (executable, args) = ("/bin/sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+        let (executable, args) = (
+            "/bin/sh".to_string(),
+            vec!["-c".to_string(), script.to_string()],
+        );
         #[cfg(windows)]
-        let (executable, args) = ("cmd.exe".to_string(), vec!["/C".to_string(), script.to_string()]);
+        let (executable, args) = (
+            "cmd.exe".to_string(),
+            vec!["/C".to_string(), script.to_string()],
+        );
         TerminalCreateRequest {
             executable,
             args,
@@ -484,12 +535,18 @@ mod tests {
         let (sink, buf) = collecting_sink();
         let (tx, rx) = mpsc::channel::<Option<u32>>();
         let (id, pid) = mgr
-            .create(shell_request("echo hello-pty", false), sink, Box::new(move |c| {
-                let _ = tx.send(c);
-            }))
+            .create(
+                shell_request("echo hello-pty", false),
+                sink,
+                Box::new(move |c| {
+                    let _ = tx.send(c);
+                }),
+            )
             .unwrap();
         assert!(pid > 0);
-        let code = rx.recv_timeout(Duration::from_secs(10)).expect("exit trong 10s");
+        let code = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("exit trong 10s");
         assert_eq!(code, Some(0));
         // batcher flush async — chờ output tới
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -529,7 +586,10 @@ mod tests {
             if text.contains("ping") {
                 break;
             }
-            assert!(Instant::now() < deadline, "không thấy echo từ cat: {text:?}");
+            assert!(
+                Instant::now() < deadline,
+                "không thấy echo từ cat: {text:?}"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         mgr.kill(&id).unwrap();
@@ -555,12 +615,17 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Option<u32>>();
         // sh spawn sleep con → kill phải diệt cả hai (process group)
         let (id, pid) = mgr
-            .create(shell_request("sleep 300", false), sink, Box::new(move |c| {
-                let _ = tx.send(c);
-            }))
+            .create(
+                shell_request("sleep 300", false),
+                sink,
+                Box::new(move |c| {
+                    let _ = tx.send(c);
+                }),
+            )
             .unwrap();
         mgr.kill(&id).unwrap();
-        rx.recv_timeout(Duration::from_secs(10)).expect("child exit sau kill");
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("child exit sau kill");
         // group leader không còn sống
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         assert!(!alive, "pid {pid} vẫn sống sau kill");

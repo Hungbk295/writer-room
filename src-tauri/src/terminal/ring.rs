@@ -10,7 +10,11 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self { capacity, data: Vec::new(), trimmed: 0 }
+        Self {
+            capacity,
+            data: Vec::new(),
+            trimmed: 0,
+        }
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
@@ -18,7 +22,8 @@ impl RingBuffer {
             // chunk một mình đã vượt capacity → chỉ giữ phần đuôi
             self.trimmed += (self.data.len() + bytes.len() - self.capacity) as u64;
             self.data.clear();
-            self.data.extend_from_slice(&bytes[bytes.len() - self.capacity..]);
+            self.data
+                .extend_from_slice(&bytes[bytes.len() - self.capacity..]);
             return;
         }
         let overflow = (self.data.len() + bytes.len()).saturating_sub(self.capacity);
