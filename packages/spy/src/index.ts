@@ -30,6 +30,14 @@ import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
+import { SpyRoleService } from './channel-intelligence/roles.ts';
+import type {
+  FollowChannelInput,
+  FollowChannelResult,
+  StarChannelResult,
+  UnfollowChannelResult,
+  WatchlistChannelsResult,
+} from './channel-intelligence/index.ts';
 import {
   samplingPolicySchema,
   spyConfigSchema,
@@ -60,6 +68,7 @@ export * from './topic.ts';
 export * from './faceless.ts';
 export * from './learn-value.ts';
 export * from './corpus-intelligence.ts';
+export * from './channel-intelligence/index.ts';
 export * from './loop/types.ts';
 export * from './loop/planner.ts';
 export * from './loop/report.ts';
@@ -206,6 +215,8 @@ export class SpyService {
   readonly loop: LoopRunner;
   /** P0 evidence/review plane; does not reuse legacy Auto-Loop candidate state. */
   readonly corpus: CorpusIntelligenceService;
+  /** C1 local bookmark/follow role boundary; storage-only by construction. */
+  readonly roles: SpyRoleService;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
@@ -227,6 +238,7 @@ export class SpyService {
     this.artifacts = new ArtifactStore(join(this.dataRoot, 'artifacts'));
     this.store = new SpyStore(join(this.dataRoot, 'spy.sqlite'));
     this.operations = new OperationManager(this.store);
+    this.roles = new SpyRoleService(this.store);
     // Desktop installers bundle yt-dlp next to the daemon.  Development keeps
     // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
     this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
@@ -1265,6 +1277,42 @@ export class SpyService {
       notFollowing: unfollow.filter((id) => !removed.includes(id)),
       competitors: this.store.listCompetitors(input.ownerChannelId),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // C1 public channel roles. These facade methods intentionally delegate only
+  // to `roles`; they do not touch acquisition, providers, or operations.
+  // ---------------------------------------------------------------------------
+
+  starChannel(youtubeUcId: string, note?: string): StarChannelResult {
+    return this.roles.star(youtubeUcId, note);
+  }
+
+  unstarChannel(youtubeUcId: string): StarChannelResult {
+    return this.roles.unstar(youtubeUcId);
+  }
+
+  listWatchlistChannels(
+    watchlistId = 'local-desktop',
+    segment: 'saved' | 'followed' = 'saved',
+  ): WatchlistChannelsResult {
+    return this.roles.list(watchlistId, segment);
+  }
+
+  followChannel(youtubeUcId: string, input: FollowChannelInput = {}): FollowChannelResult {
+    return this.roles.follow(youtubeUcId, input);
+  }
+
+  pauseChannel(youtubeUcId: string, input: FollowChannelInput = {}): FollowChannelResult {
+    return this.roles.pause(youtubeUcId, input);
+  }
+
+  updateFollowedChannel(youtubeUcId: string, input: FollowChannelInput = {}): FollowChannelResult {
+    return this.roles.patch(youtubeUcId, input);
+  }
+
+  unfollowChannel(youtubeUcId: string, watchlistId = 'local-desktop'): UnfollowChannelResult {
+    return this.roles.unfollow(youtubeUcId, watchlistId);
   }
 
   listChannelVideos(query: unknown) {

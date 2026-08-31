@@ -17,6 +17,7 @@ import {
   type P0RecommendationObservation,
   type P0Report,
   type P0SemanticAnalysisRun,
+  type FollowChannelInput,
 } from '@writer-room/spy';
 import { acquireLock, releaseLock } from './lock.ts';
 import {
@@ -353,6 +354,38 @@ function decodeP0PathId(value: string): string {
   }
 }
 
+function decodeSpyRolePathId(value: string, label: string): string {
+  try {
+    const decoded = decodeURIComponent(value);
+    if (!decoded) throw new Error('empty');
+    return decoded;
+  } catch {
+    throw new AppError('invalid_input', `${label} route không hợp lệ`);
+  }
+}
+
+function c1FollowInput(body: Record<string, unknown>, watchlistId: string): FollowChannelInput {
+  if (Object.hasOwn(body, 'note') && typeof body['note'] !== 'string') {
+    throw new AppError('invalid_input', 'note phải là chuỗi');
+  }
+  if (Object.hasOwn(body, 'cadence') && body['cadence'] !== 'daily' && body['cadence'] !== 'manual') {
+    throw new AppError('invalid_input', 'cadence phải là daily hoặc manual');
+  }
+  if (Object.hasOwn(body, 'watchStatus') && body['watchStatus'] !== 'followed' && body['watchStatus'] !== 'paused') {
+    throw new AppError('invalid_input', 'watchStatus phải là followed hoặc paused');
+  }
+  return {
+    watchlistId,
+    note: typeof body['note'] === 'string' ? body['note'] : undefined,
+    cadence: body['cadence'] === 'daily' || body['cadence'] === 'manual' ? body['cadence'] : undefined,
+    watchStatus: body['watchStatus'] === 'followed' || body['watchStatus'] === 'paused' ? body['watchStatus'] : undefined,
+  };
+}
+
+function isSpyRolePath(pathname: string): boolean {
+  return pathname.startsWith('/api/spy/channels/') || pathname.startsWith('/api/spy/watchlists/');
+}
+
 /** Do not reflect provider transport, credentials, URLs, or raw model output through the P0 API. */
 function p0PublicErrorMessage(errorValue: AppError): string {
   if (errorValue.code === 'provider_error' || errorValue.code === 'internal') {
@@ -530,6 +563,46 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const info = generalPackMcp?.info();
         if (!info) return error('General Pack MCP đang tắt', 404);
         return json(info);
+      }
+
+      // ── Spy C1 — saved research and local public watchlist ─────────────
+      // This surface is deliberately storage-only. It never starts a Spy
+      // operation and is kept separate from the read-only Spy MCP allowlist.
+      const spyRoleChannelsMatch = /^\/api\/spy\/watchlists\/([^/]+)\/channels$/.exec(pathname);
+      if (method === 'GET' && spyRoleChannelsMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const watchlistId = decodeSpyRolePathId(spyRoleChannelsMatch[1]!, 'watchlistId');
+        const rawSegment = url.searchParams.get('segment') ?? 'saved';
+        if (rawSegment !== 'saved' && rawSegment !== 'followed') {
+          throw new AppError('invalid_input', 'segment phải là saved hoặc followed');
+        }
+        return json(spy.listWatchlistChannels(watchlistId, rawSegment));
+      }
+
+      const spyStarMatch = /^\/api\/spy\/channels\/([^/]+)\/star$/.exec(pathname);
+      if ((method === 'PUT' || method === 'DELETE') && spyStarMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const youtubeUcId = decodeSpyRolePathId(spyStarMatch[1]!, 'youtubeUcId');
+        if (method === 'PUT') {
+          const body = await readBody(req);
+          if (Object.hasOwn(body, 'note') && typeof body['note'] !== 'string') {
+            throw new AppError('invalid_input', 'note phải là chuỗi');
+          }
+          return json(spy.starChannel(youtubeUcId, typeof body['note'] === 'string' ? body['note'] : undefined));
+        }
+        return json(spy.unstarChannel(youtubeUcId));
+      }
+
+      const spyCompetitorMatch = /^\/api\/spy\/watchlists\/([^/]+)\/competitors\/([^/]+)$/.exec(pathname);
+      if ((method === 'PUT' || method === 'PATCH' || method === 'DELETE') && spyCompetitorMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const watchlistId = decodeSpyRolePathId(spyCompetitorMatch[1]!, 'watchlistId');
+        const youtubeUcId = decodeSpyRolePathId(spyCompetitorMatch[2]!, 'youtubeUcId');
+        if (method === 'DELETE') return json(spy.unfollowChannel(youtubeUcId, watchlistId));
+        const body = await readBody(req);
+        const input = c1FollowInput(body, watchlistId);
+        if (method === 'PATCH') return json(spy.updateFollowedChannel(youtubeUcId, input));
+        return json(spy.followChannel(youtubeUcId, input));
       }
 
       // ── In-app completion notifications ────────────────────────────────
@@ -2434,6 +2507,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             : err.code === 'conflict' ? 409
               : err.code === 'capability_missing' ? 503
                 : err.code === 'quota_exceeded' ? 413
+                  : isSpyRolePath(pathname) && err.code === 'invalid_input' ? 422
                   : 400;
         return error(pathname.startsWith('/api/spy/p0/') ? p0PublicErrorMessage(err) : err.message, status);
       }

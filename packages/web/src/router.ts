@@ -2,6 +2,8 @@ export type Route =
   | { name: 'home' }
   | { name: 'spy' }
   | { name: 'spy-loop'; topic?: string }
+  | { name: 'spy-channels'; segment: 'saved' | 'followed' }
+  | { name: 'spy-channel'; youtubeUcId: string }
   | { name: 'spy-run'; id: string }
   | { name: 'writer' }
   | { name: 'writer-pack'; id: string }
@@ -29,6 +31,17 @@ export function parseRoute(hash = location.hash): Route {
   // spy-loop MUST be matched before spy-run (#/spy/<x> would otherwise steal it)
   if (parts[0] === 'spy' && parts[1] === 'loop') {
     return { name: 'spy-loop', topic: query.get('topic') ?? undefined };
+  }
+  // Saved/followed/channel routes MUST precede the legacy #/spy/:id matcher.
+  if (parts[0] === 'spy' && (parts[1] === 'saved' || parts[1] === 'followed')) {
+    return { name: 'spy-channels', segment: parts[1] };
+  }
+  if (parts[0] === 'spy' && parts[1] === 'channel' && parts[2]) {
+    return { name: 'spy-channel', youtubeUcId: decodeURIComponent(parts[2]!) };
+  }
+  // Keep a readable alias for callers that group list routes under /channels.
+  if (parts[0] === 'spy' && parts[1] === 'channels' && (parts[2] === 'saved' || parts[2] === 'followed')) {
+    return { name: 'spy-channels', segment: parts[2] };
   }
   if (parts[0] === 'spy' && parts[1]) return { name: 'spy-run', id: parts[1]! };
   if (parts[0] === 'spy') return { name: 'spy' };
@@ -71,6 +84,8 @@ export function href(route: Route): string {
     case 'home': return '#/';
     case 'spy': return '#/spy';
     case 'spy-loop': return route.topic ? `#/spy/loop?topic=${encodeURIComponent(route.topic)}` : '#/spy/loop';
+    case 'spy-channels': return `#/spy/${route.segment}`;
+    case 'spy-channel': return `#/spy/channel/${encodeURIComponent(route.youtubeUcId)}`;
     case 'spy-run': return `#/spy/${route.id}`;
     case 'writer': return '#/writer';
     case 'writer-pack': return `#/writer/${route.id}`;

@@ -15,7 +15,7 @@ import type { ArtifactStore } from './artifacts.ts';
 import { youtubeThumbnailUrl, type YouTubeDataApiPort } from './adapters/data-api.ts';
 import type { YoutubePort, YoutubeVideoInfo } from './adapters/ytdlp.ts';
 import type { OperationManager } from './operations.ts';
-import type { SpyStore } from './store.ts';
+import { isResolvedYoutubeUcId, type SpyStore } from './store.ts';
 import {
   channelSpyInputSchema,
   videoSpyInputSchema,
@@ -466,6 +466,12 @@ export class AcquisitionService {
   private async enrichChannel(scopeId: string, videos: readonly YoutubeVideoInfo[]): Promise<void> {
     const title = videos[0]?.channelTitle || scopeId;
     const youtubeChannelId = videos.find((v) => v.channelId)?.channelId ?? null;
+    const scopeUcId = /(?:^|[/=:])(UC[A-Za-z0-9_-]{22})(?=$|[/?#])/i.exec(scopeId)?.[1] ?? null;
+    const youtubeUcId = youtubeChannelId && isResolvedYoutubeUcId(youtubeChannelId)
+      ? youtubeChannelId
+      : scopeUcId && isResolvedYoutubeUcId(scopeUcId) ? scopeUcId : null;
+    const handleMatch = /(?:youtube:channel:)?\/@([^/]+)/i.exec(scopeId);
+    const handle = handleMatch?.[1] ? `@${handleMatch[1]}` : null;
     let subscriberCount: number | null = null;
     let videoCount: number | null = null;
     let totalViewCount: number | null = null;
@@ -494,6 +500,8 @@ export class AcquisitionService {
     }
     this.store.upsertChannel({
       channelId: scopeId,
+      youtubeUcId,
+      handle,
       title,
       subscriberCount,
       videoCount,

@@ -138,6 +138,27 @@ export function SpyPage() {
         <a class="btn secondary" href={href({ name: 'spy-loop' })}>Auto-Loop →</a>
       </div>
 
+      <section class="panel spy-intelligence-panel" aria-labelledby="spy-intelligence-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="spy-intelligence-heading">Public channel intelligence</h2>
+            <p class="muted">Lưu kênh để nghiên cứu, rồi theo dõi đối thủ bằng watch list local.</p>
+          </div>
+        </div>
+        <div class="spy-entry-grid">
+          <a class="spy-entry-card" href={href({ name: 'spy-channels', segment: 'saved' })}>
+            <span class="eyebrow">Saved research</span>
+            <strong>Đã lưu nghiên cứu →</strong>
+            <span class="muted">Star là bookmark local, không kích hoạt collector.</span>
+          </a>
+          <a class="spy-entry-card" href={href({ name: 'spy-channels', segment: 'followed' })}>
+            <span class="eyebrow">Followed competitors</span>
+            <strong>Đối thủ đang theo dõi →</strong>
+            <span class="muted">Follow, pause hoặc unfollow trong local-desktop watch list.</span>
+          </a>
+        </div>
+      </section>
+
       <form class="panel stack" onSubmit={start} style={{ marginTop: '1.25rem' }}>
         <div class="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
           <button

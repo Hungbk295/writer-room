@@ -349,6 +349,10 @@ export interface StartedOp {
 export interface ChannelRecord {
   id: string;
   channelId: string;
+  /** Stable YouTube UC identity, when the existing source has been resolved. */
+  youtubeUcId: string | null;
+  /** Public handle alias, if the source was entered through an @handle. */
+  handle: string | null;
   title: string;
   subscriberCount: number | null;
   videoCount: number | null;

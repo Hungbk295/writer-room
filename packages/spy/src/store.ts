@@ -15,8 +15,14 @@ import type {
   VideoSnapshot,
   VideoTranscript,
 } from './schema.ts';
+import type {
+  PublicCompetitorRecord,
+  PublicWatchCadence,
+  PublicWatchStatus,
+  SavedChannelRecord,
+} from './channel-intelligence/types.ts';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -67,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_spy_runs_source
 CREATE TABLE IF NOT EXISTS channels (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL UNIQUE,
+  youtube_uc_id TEXT,
+  handle TEXT,
   title TEXT NOT NULL,
   subscriber_count INTEGER,
   video_count INTEGER,
@@ -212,11 +220,24 @@ CREATE TABLE IF NOT EXISTS competitors (
   owner_channel_id TEXT NOT NULL,
   competitor_channel_id TEXT NOT NULL,
   note TEXT,
+  watch_status TEXT NOT NULL DEFAULT 'followed' CHECK(watch_status IN ('followed','paused')),
+  cadence TEXT NOT NULL DEFAULT 'daily' CHECK(cadence IN ('daily','manual')),
+  last_observed_at TEXT,
+  last_observation_status TEXT,
   created_at TEXT NOT NULL,
   UNIQUE(owner_channel_id, competitor_channel_id)
 );
 CREATE INDEX IF NOT EXISTS idx_competitors_owner
   ON competitors(owner_channel_id, created_at);
+
+-- v7: local saved research. This is deliberately independent from competitors:
+-- starring never creates a watch relation or a provider operation.
+CREATE TABLE IF NOT EXISTS saved_channels (
+  youtube_uc_id TEXT PRIMARY KEY,
+  starred_at TEXT NOT NULL,
+  note TEXT,
+  updated_at TEXT NOT NULL
+);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
   text,
@@ -550,6 +571,29 @@ ALTER TABLE candidate_channels ADD COLUMN uploads_playlist_id TEXT;
 `;
 
 /**
+ * v6 -> v7 is intentionally explicit.  The v6 schema's IF NOT EXISTS DDL can
+ * create the new objects for a fresh database, but it cannot alter an existing
+ * v6 table.  The constructor below runs these additions in one transaction and
+ * only advances schema_version after every change succeeds.
+ */
+const MIGRATION_6_TO_7 = {
+  channelsYoutubeUcId: 'ALTER TABLE channels ADD COLUMN youtube_uc_id TEXT',
+  channelsHandle: 'ALTER TABLE channels ADD COLUMN handle TEXT',
+  competitorsWatchStatus: "ALTER TABLE competitors ADD COLUMN watch_status TEXT NOT NULL DEFAULT 'followed' CHECK(watch_status IN ('followed','paused'))",
+  competitorsCadence: "ALTER TABLE competitors ADD COLUMN cadence TEXT NOT NULL DEFAULT 'daily' CHECK(cadence IN ('daily','manual'))",
+  competitorsLastObservedAt: 'ALTER TABLE competitors ADD COLUMN last_observed_at TEXT',
+  competitorsLastObservationStatus: 'ALTER TABLE competitors ADD COLUMN last_observation_status TEXT',
+  savedChannels: `CREATE TABLE IF NOT EXISTS saved_channels (
+    youtube_uc_id TEXT PRIMARY KEY,
+    starred_at TEXT NOT NULL,
+    note TEXT,
+    updated_at TEXT NOT NULL
+  )`,
+  savedChannelsIndex: 'CREATE INDEX IF NOT EXISTS idx_saved_channels_updated ON saved_channels(updated_at DESC)',
+  channelsAliasIndex: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_youtube_uc_id ON channels(youtube_uc_id) WHERE youtube_uc_id IS NOT NULL',
+} as const;
+
+/**
  * Cột thêm vào bảng v5 sau khi v5 đã ra đời (DB dev có thể đã ở version 5 mà
  * thiếu cột). Chạy ALTER idempotent mỗi lần mở DB — rẻ và không cần bump version.
  */
@@ -856,6 +900,46 @@ function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
 }
 
+/** YouTube channel IDs are `UC` followed by 22 URL-safe characters. */
+export const YOUTUBE_UC_ID_PATTERN = /^UC[A-Za-z0-9_-]{22}$/;
+
+export function isResolvedYoutubeUcId(value: unknown): value is string {
+  return typeof value === 'string' && YOUTUBE_UC_ID_PATTERN.test(value);
+}
+
+function handleAliasFromChannelId(value: string): string | null {
+  const match = /(?:^|:)\/@([^/]+)$/i.exec(value) ?? /youtube\.com\/@([^/]+)/i.exec(value);
+  return match?.[1] ? `@${match[1]}` : null;
+}
+
+function channelFromRow(row: Row): ChannelRecord {
+  return {
+    id: String(row['id']),
+    channelId: String(row['channel_id']),
+    youtubeUcId: nullableString(row['youtube_uc_id']),
+    handle: nullableString(row['handle']),
+    title: String(row['title']),
+    subscriberCount: row['subscriber_count'] === null ? null : Number(row['subscriber_count']),
+    videoCount: row['video_count'] === null ? null : Number(row['video_count']),
+    totalViewCount: row['total_view_count'] === null ? null : Number(row['total_view_count']),
+    fetchedAt: String(row['fetched_at']),
+  };
+}
+
+function publicCompetitorFromRow(row: Row): PublicCompetitorRecord {
+  return {
+    id: String(row['id']),
+    watchlistId: String(row['owner_channel_id']),
+    competitorChannelId: String(row['competitor_channel_id']),
+    note: nullableString(row['note']),
+    watchStatus: String(row['watch_status'] ?? 'followed') as PublicWatchStatus,
+    cadence: String(row['cadence'] ?? 'daily') as PublicWatchCadence,
+    lastObservedAt: nullableString(row['last_observed_at']),
+    lastObservationStatus: nullableString(row['last_observation_status']),
+    createdAt: String(row['created_at']),
+  };
+}
+
 function artifactFromJson(value: unknown): ArtifactRef | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = parseJson<ArtifactRef>(value);
@@ -1081,6 +1165,9 @@ export class SpyStore {
           // Cột đã tồn tại — bỏ qua.
         }
       }
+      if (version < 7) {
+        this.migrate6To7();
+      }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
       }
@@ -1112,6 +1199,66 @@ export class SpyStore {
       } catch {
         // Cột đã tồn tại — bỏ qua.
       }
+    }
+    // Fresh v7 databases already have the column; migrated v6 databases have
+    // it after migrate6To7. Keep index creation after the explicit migration
+    // so opening a v6 table never references a column that does not exist yet.
+    this.database.exec(MIGRATION_6_TO_7.channelsAliasIndex);
+    this.database.exec(MIGRATION_6_TO_7.savedChannelsIndex);
+  }
+
+  /** Apply the C1 additions to an already-created v6 database. */
+  private migrate6To7(): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      // Each ALTER is explicit and independently idempotent so a partially
+      // upgraded development database can be repaired without changing old
+      // rows or columns.
+      for (const statement of [
+        MIGRATION_6_TO_7.channelsYoutubeUcId,
+        MIGRATION_6_TO_7.channelsHandle,
+        MIGRATION_6_TO_7.competitorsWatchStatus,
+        MIGRATION_6_TO_7.competitorsCadence,
+        MIGRATION_6_TO_7.competitorsLastObservedAt,
+        MIGRATION_6_TO_7.competitorsLastObservationStatus,
+      ]) {
+        try {
+          this.database.exec(statement);
+        } catch (error) {
+          // SQLite has no ADD COLUMN IF NOT EXISTS.  Only ignore the known
+          // already-present-column case; another schema error must abort the
+          // migration and leave schema_version at v6.
+          if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+        }
+      }
+      this.database.exec(MIGRATION_6_TO_7.savedChannels);
+
+      // Preserve the old canonical channel_id while making existing stable UC
+      // rows addressable by the new role API. Handle-based/source identities
+      // remain aliases until a later resolved run supplies a UC ID.
+      const channels = this.database.prepare(
+        'SELECT channel_id, youtube_uc_id, handle FROM channels',
+      ).all() as Row[];
+      const updateAlias = this.database.prepare(
+        'UPDATE channels SET youtube_uc_id=?, handle=? WHERE channel_id=?',
+      );
+      for (const row of channels) {
+        const channelId = String(row['channel_id']);
+        const existingUcId = nullableString(row['youtube_uc_id']);
+        const existingHandle = nullableString(row['handle']);
+        const ucId = existingUcId ?? (isResolvedYoutubeUcId(channelId) ? channelId : null);
+        const handle = existingHandle ?? handleAliasFromChannelId(channelId);
+        if (ucId !== existingUcId || handle !== existingHandle) {
+          updateAlias.run(ucId, handle, channelId);
+        }
+      }
+      this.database.exec(MIGRATION_6_TO_7.channelsAliasIndex);
+      this.database.exec(MIGRATION_6_TO_7.savedChannelsIndex);
+      this.database.prepare('UPDATE schema_version SET version=?').run(7);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw error;
     }
   }
 
@@ -1308,12 +1455,45 @@ export class SpyStore {
     return true;
   }
 
-  upsertChannel(input: Omit<ChannelRecord, 'id'> & { id?: string }): ChannelRecord {
+  upsertChannel(
+    input: Omit<ChannelRecord, 'id' | 'youtubeUcId' | 'handle'>
+      & Partial<Pick<ChannelRecord, 'youtubeUcId' | 'handle'>>
+      & { id?: string },
+  ): ChannelRecord {
     const id = input.id ?? randomUUID();
+    const youtubeUcId = input.youtubeUcId
+      ?? (isResolvedYoutubeUcId(input.channelId) ? input.channelId : null);
+    const handle = input.handle ?? handleAliasFromChannelId(input.channelId);
+
+    // A resolved UC can arrive through a different legacy source identity
+    // (for example `youtube:channel:/@name`). Keep the old row and enrich the
+    // already-known row instead of creating a second channel record.
+    if (youtubeUcId) {
+      const existingAlias = this.database.prepare(
+        'SELECT channel_id FROM channels WHERE youtube_uc_id=?',
+      ).get(youtubeUcId) as Row | undefined;
+      if (existingAlias && String(existingAlias['channel_id']) !== input.channelId) {
+        this.database.prepare(
+          `UPDATE channels SET title=?, subscriber_count=?, video_count=?, total_view_count=?, fetched_at=?, handle=COALESCE(?, handle)
+           WHERE youtube_uc_id=?`,
+        ).run(
+          input.title,
+          input.subscriberCount,
+          input.videoCount,
+          input.totalViewCount,
+          input.fetchedAt,
+          handle,
+          youtubeUcId,
+        );
+        return this.getChannelByYoutubeUcId(youtubeUcId)!;
+      }
+    }
     this.database.prepare(
-      `INSERT INTO channels (id, channel_id, title, subscriber_count, video_count, total_view_count, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO channels (id, channel_id, youtube_uc_id, handle, title, subscriber_count, video_count, total_view_count, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel_id) DO UPDATE SET
+         youtube_uc_id=COALESCE(excluded.youtube_uc_id, channels.youtube_uc_id),
+         handle=COALESCE(excluded.handle, channels.handle),
          title=excluded.title,
          subscriber_count=excluded.subscriber_count,
          video_count=excluded.video_count,
@@ -1322,6 +1502,8 @@ export class SpyStore {
     ).run(
       id,
       input.channelId,
+      youtubeUcId,
+      handle,
       input.title,
       input.subscriberCount,
       input.videoCount,
@@ -1332,30 +1514,21 @@ export class SpyStore {
   }
 
   getChannel(channelId: string): ChannelRecord | null {
-    const row = this.database.prepare('SELECT * FROM channels WHERE channel_id=?').get(channelId) as Row | undefined;
+    const row = this.database.prepare(
+      'SELECT * FROM channels WHERE channel_id=? OR youtube_uc_id=? ORDER BY CASE WHEN channel_id=? THEN 0 ELSE 1 END LIMIT 1',
+    ).get(channelId, channelId, channelId) as Row | undefined;
     if (!row) return null;
-    return {
-      id: String(row['id']),
-      channelId: String(row['channel_id']),
-      title: String(row['title']),
-      subscriberCount: row['subscriber_count'] === null ? null : Number(row['subscriber_count']),
-      videoCount: row['video_count'] === null ? null : Number(row['video_count']),
-      totalViewCount: row['total_view_count'] === null ? null : Number(row['total_view_count']),
-      fetchedAt: String(row['fetched_at']),
-    };
+    return channelFromRow(row);
+  }
+
+  getChannelByYoutubeUcId(youtubeUcId: string): ChannelRecord | null {
+    const row = this.database.prepare('SELECT * FROM channels WHERE youtube_uc_id=?').get(youtubeUcId) as Row | undefined;
+    return row ? channelFromRow(row) : null;
   }
 
   listChannels(limit = 100): ChannelRecord[] {
     const rows = this.database.prepare('SELECT * FROM channels ORDER BY fetched_at DESC LIMIT ?').all(limit) as Row[];
-    return rows.map((row) => ({
-      id: String(row['id']),
-      channelId: String(row['channel_id']),
-      title: String(row['title']),
-      subscriberCount: row['subscriber_count'] === null ? null : Number(row['subscriber_count']),
-      videoCount: row['video_count'] === null ? null : Number(row['video_count']),
-      totalViewCount: row['total_view_count'] === null ? null : Number(row['total_view_count']),
-      fetchedAt: String(row['fetched_at']),
-    }));
+    return rows.map(channelFromRow);
   }
 
   insertVideoSnapshot(snapshot: VideoSnapshot): void {
@@ -2070,6 +2243,144 @@ export class SpyStore {
       `DELETE FROM competitors WHERE owner_channel_id=? AND competitor_channel_id=?`,
     ).run(ownerChannelId, competitorChannelId);
     return Number(result.changes) > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v7 — public saved/follow roles. These methods are storage-only: callers
+  // must not pass a provider or OperationManager into this part of the store.
+  // ---------------------------------------------------------------------------
+
+  getSavedChannel(youtubeUcId: string): SavedChannelRecord | null {
+    const row = this.database.prepare(
+      'SELECT youtube_uc_id, starred_at, note, updated_at FROM saved_channels WHERE youtube_uc_id=?',
+    ).get(youtubeUcId) as Row | undefined;
+    if (!row) return null;
+    return {
+      youtubeUcId: String(row['youtube_uc_id']),
+      starredAt: String(row['starred_at']),
+      note: nullableString(row['note']),
+      updatedAt: String(row['updated_at']),
+    };
+  }
+
+  listSavedChannels(): SavedChannelRecord[] {
+    const rows = this.database.prepare(
+      'SELECT youtube_uc_id, starred_at, note, updated_at FROM saved_channels ORDER BY starred_at DESC, youtube_uc_id ASC',
+    ).all() as Row[];
+    return rows.map((row) => ({
+      youtubeUcId: String(row['youtube_uc_id']),
+      starredAt: String(row['starred_at']),
+      note: nullableString(row['note']),
+      updatedAt: String(row['updated_at']),
+    }));
+  }
+
+  saveChannel(youtubeUcId: string, note?: string): SavedChannelRecord {
+    const now = nowIso();
+    this.database.prepare(
+      `INSERT INTO saved_channels (youtube_uc_id, starred_at, note, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(youtube_uc_id) DO UPDATE SET
+         note=COALESCE(excluded.note, saved_channels.note),
+         updated_at=excluded.updated_at`,
+    ).run(youtubeUcId, now, note ?? null, now);
+    return this.getSavedChannel(youtubeUcId)!;
+  }
+
+  unsaveChannel(youtubeUcId: string): boolean {
+    const result = this.database.prepare(
+      'DELETE FROM saved_channels WHERE youtube_uc_id=?',
+    ).run(youtubeUcId);
+    return Number(result.changes) > 0;
+  }
+
+  getPublicCompetitor(ownerChannelId: string, competitorChannelId: string): PublicCompetitorRecord | null {
+    const row = this.database.prepare(
+      'SELECT * FROM competitors WHERE owner_channel_id=? AND competitor_channel_id=?',
+    ).get(ownerChannelId, competitorChannelId) as Row | undefined;
+    return row ? publicCompetitorFromRow(row) : null;
+  }
+
+  listPublicCompetitors(ownerChannelId: string): PublicCompetitorRecord[] {
+    const rows = this.database.prepare(
+      `SELECT * FROM competitors WHERE owner_channel_id=?
+       ORDER BY created_at ASC, competitor_channel_id ASC`,
+    ).all(ownerChannelId) as Row[];
+    return rows.map(publicCompetitorFromRow);
+  }
+
+  /** Create or update the canonical competitors row used by the local UI. */
+  upsertPublicCompetitor(input: {
+    ownerChannelId: string;
+    competitorChannelId: string;
+    note?: string;
+    cadence?: PublicWatchCadence;
+    watchStatus?: PublicWatchStatus;
+  }): PublicCompetitorRecord {
+    const current = this.getPublicCompetitor(input.ownerChannelId, input.competitorChannelId);
+    if (!current) {
+      this.database.prepare(
+        `INSERT INTO competitors
+         (id, owner_channel_id, competitor_channel_id, note, watch_status, cadence, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        randomUUID(),
+        input.ownerChannelId,
+        input.competitorChannelId,
+        input.note ?? null,
+        input.watchStatus ?? 'followed',
+        input.cadence ?? 'daily',
+        nowIso(),
+      );
+    } else {
+      this.database.prepare(
+        `UPDATE competitors SET
+           note=?, watch_status=?, cadence=?
+         WHERE owner_channel_id=? AND competitor_channel_id=?`,
+      ).run(
+        input.note === undefined ? current.note : input.note,
+        input.watchStatus ?? current.watchStatus,
+        input.cadence ?? current.cadence,
+        input.ownerChannelId,
+        input.competitorChannelId,
+      );
+    }
+    return this.getPublicCompetitor(input.ownerChannelId, input.competitorChannelId)!;
+  }
+
+  updatePublicCompetitor(
+    ownerChannelId: string,
+    competitorChannelId: string,
+    patch: { note?: string; cadence?: PublicWatchCadence; watchStatus?: PublicWatchStatus },
+  ): PublicCompetitorRecord {
+    const current = this.getPublicCompetitor(ownerChannelId, competitorChannelId);
+    if (!current) throw new AppError('not_found', 'Kênh chưa được theo dõi trong watchlist');
+    return this.upsertPublicCompetitor({
+      ownerChannelId,
+      competitorChannelId,
+      note: patch.note === undefined ? current.note ?? undefined : patch.note,
+      cadence: patch.cadence ?? current.cadence,
+      watchStatus: patch.watchStatus ?? current.watchStatus,
+    });
+  }
+
+  removePublicCompetitor(ownerChannelId: string, competitorChannelId: string): boolean {
+    return this.removeCompetitor(ownerChannelId, competitorChannelId);
+  }
+
+  markPublicCompetitorObserved(
+    ownerChannelId: string,
+    competitorChannelId: string,
+    observedAt: string,
+    status?: string | null,
+  ): PublicCompetitorRecord {
+    const current = this.getPublicCompetitor(ownerChannelId, competitorChannelId);
+    if (!current) throw new AppError('not_found', 'Kênh chưa được theo dõi trong watchlist');
+    this.database.prepare(
+      `UPDATE competitors SET last_observed_at=?, last_observation_status=?
+       WHERE owner_channel_id=? AND competitor_channel_id=?`,
+    ).run(observedAt, status ?? null, ownerChannelId, competitorChannelId);
+    return this.getPublicCompetitor(ownerChannelId, competitorChannelId)!;
   }
 
   getLatestProfile(scope: string, scopeId: string, kind: string): {

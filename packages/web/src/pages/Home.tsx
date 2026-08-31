@@ -52,7 +52,7 @@ export function TopNav({ route, writerCount = 0 }: { route: Route; writerCount?:
       </a>
       <nav class="nav" aria-label="Điều hướng chính">
         <a class={is(['home'])} href={href({ name: 'home' })}>Home</a>
-        <a class={is(['spy', 'spy-run'])} href={href({ name: 'spy' })}>Spy</a>
+        <a class={is(['spy', 'spy-run', 'spy-channels', 'spy-channel'])} href={href({ name: 'spy' })}>Spy</a>
         <a class={is(['spy-loop'])} href={href({ name: 'spy-loop' })}>Loop</a>
         <a class={is(['writer', 'writer-pack'])} href={href({ name: 'writer' })}>
           Source Packs

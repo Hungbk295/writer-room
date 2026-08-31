@@ -103,6 +103,57 @@ export interface SpyRunSummary {
   displayTitle?: string;
   /** Present for standalone video runs. */
   thumbnailUrl?: string | null;
+  /** Resolved public channel identity, when the run has one. */
+  youtubeUcId?: string | null;
+  /** Additive channel-intelligence summary returned for resolved channel runs. */
+  channelSummary?: SpyChannelSummary | null;
+}
+
+// ── Spy public channel intelligence (C1) ───────────────────────────────────
+
+export const LOCAL_DESKTOP_WATCHLIST_ID = 'local-desktop';
+
+export type SpyWatchlistSegment = 'saved' | 'followed';
+export type SpyWatchStatus = 'followed' | 'paused';
+export type SpyCadence = 'daily' | 'manual';
+
+/** Public channel identity plus additive saved/watch-list state. */
+export interface SpyChannelSummary {
+  youtubeUcId: string;
+  title: string | null;
+  handle: string | null;
+  canonicalUrl?: string | null;
+  thumbnailUrl?: string | null;
+  starred: boolean;
+  starredAt?: string | null;
+  watchStatus: SpyWatchStatus | null;
+  cadence: SpyCadence | null;
+  lastObservedAt: string | null;
+  nextDueAt?: string | null;
+  note: string | null;
+}
+
+/** Contract name used by the daemon's channel-intelligence read model. */
+export type ChannelSummary = SpyChannelSummary;
+
+export interface SpyWatchlistChannelsResponse {
+  channels: SpyChannelSummary[];
+  nextCursor: string | null;
+}
+
+export interface SpyStarChannelResponse {
+  youtubeUcId: string;
+  starred: boolean;
+  starredAt?: string;
+}
+
+export interface SpyCompetitorResponse {
+  watchlistId: string;
+  competitorChannelId: string;
+  watchStatus: SpyWatchStatus;
+  cadence: SpyCadence;
+  lastObservedAt: string | null;
+  nextDueAt?: string | null;
 }
 
 export interface SpyVideoRow {
@@ -1248,6 +1299,41 @@ export const api = {
   deleteSpyRun: (id: string) =>
     request<{ ok: boolean }>(`/api/spy/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getOperation: (id: string) => request<SpyOperation>(`/api/spy/operations/${id}`),
+
+  // ── Spy public channel intelligence (C1) ────────────────────────────────
+  listSpyWatchlistChannels: (watchlistId: string, segment: SpyWatchlistSegment) =>
+    request<SpyWatchlistChannelsResponse>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/channels?segment=${encodeURIComponent(segment)}`,
+    ),
+  starSpyChannel: (youtubeUcId: string, note?: string) =>
+    request<SpyStarChannelResponse>(
+      `/api/spy/channels/${encodeURIComponent(youtubeUcId)}/star`,
+      { method: 'PUT', body: JSON.stringify(note ? { note } : {}) },
+    ),
+  unstarSpyChannel: (youtubeUcId: string) =>
+    request<SpyStarChannelResponse>(
+      `/api/spy/channels/${encodeURIComponent(youtubeUcId)}/star`,
+      { method: 'DELETE' },
+    ),
+  followSpyChannel: (watchlistId: string, youtubeUcId: string, body?: {
+    note?: string;
+    cadence?: SpyCadence;
+    watchStatus?: 'followed';
+  }) =>
+    request<SpyCompetitorResponse>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}`,
+      { method: 'PUT', body: JSON.stringify(body ?? { cadence: 'daily', watchStatus: 'followed' }) },
+    ),
+  pauseSpyChannel: (watchlistId: string, youtubeUcId: string) =>
+    request<SpyCompetitorResponse>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}`,
+      { method: 'PATCH', body: JSON.stringify({ watchStatus: 'paused' }) },
+    ),
+  unfollowSpyChannel: (watchlistId: string, youtubeUcId: string) =>
+    request<SpyCompetitorResponse>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}`,
+      { method: 'DELETE' },
+    ),
 
   startChannel: (body: {
     url: string;

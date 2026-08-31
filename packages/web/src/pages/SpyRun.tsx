@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import {
   api,
   formatDuration,
+  type SpyRunSummary,
   type SpyVideoRow,
   type WriterPackSummary,
 } from '../api.ts';
@@ -22,10 +23,24 @@ function statusChipClass(status: string): string {
   return 'bad';
 }
 
+function stableChannelId(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const candidate = value?.trim() ?? '';
+    if (/^UC[A-Za-z0-9_-]{22}$/.test(candidate)) return candidate;
+    const embedded = /(?:^|[/=:])(UC[A-Za-z0-9_-]{22})(?=$|[/?#])/i.exec(candidate)?.[1];
+    if (embedded) return embedded;
+  }
+  return null;
+}
+
 export function SpyRunPage({ id }: { id: string }) {
   const [videos, setVideos] = useState<SpyVideoRow[]>([]);
   const [source, setSource] = useState('');
   const [status, setStatus] = useState('');
+  const [runKind, setRunKind] = useState<SpyRunSummary['kind']>('channel');
+  const [youtubeUcId, setYoutubeUcId] = useState<string | null>(null);
+  const [channelAction, setChannelAction] = useState<'star' | 'unstar' | null>(null);
+  const [starred, setStarred] = useState(false);
   const [packPreview, setPackPreview] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ wordCount: number; warnings: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +70,13 @@ export function SpyRunPage({ id }: { id: string }) {
     setVideos(data.videos);
     setSource(data.run.canonicalSource);
     setStatus(data.run.status);
+    setRunKind(data.run.kind);
+    setYoutubeUcId(
+      data.run.youtubeUcId
+      ?? data.run.channelSummary?.youtubeUcId
+      ?? stableChannelId(data.run.sourceIdentity, data.run.canonicalSource),
+    );
+    setStarred(data.run.channelSummary?.starred ?? false);
     setActiveId((prev) => {
       if (prev && data.videos.some((v) => v.id === prev)) return prev;
       return data.videos[0]?.id ?? null;
@@ -213,6 +235,27 @@ export function SpyRunPage({ id }: { id: string }) {
   }, [sorted, filterTab, searchQuery]);
 
   const active = videos.find((v) => v.id === activeId) ?? sorted[0] ?? null;
+  const completedChannelRun = runKind === 'channel' && status.toLowerCase() === 'completed';
+
+  const toggleStar = async () => {
+    if (!youtubeUcId) {
+      setError('Kênh chưa có stable UC… ID; hãy resolve channel trước khi Star.');
+      return;
+    }
+    const nextAction = starred ? 'unstar' : 'star';
+    setChannelAction(nextAction);
+    setError(null);
+    try {
+      const result = starred
+        ? await api.unstarSpyChannel(youtubeUcId)
+        : await api.starSpyChannel(youtubeUcId);
+      setStarred(result.starred);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChannelAction(null);
+    }
+  };
 
   return (
     <div class="spy-run-container">
@@ -230,7 +273,32 @@ export function SpyRunPage({ id }: { id: string }) {
           </div>
         </div>
 
-        <a class="btn secondary" href={href({ name: 'spy' })}>← Danh sách Spy</a>
+        <div class="row spy-run-header-actions">
+          {completedChannelRun && (
+            <div class="spy-run-star-control">
+              <button
+                class={starred ? 'btn secondary' : 'btn teal'}
+                type="button"
+                disabled={channelAction !== null || !youtubeUcId}
+                onClick={() => void toggleStar()}
+                title={youtubeUcId ? 'Lưu bookmark local, không kích hoạt public watch' : 'Cần stable UC… ID'}
+              >
+                {channelAction === 'star'
+                  ? 'Đang lưu…'
+                  : channelAction === 'unstar'
+                    ? 'Bỏ lưu…'
+                    : starred
+                      ? '★ Đã lưu nghiên cứu'
+                      : '☆ Star / Lưu nghiên cứu'}
+              </button>
+              {!youtubeUcId && <span class="muted small">Cần resolve stable UC… ID để lưu.</span>}
+            </div>
+          )}
+          {completedChannelRun && youtubeUcId && (
+            <a class="btn secondary" href={href({ name: 'spy-channel', youtubeUcId })}>Channel workspace →</a>
+          )}
+          <a class="btn secondary" href={href({ name: 'spy' })}>← Danh sách Spy</a>
+        </div>
       </div>
 
       <div class="toolbar-actions">

@@ -46,6 +46,7 @@ import {
 import { getChannelStyle } from './channel-style.ts';
 import { getGeneralPack } from './general-pack.ts';
 import { clearHookState } from './hook-board.ts';
+import { getPersonaPack } from './persona-pack.ts';
 import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
@@ -77,9 +78,9 @@ const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 
-const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1';
+const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1-lateral-gap-v1';
 const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1-stance-v1';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
@@ -173,6 +174,11 @@ export interface WriterRunV2 {
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
+  /** Content hash of `writer/persona-pack.md`, pinned at WRITE dispatch time —
+   * only when the file exists. Optional so every run written before persona
+   * packs existed still reads back unchanged; a `null`/undefined value means
+   * "this run's WRITE stage ran without a persona pack", not "unknown". */
+  personaPackHash?: string;
   /** Style contract (replaces the Profile pin). */
   formulaId: string;
   formulaVersion: number;
@@ -691,8 +697,19 @@ function buildStudyPrompt(opts: {
     '1. `coverageMap` — one entry per source video in the pack, saying what it actually',
     `   claims and from which angle. All ${opts.videoIds.length} pack video(s) must appear:`,
     `   ${opts.videoIds.join(', ') || '(see the pack)'}.`,
-    '2. `gap` — one thing none of those videos did, that this audience would want. This is',
-    '   the reason for the piece to exist. Not a new topic; a missing angle.',
+    '2. `gap` — a recombination, not a missing subject. This is the reason for the piece to',
+    '   exist. Not a new topic. Try at least 3 of these 4 provocations against the pack,',
+    '   then pick ONE as the spine:',
+    '   - CONTRADICTION: two facts already in the pack that clash when placed side by side',
+    '     (a stated goal vs a behavior, two numbers that don\'t reconcile).',
+    '   - ZOOM-IN: one ordinary word inside a familiar piece of advice that nobody has',
+    '     dissected — make that word carry the whole piece.',
+    '   - EXTREME-TEST: push a formula/rule from the pack to an extreme input and report',
+    '     where it breaks.',
+    '   - INVERSION: the question everyone asks, asked backwards.',
+    '   State in the `gap` value which provocation you chose and why. A topical gap ("no',
+    '   video covered X for young people") is a REJECTED gap — the gap must be a',
+    '   perspective move, not a missing subject.',
     '3. `outline` — the compression contract for the piece: `coreInsight`, one',
     '   `memoryAnchor`, 2-8 `progression` beats (each with `newInformation`,',
     '   `characterOrArgumentChange`, `visualAnchor`), `endingPayoff`, `cutList`.',
@@ -769,6 +786,7 @@ function buildWritePrompt(opts: {
   wordRange: { minWords: number; maxWords: number };
   forbiddenNames: string[];
   generalPackPath: string;
+  personaPackPath?: string;
   selectedHook?: SelectedHook;
 }): string {
   return [
@@ -811,10 +829,30 @@ function buildWritePrompt(opts: {
     '  refuses to do. **Never a source of facts.** Do not take a number, a case, a person',
     '  or a story from it. Entries tagged `[nhân vật hư cấu — KHÔNG bắt chước]` are',
     '  examples of a move NOT to copy.',
+    ...(opts.personaPackPath
+      ? [`- **Persona pack** (\`${opts.personaPackPath}\`): WHO the narrator is — see below.`]
+      : []),
     '- **factsLedger**: the ONLY facts you may state. Every number, name, place, study or',
     '  case in your script must trace to an entry here.',
     '- **outline**: the compression contract. Follow the beats; do not print field names.',
     '',
+    ...(opts.personaPackPath
+      ? [
+          '## Persona pack',
+          '',
+          `Read the WHOLE persona pack at \`input/persona-pack.md\` (\`${opts.personaPackPath}\`).`,
+          "It is the narrator's fixed identity — a stance registry (this channel's official",
+          'position on recurring money questions) plus a bank of adapted personal experiences.',
+          '',
+          '- Any personal opinion, life experience, acquaintance or anecdote in the script must',
+          '  trace to this file — pulled from it, not invented. If the brief calls for personal',
+          '  color the persona pack does not cover, leave it out rather than making it up.',
+          '- The stance registry is this channel\'s official position. Do not contradict it —',
+          '  if the persona pack says the emergency fund is 1 year, do not write "3 months".',
+          '- Adapt archetypes in your own words; do not paste them verbatim.',
+          '',
+        ]
+      : []),
     '## Hard rules',
     '',
     '1. **Facts only from `factsLedger`.** This is checked in code against the pack after',
@@ -837,6 +875,18 @@ function buildWritePrompt(opts: {
       opts.forbiddenNames.length ? opts.forbiddenNames.map((n) => `"${n}"`).join(', ') : '(none)'
     }.`,
     '5. Vietnamese prose. Do not mention, enumerate or visibly perform the rules.',
+    '',
+    '## Stance (được phép — không cần ledger)',
+    '',
+    'The narrator is a person with positions, not a neutral compiler. Opinions,',
+    'priorities and a declared school of thought are NOT fact claims and need no ledger',
+    'entry: "tôi thì tôi theo trường phái chắc chắn hơn", "với tôi thì không", naming the',
+    'industry-standard advice and then openly deviating from it as a personal policy — all',
+    'allowed and encouraged where the general pack shows the move.',
+    '',
+    'A stance must be OWNED ("tôi", "theo góc nhìn của tôi"), never disguised as an',
+    'objective fact ("nghiên cứu cho thấy…" is a fact claim → ledger). Use 2-3 stance',
+    'moments per piece, not every paragraph.',
     '',
     '## Before you write',
     '',
@@ -1399,6 +1449,9 @@ async function dispatchWrite(
   const pack = await getWriterPack(run.packId, deps.dataDir);
   const generalPack = await getGeneralPack(run.generalPackPath, deps.dataDir);
   const formula = await getFormula(run.formulaId, deps.dataDir);
+  // Optional and independent of the required packs above: absent is a normal,
+  // fully-supported state (pipeline runs exactly as it did before persona packs).
+  const personaPack = await getPersonaPack(deps.dataDir);
   if (!pack || !generalPack || !formula) {
     await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack, general pack or formula disappeared before WRITE');
     return;
@@ -1413,6 +1466,11 @@ async function dispatchWrite(
     );
     return;
   }
+
+  // Pinned like generalPackHash, but nothing fails if it changes mid-run — a
+  // persona pack is optional identity material, not a required contract.
+  run.personaPackHash = personaPack?.hash;
+  await saveWriterRunV2(run, deps.dataDir);
 
   const forbiddenNames = forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title });
   const wordRange = wordRangeFor(run);
@@ -1439,6 +1497,17 @@ async function dispatchWrite(
       role: 'HOW this channel makes moves. Never a source of facts, cases or numbers.',
       contentFile: 'input/general-pack.md',
     },
+    ...(personaPack
+      ? {
+          personaPack: {
+            path: personaPack.path,
+            hash: personaPack.hash,
+            role: "The narrator's fixed identity — stance registry + adapted experience "
+              + 'archetypes. Personal opinions/experiences must trace here.',
+            contentFile: 'input/persona-pack.md',
+          },
+        }
+      : {}),
     instructions: {
       facts: 'only from factsLedger; unsourced specifics must be openly hypothetical and unnamed',
       coinedLabels: 'at most 2, declared',
@@ -1472,6 +1541,7 @@ async function dispatchWrite(
       wordRange,
       forbiddenNames,
       generalPackPath: generalPack.path,
+      ...(personaPack ? { personaPackPath: personaPack.path } : {}),
       ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     })}${continuation
       ? buildWriteContinuationPrompt({ previousWordCount: continuation.previousWordCount, wordRange })
@@ -1479,14 +1549,18 @@ async function dispatchWrite(
     envelope,
     inputFiles: [
       { path: 'general-pack.md', content: generalPack.markdown },
+      ...(personaPack ? [{ path: 'persona-pack.md', content: personaPack.markdown }] : []),
       ...(stagedPreviousDraft ? [{ path: 'previous-draft.md', content: stagedPreviousDraft }] : []),
     ],
     inputHashes: [
       envelopeHash(envelope),
       contentHash(generalPack.markdown),
+      ...(personaPack ? [contentHash(personaPack.markdown)] : []),
       ...(stagedPreviousDraft ? [contentHash(stagedPreviousDraft)] : []),
     ],
-    promptVersion: WRITE_PROMPT_VERSION,
+    // Only when a persona pack is actually staged does the prompt text differ
+    // from the pre-persona-pack shape — so only then does the turn key change.
+    promptVersion: personaPack ? `${WRITE_PROMPT_VERSION}-persona-v1` : WRITE_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,
     // A timed-out CLI pane may be stuck mid-prompt. Keep the visible author pane

@@ -694,6 +694,69 @@ describe('Writer v2 — end to end', () => {
     expect(summaries[0]!.hasScript).toBe(true);
   });
 
+  test('WRITE runs exactly as before when no persona pack file exists (backward compatible)', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).exists())
+      .toBe(false);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { personaPack?: unknown };
+    expect(writeEnvelope.personaPack).toBeUndefined();
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .not.toContain('## Persona pack');
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.personaPackHash).toBeUndefined();
+  });
+
+  test('WRITE stages persona-pack.md and adds a Persona pack prompt section when the file exists', async () => {
+    const personaMarkdown = [
+      '# Persona Pack — Danh tính narrator kênh',
+      '<!-- version: 1 -->',
+      '',
+      '## 1. Bộ quan điểm (stance registry)',
+      '### 1.1 Quỹ dự phòng bao lâu',
+      '**Lập trường kênh**: 1 năm chi phí sinh hoạt.',
+    ].join('\n');
+    mkdirSync(join(dir, 'writer'), { recursive: true });
+    writeFileSync(join(dir, 'writer', 'persona-pack.md'), personaMarkdown, 'utf8');
+
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).text())
+      .toBe(personaMarkdown);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { personaPack: { contentFile: string; path: string; hash: string } };
+    expect(writeEnvelope.personaPack.contentFile).toBe('input/persona-pack.md');
+    expect(writeEnvelope.personaPack.path).toBe('persona-pack.md');
+    const prompt = await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text();
+    expect(prompt).toContain('## Persona pack');
+    expect(prompt).toContain('stance registry');
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.personaPackHash).toBe(writeEnvelope.personaPack.hash);
+  });
+
   test('a fabricated case never reaches DONE — it ends FAILED_GATE', async () => {
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);

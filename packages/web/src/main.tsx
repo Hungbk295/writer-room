@@ -6,6 +6,7 @@ import { Home, TopNav } from './pages/Home.tsx';
 import { SpyPage } from './pages/Spy.tsx';
 import { SpyLoopPage } from './pages/SpyLoop.tsx';
 import { SpyRunPage } from './pages/SpyRun.tsx';
+import { SpyChannelsPage, SpyChannelPage } from './pages/SpyChannel.tsx';
 import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
 import { WriterV2Page, WriterV2RunPage } from './pages/WriterV2.tsx';
 import { ChannelStylesPage } from './pages/ChannelStyles.tsx';
@@ -106,6 +107,12 @@ function App() {
       break;
     case 'spy-loop':
       page = <SpyLoopPage topic={route.topic} />;
+      break;
+    case 'spy-channels':
+      page = <SpyChannelsPage segment={route.segment} />;
+      break;
+    case 'spy-channel':
+      page = <SpyChannelPage youtubeUcId={route.youtubeUcId} />;
       break;
     case 'spy-run':
       page = <SpyRunPage id={route.id} />;

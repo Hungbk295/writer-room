@@ -958,6 +958,204 @@ textarea { min-height: 140px; resize: vertical; }
   max-width: 50ch;
 }
 
+/* ---------- Spy public channel intelligence (C1) ---------- */
+
+.spy-intelligence-panel {
+  margin-top: 1.25rem;
+}
+
+.spy-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.spy-entry-card {
+  display: grid;
+  gap: 0.4rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.spy-entry-card:hover,
+.spy-entry-card:focus-visible {
+  border-color: rgba(31, 138, 122, 0.45);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.spy-entry-card .eyebrow,
+.spy-channel-page .eyebrow {
+  color: var(--teal-deep);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.spy-channel-page {
+  display: grid;
+  gap: 1rem;
+  padding-bottom: 4rem;
+}
+
+.spy-channel-page .page-header {
+  margin-bottom: 0.25rem;
+}
+
+.spy-channel-list {
+  margin-top: 0.75rem;
+}
+
+.spy-channel-card {
+  gap: 0.7rem;
+}
+
+.spy-channel-card-main {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.spy-channel-card-copy {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.spy-channel-card-copy > a {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spy-channel-thumb {
+  width: 3.2rem;
+  height: 3.2rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--line);
+}
+
+.spy-channel-card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.spy-channel-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+
+.spy-channel-hero h2 {
+  margin-top: 0.7rem;
+}
+
+.spy-channel-actions {
+  align-items: flex-start;
+  justify-content: flex-end;
+  min-width: min(100%, 31rem);
+}
+
+.spy-channel-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.spy-channel-detail-grid .panel,
+.spy-channel-placeholder {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+}
+
+.spy-channel-detail-grid h2,
+.spy-channel-placeholder h2 {
+  margin: 0.2rem 0 0.15rem;
+}
+
+.spy-channel-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+}
+
+.spy-channel-facts div {
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.44);
+}
+
+.spy-channel-facts dt {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.spy-channel-facts dd {
+  margin: 0.2rem 0 0;
+  font-weight: 650;
+}
+
+.spy-run-header-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.spy-run-star-control {
+  display: grid;
+  gap: 0.25rem;
+  justify-items: end;
+}
+
+@media (max-width: 720px) {
+  .spy-entry-grid,
+  .spy-channel-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .spy-channel-hero {
+    flex-direction: column;
+  }
+
+  .spy-channel-actions {
+    justify-content: flex-start;
+    min-width: 0;
+  }
+
+  .spy-channel-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .spy-run-header-actions,
+  .spy-run-star-control {
+    justify-items: start;
+    justify-content: flex-start;
+  }
+
+  .spy-channel-card-main {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .spy-channel-card-main > .btn {
+    margin-left: 4.05rem;
+  }
+}
+
 /* ---------- Spy run master–detail ---------- */
 
 .spy-run-page {
