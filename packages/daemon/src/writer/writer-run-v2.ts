@@ -78,9 +78,9 @@ const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 
-const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1-lateral-gap-v1';
+const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1';
 const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1-stance-v1';
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
@@ -697,19 +697,8 @@ function buildStudyPrompt(opts: {
     '1. `coverageMap` — one entry per source video in the pack, saying what it actually',
     `   claims and from which angle. All ${opts.videoIds.length} pack video(s) must appear:`,
     `   ${opts.videoIds.join(', ') || '(see the pack)'}.`,
-    '2. `gap` — a recombination, not a missing subject. This is the reason for the piece to',
-    '   exist. Not a new topic. Try at least 3 of these 4 provocations against the pack,',
-    '   then pick ONE as the spine:',
-    '   - CONTRADICTION: two facts already in the pack that clash when placed side by side',
-    '     (a stated goal vs a behavior, two numbers that don\'t reconcile).',
-    '   - ZOOM-IN: one ordinary word inside a familiar piece of advice that nobody has',
-    '     dissected — make that word carry the whole piece.',
-    '   - EXTREME-TEST: push a formula/rule from the pack to an extreme input and report',
-    '     where it breaks.',
-    '   - INVERSION: the question everyone asks, asked backwards.',
-    '   State in the `gap` value which provocation you chose and why. A topical gap ("no',
-    '   video covered X for young people") is a REJECTED gap — the gap must be a',
-    '   perspective move, not a missing subject.',
+    '2. `gap` — one thing none of those videos did, that this audience would want. This is',
+    '   the reason for the piece to exist. Not a new topic; a missing angle.',
     '3. `outline` — the compression contract for the piece: `coreInsight`, one',
     '   `memoryAnchor`, 2-8 `progression` beats (each with `newInformation`,',
     '   `characterOrArgumentChange`, `visualAnchor`), `endingPayoff`, `cutList`.',
@@ -875,18 +864,6 @@ function buildWritePrompt(opts: {
       opts.forbiddenNames.length ? opts.forbiddenNames.map((n) => `"${n}"`).join(', ') : '(none)'
     }.`,
     '5. Vietnamese prose. Do not mention, enumerate or visibly perform the rules.',
-    '',
-    '## Stance (được phép — không cần ledger)',
-    '',
-    'The narrator is a person with positions, not a neutral compiler. Opinions,',
-    'priorities and a declared school of thought are NOT fact claims and need no ledger',
-    'entry: "tôi thì tôi theo trường phái chắc chắn hơn", "với tôi thì không", naming the',
-    'industry-standard advice and then openly deviating from it as a personal policy — all',
-    'allowed and encouraged where the general pack shows the move.',
-    '',
-    'A stance must be OWNED ("tôi", "theo góc nhìn của tôi"), never disguised as an',
-    'objective fact ("nghiên cứu cho thấy…" is a fact claim → ledger). Use 2-3 stance',
-    'moments per piece, not every paragraph.',
     '',
     '## Before you write',
     '',
