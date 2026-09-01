@@ -1,0 +1,262 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  coverageMapFromResearchMap,
+  deriveFactsLedger,
+  RESEARCH_MAP_SCHEMA_VERSION,
+  validateResearchMap,
+  type ResearchMap,
+} from '../../src/writer/research-map.ts';
+
+const PACK = [
+  '# Source Pack — UNTRUSTED REFERENCE MATERIAL',
+  '',
+  '## Video một',
+  '',
+  '- videoId: `v1`',
+  '',
+  '### Transcript',
+  '',
+  'Quỹ dự phòng tạo ra khoảng trống để một người có thể đổi việc.',
+  '',
+  '## Video hai',
+  '',
+  '- videoId: `v2`',
+  '',
+  '### Transcript',
+  '',
+  'Khoản vay dài hạn có thể làm giảm khả năng đổi hướng nghề nghiệp.',
+  '',
+  '## Video ba',
+  '',
+  '- videoId: `v3`',
+  '',
+  '### Transcript',
+  '',
+  'Một kế hoạch tốt vẫn cần chừa chỗ cho tình huống bất ngờ.',
+].join('\n');
+
+const VIDEO_IDS = ['v1', 'v2', 'v3'];
+const ORIGIN_GROUPS = { v1: 'origin-a', v2: 'origin-b', v3: 'origin-a' } as const;
+const CONTEXT = {
+  packMarkdown: PACK,
+  videoIds: VIDEO_IDS,
+  originGroupByVideoId: ORIGIN_GROUPS,
+} as const;
+
+function validMap(): ResearchMap {
+  return {
+    schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
+    sourceAudit: [
+      {
+        videoId: 'v1',
+        mainClaim: 'Quỹ dự phòng bảo vệ khả năng đổi việc.',
+        angle: 'quyền lựa chọn',
+        originGroup: 'origin-a',
+        limitations: ['không định lượng mức quỹ'],
+      },
+      {
+        videoId: 'v2',
+        mainClaim: 'Nợ dài hạn làm hẹp lựa chọn nghề nghiệp.',
+        angle: 'chi phí cơ hội',
+        originGroup: 'origin-b',
+        limitations: [],
+      },
+      {
+        videoId: 'v3',
+        mainClaim: 'Kế hoạch cần khoảng đệm.',
+        angle: 'bất định',
+        originGroup: 'origin-a',
+        limitations: [],
+      },
+    ],
+    claims: [
+      {
+        id: 'claim-choice',
+        text: 'Khoảng đệm tài chính bảo vệ quyền đổi hướng.',
+        status: 'MULTI_SOURCE_ATTESTED',
+        evidenceIds: ['e-choice-1', 'e-choice-2'],
+        independentOriginGroups: ['origin-a', 'origin-b'],
+        caveats: ['pack không đo mức tác động'],
+      },
+      {
+        id: 'claim-buffer',
+        text: 'Kế hoạch tốt cần chừa chỗ cho bất ngờ.',
+        status: 'ATTESTED',
+        evidenceIds: ['e-buffer-1'],
+        independentOriginGroups: ['origin-a'],
+        caveats: [],
+      },
+    ],
+    evidence: [
+      {
+        id: 'e-choice-1',
+        claimId: 'claim-choice',
+        videoId: 'v1',
+        quote: 'Quỹ dự phòng tạo ra khoảng trống để một người có thể đổi việc.',
+        relation: 'SUPPORTS',
+      },
+      {
+        id: 'e-choice-2',
+        claimId: 'claim-choice',
+        videoId: 'v2',
+        quote: 'Khoản vay dài hạn có thể làm giảm khả năng đổi hướng nghề nghiệp.',
+        relation: 'QUALIFIES',
+      },
+      {
+        id: 'e-buffer-1',
+        claimId: 'claim-buffer',
+        videoId: 'v3',
+        quote: 'Một kế hoạch tốt vẫn cần chừa chỗ cho tình huống bất ngờ.',
+        relation: 'SUPPORTS',
+      },
+    ],
+    conflicts: [],
+    openQuestions: ['Mức quỹ nào phù hợp với từng người?'],
+    overusedAngles: ['liệt kê tỷ lệ ngân sách'],
+  };
+}
+
+function copyMap(): ResearchMap {
+  return structuredClone(validMap());
+}
+
+describe('validateResearchMap', () => {
+  test('accepts a strict non-narrative map grounded to the correct video sections', () => {
+    const result = validateResearchMap(validMap(), CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(coverageMapFromResearchMap(result.researchMap)).toEqual([
+      { videoId: 'v1', mainClaim: 'Quỹ dự phòng bảo vệ khả năng đổi việc.', angle: 'quyền lựa chọn' },
+      { videoId: 'v2', mainClaim: 'Nợ dài hạn làm hẹp lựa chọn nghề nghiệp.', angle: 'chi phí cơ hội' },
+      { videoId: 'v3', mainClaim: 'Kế hoạch cần khoảng đệm.', angle: 'bất định' },
+    ]);
+  });
+
+  test('rejects story topology even before the generic unknown-key check', () => {
+    const raw = { ...validMap(), outline: { intro: 'mở thế này' } };
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_FORBIDDEN_TOPOLOGY');
+    expect(result.path).toBe('$.outline');
+  });
+
+  test('rejects a real quote attributed to the wrong video', () => {
+    const raw = copyMap();
+    raw.evidence[0]!.quote = raw.evidence[1]!.quote;
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_SOURCE_GROUNDING');
+    expect(result.reason).toContain('v1');
+  });
+
+  test('does not accept section metadata as transcript evidence', () => {
+    const raw = copyMap();
+    raw.evidence[0]!.quote = '- videoId: `v1`';
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_SOURCE_GROUNDING');
+  });
+
+  test('does not count two videos in one origin group as independent corroboration', () => {
+    const raw = copyMap();
+    raw.sourceAudit[1]!.originGroup = 'origin-a';
+    raw.claims[0]!.independentOriginGroups = ['origin-a'];
+    const result = validateResearchMap(raw, {
+      ...CONTEXT,
+      originGroupByVideoId: { v1: 'origin-a', v2: 'origin-a', v3: 'origin-a' },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_ORIGIN');
+    expect(result.reason).toContain('MULTI_SOURCE_ATTESTED');
+  });
+
+  test('does not trust origin groups invented by the research agent', () => {
+    const result = validateResearchMap(validMap(), { packMarkdown: PACK, videoIds: VIDEO_IDS });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_ORIGIN');
+    expect(result.reason).toContain('coordinator-pinned');
+  });
+
+  test('rejects evidence/claim references that disagree in either direction', () => {
+    const raw = copyMap();
+    raw.claims[0]!.evidenceIds = ['e-choice-1'];
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_REFERENCE');
+    expect(result.reason).toContain('e-choice-2');
+  });
+
+  test('requires both supporting and contradicting evidence for DISPUTED', () => {
+    const raw = copyMap();
+    raw.claims[0]!.status = 'DISPUTED';
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_STATUS');
+  });
+
+  test('fails oversize output without authorizing another raw-pack call', () => {
+    const result = validateResearchMap(validMap(), {
+      ...CONTEXT,
+      maxBytes: 100,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_ARTIFACT_OVERSIZE');
+  });
+});
+
+describe('deriveFactsLedger', () => {
+  test('mechanically derives at least three grounded legacy entries', () => {
+    const validated = validateResearchMap(validMap(), CONTEXT);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    const result = deriveFactsLedger(
+      validated.researchMap,
+      ['e-choice-1', 'e-choice-2', 'e-buffer-1'],
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.factsLedger).toHaveLength(3);
+    expect(result.factsLedger[0]).toEqual({
+      fact: 'Quỹ dự phòng tạo ra khoảng trống để một người có thể đổi việc.',
+      videoId: 'v1',
+      quote: 'Quỹ dự phòng tạo ra khoảng trống để một người có thể đổi việc.',
+    });
+  });
+
+  test('rejects a REJECTED claim even when its quote is real', () => {
+    const raw = copyMap();
+    raw.claims[1]!.status = 'REJECTED';
+    const validated = validateResearchMap(raw, CONTEXT);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    const result = deriveFactsLedger(validated.researchMap, ['e-buffer-1'], { minEntries: 1 });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'RESEARCH_LEDGER',
+      reason: 'claim "claim-buffer" is REJECTED',
+    });
+  });
+
+  test('does not label contradicting evidence as if it supported the claim', () => {
+    const raw = copyMap();
+    raw.evidence[2]!.relation = 'CONTRADICTS';
+    raw.claims[1]!.status = 'REJECTED';
+    const validated = validateResearchMap(raw, CONTEXT);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    const nonRejected = structuredClone(validated.researchMap);
+    nonRejected.claims[1]!.status = 'ATTESTED';
+    const result = deriveFactsLedger(nonRejected, ['e-buffer-1'], { minEntries: 1 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('CONTRADICTS');
+  });
+});

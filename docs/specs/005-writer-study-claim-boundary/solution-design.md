@@ -339,7 +339,7 @@ Validation rules:
 - One `sourceAudit` entry per Topic Pack video ID and no unknown video ID.
 - Every evidence quote is an exact substring of the pinned Topic Pack and its video association is valid.
 - Every referenced claim/evidence ID resolves; rejected claims cannot enter the facts ledger.
-- `MULTI_SOURCE_ATTESTED` requires at least two evidence items from at least two distinct, nonempty `originGroup` values. Otherwise it is downgraded or rejected.
+- `MULTI_SOURCE_ATTESTED` requires at least two evidence items from at least two distinct, nonempty `originGroup` values pinned by the coordinator. The research agent may not declare source independence. When the pack has no trusted per-video provenance mapping, every expected group is `unknown`, so multi-source status cannot pass.
 - The top-level and nested schemas use explicit allowlists. Keys or sections that encode hook, thesis, outline, beat order, intro, ending, narration, recommendation, or story spine are rejected.
 - Serialized output is capped at 60 KiB. An oversize artifact fails with `RESEARCH_ARTIFACT_OVERSIZE`; the coordinator does not automatically repeat the raw-pack call merely to ask for compression.
 
@@ -483,6 +483,8 @@ workspaces/pipeline/{runId}/piece/
 ```
 
 The run JSON stores only checkpoint pointers/hashes, the model-call counter, and the final derived `StudyArtifact`. It does not duplicate the raw Topic Pack or entire intermediate artifacts. Writes remain atomic through Run Store.
+
+ResearchMap and checkpoint artifacts remain under `workspaces/pipeline`; they are not written into `writer-room-data/`, whose repository ignore rules can silently omit newly generated files. Any future load-bearing General/Persona/Style source artifact intentionally added under `writer-room-data/` requires an explicit tracking check during delivery.
 
 #### Internal API Changes
 
