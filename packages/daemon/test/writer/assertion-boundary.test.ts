@@ -6,6 +6,7 @@ import {
   type AssertionAnchor,
   type BoundaryClaim,
 } from '../../src/writer/assertion-boundary.ts';
+import { DISPUTED_CAVEAT_FIXTURES } from './disputed-caveat-fixtures.ts';
 
 const PERSONA = [
   '# Persona Pack — test',
@@ -95,6 +96,39 @@ describe('parsePersonaRegistry', () => {
       '> quote nguồn',
     ].join('\n'));
     expect(registry.entries[0]!.status).toBe('PENDING');
+  });
+
+  test('makes a duplicated Persona ID ineligible everywhere it could grant permission', () => {
+    const registry = parsePersonaRegistry([
+      '### 1.7 Quyền lựa chọn — `[ĐÃ DUYỆT]`',
+      '**Lập trường kênh**: Với tôi, giữ quyền lựa chọn là ưu tiên.',
+      '',
+      '### 1.7 Trùng mã — `[ĐÃ DUYỆT]`',
+      '**Lập trường kênh**: Với tôi, lợi nhuận là ưu tiên.',
+    ].join('\n'));
+    expect(registry.violations).toEqual([{
+      code: 'PERSONA_DUPLICATE_ID',
+      detail: 'duplicate persona entry "stance-1.7"; the colliding ID is ineligible',
+      entryId: 'stance-1.7',
+    }]);
+    expect(registry.entries.find((entry) => entry.id === 'stance-1.7')?.status).toBe('REJECTED');
+
+    const script = 'Với tôi, giữ quyền lựa chọn là ưu tiên.';
+    const result = validateAssertionBoundary({
+      script,
+      assertionAnchors: [{
+        id: 'a-duplicate-stance',
+        quote: script,
+        kind: 'STANCE',
+        stanceId: 'stance-1.7',
+      }],
+      claims: [],
+      personaRegistry: registry,
+      pinnedPersonaPackHash: registry.hash,
+    });
+    expect(result.passed).toBe(false);
+    expect(result.violations.map((item) => item.code)).toContain('ASSERTION_PERSONA_PENDING');
+    expect(buildClaimBoundaryReviewIndex({ claims: [], personaRegistry: registry }).stances).toEqual([]);
   });
 });
 
@@ -230,6 +264,24 @@ describe('persona and metadata hard gates', () => {
     }]);
     expect(result.passed).toBe(false);
     expect(result.violations.map((item) => item.code)).toContain('ASSERTION_DISPUTED_UNQUALIFIED');
+  });
+
+  test('uses the shared narrow caveat registry for DISPUTED assertion permission', () => {
+    for (const fixture of DISPUTED_CAVEAT_FIXTURES) {
+      const result = check(fixture.text, [{
+        id: 'a-disputed-registry',
+        quote: fixture.text,
+        kind: 'FACT',
+        claimIds: ['claim-disputed'],
+      }]);
+      expect({ text: fixture.text, passed: result.passed }).toEqual({
+        text: fixture.text,
+        passed: fixture.accepted,
+      });
+      if (!fixture.accepted) {
+        expect(result.violations.map((item) => item.code)).toContain('ASSERTION_DISPUTED_UNQUALIFIED');
+      }
+    }
   });
 });
 

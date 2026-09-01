@@ -29,6 +29,26 @@ export const RESEARCH_EVIDENCE_RELATIONS = [
 
 export type ResearchEvidenceRelation = (typeof RESEARCH_EVIDENCE_RELATIONS)[number];
 
+/**
+ * Deliberately narrow, shared vocabulary for a visible DISPUTED qualification.
+ * Additions change both planning and final-script permission, so they must be
+ * made here with cross-layer fixtures rather than independently in consumers.
+ */
+export const DISPUTED_CAVEAT_MARKERS = [
+  'nhưng',
+  'mặt khác',
+  'tranh cãi',
+  'chưa rõ',
+  'không thống nhất',
+  'có thể',
+  'không phải lúc nào',
+] as const;
+
+export function hasDisputedCaveatLanguage(text: string): boolean {
+  const normalized = text.normalize('NFC').toLocaleLowerCase('vi');
+  return DISPUTED_CAVEAT_MARKERS.some((marker) => normalized.includes(marker));
+}
+
 export interface ResearchSourceAudit {
   videoId: string;
   mainClaim: string;
@@ -490,10 +510,25 @@ export function validateResearchMap(
         `claim "${claim.id}" independentOriginGroups must equal evidence-derived groups: ${derivedGroups.join(', ')}`,
       );
     }
-    if (claim.status === 'MULTI_SOURCE_ATTESTED' && derivedGroups.length < 2) {
+    const positiveItems = items.filter(
+      (item) => item.relation === 'SUPPORTS' || item.relation === 'QUALIFIES',
+    );
+    const supportOriginGroups = [
+      ...new Set(positiveItems.map((item) => auditByVideo.get(item.videoId)!.originGroup)),
+    ];
+    const hasContradiction = items.some((item) => item.relation === 'CONTRADICTS');
+    const isAttested = claim.status === 'ATTESTED' || claim.status === 'MULTI_SOURCE_ATTESTED';
+    if (isAttested && hasContradiction) {
+      return fail(
+        'RESEARCH_STATUS',
+        `attested claim "${claim.id}" contains CONTRADICTS evidence and must be DISPUTED or REJECTED`,
+      );
+    }
+    if (claim.status === 'MULTI_SOURCE_ATTESTED' && supportOriginGroups.length < 2) {
       return fail(
         'RESEARCH_ORIGIN',
-        `claim "${claim.id}" cannot be MULTI_SOURCE_ATTESTED with ${derivedGroups.length} origin group`,
+        `claim "${claim.id}" cannot be MULTI_SOURCE_ATTESTED with `
+        + `${supportOriginGroups.length} supporting origin group`,
       );
     }
     const relations = new Set(items.map((item) => item.relation));
@@ -504,10 +539,10 @@ export function validateResearchMap(
     ) {
       return fail('RESEARCH_STATUS', `attested claim "${claim.id}" has no supporting/qualifying evidence`);
     }
-    if (claim.status === 'DISPUTED' && (!relations.has('SUPPORTS') || !relations.has('CONTRADICTS'))) {
+    if (claim.status === 'DISPUTED' && (positiveItems.length === 0 || !hasContradiction)) {
       return fail(
         'RESEARCH_STATUS',
-        `DISPUTED claim "${claim.id}" needs both SUPPORTS and CONTRADICTS evidence`,
+        `DISPUTED claim "${claim.id}" needs positive (SUPPORTS/QUALIFIES) and CONTRADICTS evidence`,
       );
     }
   }
@@ -535,6 +570,20 @@ export function validateResearchMap(
     const explanation = requiredString(raw['explanation'], `${path}.explanation`);
     if (typeof explanation !== 'string') return explanation;
     conflicts.push({ claimIds: conflictClaimIds, explanation });
+  }
+
+  const claimsWithConflictPayload = new Set(conflicts.flatMap((conflict) => conflict.claimIds));
+  for (const claim of claims) {
+    if (
+      claim.status === 'DISPUTED'
+      && claim.caveats.length === 0
+      && !claimsWithConflictPayload.has(claim.id)
+    ) {
+      return fail(
+        'RESEARCH_STATUS',
+        `DISPUTED claim "${claim.id}" needs a non-empty caveat or conflicts entry`,
+      );
+    }
   }
 
   const openQuestions = stringArray(value['openQuestions'], '$.openQuestions', { max: 64 });
@@ -603,7 +652,10 @@ export function deriveFactsLedger(
         reason: `evidence "${evidenceId}" CONTRADICTS claim "${claim.id}" and cannot source that fact label`,
       };
     }
-    const key = `${claim.id}\u0000${item.videoId}\u0000${item.quote}`;
+    // Ledger breadth is evidence breadth, not the number of agent-authored
+    // claim labels attached to one transcript substring. Claim authorization
+    // remains a separate planning concern.
+    const key = `${item.videoId}\u0000${item.quote}`;
     if (seen.has(key)) continue;
     seen.add(key);
     // The claim label is agent-authored interpretation. It remains useful to

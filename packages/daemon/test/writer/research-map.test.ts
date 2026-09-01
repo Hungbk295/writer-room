@@ -201,6 +201,41 @@ describe('validateResearchMap', () => {
     expect(result.errorCode).toBe('RESEARCH_STATUS');
   });
 
+  test('never upgrades contradictory evidence into attested multi-source support', () => {
+    const raw = copyMap();
+    raw.evidence[1]!.relation = 'CONTRADICTS';
+
+    const result = validateResearchMap(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errorCode).toBe('RESEARCH_STATUS');
+    expect(result.reason).toContain('must be DISPUTED or REJECTED');
+  });
+
+  test('requires a DISPUTED claim to carry an explicit caveat or conflict payload', () => {
+    const raw = copyMap();
+    raw.claims[0]!.status = 'DISPUTED';
+    raw.claims[0]!.caveats = [];
+    raw.evidence[1]!.relation = 'CONTRADICTS';
+
+    const missing = validateResearchMap(raw, CONTEXT);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.errorCode).toBe('RESEARCH_STATUS');
+      expect(missing.reason).toContain('non-empty caveat or conflicts entry');
+    }
+
+    raw.claims[0]!.caveats = ['Hai nguồn mô tả tác động theo hướng trái ngược.'];
+    expect(validateResearchMap(raw, CONTEXT).ok).toBe(true);
+
+    raw.claims[0]!.caveats = [];
+    raw.conflicts = [{
+      claimIds: ['claim-choice', 'claim-buffer'],
+      explanation: 'Hai cơ chế cần được giữ tách biệt khi diễn giải.',
+    }];
+    expect(validateResearchMap(raw, CONTEXT).ok).toBe(true);
+  });
+
   test('fails oversize output without authorizing another raw-pack call', () => {
     const result = validateResearchMap(validMap(), {
       ...CONTEXT,
@@ -258,5 +293,42 @@ describe('deriveFactsLedger', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain('CONTRADICTS');
+  });
+
+  test('collapses one exact quote reused under multiple claim IDs', () => {
+    const raw = copyMap();
+    const quote = raw.evidence[0]!.quote;
+    raw.claims = [1, 2, 3].map((number) => ({
+      id: `claim-duplicate-${number}`,
+      text: `Agent-authored interpretation ${number}.`,
+      status: 'ATTESTED',
+      evidenceIds: [`e-duplicate-${number}`],
+      independentOriginGroups: ['origin-a'],
+      caveats: [],
+    }));
+    raw.evidence = [1, 2, 3].map((number) => ({
+      id: `e-duplicate-${number}`,
+      claimId: `claim-duplicate-${number}`,
+      videoId: 'v1',
+      quote,
+      relation: 'SUPPORTS',
+    }));
+
+    const validated = validateResearchMap(raw, CONTEXT);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+
+    const selectedIds = raw.evidence.map((item) => item.id);
+    const defaultMinimum = deriveFactsLedger(validated.researchMap, selectedIds);
+    expect(defaultMinimum).toEqual({
+      ok: false,
+      errorCode: 'RESEARCH_LEDGER',
+      reason: 'factsLedger needs at least 3 unique grounded entries; got 1',
+    });
+
+    const oneEntry = deriveFactsLedger(validated.researchMap, selectedIds, { minEntries: 1 });
+    expect(oneEntry.ok).toBe(true);
+    if (!oneEntry.ok) return;
+    expect(oneEntry.factsLedger).toEqual([{ fact: quote, videoId: 'v1', quote }]);
   });
 });

@@ -13,6 +13,7 @@ import {
 } from './hook-doi-thu.ts';
 import {
   deriveFactsLedger,
+  hasDisputedCaveatLanguage,
   type ResearchClaim,
   type ResearchEvidence,
   type ResearchMap,
@@ -210,8 +211,6 @@ const OUTLINE_LABEL_RE = /(?:mở\s*bài|thân\s*bài|kết\s*bài|\bintro(?:duc
 const NUMERIC_FACT_RE = /(?:[$€£]\s*\d+(?:[.,]\d+)?|\b\d+(?:[.,]\d+)?\s*(?:%|phần\s*trăm|triệu|tỷ|nghìn|ngàn|đồng|usd|vnd|năm|tháng|tuần|ngày|giờ|tuổi|lần|người))(?=$|[^\p{L}\p{N}_])/giu;
 const EVIDENCE_INQUIRY_RE = /^(?:cần|kiểm\s*tra|xác\s*định|tìm|đối\s*chiếu|liệu|bằng\s*chứng|nguồn\s*nào|điều\s*gì|dữ\s*liệu)/iu;
 const FALSIFIER_RE = /(?:^|\b)(?:nếu|khi|trừ\s*khi|sẽ\s*bác\s*bỏ|không\s*đúng\s*nếu|thất\s*bại\s*nếu|unless|if|when)(?:\b|$)/iu;
-const CAVEAT_RE = /\b(?:nhưng|tuy\s*nhiên|mặt\s*khác|tranh\s*cãi|chưa\s*rõ|chưa\s*chắc|không\s*thống\s*nhất|có\s*thể|không\s*phải\s*lúc\s*nào|giới\s*hạn|ngoại\s*lệ)\b/iu;
-
 const DISTINCT_FIELDS = [
   'thesisHypothesis',
   'beliefBefore',
@@ -1031,7 +1030,10 @@ function validateBeatGrounding(
     }
     for (const claimId of item.claimIds) {
       const claim = claimById.get(claimId)!;
-      if (claim.status === 'DISPUTED' && !CAVEAT_RE.test(beatText(plan, item.beatIndex))) {
+      if (
+        claim.status === 'DISPUTED'
+        && !hasDisputedCaveatLanguage(beatText(plan, item.beatIndex))
+      ) {
         return fail(
           'STORY_DISPUTED_UNQUALIFIED',
           `beat ${item.beatIndex} selects DISPUTED claim "${claimId}" without visible conflict/caveat language`,

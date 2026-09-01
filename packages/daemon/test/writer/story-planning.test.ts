@@ -12,6 +12,7 @@ import {
   type StoryHypothesis,
 } from '../../src/writer/story-planning.ts';
 import { RESEARCH_MAP_SCHEMA_VERSION, type ResearchMap } from '../../src/writer/research-map.ts';
+import { DISPUTED_CAVEAT_FIXTURES } from './disputed-caveat-fixtures.ts';
 
 function hypotheses(): [StoryHypothesis, StoryHypothesis, StoryHypothesis] {
   return [
@@ -492,21 +493,25 @@ describe('validateConfrontArtifact', () => {
     }
   });
 
-  test('requires visible caveat language when a beat selects a DISPUTED claim', () => {
-    const uncaveated = copyConfront();
-    uncaveated.beatEvidence![2] = {
-      beatIndex: 2,
-      claimIds: ['c-disputed'],
-      evidenceIds: ['e-disputed-for'],
-    };
-    const failed = validateConfrontArtifact(uncaveated, CONTEXT);
-    expect(failed.ok).toBe(false);
-    if (!failed.ok) expect(failed.errorCode).toBe('STORY_DISPUTED_UNQUALIFIED');
+  test('uses the shared narrow caveat registry when a beat selects a DISPUTED claim', () => {
+    for (const fixture of DISPUTED_CAVEAT_FIXTURES) {
+      const raw = copyConfront();
+      raw.beatEvidence![2] = {
+        beatIndex: 2,
+        claimIds: ['c-disputed'],
+        evidenceIds: ['e-disputed-for'],
+      };
+      raw.finalPlan!.progression[2]!.newInformation = fixture.text;
 
-    uncaveated.finalPlan!.progression[2]!.newInformation =
-      'Nguồn chưa thống nhất: nhiều lựa chọn có thể giúp, nhưng đôi khi cũng làm chậm hành động.';
-    const passed = validateConfrontArtifact(uncaveated, CONTEXT);
-    expect(passed.ok).toBe(true);
+      const result = validateConfrontArtifact(raw, CONTEXT);
+      expect({ text: fixture.text, accepted: result.ok }).toEqual({
+        text: fixture.text,
+        accepted: fixture.accepted,
+      });
+      if (!fixture.accepted && !result.ok) {
+        expect(result.errorCode).toBe('STORY_DISPUTED_UNQUALIFIED');
+      }
+    }
   });
 
   test('allows only evidence-linked hook tightening that preserves the selected promise', () => {

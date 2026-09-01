@@ -11,7 +11,10 @@ import {
   extractProperNouns,
   isCommonKnowledgeClaim,
 } from './deterministic-gate.ts';
-import type { ResearchStatus } from './research-map.ts';
+import {
+  hasDisputedCaveatLanguage,
+  type ResearchStatus,
+} from './research-map.ts';
 
 export const ASSERTION_BOUNDARY_VERSION = 'writer-assertion-boundary-v1' as const;
 
@@ -214,7 +217,13 @@ export function parsePersonaRegistry(markdown: string): PersonaRegistry {
     const isStance = code.startsWith('1.');
     const id = isStance ? `stance-${code}` : `experience-${code}`;
     if (seen.has(id)) {
-      violations.push({ code: 'PERSONA_DUPLICATE_ID', detail: `duplicate persona entry "${id}"`, entryId: id });
+      const existing = entries.find((entry) => entry.id === id);
+      if (existing) existing.status = 'REJECTED';
+      violations.push({
+        code: 'PERSONA_DUPLICATE_ID',
+        detail: `duplicate persona entry "${id}"; the colliding ID is ineligible`,
+        entryId: id,
+      });
       continue;
     }
     seen.add(id);
@@ -420,10 +429,6 @@ function protectedSpans(script: string): ProtectedSpan[] {
     .sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
-function hasCaveatLanguage(quote: string): boolean {
-  return /\b(?:nhưng|mặt khác|tranh cãi|chưa rõ|không thống nhất|có thể|không phải lúc nào)\b/iu.test(quote);
-}
-
 function personaEntryFor(
   anchor: AssertionAnchor,
   registry: PersonaRegistry | undefined,
@@ -621,7 +626,7 @@ export function validateAssertionBoundary(input: AssertionBoundaryInput): Assert
             anchorId: anchor.id,
           });
         }
-        if (claim.status === 'DISPUTED' && !hasCaveatLanguage(anchor.quote)) {
+        if (claim.status === 'DISPUTED' && !hasDisputedCaveatLanguage(anchor.quote)) {
           violations.push({
             code: 'ASSERTION_DISPUTED_UNQUALIFIED',
             detail: `anchor "${anchor.id}" uses DISPUTED claim "${claimId}" without visible caveat`,

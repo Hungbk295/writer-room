@@ -45,13 +45,13 @@ owners: [Product Owner, Writer Room Engineering]
 | CON-7 | DIVERGE returns three hypotheses, not three prose outlines. Each hypothesis uses a distinct provocation from `CONTRADICTION`, `ZOOM_IN`, `EXTREME_TEST`, and `INVERSION`; at least three of the four must be exercised. |
 | CON-8 | RESEARCH uses a strict allowlist schema and cannot emit outline, hook, thesis, beat order, narration, intro, ending, or recommended story topology fields. |
 | CON-9 | Research status means what the pack attests, not external truth. The allowed statuses are `ATTESTED`, `MULTI_SOURCE_ATTESTED`, `DISPUTED`, and `REJECTED`; the system must not relabel them “verified.” |
-| CON-10 | Multiple videos count as independent support only when their origin groups are independently established. Repetition inside one channel or shared upstream material is not independent corroboration. |
+| CON-10 | Multiple videos count as independent support only when `SUPPORTS`/`QUALIFIES` evidence belongs to independently established origin groups. `CONTRADICTS` evidence never increases attestation strength; repetition inside one channel or shared upstream material is not independent corroboration. |
 | CON-11 | CONFRONT is allowed to invalidate the writer's initial idea. A loop that can only patch evidence into the chosen hook is rejected as confirmation bias. |
 | CON-12 | General Pack, Formula, and Persona Pack remain WRITE inputs. They do not shape research collection or hypothesis generation. |
 | CON-13 | Every protected assertion in WRITE/REPAIR output is represented by a unique exact-substring `assertionAnchor`; metadata supplied by the writer is untrusted until validated. |
 | CON-14 | Assertion kinds are exactly `FACT`, `COMMON_KNOWLEDGE`, `STANCE`, `HYPOTHETICAL`, and `PERSONA_EXPERIENCE`. A writer cannot create an additional exemption class. |
 | CON-15 | A factual detector can never be disabled by “theo tôi,” “tôi tin,” “với tôi,” or another stance marker. A factual payload claimed as STANCE is evaluated as FACT or PERSONA_EXPERIENCE. |
-| CON-16 | STANCE does not need a ResearchMap claim, but it must trace to an approved Persona Pack stance entry. PERSONA_EXPERIENCE must trace to an eligible experience archetype. An entry marked pending approval is ineligible. |
+| CON-16 | STANCE does not need a ResearchMap claim, but it must trace to an approved Persona Pack stance entry. PERSONA_EXPERIENCE must trace to an eligible experience archetype. An entry marked pending approval, rejected, or sharing a duplicate stable ID is ineligible. |
 | CON-17 | Deterministic Claim Boundary rules are the minimum floor. An independent editor must also review empirical propositions that have no number or readily detected proper noun. |
 | CON-18 | A semantic-only Claim Boundary failure cannot automatically become DONE after an unreviewed repair. Under the six-call ceiling it fails closed for human review. |
 | CON-19 | The post-hook semantic call budget is five calls without REPAIR and six with REPAIR: three STUDY calls, WRITE, EDIT_REVIEW, and at most one REPAIR. No planning loop or second editor pass is added. |
@@ -339,7 +339,9 @@ Validation rules:
 - One `sourceAudit` entry per Topic Pack video ID and no unknown video ID.
 - Every evidence quote is an exact substring of the pinned Topic Pack and its video association is valid.
 - Every referenced claim/evidence ID resolves; rejected claims cannot enter the facts ledger.
-- `MULTI_SOURCE_ATTESTED` requires at least two evidence items from at least two distinct, nonempty `originGroup` values pinned by the coordinator. The research agent may not declare source independence. When the pack has no trusted per-video provenance mapping, every expected group is `unknown`, so multi-source status cannot pass.
+- `MULTI_SOURCE_ATTESTED` requires positive (`SUPPORTS`/`QUALIFIES`) evidence from at least two distinct, nonempty `originGroup` values pinned by the coordinator. `CONTRADICTS` evidence is excluded from supporting-origin counts. The research agent may not declare source independence.
+- Any claim containing both positive and `CONTRADICTS` evidence is ineligible for `ATTESTED` or `MULTI_SOURCE_ATTESTED`; it must be `DISPUTED` or `REJECTED`. `DISPUTED` requires both evidence directions plus a nonempty claim caveat or top-level conflict payload, so the agent cannot choose the stronger label for the same evidence set.
+- Until a separately trusted provenance extension is wired, current pack paths conservatively pin every origin to `unknown`, so multi-source status cannot pass. This is a temporary safe fallback, not the final provenance design; neither model output nor repeated videos may upgrade it.
 - The top-level and nested schemas use explicit allowlists. Keys or sections that encode hook, thesis, outline, beat order, intro, ending, narration, recommendation, or story spine are rejected.
 - Serialized output is capped at 60 KiB. An oversize artifact fails with `RESEARCH_ARTIFACT_OVERSIZE`; the coordinator does not automatically repeat the raw-pack call merely to ask for compression.
 
@@ -397,7 +399,7 @@ Validation rules:
 - REJECT cannot be selected. At least one KEEP/REBUILD candidate is required to proceed.
 - `hookVerdict.status=REWRITE` requires a valid replacement hook and evidence-linked reason. It may tighten grounding while preserving the human-selected promise; a materially different promise is `REJECT` and requires human choice. `REJECT` produces no final plan and fails STUDY with `HOOK_REVIEW_REQUIRED`; it does not trigger an automatic hook loop.
 - Every factual beat in `finalPlan` maps to non-rejected claim and evidence IDs. The application, not the model, derives the legacy `factsLedger` from those selected evidence records.
-- A DISPUTED claim may be selected only when the plan preserves its conflict/caveat; an uncaveated beat is rejected. Ledger derivation must retain at least the existing minimum of three grounded entries.
+- A DISPUTED claim may be selected only when the plan preserves its conflict/caveat; an uncaveated beat is rejected. Planning and Claim Boundary use one deliberately narrow caveat-marker registry and the same acceptance/rejection fixtures; vocabulary expansion is a contract change. Ledger derivation must retain at least the existing minimum of three grounded entries.
 - Serialized DIVERGE and CONFRONT outputs are capped at 16 KiB and 32 KiB respectively.
 
 #### Checkpoint metadata
@@ -458,7 +460,7 @@ Anchor rules:
 - STANCE requires an eligible `stanceId` and is limited to preference, value judgment, or policy choice owned by the narrator. It cannot carry a descriptive statistic, named case, study result, empirical generalization, or hidden biography. A clearly normative personal threshold may contain a number only when the same number/unit and policy are explicitly present in the approved stance entry; this never authorizes a descriptive prevalence or outcome claim.
 - HYPOTHETICAL requires a visible hypothetical marker in the anchored prose, anonymous actors, prospective/modal framing, and no implied past testimony or source attribution.
 - PERSONA_EXPERIENCE requires an eligible `personaEntryId`, the pinned Persona Pack hash, and compliance with that archetype's forbidden-detail/required-guardrail notes. Source-pack testimony may not be transformed into first-person experience.
-- `stanceId` and `personaEntryId` use stable IDs derived from the registry heading, such as `stance-1.4` and `experience-A3`. Text marked pending approval is not eligible.
+- `stanceId` and `personaEntryId` use stable IDs derived from the registry heading, such as `stance-1.4` and `experience-A3`. Text marked pending approval is not eligible. If an ID appears more than once, the colliding ID is rejected everywhere: WRITE permission, deterministic validation, and the editor index.
 
 Classification priority is fail-closed:
 
@@ -637,7 +639,7 @@ Normalization removes punctuation, stop phrases, and provocation labels, then co
 
 #### Facts ledger derivation
 
-The model never writes arbitrary ledger quotes after CONFRONT. For each selected beat evidence ID, code resolves the validated ResearchEvidence, ResearchClaim, and source video; rejected claims are excluded; duplicate quotes are collapsed without losing claim IDs. This closes the current path where an agent can invent a fact label around a real but unrelated quote.
+The model never writes arbitrary ledger quotes after CONFRONT. For each selected beat evidence ID, code resolves the validated ResearchEvidence, ResearchClaim, and source video; rejected claims are excluded; duplicate evidence is collapsed by `(videoId, exact quote)` regardless of how many agent-authored claim IDs reuse it. Claim/evidence authorization remains separate from the legacy ledger and must not inflate evidence breadth by duplicating the same transcript substring. This closes the current path where an agent can invent several fact labels around one real quote and satisfy the ledger minimum.
 
 #### Effective assertion kind
 
@@ -696,6 +698,7 @@ Prompt versions and internal stage IDs are bumped once for this design. The disc
 - Stage ID allowlists, settle handling, recovery scanners, prompt versions, and tests change together.
 - Persona stable IDs/eligibility use one parser shared by WRITE envelope, deterministic gate, and editor index.
 - Claim/evidence IDs use one ResearchMap validator shared by CONFRONT, ledger derivation, WRITE anchors, and editor index.
+- DISPUTED caveat markers use one narrow predicate and one shared fixture registry across story planning and Claim Boundary.
 - Existing `DONE` invariant remains: only a passed latest deterministic gate and a clean independent review can finish automatically.
 
 ## Architecture Decisions
@@ -745,7 +748,7 @@ Prompt versions and internal stage IDs are bumped once for this design. The disc
 ### ADR-007: Use attestation and origin groups, not truth labels
 
 - **Status:** Accepted
-- **Decision:** Research records what sources attest, conflict about, or reject. Multi-source strength requires distinct origin groups.
+- **Decision:** Research records what sources attest, conflict about, or reject. Multi-source strength requires distinct coordinator-pinned origin groups among positive evidence only; contradictory evidence forces a disputed/rejected status.
 - **Reason:** A video pack can be internally repetitive or wrong. “Verified” would overstate what the pipeline knows.
 - **Rejected alternatives:** Majority vote by video count; treat channel repetition as independent confirmation; automatic live web verification in this scope.
 
@@ -816,6 +819,9 @@ These are planning ranges only. They must not be displayed or billed as observed
 19. **Given** a semantic-only Claim Boundary defect from EDIT_REVIEW, **then** the run ends `FAILED_GATE` with exact prose and repair guidance; it cannot become DONE through an unreviewed repair.
 20. **Given** an existing legacy Writer V2 run, **then** it remains readable/recoverable without fabricating new checkpoint or assertion certification.
 21. **Given** a valid final StudyArtifact, **when** initial WRITE dispatches, **then** it starts with `freshContext=true` and cannot inherit DIVERGE/RESEARCH/CONFRONT conversation memory.
+22. **Given** positive evidence from one origin and contradictory evidence from another, **then** the claim cannot pass as `ATTESTED` or `MULTI_SOURCE_ATTESTED`; a `DISPUTED` label also requires a nonempty caveat or conflict payload.
+23. **Given** one exact `(videoId, quote)` reused under three claim IDs, **then** ledger derivation counts one unique entry, not three.
+24. **Given** two Persona Pack sections with the same stable ID, **then** that ID is ineligible for narrator permission and absent from the editor eligibility index even when both headings say approved.
 
 Minimum automated assertion fixtures are acceptance criteria 11-16. Criteria 17-19 are additional regression fixtures required by the hard-gate boundary.
 
@@ -825,7 +831,7 @@ Minimum automated assertion fixtures are acceptance criteria 11-16. Criteria 17-
 |---|---|---|
 | Blindness is broken by persistent CLI memory | Confirmation bias survives despite clean envelopes | Require `freshContext=true` and assert it in orchestration tests. |
 | Strict key allowlist cannot detect an outline hidden in prose | Research may still smuggle story topology | Prompt prohibition plus field/size validation; treat semantic leakage as reviewable telemetry and add fixtures when observed. |
-| Origin groups are inferred from a single channel pack | False impression of independent corroboration | Default uncertain items to the same/unknown group; multi-source status requires affirmative distinct groups. |
+| Trusted origin provenance is not yet wired for current packs | False impression of independent corroboration | Treat all current groups as the same/`unknown` temporary fallback; multi-source status requires a future coordinator-pinned provenance extension and never agent inference. |
 | DIVERGE candidates are superficially distinct | Confrontation becomes three wording options | Distinct provocations, belief-shift fields, normalization floor, and rejection fixtures. |
 | ResearchMap grows toward raw-pack size | Token increase exceeds estimate | Byte caps, exact selected quotes only, one raw-pack call, no repeated source text in CONFRONT. |
 | Deterministic factual detector misses semantic empirical claims | Unsourced fact passes as opinion | Independent editor; semantic findings fail closed rather than trusting one unreviewed repair. |
