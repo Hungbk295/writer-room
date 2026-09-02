@@ -1,8 +1,8 @@
 ---
 title: "Writer V2: Blind Study Planning and Claim Boundary"
 status: approved
-version: "1.0"
-date: 2026-09-01
+version: "1.1"
+date: 2026-09-02
 owners: [Product Owner, Writer Room Engineering]
 ---
 
@@ -31,6 +31,8 @@ owners: [Product Owner, Writer Room Engineering]
 - [x] Source quantity is not treated as source independence or truth.
 - [x] Recovery, hash pinning, legacy-run compatibility, failure behavior, and minimum fixtures are specified.
 - [x] Cost estimates are labelled as artifact-size estimates rather than billed-token telemetry.
+- [x] Beat declarations control required planning metadata but never disable whole-script factual detection.
+- [x] Factual paraphrase permission is bounded by code-derived selected claims and exact-quote specifics.
 
 ## Constraints
 
@@ -40,14 +42,14 @@ owners: [Product Owner, Writer Room Engineering]
 | CON-2 | `WriterRunV2.phase` and the visible UI state machine do not gain DIVERGE, RESEARCH, or CONFRONT values. While any of the three runs, the public phase is `STUDY`. |
 | CON-3 | DIVERGE is source-blind. Its prompt, envelope, staged files, and CLI conversation may not contain the Topic Pack, ResearchMap, source IDs, source quotes, prior STUDY output, General Pack, Formula, or Persona Pack. |
 | CON-4 | RESEARCH is hypothesis-blind. It may see the pinned title, brief, audience, Topic Pack, and source manifest, but not the selected hook, DIVERGE artifact, candidate hypotheses, General Pack, Formula, or Persona Pack. |
-| CON-5 | CONFRONT sees only validated DIVERGE and RESEARCH artifacts plus the selected hook and planning contract. It does not receive the raw Topic Pack, General Pack, Formula, or Persona Pack. |
+| CON-5 | CONFRONT sees only validated DIVERGE and RESEARCH artifacts, the selected hook, the planning contract, and an optional compact allowlist of approved Persona experience IDs. It does not receive the raw Topic Pack, General Pack, Formula, Persona prose, source quotes outside ResearchMap, or unapproved Persona entries. |
 | CON-6 | DIVERGE, RESEARCH, CONFRONT, and the initial WRITE use fresh CLI context. Reusing the visible author terminal identity must not reuse conversation memory that breaks blindness or lets raw planning topology leak into prose. |
 | CON-7 | DIVERGE returns three hypotheses, not three prose outlines. Each hypothesis uses a distinct provocation from `CONTRADICTION`, `ZOOM_IN`, `EXTREME_TEST`, and `INVERSION`; at least three of the four must be exercised. |
 | CON-8 | RESEARCH uses a strict allowlist schema and cannot emit outline, hook, thesis, beat order, narration, intro, ending, or recommended story topology fields. |
 | CON-9 | Research status means what the pack attests, not external truth. The allowed statuses are `ATTESTED`, `MULTI_SOURCE_ATTESTED`, `DISPUTED`, and `REJECTED`; the system must not relabel them “verified.” |
 | CON-10 | Multiple videos count as independent support only when `SUPPORTS`/`QUALIFIES` evidence belongs to independently established origin groups. `CONTRADICTS` evidence never increases attestation strength; repetition inside one channel or shared upstream material is not independent corroboration. |
 | CON-11 | CONFRONT is allowed to invalidate the writer's initial idea. A loop that can only patch evidence into the chosen hook is rejected as confirmation bias. |
-| CON-12 | General Pack, Formula, and Persona Pack remain WRITE inputs. They do not shape research collection or hypothesis generation. |
+| CON-12 | General Pack, Formula, and Persona prose remain WRITE inputs. They do not shape research collection or hypothesis generation. CONFRONT may receive only approved Persona experience IDs needed to validate a `PERSONA` beat; no stance/experience text crosses that boundary. |
 | CON-13 | Every protected assertion in WRITE/REPAIR output is represented by a unique exact-substring `assertionAnchor`; metadata supplied by the writer is untrusted until validated. |
 | CON-14 | Assertion kinds are exactly `FACT`, `COMMON_KNOWLEDGE`, `STANCE`, `HYPOTHETICAL`, and `PERSONA_EXPERIENCE`. A writer cannot create an additional exemption class. |
 | CON-15 | A factual detector can never be disabled by “theo tôi,” “tôi tin,” “với tôi,” or another stance marker. A factual payload claimed as STANCE is evaluated as FACT or PERSONA_EXPERIENCE. |
@@ -56,9 +58,15 @@ owners: [Product Owner, Writer Room Engineering]
 | CON-18 | A semantic-only Claim Boundary failure cannot automatically become DONE after an unreviewed repair. Under the six-call ceiling it fails closed for human review. |
 | CON-19 | The post-hook semantic call budget is five calls without REPAIR and six with REPAIR: three STUDY calls, WRITE, EDIT_REVIEW, and at most one REPAIR. No planning loop or second editor pass is added. |
 | CON-20 | Every model dispatch that actually starts consumes the run budget, including a retry. Recovery must prefer a committed checkpoint, and automatic work stops before starting call seven. |
-| CON-21 | Existing Topic Pack, General Pack, Formula, and hook hashes remain pinned. If an optional Persona Pack is loaded at WRITE, its hash is pinned through gate/review/repair. A checkpoint is reusable only when all inputs relevant to that checkpoint still match. |
+| CON-21 | Existing Topic Pack, General Pack, Formula, and hook hashes remain pinned. If an optional Persona Pack supplies the CONFRONT experience-ID allowlist or WRITE prose, its hash is pinned before CONFRONT and remains pinned through gate/review/repair. A checkpoint is reusable only when all inputs relevant to that checkpoint still match. |
 | CON-22 | This delivery adds no live Google, Reddit, social, browser, external API, database, or search dependency. Future source types may enter through a separately validated Topic Pack contract. |
 | CON-23 | DIVERGE, RESEARCH, and CONFRONT dispatch sequentially. They are not parallelized on the same Writer item/attempt because current lane write ownership and checkpoint ordering assume sequential stages. |
+| CON-24 | Every final-plan beat declares exactly one kind: `FACTUAL`, `NARRATIVE`, or `PERSONA`. FACTUAL requires claim/evidence grounding; NARRATIVE requires neither; PERSONA requires one coordinator-approved Persona experience ID. |
+| CON-25 | A declared beat kind is never factual permission. Assertion Boundary scans the entire final script independently of beat kinds; factual signals inside NARRATIVE or PERSONA prose still require an authorized claim and fail closed otherwise. |
+| CON-26 | FACT prose may paraphrase an authorized `ResearchClaim.text`, but every protected specific in that prose must match a protected specific in one of that permission's exact selected evidence quotes. Paraphrase authorizes wording, never number/name drift. |
+| CON-27 | Authorized claim permissions are derived by code only from CONFRONT-selected supporting/qualifying evidence. The writer, editor, and model output cannot add permission records, and the full set of non-rejected ResearchMap claims is never an authorization list. |
+| CON-28 | For non-terminal hook KEEP/REWRITE, every `hookVerdict.claimId` belongs to the union of grounded FACTUAL beat claims. A terminal hook REJECT is exempt because it produces no plan. |
+| CON-29 | Editor defects carry a machine-readable `kind` and `code`. Any `CLAIM_BOUNDARY` defect routes directly to `FAILED_GATE`; only `READING_EXPERIENCE` defects are eligible for the existing one-shot automatic repair. |
 
 ## Implementation Context
 
@@ -91,7 +99,7 @@ No external web documentation is required. This is an internal orchestration and
 
 - file: packages/daemon/src/writer/deterministic-gate.ts
   relevance: CRITICAL
-  why: "Current numeric, proper-noun, hypothetical, common-knowledge, ledger, beat-anchor, identity, and length checks to extend with Claim Boundary."
+  why: "Current numeric, proper-noun, hypothetical, common-knowledge, ledger, beat-anchor, identity, and length checks; shared specific normalization may be exported, but the gate remains independent from Claim Boundary."
 
 - file: packages/daemon/src/writer/run-store-v2.ts
   relevance: HIGH
@@ -126,17 +134,20 @@ Hook selected by human
 +------------------------------------------------------------------------------------+
         | validated final StudyArtifact
         v
-WRITE (General + Formula + optional Persona)
+WRITE (permissions + General + Formula + optional Persona)
         |
-        v
-Deterministic Gate ---> independent EDIT_REVIEW + Claim Boundary
-        |                                   |
-        | safe/style repairable             | semantic boundary failure
-        v                                   v
-one REPAIR -> deterministic Gate        FAILED_GATE + precise repair notes
-        |
-        v
-DONE or FAILED_GATE
+        +--> Deterministic Gate -----+
+        |                             +--> Combined typed gate
+        +--> Assertion Boundary -----+            |
+                                                   v
+                                   independent typed EDIT_REVIEW
+                                      |                     |
+                                      | READING_EXPERIENCE  | CLAIM_BOUNDARY
+                                      v                     v
+                              one REPAIR -> re-gate      FAILED_GATE
+                                      |
+                                      v
+                               DONE or FAILED_GATE
 ```
 
 Inside scope:
@@ -165,6 +176,7 @@ writer-run-v2.ts (thin coordinator)
     |-- research-map.ts       RESEARCH contract and pack grounding
     |-- assertion-boundary.ts assertion classification and editor index
     |-- deterministic-gate.ts existing hard gate + deterministic floor
+    |-- writer-hard-gate.ts   typed result combination and editor routing
     |-- LaneScheduler         immutable stage inputs/artifacts and fresh contexts
     `-- run-store-v2.ts       atomic public run + internal checkpoint cursor
 ```
@@ -184,7 +196,7 @@ writer-run-v2.ts (thin coordinator)
 - `research-map.ts` may read/validate Topic Pack material but cannot construct prose order.
 - `story-planning.ts` may compare hypotheses with a validated ResearchMap but cannot accept raw Topic Pack text.
 - `assertion-boundary.ts` creates the deterministic classification floor and compact reviewer index; it does not decide narrative quality.
-- `deterministic-gate.ts` remains pure and testable. It receives validated assertion metadata rather than reading run files.
+- `deterministic-gate.ts` remains pure, testable, and independent. It receives only its legacy gate input; the coordinator separately calls Assertion Boundary and hands both results to `writer-hard-gate.ts`.
 - LaneScheduler owns immutable inputs, artifact hashes, stage isolation, and dispatch attempts. Run Store owns resumable cursor state.
 
 ### Project Commands
@@ -207,7 +219,7 @@ The existing STUDY call has one model inspect the source topology and immediatel
 
 This is progressive alignment, not progressive source patching. Evidence can rebuild or reject the initial idea and hook; the system therefore gains human-like revision without pretending that source repetition equals lived truth.
 
-This SDD supersedes only two Writer V2 details from the earlier MVP design: the single monolithic STUDY call and the absence of an explicit stance-versus-claim boundary. It preserves the existing Writer V2 lifecycle, hard-gate layers, artifact model, and downstream contracts; it does not overlap the Spy/source-acquisition designs.
+This SDD supersedes the earlier MVP's monolithic STUDY call, all-beats-grounded planning assumption, and absence of an explicit stance/claim permission boundary. It preserves the existing Writer V2 public lifecycle and legacy facts ledger while adding typed internal artifacts; it does not overlap the Spy/source-acquisition designs.
 
 ## Building Block View
 
@@ -219,17 +231,21 @@ This SDD supersedes only two Writer V2 details from the earlier MVP design: the 
 
 #### 2. Research Map
 
-`research-map.ts` defines the RESEARCH prompt contract, strict allowlist parser, exact-quote/source-ID validation, independent-origin semantics, size limits, and conversion from selected evidence to the legacy `factsLedger`.
+`research-map.ts` defines the RESEARCH prompt contract, strict allowlist parser, exact-quote/source-ID validation, independent-origin semantics, claim-specific provenance, code-derived claim permissions, size limits, and conversion from selected evidence to the legacy `factsLedger`.
 
 #### 3. Story Planning
 
-`story-planning.ts` defines DIVERGE candidates, the four provocations, meaningful-distinctness checks, CONFRONT deltas, verdicts, hook verdict, evidence-to-beat mapping, and final `WriterVideoPlan` validation.
+`story-planning.ts` defines DIVERGE candidates, the four provocations, meaningful-distinctness checks, CONFRONT deltas, verdicts, typed beats, hook-to-beat claim containment, evidence-to-beat mapping, and final plan validation.
 
 #### 4. Assertion Boundary
 
 `assertion-boundary.ts` defines the five assertion kinds, exact anchor validation, persona registry references, classification priority, deterministic findings, compact editor input, and semantic-boundary finding schema.
 
-#### 5. Independent Editor
+#### 5. Combined Hard-Gate Contract
+
+`writer-hard-gate.ts` combines already-computed deterministic and Assertion Boundary results, validates typed editor defects, and selects `CLEAN`, `AUTO_REPAIR`, or `FAILED_GATE`. It imports the two result types; neither underlying validator imports it or the other validator in reverse.
+
+#### 6. Independent Editor
 
 The existing editor remains a different agent/session from the author. Its current reading-experience checklist gains a Claim Boundary section and a compact admissibility index. It still receives no raw Topic Pack, General Pack, Formula, or writer reasoning.
 
@@ -241,7 +257,8 @@ packages/daemon/src/writer/
 ├── research-map.ts           # NEW: ResearchMap schema, validation, ledger derivation
 ├── story-planning.ts         # NEW: DIVERGE/CONFRONT schemas, prompts, validation
 ├── assertion-boundary.ts     # NEW: ADR-004 contract and deterministic boundary floor
-├── deterministic-gate.ts     # MODIFY: consume assertion anchors and boundary findings
+├── writer-hard-gate.ts       # NEW: typed result combination, editor defect validation/routing
+├── deterministic-gate.ts     # MODIFY: remain independent; export shared specific normalization only
 ├── persona-pack.ts           # MODIFY: stable IDs and approval/eligibility index
 └── run-store-v2.ts           # MODIFY only for additive legacy defaults if required
 
@@ -249,7 +266,9 @@ packages/daemon/test/writer/
 ├── writer-run-v2.test.ts         # MODIFY: three-call flow, blindness, recovery, budget
 ├── deterministic-gate.test.ts    # MODIFY: assertion fixtures and priority
 ├── research-map.test.ts          # NEW: strict schema and exact grounding
-└── story-planning.test.ts        # NEW: candidate/confront validation
+├── story-planning.test.ts        # NEW: candidate/confront validation
+├── assertion-boundary.test.ts    # NEW: permission/specific/whole-script fixtures
+└── writer-hard-gate.test.ts      # NEW: typed editor defect and routing fixtures
 ```
 
 No Writer v3 module or alternate public pipeline is introduced.
@@ -341,6 +360,7 @@ Validation rules:
 - Every referenced claim/evidence ID resolves; rejected claims cannot enter the facts ledger.
 - `MULTI_SOURCE_ATTESTED` requires positive (`SUPPORTS`/`QUALIFIES`) evidence from at least two distinct, nonempty `originGroup` values pinned by the coordinator. `CONTRADICTS` evidence is excluded from supporting-origin counts. The research agent may not declare source independence.
 - Any claim containing both positive and `CONTRADICTS` evidence is ineligible for `ATTESTED` or `MULTI_SOURCE_ATTESTED`; it must be `DISPUTED` or `REJECTED`. `DISPUTED` requires both evidence directions plus a nonempty claim caveat or top-level conflict payload, so the agent cannot choose the stronger label for the same evidence set.
+- Every protected specific in `ResearchClaim.text` must resolve to the same canonical specific in at least one exact evidence quote owned by that claim. Protected specifics include money, measured percentages, ages, dated years, “N lần” multiples, and detected proper nouns. A claim containing an invented or drifted specific fails RESEARCH before it can become permission.
 - Until a separately trusted provenance extension is wired, current pack paths conservatively pin every origin to `unknown`, so multi-source status cannot pass. This is a temporary safe fallback, not the final provenance design; neither model output nor repeated videos may upgrade it.
 - The top-level and nested schemas use explicit allowlists. Keys or sections that encode hook, thesis, outline, beat order, intro, ending, narration, recommendation, or story spine are rejected.
 - Serialized output is capped at 60 KiB. An oversize artifact fails with `RESEARCH_ARTIFACT_OVERSIZE`; the coordinator does not automatically repeat the raw-pack call merely to ask for compression.
@@ -350,6 +370,7 @@ Validation rules:
 ```ts
 type HypothesisVerdict = 'KEEP' | 'REBUILD' | 'REJECT';
 type HookStatus = 'KEEP' | 'REWRITE' | 'REJECT';
+type StoryBeatKind = 'FACTUAL' | 'NARRATIVE' | 'PERSONA';
 
 interface ConfrontDelta {
   field: string;
@@ -377,17 +398,31 @@ interface HookVerdict {
   replacementHook?: SelectedHook;
 }
 
+interface StoryPlanBeat extends WriterVideoPlanBeat {
+  kind: StoryBeatKind;
+  personaEntryId?: string;
+}
+
 interface ConfrontArtifact {
   schemaVersion: 'writer-study-confront-v1';
   assessments: [HypothesisAssessment, HypothesisAssessment, HypothesisAssessment];
   selectedHypothesisId?: string;
   hookVerdict: HookVerdict;
-  finalPlan?: WriterVideoPlan;
+  finalPlan?: Omit<WriterVideoPlan, 'progression'> & {
+    progression: StoryPlanBeat[];
+  };
   beatEvidence?: Array<{
     beatIndex: number;
     claimIds: string[];
     evidenceIds: string[];
   }>;
+}
+
+interface ConfrontValidationContext {
+  divergeArtifact: DivergeArtifact;
+  researchMap: ResearchMap;
+  selectedHook: SelectedHook;
+  approvedPersonaExperienceIds?: readonly string[];
 }
 ```
 
@@ -398,9 +433,27 @@ Validation rules:
 - REBUILD requires explicit before/after deltas and a rebuilt belief shift; it is not a synonym for minor wording edits.
 - REJECT cannot be selected. At least one KEEP/REBUILD candidate is required to proceed.
 - `hookVerdict.status=REWRITE` requires a valid replacement hook and evidence-linked reason. It may tighten grounding while preserving the human-selected promise; a materially different promise is `REJECT` and requires human choice. `REJECT` produces no final plan and fails STUDY with `HOOK_REVIEW_REQUIRED`; it does not trigger an automatic hook loop.
-- Every factual beat in `finalPlan` maps to non-rejected claim and evidence IDs. The application, not the model, derives the legacy `factsLedger` from those selected evidence records.
+- FACTUAL beats have exactly one `beatEvidence` mapping with non-rejected claim IDs and supporting/qualifying evidence IDs. NARRATIVE beats have no `beatEvidence` and no Persona ID. PERSONA beats have no `beatEvidence` and require one ID from the coordinator-pinned approved Persona experience allowlist.
+- Beat kind controls required planning metadata only. It is not passed to Assertion Boundary as an exemption and never suppresses whole-script factual scanning.
+- For hook KEEP/REWRITE, `hookVerdict.claimIds` must be a subset of the union of grounded FACTUAL beat claim IDs. Hook REJECT remains the terminal no-plan exception.
+- The application, not the model, derives the legacy `factsLedger` and `AuthorizedClaimPermission[]` from selected FACTUAL evidence records. The existing minimum of three unique ledger entries remains until separately changed by the owner.
 - A DISPUTED claim may be selected only when the plan preserves its conflict/caveat; an uncaveated beat is rejected. Planning and Claim Boundary use one deliberately narrow caveat-marker registry and the same acceptance/rejection fixtures; vocabulary expansion is a contract change. Ledger derivation must retain at least the existing minimum of three grounded entries.
 - Serialized DIVERGE and CONFRONT outputs are capped at 16 KiB and 32 KiB respectively.
+
+#### Authorized claim permission
+
+```ts
+interface AuthorizedClaimPermission {
+  claimId: string;
+  text: string;
+  status: Exclude<ResearchStatus, 'REJECTED'>;
+  caveats: string[];
+  evidenceIds: string[];
+  quotes: string[];
+}
+```
+
+The permission list is a code-derived capability object, not model output. For each claim selected by a FACTUAL beat, it contains only that claim's selected supporting/qualifying evidence IDs and their exact quotes. The identical immutable list is staged for WRITE, supplied to Assertion Boundary, and projected into the independent editor index. Unselected ResearchMap claims confer no permission. The legacy `factsLedger` remains in parallel for the old gate until coordinator migration is complete.
 
 #### Checkpoint metadata
 
@@ -448,6 +501,14 @@ interface AssertionAnchor {
   stanceId?: string;
   personaEntryId?: string;
 }
+
+interface AssertionBoundaryInput {
+  script: string;
+  assertionAnchors: unknown;
+  permissions: readonly AuthorizedClaimPermission[];
+  personaRegistry?: PersonaRegistry;
+  pinnedPersonaPackHash?: string;
+}
 ```
 
 Anchor rules:
@@ -455,7 +516,7 @@ Anchor rules:
 - `quote` is copied verbatim from the final script and must identify exactly one occurrence. If a short phrase repeats, the writer expands the quote until it is unique.
 - Anchors are minimal complete assertions, are ordered by script position, and may not partially overlap. Exact duplicates are rejected.
 - The gate scans the entire script independently of the supplied anchors. Every detected protected assertion must be fully covered by one anchor; a missing anchor fails as `ASSERTION_UNANCHORED`. The independent reviewer performs the same completeness check for semantic empirical claims.
-- FACT requires at least one non-rejected ResearchMap claim whose selected evidence produced the facts ledger. If the claim is DISPUTED, the anchored prose must preserve its conflict/caveat.
+- FACT requires at least one ID in the code-derived `AuthorizedClaimPermission[]`; an arbitrary non-rejected ResearchMap claim is insufficient. The prose may paraphrase the authorized `text`, but each protected specific in the anchored prose must canonically match one in the exact selected `quotes` of its cited permissions. If the claim is DISPUTED, the anchored prose must also preserve its conflict/caveat.
 - COMMON_KNOWLEDGE has no claim ID but must pass the bounded existing common-knowledge rules. Money, age, year, study attribution, named-case detail, measured percentage, and “N times” comparisons are never exempt by this kind.
 - STANCE requires an eligible `stanceId` and is limited to preference, value judgment, or policy choice owned by the narrator. It cannot carry a descriptive statistic, named case, study result, empirical generalization, or hidden biography. A clearly normative personal threshold may contain a number only when the same number/unit and policy are explicitly present in the approved stance entry; this never authorizes a descriptive prevalence or outcome claim.
 - HYPOTHETICAL requires a visible hypothetical marker in the anchored prose, anonymous actors, prospective/modal framing, and no implied past testimony or source attribution.
@@ -471,6 +532,56 @@ Classification priority is fail-closed:
 5. Only after the prior detectors do not fire may an evaluative sentence be STANCE. The one numeric exception is an exact approved normative threshold described above; it is checked against the Persona Pack, not inferred from a stance prefix.
 
 Therefore “Theo tôi, 70%...” is FACT, never STANCE. The writer-declared kind does not override the effective kind computed by the gate/reviewer.
+
+Specific matching is deliberately stricter than semantic paraphrase. VND spelling may normalize to the same amount (`800 triệu` and `0,8 tỷ`), but a nearby amount does not. Given exact evidence `năm ngoái tôi lỗ gần 800 triệu`, `có người lỗ gần 800 triệu chỉ trong một năm` may pass, while `có người mất gần một tỷ chỉ trong một năm` fails `ASSERTION_SPECIFIC_UNAUTHORIZED`. The phrase “một năm” in this fixture paraphrases “năm ngoái”; it does not authorize money drift.
+
+#### Typed editor and combined gate contract
+
+```ts
+type EditorDefectKind = 'READING_EXPERIENCE' | 'CLAIM_BOUNDARY';
+
+type ReadingExperienceDefectCode =
+  | 'MEMORY_ANCHOR_WEAK'
+  | 'PROGRESSION_FLAT'
+  | 'STRUCTURE_SWAPPABLE'
+  | 'HOOK_PAYOFF_MISSED'
+  | 'ENDING_DECAY'
+  | 'PACING'
+  | 'PROSE_DRY'
+  | 'CLARITY';
+
+type ClaimBoundaryDefectCode =
+  | 'EMPIRICAL_CLAIM_UNAUTHORIZED'
+  | 'SPECIFIC_DRIFT'
+  | 'DISPUTED_UNQUALIFIED'
+  | 'PERSONA_UNAUTHORIZED'
+  | 'ASSERTION_UNANCHORED'
+  | 'SOURCE_MISREPRESENTED'
+  | 'ARITHMETIC_ERROR';
+
+interface EditorDefectBase {
+  quote: string;
+  severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  note: string;
+}
+
+type EditorDefect = EditorDefectBase & (
+  | { kind: 'READING_EXPERIENCE'; code: ReadingExperienceDefectCode }
+  | { kind: 'CLAIM_BOUNDARY'; code: ClaimBoundaryDefectCode }
+);
+
+interface CombinedWriterGateResult {
+  passed: boolean;
+  deterministic: GateResult;
+  claimBoundary: AssertionBoundaryResult;
+  violations: Array<
+    | { source: 'DETERMINISTIC'; code: GateViolationCode; detail: string; quote?: string }
+    | { source: 'CLAIM_BOUNDARY'; code: AssertionBoundaryViolationCode; detail: string; quote?: string }
+  >;
+}
+```
+
+Editor codes use disjoint allowlists per kind. Reading-experience codes cover memory, progression, structure, payoff, ending, pacing, and prose clarity. Claim-boundary codes cover unauthorized empirical claims, specific drift, disputed-claim qualification, Persona provenance, assertion completeness, source misrepresentation, and arithmetic. The parser rejects a code paired with the wrong kind. Routing is deterministic: no defects plus a clean combined gate is `CLEAN`; reading defects are `AUTO_REPAIR`; any claim-boundary defect or failed combined gate is `FAILED_GATE`. `deterministic-gate.ts` remains unaware of Assertion Boundary; the coordinator invokes both validators and gives their results to the combiner.
 
 #### Data Storage Changes
 
@@ -500,10 +611,20 @@ validateConfrontArtifact(
   diverge: DivergeArtifact,
   research: ResearchMap,
 ): ValidationResult<ConfrontArtifact>
+deriveAuthorizedClaimPermissions(
+  research: ResearchMap,
+  selectedEvidenceIds: readonly string[],
+): ValidationResult<AuthorizedClaimPermission[]>
 deriveStudyArtifact(research: ResearchMap, confront: ConfrontArtifact): StudyArtifact
 nextStudyAction(run: WriterRunV2, artifacts: ArtifactReader): StudyAction
-validateAssertionAnchors(input: AssertionBoundaryInput): AssertionBoundaryResult
+validateAssertionBoundary(input: AssertionBoundaryInput): AssertionBoundaryResult
 buildClaimBoundaryReviewIndex(input: BoundaryIndexInput): BoundaryReviewIndex
+combineWriterGateResults(
+  deterministic: GateResult,
+  claimBoundary: AssertionBoundaryResult,
+): CombinedWriterGateResult
+validateTypedEditorReview(value: unknown, script: string): EditorReviewValidationResult
+routeEditorOutcome(gate: CombinedWriterGateResult, defects: readonly EditorDefect[]): EditorRoute
 ```
 
 All validators are deterministic, side-effect free, and directly unit-tested. Dispatch functions receive already validated/pinned inputs.
@@ -518,6 +639,8 @@ interface StudyArtifact {
   gap: string;
   outline: WriterVideoPlan;
   factsLedger: LedgerEntry[];
+  /** Required for new planning runs; absent only on readable legacy artifacts. */
+  authorizedClaims?: AuthorizedClaimPermission[];
   planning?: {
     schemaVersion: 'writer-study-planning-v1';
     selectedHypothesisId: string;
@@ -529,17 +652,17 @@ interface StudyArtifact {
 }
 ```
 
-`coverageMap` is derived from `ResearchMap.sourceAudit`; `gap` is derived from the selected/rebuilt central tension; `outline` comes from validated CONFRONT; and `factsLedger` is mechanically derived from selected evidence. `effectiveHook` equals the human selection on KEEP and the validated replacement on REWRITE; the original `run.selectedHook` remains available for audit. The optional `planning` field allows old persisted runs to remain readable.
+`coverageMap` is derived from `ResearchMap.sourceAudit`; `gap` is derived from the selected/rebuilt central tension; `outline` comes from validated CONFRONT; and both `factsLedger` and `authorizedClaims` are mechanically derived from selected FACTUAL evidence. `effectiveHook` equals the human selection on KEEP and the validated replacement on REWRITE; the original `run.selectedHook` remains available for audit. Existing persisted runs without `authorizedClaims` remain readable but cannot be silently certified under the new Claim Boundary.
 
 WRITE and REPAIR draft artifacts add required `assertionAnchors`. Legacy completed drafts remain readable but are not silently re-certified under ADR-004.
 
 #### Integration Points
 
 - The settle listener accepts all three internal STUDY stage IDs and commits one checkpoint per valid artifact.
-- WRITE starts with `freshContext=true` and receives the final StudyArtifact and `effectiveHook`, General Pack, Formula contract/content as currently applicable, and optional pinned Persona Pack. It does not receive raw ResearchMap topology or CONFRONT conversation memory.
-- Gate receives the final script, assertion anchors, facts ledger, Persona eligibility index, and existing outline/identity/length inputs.
-- EDIT_REVIEW receives the script, outline, effective hook, writer assertion anchors, deterministic findings, and a compact index of allowed claim/stance/experience IDs and texts. It receives no raw source files.
-- REPAIR receives precise deterministic/style defects. A semantic-only boundary failure bypasses automatic repair and ends as `FAILED_GATE` with exact quote and required classification/source/persona repair.
+- WRITE starts with `freshContext=true` and receives the final plan, `effectiveHook`, the code-derived `authorizedClaims`, General Pack, Formula contract/content as currently applicable, and optional pinned Persona Pack. It does not receive raw ResearchMap topology or CONFRONT conversation memory.
+- The coordinator calls the legacy deterministic gate and Assertion Boundary independently, then combines their typed results. Assertion Boundary receives `authorizedClaims`, never the whole ResearchMap. Beat kinds do not alter either scan.
+- EDIT_REVIEW receives the script, outline, effective hook, writer assertion anchors, combined findings, and a compact projection of the same authorized claim/stance/experience records. It receives no raw source files.
+- REPAIR receives precise deterministic and `READING_EXPERIENCE` defects. A failed combined gate or any `CLAIM_BOUNDARY` editor defect bypasses automatic repair and ends as `FAILED_GATE` with exact quote and required classification/source/persona repair.
 
 ### Implementation Examples
 
@@ -565,7 +688,7 @@ Invalid factual payload disguised as stance:
 }
 ```
 
-The effective kind is FACT. Without a non-rejected `claimId`, the gate rejects it.
+The effective kind is FACT. Without a claim ID present in the code-derived permission list, the gate rejects it.
 
 ## Runtime View
 
@@ -573,23 +696,26 @@ The effective kind is FACT. Without a non-rejected `claimId`, the gate rejects i
 
 ```text
 1. Human selects a hook and starts Writer V2.
-2. Coordinator pins title/brief/audience/hook/pack/general/formula hashes,
+2. Coordinator pins title/brief/audience/hook/pack/general/formula/persona hashes,
    sets status RUNNING + phase STUDY, and checks call budget.
 3. DIVERGE launches with freshContext=true and no source/craft/persona files.
 4. Validator commits checkpoint D.
 5. RESEARCH launches with freshContext=true, Topic Pack files, and no hook/hypotheses.
 6. Validator grounds quotes/statuses, then commits checkpoint R.
-7. CONFRONT launches with freshContext=true using D + R + selected hook, no raw pack.
-8. Validator commits checkpoint C and derives the legacy StudyArtifact.
-9. Public phase advances to WRITE; a fresh context receives final plan + craft/persona inputs.
+7. CONFRONT launches with freshContext=true using D + R + selected hook and, when available, approved Persona experience IDs; it receives no raw pack or Persona prose.
+8. Validator enforces typed beats and hook-claim containment, commits checkpoint C,
+   then derives legacy factsLedger plus AuthorizedClaimPermission[] from FACTUAL evidence.
+9. Public phase advances to WRITE; a fresh context receives final plan, permissions,
+   and craft/persona inputs.
 10. WRITE emits script plus assertionAnchors.
-11. Deterministic gate computes effective kinds and factual/persona provenance.
+11. Coordinator runs the legacy deterministic gate and whole-script Assertion Boundary,
+    then combines both typed results without either validator importing the other.
 12. EDIT_REVIEW independently checks experience, story quality, arithmetic, and
-    semantic Claim Boundary using the compact admissibility index.
-13a. No defect: DONE if deterministic gate also passed.
-13b. Deterministically repairable or style defect: one REPAIR, then deterministic gate.
-13c. Semantic-only Claim Boundary defect: FAILED_GATE with exact repair notes; no
-     unreviewed automatic repair is allowed to become DONE.
+    semantic Claim Boundary using the compact permission index.
+13a. Clean combined gate + no defect: DONE.
+13b. Clean combined gate + READING_EXPERIENCE defect: one REPAIR, then re-gate.
+13c. Failed combined gate or any CLAIM_BOUNDARY defect: FAILED_GATE with exact repair
+     notes; no unreviewed automatic repair is allowed to become DONE.
 ```
 
 ### Checkpoint and Resume Flow
@@ -622,14 +748,19 @@ Every actual model launch increments `modelCallsStarted` before dispatch. A cras
 | Blindness envelope contains a forbidden field/file | `FAILED` before dispatch | Name the field/file and sub-call contract. |
 | Invalid/missing exact source quote | RESEARCH artifact rejected | Identify evidence ID, video ID, and unmatched quote. |
 | Claimed independent support shares one origin group | RESEARCH artifact rejected/downgraded | List the colliding evidence IDs/origin group. |
+| Claim text contains a number/name absent from its own exact evidence | RESEARCH artifact rejected | Quote the drifted specific and the claim/evidence IDs that failed to authorize it. |
 | Hypotheses differ only in wording | DIVERGE artifact rejected | Name normalized duplicate fields and required provocation change. |
 | No hypothesis survives CONFRONT | Existing `FAILED` terminal handling | Return each verdict/falsifier and request a new human hook/brief decision. |
+| NARRATIVE/PERSONA beat carries factual grounding metadata, or FACTUAL beat lacks it | CONFRONT artifact rejected | Name beat index, declared kind, and required/forbidden fields. |
+| PERSONA beat cites a missing/pending/rejected ID | CONFRONT artifact rejected | Name beat index and require an approved experience ID or a different beat kind. |
+| Hook KEEP/REWRITE cites a claim absent from grounded FACTUAL beats | CONFRONT artifact rejected | Name the orphan hook claim and require a supporting beat or terminal REJECT. |
 | Hook rejected by evidence | `HOOK_REVIEW_REQUIRED` | Give evidence-linked reason; do not silently preserve the hook. |
 | Checkpoint tampering/hash mismatch | `STUDY_CHECKPOINT_INVALID` | Name stage, expected hash, and actual hash. |
 | Call seven would start | `MODEL_CALL_BUDGET_EXHAUSTED` | Show calls consumed by stage/attempt; require human action. |
 | STANCE contains protected factual payload | `FAILED_GATE` | Quote exact prose, effective kind FACT, and missing claim ID. |
+| FACT paraphrase changes a protected number/name | `FAILED_GATE` | Quote the drifted specific and the selected exact evidence quotes; preserve the source specific or remove it. |
 | Persona experience lacks eligible ID | `FAILED_GATE` | Quote exact prose and require removal or an approved Persona Pack entry. |
-| Independent reviewer finds semantic empirical assertion | `FAILED_GATE` | Quote exact prose and require grounding, qualification, hypothetical rewrite, or removal. |
+| Independent reviewer emits `CLAIM_BOUNDARY` defect | `FAILED_GATE` | Preserve typed code/quote/note; do not route through unreviewed automatic repair. |
 
 ### Complex Logic
 
@@ -640,6 +771,16 @@ Normalization removes punctuation, stop phrases, and provocation labels, then co
 #### Facts ledger derivation
 
 The model never writes arbitrary ledger quotes after CONFRONT. For each selected beat evidence ID, code resolves the validated ResearchEvidence, ResearchClaim, and source video; rejected claims are excluded; duplicate evidence is collapsed by `(videoId, exact quote)` regardless of how many agent-authored claim IDs reuse it. Claim/evidence authorization remains separate from the legacy ledger and must not inflate evidence breadth by duplicating the same transcript substring. This closes the current path where an agent can invent several fact labels around one real quote and satisfy the ledger minimum.
+
+#### Claim permission and protected specifics
+
+Research validation canonicalizes protected specifics in every `claim.text` and checks them against only that claim's exact evidence quotes. Money is compared by canonical amount/unit, so spelling changes do not create drift; names are normalized without granting fuzzy entity substitution. This is the root invariant that makes claim-text paraphrase usable.
+
+After CONFRONT, code groups only selected FACTUAL supporting/qualifying evidence by claim and emits `AuthorizedClaimPermission[]`. Assertion Boundary checks cited IDs against that list and checks each protected script specific against the permission's selected exact quotes. Claim text authorizes the proposition's wording; quotes authorize its concrete specifics. The editor receives the same records to assess semantic drift that deterministic comparison cannot decide.
+
+#### Beat declaration is not authority
+
+Typed beats make planning less essay-like: a transition, question, or rhythm beat need not invent claim IDs merely to satisfy a topology quota. The trade-off is an intentionally independent final scan. No branch in deterministic gate or Assertion Boundary reads a NARRATIVE declaration as permission to skip prose; if factual signals appear, the normal FACT rules fire. PERSONA IDs similarly prove only approved narrator material and cannot authorize external facts embedded inside that prose.
 
 #### Effective assertion kind
 
@@ -661,10 +802,11 @@ This is an in-process daemon change using existing filesystem artifacts and Lane
 Rollout order:
 
 1. Land Persona Pack support and its optional file without enabling unbounded stance permission.
-2. Land ADR-004 types, parser, deterministic fixtures, and editor schema behind tests.
-3. Land DIVERGE/RESEARCH/CONFRONT modules and checkpoint recovery.
-4. Switch new Writer V2 runs to the internal three-call STUDY flow.
-5. Preserve read/recovery behavior for existing single-STUDY runs.
+2. Land origin/status, quote dedupe, duplicate-Persona, and shared-caveat fail-closed fixes.
+3. Land claim-text specific provenance before any claim becomes paraphrase permission.
+4. Land code-derived permissions, typed beats, hook-to-beat containment, and typed editor/combined-result contracts behind pure tests.
+5. Only after those contracts pass, wire the thin coordinator and checkpoint recovery in `writer-run-v2.ts` under a separate approval gate.
+6. Switch new Writer V2 runs to the internal three-call STUDY flow while preserving read/recovery behavior for existing single-STUDY runs.
 
 Prompt versions and internal stage IDs are bumped once for this design. The discarded lateral-gap STUDY prompt is not shipped separately; its four provocations live in DIVERGE.
 
@@ -699,6 +841,8 @@ Prompt versions and internal stage IDs are bumped once for this design. The disc
 - Persona stable IDs/eligibility use one parser shared by WRITE envelope, deterministic gate, and editor index.
 - Claim/evidence IDs use one ResearchMap validator shared by CONFRONT, ledger derivation, WRITE anchors, and editor index.
 - DISPUTED caveat markers use one narrow predicate and one shared fixture registry across story planning and Claim Boundary.
+- Authorized claims are derived once from selected FACTUAL evidence and projected unchanged into WRITE, Assertion Boundary, and editor inputs.
+- Dependency direction is coordinator/combiner → deterministic gate + Assertion Boundary. `deterministic-gate.ts` never imports `assertion-boundary.ts` or the combiner.
 - Existing `DONE` invariant remains: only a passed latest deterministic gate and a clean independent review can finish automatically.
 
 ## Architecture Decisions
@@ -727,14 +871,14 @@ Prompt versions and internal stage IDs are bumped once for this design. The disc
 ### ADR-004: Separate narrator stance from factual claims
 
 - **Status:** Accepted
-- **Decision:** Use the five-kind assertion contract, exact-substring anchors, persona references, deterministic floor, and independent reviewer. Factual detection has priority over stance markers.
+- **Decision:** Use the five-kind assertion contract, exact-substring anchors, code-derived authorized claims, persona references, deterministic floor, and independent reviewer. Factual detection has priority over stance and beat-kind declarations.
 - **Reason:** Narrator voice needs room for values and interpretation, but “theo tôi” must not become a bypass for statistics, empirical comparisons, named cases, or invented biography.
 - **Rejected alternatives:** Require every sentence to have a source claim; allow all first-person statements without ledger; rely only on the writer's declared kind; rely only on regex.
 
 ### ADR-005: Fold Claim Boundary into EDIT_REVIEW and fail semantic defects closed
 
 - **Status:** Accepted
-- **Decision:** The independent editor performs both reader-quality and semantic-boundary review in one call. Semantic-only boundary failures go to human `FAILED_GATE`, not an unreviewed automatic repair.
+- **Decision:** The independent editor performs both reader-quality and semantic-boundary review in one call. Its defects carry a typed discriminator/code; every `CLAIM_BOUNDARY` defect goes to human `FAILED_GATE`, not an unreviewed automatic repair.
 - **Reason:** A second post-repair semantic review would be call seven. Auto-passing a semantic rewrite without that review would weaken the hard gate.
 - **Rejected alternatives:** Separate Claim Boundary call; seventh verification call; automatic DONE after a semantic boundary repair checked only by regex.
 
@@ -755,21 +899,42 @@ Prompt versions and internal stage IDs are bumped once for this design. The disc
 ### ADR-008: Apply craft and persona after evidence planning
 
 - **Status:** Accepted
-- **Decision:** General Pack, Formula, and Persona Pack remain WRITE-only inputs; Persona IDs also feed the later gate/editor eligibility index.
+- **Decision:** General Pack, Formula, and Persona prose remain WRITE-only inputs; a compact allowlist of approved Persona experience IDs may enter CONFRONT solely to validate PERSONA beats, and the full eligibility index feeds the later gate/editor.
 - **Reason:** Research should map reality and uncertainty, not search for evidence that fits a preferred formula or borrowed storytelling voice.
 - **Rejected alternatives:** Show General/Formula to DIVERGE or RESEARCH; use source experiences as narrator biography.
+
+### ADR-009: Type beats without treating declarations as authority
+
+- **Status:** Accepted
+- **Decision:** Final-plan beats are FACTUAL, NARRATIVE, or PERSONA. Only FACTUAL beats need claim/evidence mapping; PERSONA needs an approved experience ID. The final script is always scanned independently of those declarations.
+- **Reason:** Forcing evidence onto transitions and rhythm beats recreates source-backed essay topology. Trusting the model's kind would create a trivial bypass, so kind changes planning obligations but not factual permission.
+- **Rejected alternatives:** Ground every beat; let NARRATIVE bypass Claim Boundary; infer beat kind after prose without an explicit planning contract.
+
+### ADR-010: Permit claim-text paraphrase while pinning exact specifics
+
+- **Status:** Accepted
+- **Decision:** FACT wording may paraphrase `ResearchClaim.text`. Every protected specific in claim text must first trace to that claim's evidence, and every protected specific in final prose must trace to the cited permission's selected exact quotes.
+- **Reason:** Exact-quote-only prose reads copied and rigid, while unconstrained semantic paraphrase permits number/name drift. Two-stage specific validation preserves natural language without widening factual detail.
+- **Rejected alternatives:** Exact-quote-only authorization; fuzzy numeric equivalence; treat a nearby rounded amount as the same fact; trust claim text without validating its specifics.
+
+### ADR-011: Derive capabilities and hook support from factual beats
+
+- **Status:** Accepted
+- **Decision:** Code derives `AuthorizedClaimPermission[]` from selected FACTUAL evidence, and non-terminal hook claim IDs must be a subset of grounded FACTUAL beat claims.
+- **Reason:** A model-authored permission list or all non-rejected claims would silently expand authority. Hook containment keeps the opening promise attached to a beat that actually carries evidence without adding a second hook-evidence schema.
+- **Rejected alternatives:** Agent-declared permissions; authorize all non-rejected ResearchMap claims; separate `hookEvidenceIds`; permit an evidence claim used only by the hook.
 
 ## Quality Requirements
 
 | ID | Quality | Measurable target |
 |---|---|---|
 | QR-1 | Epistemic isolation | Tests inspect every staged prompt, envelope, file, input hash, and `freshContext`; no forbidden input appears in DIVERGE or RESEARCH, and initial WRITE also starts fresh. |
-| QR-2 | Factual grounding | 100% of ResearchEvidence quotes resolve exactly to the pinned pack/video; 100% of final FACT anchors resolve to non-rejected claim IDs. |
+| QR-2 | Factual grounding | 100% of ResearchEvidence quotes resolve exactly to the pinned pack/video; every protected claim-text specific resolves to that claim's evidence; every final FACT anchor resolves to a code-derived permission and its protected specifics resolve to selected exact quotes. |
 | QR-3 | Recovery | For crashes after D, R, or C, Continue dispatches at most the next missing call; a valid R is never called again. |
 | QR-4 | Cost bound | At most six actual post-hook model launches per run. Planned path is five without repair and six with repair. |
 | QR-5 | Artifact size | DIVERGE <= 16 KiB, RESEARCH <= 60 KiB, CONFRONT <= 32 KiB serialized JSON. |
 | QR-6 | Compatibility | Existing completed/single-STUDY run JSON remains readable; public phase unions and UI routing do not change. |
-| QR-7 | Hard-gate safety | All minimum Claim Boundary fixtures pass/fail as specified; a stance marker never suppresses a factual violation. |
+| QR-7 | Hard-gate safety | All minimum Claim Boundary fixtures pass/fail as specified; neither a stance marker nor NARRATIVE/PERSONA beat declaration suppresses a factual violation. |
 | QR-8 | Identity safety | Pending Persona entries, source-host identity, and unregistered first-person experiences cannot pass automatically. |
 | QR-9 | Observability | Each run records exact stage attempts and artifact byte sizes; cost estimates are not shown as telemetry. |
 
@@ -822,8 +987,15 @@ These are planning ranges only. They must not be displayed or billed as observed
 22. **Given** positive evidence from one origin and contradictory evidence from another, **then** the claim cannot pass as `ATTESTED` or `MULTI_SOURCE_ATTESTED`; a `DISPUTED` label also requires a nonempty caveat or conflict payload.
 23. **Given** one exact `(videoId, quote)` reused under three claim IDs, **then** ledger derivation counts one unique entry, not three.
 24. **Given** two Persona Pack sections with the same stable ID, **then** that ID is ineligible for narrator permission and absent from the editor eligibility index even when both headings say approved.
+25. **Given** `ResearchClaim.text` containing a protected amount/name absent from all evidence quotes owned by that claim, **then** RESEARCH rejects it before CONFRONT.
+26. **Given** FACTUAL, NARRATIVE, and PERSONA beats, **then** only FACTUAL requires claim/evidence mapping, only PERSONA requires an approved experience ID, and forbidden cross-kind metadata is rejected.
+27. **Given** a NARRATIVE beat whose final script prose contains an amount, percentage, age, dated year, multiple, proper noun, study/data attribution, or external case, **then** whole-script detection still requires FACT permission; changing the beat kind never makes it pass.
+28. **Given** selected evidence for claims A and B while non-rejected claim C remains unselected, **then** code emits permissions only for A/B with only their selected evidence IDs/quotes, and C cannot authorize WRITE/gate/editor prose.
+29. **Given** hook KEEP/REWRITE referencing a claim outside the union of grounded FACTUAL beat claims, **then** CONFRONT rejects it; terminal hook REJECT remains valid without a plan.
+30. **Given** evidence quote `năm ngoái tôi lỗ gần 800 triệu`, **then** FACT paraphrase `có người lỗ gần 800 triệu chỉ trong một năm` preserves the protected amount and may pass, while `có người mất gần một tỷ chỉ trong một năm` fails for specific drift.
+31. **Given** an editor defect, **then** its code must belong to its declared kind; any `CLAIM_BOUNDARY` defect routes to `FAILED_GATE`, while a clean combined gate plus only `READING_EXPERIENCE` defects may route to one-shot repair.
 
-Minimum automated assertion fixtures are acceptance criteria 11-16. Criteria 17-19 are additional regression fixtures required by the hard-gate boundary.
+Minimum automated assertion fixtures are acceptance criteria 11-19 and 25-31. The implementation must keep the paraphrase pair in criterion 30 verbatim as a regression fixture because it distinguishes wording freedom from numeric drift.
 
 ## Risks and Technical Debt
 
@@ -835,6 +1007,9 @@ Minimum automated assertion fixtures are acceptance criteria 11-16. Criteria 17-
 | DIVERGE candidates are superficially distinct | Confrontation becomes three wording options | Distinct provocations, belief-shift fields, normalization floor, and rejection fixtures. |
 | ResearchMap grows toward raw-pack size | Token increase exceeds estimate | Byte caps, exact selected quotes only, one raw-pack call, no repeated source text in CONFRONT. |
 | Deterministic factual detector misses semantic empirical claims | Unsourced fact passes as opinion | Independent editor; semantic findings fail closed rather than trusting one unreviewed repair. |
+| Model declares NARRATIVE to avoid planning evidence | Unsupported factual prose appears lightly grounded | Treat beat kind only as planning metadata; scan the entire script and require authorized FACT anchors whenever factual signals appear. |
+| Claim-text paraphrase drifts a number/name | Natural wording silently changes the fact | Validate claim specifics against owned evidence first, then validate script specifics against selected exact permission quotes. |
+| Compact Persona ID allowlist leaks persona content into CONFRONT | Craft/identity biases evidence planning | Include approved experience IDs only, with no prose, stance text, pending entries, or source biography; DIVERGE/RESEARCH remain persona-blind. |
 | Persona Pack currently contains pending stance entries | Stance feature appears present but safely rejects entries | Surface eligibility clearly; owner approval is a content decision outside this implementation. |
 | Six-call cap reduces automatic recovery after multiple model failures | Run may stop even though another retry could work | Persist checkpoints, count launches visibly, and return precise human continuation notes. Cost safety is intentional. |
 | Additive run-state fields drift from artifact ledger | Resume chooses wrong stage | Artifact hash/input-pin verification is authoritative; run JSON is a cursor/cache, not proof. |
@@ -852,7 +1027,11 @@ Minimum automated assertion fixtures are acceptance criteria 11-16. Criteria 17-
 | **Provocation** | One of contradiction, zoom-in, extreme test, or inversion used to force a materially different hypothesis. |
 | **Claim Boundary** | Contract separating sourced facts, bounded common knowledge, narrator stance, hypotheticals, and approved persona experience. |
 | **Assertion anchor** | A unique verbatim script substring carrying assertion kind and required provenance IDs. |
+| **Authorized claim permission** | Code-derived capability containing one selected claim plus only its selected supporting/qualifying evidence IDs and exact quotes. |
+| **Protected specific** | A concrete amount, measured percentage, age, dated year, multiple, or detected proper noun that must trace to exact evidence rather than semantic similarity. |
+| **Beat kind** | FACTUAL, NARRATIVE, or PERSONA planning metadata; it controls required beat fields but never grants final-script factual permission. |
 | **Effective kind** | Classification computed by gate/reviewer after factual/persona priority; it may be stricter than the writer-declared kind. |
+| **Typed editor defect** | Exact-quote defect labeled READING_EXPERIENCE or CLAIM_BOUNDARY with a kind-specific machine-readable code. |
 | **Origin group** | Best-known upstream provenance cluster used to avoid counting repeated material as independent support. |
 | **Attested** | Present in the source pack; not a claim that the outside world has independently verified it. |
 | **Checkpoint** | Hash-pinned, validated immutable sub-call artifact that allows forward resume without repeating completed work. |
