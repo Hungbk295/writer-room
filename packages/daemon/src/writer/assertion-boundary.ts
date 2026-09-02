@@ -8,12 +8,14 @@
 import { createHash } from 'node:crypto';
 import {
   extractNumericClaims,
+  extractProtectedSpecifics,
   extractProperNouns,
   isCommonKnowledgeClaim,
+  unauthorizedProtectedSpecifics,
 } from './deterministic-gate.ts';
 import {
   hasDisputedCaveatLanguage,
-  type ResearchStatus,
+  type AuthorizedClaimPermission,
 } from './research-map.ts';
 
 export const ASSERTION_BOUNDARY_VERSION = 'writer-assertion-boundary-v1' as const;
@@ -69,13 +71,6 @@ export interface PersonaRegistry {
   violations: PersonaRegistryViolation[];
 }
 
-export interface BoundaryClaim {
-  id: string;
-  text: string;
-  status: ResearchStatus;
-  caveats: string[];
-}
-
 export type AssertionBoundaryViolationCode =
   | 'ASSERTION_SCHEMA'
   | 'ASSERTION_QUOTE_UNGROUNDED'
@@ -88,6 +83,7 @@ export type AssertionBoundaryViolationCode =
   | 'ASSERTION_CLAIM_REQUIRED'
   | 'ASSERTION_CLAIM_UNKNOWN'
   | 'ASSERTION_CLAIM_REJECTED'
+  | 'ASSERTION_SPECIFIC_UNAUTHORIZED'
   | 'ASSERTION_DISPUTED_UNQUALIFIED'
   | 'ASSERTION_PERSONA_HASH'
   | 'ASSERTION_PERSONA_REQUIRED'
@@ -107,7 +103,7 @@ export interface AssertionBoundaryViolation {
 export interface AssertionBoundaryInput {
   script: string;
   assertionAnchors: unknown;
-  claims?: readonly BoundaryClaim[];
+  permissions: readonly AuthorizedClaimPermission[];
   personaRegistry?: PersonaRegistry;
   /** Hash pinned when Persona Pack was staged for WRITE. */
   pinnedPersonaPackHash?: string;
@@ -121,7 +117,7 @@ export interface AssertionBoundaryResult {
 
 export interface ClaimBoundaryReviewIndex {
   contractVersion: typeof ASSERTION_BOUNDARY_VERSION;
-  claims: BoundaryClaim[];
+  claims: AuthorizedClaimPermission[];
   stances: Array<{ id: string; text: string }>;
   experiences: Array<{ id: string; text: string; guardrails: string }>;
   priorityRule: string;
@@ -317,9 +313,12 @@ function optionalId(value: unknown): string | undefined | null {
 
 function sameNumericClaims(left: string, right: string): boolean {
   const allowed = extractNumericClaims(right);
-  return extractNumericClaims(left).every((claim) =>
+  const ordinaryClaimsMatch = extractNumericClaims(left).every((claim) =>
     allowed.some((candidate) => candidate.value === claim.value && candidate.unit === claim.unit)
   );
+  if (!ordinaryClaimsMatch) return false;
+  return unauthorizedProtectedSpecifics(left, [right])
+    .every((specific) => specific.kind !== 'NUMERIC');
 }
 
 function normalizedContains(haystack: string, needle: string): boolean {
@@ -346,6 +345,8 @@ function effectiveKind(
   const quote = anchor.quote;
   const names = extractProperNouns(quote);
   const numbers = extractNumericClaims(quote);
+  const protectedNumbers = extractProtectedSpecifics(quote)
+    .filter((specific) => specific.kind === 'NUMERIC');
   if (hasPersonaExperienceSignal(quote)) return 'PERSONA_EXPERIENCE';
   if (
     includesMarker(quote, HYPOTHETICAL_MARKERS)
@@ -354,7 +355,11 @@ function effectiveKind(
   ) {
     return 'HYPOTHETICAL';
   }
-  if (anchor.kind === 'STANCE' && numbers.length > 0 && stanceAllowsNumericThreshold(quote, personaEntry)) {
+  if (
+    anchor.kind === 'STANCE'
+    && (numbers.length > 0 || protectedNumbers.length > 0)
+    && stanceAllowsNumericThreshold(quote, personaEntry)
+  ) {
     return 'STANCE';
   }
   if (anchor.kind === 'COMMON_KNOWLEDGE' && names.length === 0 && commonKnowledgeAnchor(quote)) {
@@ -362,6 +367,7 @@ function effectiveKind(
   }
   if (
     numbers.length > 0
+    || protectedNumbers.length > 0
     || names.length > 0
     || hasSourceEmpiricalSignal(quote)
     || hasGeneralizationSignal(quote)
@@ -401,6 +407,14 @@ function protectedSpans(script: string): ProtectedSpan[] {
   const spans: ProtectedSpan[] = [];
   for (const claim of extractNumericClaims(script)) {
     addLiteralSpans(spans, script, claim.raw, 'numeric claim');
+  }
+  // `extractNumericClaims` intentionally ignores a single numeral word (for
+  // example "một năm") to avoid over-classifying ordinary prose. Protected
+  // money/age/multiple forms such as "một tỷ" still need whole-script coverage;
+  // otherwise omitting the FACT anchor would turn declaration into authority.
+  for (const specific of extractProtectedSpecifics(script)) {
+    if (specific.kind !== 'NUMERIC') continue;
+    addLiteralSpans(spans, script, specific.raw, 'protected numeric claim');
   }
   for (const { name } of extractProperNouns(script)) {
     addLiteralSpans(spans, script, name, 'proper noun');
@@ -581,7 +595,24 @@ export function validateAssertionBoundary(input: AssertionBoundaryInput): Assert
     previous = anchor;
   }
 
-  const claimById = new Map((input.claims ?? []).map((claim) => [claim.id, claim]));
+  const permissionById = new Map<string, AuthorizedClaimPermission>();
+  for (const permission of input.permissions) {
+    if (permissionById.has(permission.claimId)) {
+      violations.push({
+        code: 'ASSERTION_SCHEMA',
+        detail: `duplicate authorized claim permission "${permission.claimId}"`,
+      });
+      continue;
+    }
+    if ((permission.status as string) === 'REJECTED') {
+      violations.push({
+        code: 'ASSERTION_CLAIM_REJECTED',
+        detail: `REJECTED claim "${permission.claimId}" cannot appear in authorized permissions`,
+      });
+      continue;
+    }
+    permissionById.set(permission.claimId, permission);
+  }
   for (const anchor of parsed) {
     if (anchor.kind === 'HYPOTHETICAL' && extractProperNouns(anchor.quote).length > 0) {
       violations.push({
@@ -604,32 +635,43 @@ export function validateAssertionBoundary(input: AssertionBoundaryInput): Assert
       if (!anchor.claimIds?.length) {
         violations.push({
           code: 'ASSERTION_CLAIM_REQUIRED',
-          detail: `FACT anchor "${anchor.id}" needs at least one non-rejected claimId`,
+          detail: `FACT anchor "${anchor.id}" needs at least one authorized claimId`,
           quote: anchor.quote,
           anchorId: anchor.id,
         });
       }
+      const citedPermissions: AuthorizedClaimPermission[] = [];
       for (const claimId of anchor.claimIds ?? []) {
-        const claim = claimById.get(claimId);
-        if (!claim) {
+        const permission = permissionById.get(claimId);
+        if (!permission) {
           violations.push({
             code: 'ASSERTION_CLAIM_UNKNOWN',
-            detail: `anchor "${anchor.id}" references unknown claim "${claimId}"`,
+            detail: `anchor "${anchor.id}" references claim "${claimId}" outside the code-derived permission list`,
             anchorId: anchor.id,
           });
           continue;
         }
-        if (claim.status === 'REJECTED') {
-          violations.push({
-            code: 'ASSERTION_CLAIM_REJECTED',
-            detail: `anchor "${anchor.id}" references REJECTED claim "${claimId}"`,
-            anchorId: anchor.id,
-          });
-        }
-        if (claim.status === 'DISPUTED' && !hasDisputedCaveatLanguage(anchor.quote)) {
+        citedPermissions.push(permission);
+        if (permission.status === 'DISPUTED' && !hasDisputedCaveatLanguage(anchor.quote)) {
           violations.push({
             code: 'ASSERTION_DISPUTED_UNQUALIFIED',
             detail: `anchor "${anchor.id}" uses DISPUTED claim "${claimId}" without visible caveat`,
+            quote: anchor.quote,
+            anchorId: anchor.id,
+          });
+        }
+      }
+      if (citedPermissions.length > 0) {
+        const unauthorizedSpecifics = unauthorizedProtectedSpecifics(
+          anchor.quote,
+          citedPermissions.flatMap((permission) => permission.quotes),
+        );
+        if (unauthorizedSpecifics.length > 0) {
+          violations.push({
+            code: 'ASSERTION_SPECIFIC_UNAUTHORIZED',
+            detail:
+              `FACT anchor "${anchor.id}" contains specifics absent from its selected exact quotes: `
+              + unauthorizedSpecifics.map((specific) => `${specific.kind}:${specific.raw}`).join(', '),
             quote: anchor.quote,
             anchorId: anchor.id,
           });
@@ -783,22 +825,25 @@ function validatePersonaReference(
 
 /** Compact evidence/identity index for the existing independent EDIT_REVIEW call. */
 export function buildClaimBoundaryReviewIndex(input: {
-  claims: readonly BoundaryClaim[];
+  permissions: readonly AuthorizedClaimPermission[];
   personaRegistry?: PersonaRegistry;
 }): ClaimBoundaryReviewIndex {
   const eligible = input.personaRegistry?.entries.filter((entry) => entry.status === 'APPROVED') ?? [];
   return {
     contractVersion: ASSERTION_BOUNDARY_VERSION,
-    claims: input.claims
-      .filter((claim) => claim.status !== 'REJECTED')
-      .map((claim) => ({ ...claim, caveats: [...claim.caveats] })),
+    claims: input.permissions.map((permission) => ({
+      ...permission,
+      caveats: [...permission.caveats],
+      evidenceIds: [...permission.evidenceIds],
+      quotes: [...permission.quotes],
+    })),
     stances: eligible
       .filter((entry) => entry.kind === 'STANCE')
       .map((entry) => ({ id: entry.id, text: entry.allowedText })),
     experiences: eligible
       .filter((entry) => entry.kind === 'PERSONA_EXPERIENCE')
       .map((entry) => ({ id: entry.id, text: entry.allowedText, guardrails: entry.guardrails })),
-    priorityRule: 'A factual detector is never overridden by a stance marker.',
+    priorityRule: 'A factual detector is never overridden by a stance or beat-kind marker.',
   };
 }
 

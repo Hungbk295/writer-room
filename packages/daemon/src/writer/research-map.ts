@@ -6,7 +6,10 @@
  * story order. Keeping those concepts out of the type is part of the blindness
  * boundary, not merely a prompt instruction.
  */
-import type { LedgerEntry } from './deterministic-gate.ts';
+import {
+  unauthorizedProtectedSpecifics,
+  type LedgerEntry,
+} from './deterministic-gate.ts';
 import { videoSectionsFromMarkdown } from '../writer-packs.ts';
 
 export const RESEARCH_MAP_SCHEMA_VERSION = 'writer-research-map-v1' as const;
@@ -91,6 +94,22 @@ export interface ResearchMap {
   overusedAngles: string[];
 }
 
+export type AuthorizedResearchStatus = Exclude<ResearchStatus, 'REJECTED'>;
+
+/**
+ * Capability derived by application code from CONFRONT-selected evidence.
+ * It is never accepted from model output and intentionally contains only the
+ * exact quotes selected for this run, not every quote in ResearchMap.
+ */
+export interface AuthorizedClaimPermission {
+  claimId: string;
+  text: string;
+  status: AuthorizedResearchStatus;
+  caveats: string[];
+  evidenceIds: string[];
+  quotes: string[];
+}
+
 export type ResearchMapErrorCode =
   | 'RESEARCH_SCHEMA'
   | 'RESEARCH_FORBIDDEN_TOPOLOGY'
@@ -99,6 +118,7 @@ export type ResearchMapErrorCode =
   | 'RESEARCH_SOURCE_GROUNDING'
   | 'RESEARCH_REFERENCE'
   | 'RESEARCH_ORIGIN'
+  | 'RESEARCH_CLAIM_SPECIFIC'
   | 'RESEARCH_STATUS';
 
 export interface ResearchMapValidationError {
@@ -503,6 +523,19 @@ export function validateResearchMap(
       }
       items.push(item);
     }
+    const unauthorizedSpecifics = unauthorizedProtectedSpecifics(
+      claim.text,
+      items.map((item) => item.quote),
+    );
+    if (unauthorizedSpecifics.length > 0) {
+      const detail = unauthorizedSpecifics
+        .map((specific) => `${specific.kind}:${specific.raw}`)
+        .join(', ');
+      return fail(
+        'RESEARCH_CLAIM_SPECIFIC',
+        `claim "${claim.id}" contains specifics absent from its own exact evidence quotes: ${detail}`,
+      );
+    }
     const derivedGroups = [...new Set(items.map((item) => auditByVideo.get(item.videoId)!.originGroup))];
     if (!sameSet(claim.independentOriginGroups, derivedGroups)) {
       return fail(
@@ -618,6 +651,71 @@ export function coverageMapFromResearchMap(researchMap: ResearchMap): ResearchCo
 export type FactsLedgerDerivationResult =
   | { ok: true; factsLedger: LedgerEntry[] }
   | { ok: false; errorCode: 'RESEARCH_LEDGER'; reason: string };
+
+export type AuthorizedClaimPermissionDerivationResult =
+  | { ok: true; permissions: AuthorizedClaimPermission[] }
+  | { ok: false; errorCode: 'RESEARCH_PERMISSION'; reason: string };
+
+/**
+ * Derive factual capability records from selected positive evidence only.
+ * Unselected non-rejected claims deliberately confer no permission.
+ */
+export function deriveAuthorizedClaimPermissions(
+  researchMap: ResearchMap,
+  selectedEvidenceIds: readonly string[],
+): AuthorizedClaimPermissionDerivationResult {
+  const evidenceById = new Map(researchMap.evidence.map((item) => [item.id, item]));
+  const claimById = new Map(researchMap.claims.map((claim) => [claim.id, claim]));
+  const selectedByClaim = new Map<string, { evidenceIds: string[]; quotes: string[] }>();
+
+  for (const evidenceId of selectedEvidenceIds) {
+    const evidence = evidenceById.get(evidenceId);
+    if (!evidence) {
+      return { ok: false, errorCode: 'RESEARCH_PERMISSION', reason: `unknown evidence "${evidenceId}"` };
+    }
+    const claim = claimById.get(evidence.claimId);
+    if (!claim) {
+      return {
+        ok: false,
+        errorCode: 'RESEARCH_PERMISSION',
+        reason: `evidence "${evidenceId}" has no claim`,
+      };
+    }
+    if (claim.status === 'REJECTED') {
+      return {
+        ok: false,
+        errorCode: 'RESEARCH_PERMISSION',
+        reason: `claim "${claim.id}" is REJECTED`,
+      };
+    }
+    if (evidence.relation === 'CONTRADICTS') {
+      return {
+        ok: false,
+        errorCode: 'RESEARCH_PERMISSION',
+        reason: `evidence "${evidenceId}" CONTRADICTS claim "${claim.id}" and cannot authorize it`,
+      };
+    }
+    const selected = selectedByClaim.get(claim.id) ?? { evidenceIds: [], quotes: [] };
+    if (!selected.evidenceIds.includes(evidence.id)) selected.evidenceIds.push(evidence.id);
+    if (!selected.quotes.includes(evidence.quote)) selected.quotes.push(evidence.quote);
+    selectedByClaim.set(claim.id, selected);
+  }
+
+  const permissions: AuthorizedClaimPermission[] = [];
+  for (const [claimId, selected] of selectedByClaim) {
+    const claim = claimById.get(claimId)!;
+    if (claim.status === 'REJECTED') continue;
+    permissions.push({
+      claimId: claim.id,
+      text: claim.text,
+      status: claim.status,
+      caveats: [...claim.caveats],
+      evidenceIds: selected.evidenceIds,
+      quotes: selected.quotes,
+    });
+  }
+  return { ok: true, permissions };
+}
 
 /**
  * Convert evidence selected by CONFRONT into the legacy writer facts ledger.

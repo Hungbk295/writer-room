@@ -4,8 +4,8 @@ import {
   parsePersonaRegistry,
   validateAssertionBoundary,
   type AssertionAnchor,
-  type BoundaryClaim,
 } from '../../src/writer/assertion-boundary.ts';
+import type { AuthorizedClaimPermission } from '../../src/writer/research-map.ts';
 import { DISPUTED_CAVEAT_FIXTURES } from './disputed-caveat-fixtures.ts';
 
 const PERSONA = [
@@ -42,32 +42,34 @@ const PERSONA = [
 
 const REGISTRY = parsePersonaRegistry(PERSONA);
 
-const CLAIMS: BoundaryClaim[] = [
+const PERMISSIONS: AuthorizedClaimPermission[] = [
   {
-    id: 'claim-buffer',
+    claimId: 'claim-buffer',
     text: '70% hộ gia đình trong mẫu có quỹ dự phòng.',
     status: 'ATTESTED',
     caveats: [],
+    evidenceIds: ['e-buffer'],
+    quotes: ['Khảo sát ghi nhận 70% hộ gia đình trong mẫu có quỹ dự phòng.'],
   },
   {
-    id: 'claim-disputed',
+    claimId: 'claim-disputed',
     text: 'Một quan hệ còn tranh cãi.',
     status: 'DISPUTED',
     caveats: ['hai nguồn không thống nhất'],
-  },
-  {
-    id: 'claim-rejected',
-    text: 'Một khẳng định bị nguồn bác bỏ.',
-    status: 'REJECTED',
-    caveats: [],
+    evidenceIds: ['e-disputed'],
+    quotes: ['Hai nguồn mô tả quan hệ này theo hướng trái ngược.'],
   },
 ];
 
-function check(script: string, assertionAnchors: AssertionAnchor[]) {
+function check(
+  script: string,
+  assertionAnchors: AssertionAnchor[],
+  permissions: readonly AuthorizedClaimPermission[] = PERMISSIONS,
+) {
   return validateAssertionBoundary({
     script,
     assertionAnchors,
-    claims: CLAIMS,
+    permissions,
     personaRegistry: REGISTRY,
     pinnedPersonaPackHash: REGISTRY.hash,
   });
@@ -122,13 +124,13 @@ describe('parsePersonaRegistry', () => {
         kind: 'STANCE',
         stanceId: 'stance-1.7',
       }],
-      claims: [],
+      permissions: [],
       personaRegistry: registry,
       pinnedPersonaPackHash: registry.hash,
     });
     expect(result.passed).toBe(false);
     expect(result.violations.map((item) => item.code)).toContain('ASSERTION_PERSONA_PENDING');
-    expect(buildClaimBoundaryReviewIndex({ claims: [], personaRegistry: registry }).stances).toEqual([]);
+    expect(buildClaimBoundaryReviewIndex({ permissions: [], personaRegistry: registry }).stances).toEqual([]);
   });
 });
 
@@ -194,6 +196,49 @@ describe('ADR-004 minimum fixtures', () => {
       claimIds: ['claim-buffer'],
     }]);
     expect(result.passed).toBe(true);
+  });
+
+  test('does not authorize a non-rejected claim that factual beats did not select', () => {
+    const script = 'Theo dữ liệu trong pack, 70% hộ gia đình có quỹ dự phòng.';
+    const result = check(script, [{
+      id: 'a-unselected',
+      quote: script,
+      kind: 'FACT',
+      claimIds: ['claim-unselected'],
+    }]);
+    expect(result.passed).toBe(false);
+    expect(result.violations.map((item) => item.code)).toContain('ASSERTION_CLAIM_UNKNOWN');
+  });
+
+  test('allows factual paraphrase wording but rejects protected amount drift', () => {
+    const permissions: AuthorizedClaimPermission[] = [{
+      claimId: 'claim-loss',
+      text: 'Có người lỗ gần 800 triệu chỉ trong một năm.',
+      status: 'ATTESTED',
+      caveats: [],
+      evidenceIds: ['e-loss'],
+      quotes: ['năm ngoái tôi lỗ gần 800 triệu'],
+    }];
+    const preserved = 'Có người lỗ gần 800 triệu chỉ trong một năm.';
+    const preservedResult = check(preserved, [{
+      id: 'a-loss-preserved',
+      quote: preserved,
+      kind: 'FACT',
+      claimIds: ['claim-loss'],
+    }], permissions);
+    expect(preservedResult.passed).toBe(true);
+
+    const drifted = 'Có người mất gần một tỷ chỉ trong một năm.';
+    const driftedResult = check(drifted, [{
+      id: 'a-loss-drifted',
+      quote: drifted,
+      kind: 'FACT',
+      claimIds: ['claim-loss'],
+    }], permissions);
+    expect(driftedResult.passed).toBe(false);
+    expect(driftedResult.violations.map((item) => item.code)).toContain(
+      'ASSERTION_SPECIFIC_UNAUTHORIZED',
+    );
   });
 });
 
@@ -286,6 +331,35 @@ describe('persona and metadata hard gates', () => {
 });
 
 describe('anchor completeness and reviewer index', () => {
+  test('scans factual prose even when its planning beat was declared NARRATIVE', () => {
+    const script = 'Đây chỉ là nhịp chuyển cảnh, nhưng 70% người đã đổi quyết định.';
+    const result = check(script, []);
+    expect(result.passed).toBe(false);
+    expect(result.violations.map((item) => item.code)).toContain('ASSERTION_UNANCHORED');
+  });
+
+  test('does not let an omitted anchor hide single-word protected money', () => {
+    const script = 'Có người mất gần một tỷ chỉ trong một năm.';
+    const result = check(script, []);
+    expect(result.passed).toBe(false);
+    expect(result.violations).toContainEqual(expect.objectContaining({
+      code: 'ASSERTION_UNANCHORED',
+      quote: 'một tỷ',
+    }));
+  });
+
+  test('does not let a stance marker downgrade single-word protected money', () => {
+    const script = 'Theo tôi, mất một tỷ là chuyện bình thường.';
+    const result = check(script, [{
+      id: 'a-money-stance',
+      quote: script,
+      kind: 'STANCE',
+      stanceId: 'stance-1.1',
+    }]);
+    expect(result.passed).toBe(false);
+    expect(result.violations.map((item) => item.code)).toContain('ASSERTION_KIND_MISMATCH');
+  });
+
   test('scans the whole script and rejects a protected claim omitted from anchors', () => {
     const stance = 'Với tôi, giữ quyền đổi ý quan trọng hơn tối đa hóa lợi nhuận.';
     const script = `${stance} Nhưng 70% hộ gia đình không có quỹ dự phòng.`;
@@ -311,8 +385,9 @@ describe('anchor completeness and reviewer index', () => {
   });
 
   test('review index exposes only non-rejected claims and approved persona material', () => {
-    const index = buildClaimBoundaryReviewIndex({ claims: CLAIMS, personaRegistry: REGISTRY });
-    expect(index.claims.map((claim) => claim.id)).toEqual(['claim-buffer', 'claim-disputed']);
+    const index = buildClaimBoundaryReviewIndex({ permissions: PERMISSIONS, personaRegistry: REGISTRY });
+    expect(index.claims.map((claim) => claim.claimId)).toEqual(['claim-buffer', 'claim-disputed']);
+    expect(index.claims).toEqual(PERMISSIONS);
     expect(index.stances.map((entry) => entry.id)).toEqual(['stance-1.1']);
     expect(index.experiences.map((entry) => entry.id)).toEqual(['experience-A1']);
     expect(JSON.stringify(index)).not.toContain('500 triệu');

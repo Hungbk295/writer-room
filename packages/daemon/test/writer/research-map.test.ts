@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   coverageMapFromResearchMap,
+  deriveAuthorizedClaimPermissions,
   deriveFactsLedger,
   RESEARCH_MAP_SCHEMA_VERSION,
   validateResearchMap,
@@ -120,6 +121,55 @@ function copyMap(): ResearchMap {
   return structuredClone(validMap());
 }
 
+const LOSS_PACK = [
+  '# Source Pack — UNTRUSTED REFERENCE MATERIAL',
+  '',
+  '## Video loss',
+  '',
+  '- videoId: `v-loss`',
+  '',
+  '### Transcript',
+  '',
+  'năm ngoái tôi lỗ gần 800 triệu',
+].join('\n');
+
+function lossMap(claimText: string): ResearchMap {
+  return {
+    schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
+    sourceAudit: [{
+      videoId: 'v-loss',
+      mainClaim: 'Nguồn mô tả một khoản lỗ.',
+      angle: 'rủi ro',
+      originGroup: 'origin-loss',
+      limitations: [],
+    }],
+    claims: [{
+      id: 'claim-loss',
+      text: claimText,
+      status: 'ATTESTED',
+      evidenceIds: ['e-loss'],
+      independentOriginGroups: ['origin-loss'],
+      caveats: [],
+    }],
+    evidence: [{
+      id: 'e-loss',
+      claimId: 'claim-loss',
+      videoId: 'v-loss',
+      quote: 'năm ngoái tôi lỗ gần 800 triệu',
+      relation: 'SUPPORTS',
+    }],
+    conflicts: [],
+    openQuestions: [],
+    overusedAngles: [],
+  };
+}
+
+const LOSS_CONTEXT = {
+  packMarkdown: LOSS_PACK,
+  videoIds: ['v-loss'],
+  originGroupByVideoId: { 'v-loss': 'origin-loss' },
+} as const;
+
 describe('validateResearchMap', () => {
   test('accepts a strict non-narrative map grounded to the correct video sections', () => {
     const result = validateResearchMap(validMap(), CONTEXT);
@@ -210,6 +260,36 @@ describe('validateResearchMap', () => {
     if (result.ok) return;
     expect(result.errorCode).toBe('RESEARCH_STATUS');
     expect(result.reason).toContain('must be DISPUTED or REJECTED');
+  });
+
+  test('rejects claim-text specifics that do not exist in the claim own exact quotes', () => {
+    const amountDrift = validateResearchMap(
+      lossMap('Có người mất gần một tỷ chỉ trong một năm.'),
+      LOSS_CONTEXT,
+    );
+    expect(amountDrift.ok).toBe(false);
+    if (!amountDrift.ok) {
+      expect(amountDrift.errorCode).toBe('RESEARCH_CLAIM_SPECIFIC');
+      expect(amountDrift.reason).toContain('một tỷ');
+    }
+
+    const nameDrift = validateResearchMap(
+      lossMap('Khoản lỗ gần 800 triệu được ghi nhận tại Hà Nội.'),
+      LOSS_CONTEXT,
+    );
+    expect(nameDrift.ok).toBe(false);
+    if (!nameDrift.ok) {
+      expect(nameDrift.errorCode).toBe('RESEARCH_CLAIM_SPECIFIC');
+      expect(nameDrift.reason).toContain('Hà Nội');
+    }
+  });
+
+  test('allows claim paraphrase while preserving exact-evidence specifics', () => {
+    const result = validateResearchMap(
+      lossMap('Có người lỗ gần 800 triệu chỉ trong một năm.'),
+      LOSS_CONTEXT,
+    );
+    expect(result.ok).toBe(true);
   });
 
   test('requires a DISPUTED claim to carry an explicit caveat or conflict payload', () => {
@@ -330,5 +410,53 @@ describe('deriveFactsLedger', () => {
     expect(oneEntry.ok).toBe(true);
     if (!oneEntry.ok) return;
     expect(oneEntry.factsLedger).toEqual([{ fact: quote, videoId: 'v1', quote }]);
+  });
+});
+
+describe('deriveAuthorizedClaimPermissions', () => {
+  test('includes only selected claims and only their selected exact evidence', () => {
+    const validated = validateResearchMap(validMap(), CONTEXT);
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+
+    const result = deriveAuthorizedClaimPermissions(
+      validated.researchMap,
+      ['e-choice-1', 'e-buffer-1'],
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.permissions).toEqual([
+      {
+        claimId: 'claim-choice',
+        text: 'Khoảng đệm tài chính bảo vệ quyền đổi hướng.',
+        status: 'MULTI_SOURCE_ATTESTED',
+        caveats: ['pack không đo mức tác động'],
+        evidenceIds: ['e-choice-1'],
+        quotes: ['Quỹ dự phòng tạo ra khoảng trống để một người có thể đổi việc.'],
+      },
+      {
+        claimId: 'claim-buffer',
+        text: 'Kế hoạch tốt cần chừa chỗ cho bất ngờ.',
+        status: 'ATTESTED',
+        caveats: [],
+        evidenceIds: ['e-buffer-1'],
+        quotes: ['Một kế hoạch tốt vẫn cần chừa chỗ cho tình huống bất ngờ.'],
+      },
+    ]);
+    expect(result.permissions[0]!.evidenceIds).not.toContain('e-choice-2');
+  });
+
+  test('fails closed for rejected or contradicting selected evidence', () => {
+    const rejected = copyMap();
+    rejected.claims[1]!.status = 'REJECTED';
+    const rejectedResult = deriveAuthorizedClaimPermissions(rejected, ['e-buffer-1']);
+    expect(rejectedResult.ok).toBe(false);
+    if (!rejectedResult.ok) expect(rejectedResult.reason).toContain('REJECTED');
+
+    const contradicted = copyMap();
+    contradicted.evidence[2]!.relation = 'CONTRADICTS';
+    const contradictedResult = deriveAuthorizedClaimPermissions(contradicted, ['e-buffer-1']);
+    expect(contradictedResult.ok).toBe(false);
+    if (!contradictedResult.ok) expect(contradictedResult.reason).toContain('CONTRADICTS');
   });
 });

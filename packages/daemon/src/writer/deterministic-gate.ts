@@ -214,7 +214,7 @@ const WORD_CLAIM_RE = new RegExp(
 /** Words that open a clause and are therefore capitalised without being names. */
 const SENTENCE_BOUNDARY = /[.!?…:;\n"“”'’()\[\]—–\-*|]/;
 
-interface NumericClaim {
+export interface NumericClaim {
   raw: string;
   value: number;
   unit: string;
@@ -387,7 +387,7 @@ const VND_SCALE: Record<string, number> = {
  * which would otherwise never equal the 100_000 written as "100 nghìn"); đồng is
  * the smallest unit in circulation, so there is nothing below it to lose.
  */
-function claimKey(claim: { value: number; unit: string }): string {
+export function canonicalNumericClaimKey(claim: { value: number; unit: string }): string {
   const unit = normalizeUnit(claim.unit);
   const scale = VND_SCALE[unit];
   if (scale === undefined) return `${claim.value}|${unit}`;
@@ -425,6 +425,110 @@ export function extractProperNouns(text: string): Array<{ name: string; sentence
     flush();
   }
   return out;
+}
+
+/**
+ * Concrete details whose wording may move but whose identity may not. This is
+ * intentionally narrower than every number the legacy gate sees: a phrase such
+ * as "một năm" may paraphrase "năm ngoái", while money, measured percentages,
+ * ages, dated years and multiples remain exact factual capabilities.
+ */
+export type ProtectedSpecific =
+  | { kind: 'NUMERIC'; raw: string; key: string; sentence: string }
+  | { kind: 'PROPER_NOUN'; raw: string; key: string; sentence: string };
+
+const PROTECTED_NUMERIC_UNITS = new Set([...MONEY_UNITS, '%', 'tuổi', 'lần']);
+const SINGLE_PROTECTED_NUMERAL_PATTERN = [
+  'không', 'một', 'mốt', 'hai', 'ba', 'bốn', 'tư', 'năm', 'lăm',
+  'sáu', 'bảy', 'bẩy', 'tám', 'chín', 'mười',
+].join('|');
+const SINGLE_PROTECTED_UNIT_PATTERN =
+  'triệu|nghìn|ngàn|tỷ|tỉ|đồng|usd|đô|tuổi|lần|%|phần trăm'
+  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}`;
+const SINGLE_PROTECTED_CLAIM_RE = new RegExp(
+  `\\b(${SINGLE_PROTECTED_NUMERAL_PATTERN})\\s+(${SINGLE_PROTECTED_UNIT_PATTERN})`,
+  'giu',
+);
+
+function isProtectedNumericClaim(claim: NumericClaim): boolean {
+  if (PROTECTED_NUMERIC_UNITS.has(claim.unit)) return true;
+  if (claim.unit !== 'năm') return false;
+  return /^năm\s/iu.test(claim.raw.trim()) || claim.value >= 1_000;
+}
+
+function singleWordProtectedClaims(text: string): NumericClaim[] {
+  const claims: NumericClaim[] = [];
+  for (const sentence of splitSentences(text)) {
+    for (const match of sentence.matchAll(SINGLE_PROTECTED_CLAIM_RE)) {
+      const value = parseVietnameseNumeral(match[1] ?? '');
+      if (value === null) continue;
+      claims.push({
+        raw: match[0],
+        value,
+        unit: normalizeUnit(match[2] ?? ''),
+        sentence,
+      });
+    }
+  }
+  return claims;
+}
+
+function normalizedSpecificName(value: string): string {
+  return value.normalize('NFC').toLocaleLowerCase('vi');
+}
+
+/** Shared deterministic floor for Research claim text and final FACT prose. */
+export function extractProtectedSpecifics(text: string): ProtectedSpecific[] {
+  const out: ProtectedSpecific[] = [];
+  const seen = new Set<string>();
+  for (const claim of [...extractNumericClaims(text), ...singleWordProtectedClaims(text)]) {
+    if (!isProtectedNumericClaim(claim)) continue;
+    const key = canonicalNumericClaimKey(claim);
+    const dedupe = `NUMERIC\u0000${key}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    out.push({ kind: 'NUMERIC', raw: claim.raw, key, sentence: claim.sentence });
+  }
+  for (const { name, sentence } of extractProperNouns(text)) {
+    if (name.length < 2) continue;
+    const key = normalizedSpecificName(name);
+    const dedupe = `PROPER_NOUN\u0000${key}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    out.push({ kind: 'PROPER_NOUN', raw: name, key, sentence });
+  }
+  return out;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function textContainsSpecificName(text: string, normalizedName: string): boolean {
+  const pattern = new RegExp(
+    `(?:^|[^\\p{L}\\p{M}\\p{N}_])${escapeRegExp(normalizedName)}`
+      + '(?=$|[^\\p{L}\\p{M}\\p{N}_])',
+    'iu',
+  );
+  return pattern.test(normalizedSpecificName(text));
+}
+
+/** Return only protected details not present in any allowed exact-evidence text. */
+export function unauthorizedProtectedSpecifics(
+  text: string,
+  allowedExactTexts: readonly string[],
+): ProtectedSpecific[] {
+  const allowedNumericKeys = new Set(
+    allowedExactTexts
+      .flatMap((allowed) => extractProtectedSpecifics(allowed))
+      .filter((specific): specific is Extract<ProtectedSpecific, { kind: 'NUMERIC' }> =>
+        specific.kind === 'NUMERIC')
+      .map((specific) => specific.key),
+  );
+  return extractProtectedSpecifics(text).filter((specific) => {
+    if (specific.kind === 'NUMERIC') return !allowedNumericKeys.has(specific.key);
+    return !allowedExactTexts.some((allowed) => textContainsSpecificName(allowed, specific.key));
+  });
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -487,16 +591,16 @@ export function runDeterministicGate(input: GateInput): GateResult {
   const sourceText = groundedLedger.length > 0
     ? groundedLedger.map((e) => e.quote).join('\n')
     : pack;
-  const sourceClaims = new Set(extractNumericClaims(sourceText).map(claimKey));
+  const sourceClaims = new Set(extractNumericClaims(sourceText).map(canonicalNumericClaimKey));
   // The pack is always allowed as a fallback source for numbers even with a
   // ledger present: the ledger is a *shortlist*, not an exhaustive index, and a
   // number quoted verbatim from the pack is by definition not fabricated.
-  const packClaims = new Set(extractNumericClaims(pack).map(claimKey));
+  const packClaims = new Set(extractNumericClaims(pack).map(canonicalNumericClaimKey));
 
   // ── 1 + 3. Numeric claims, with the assumption-marker escape ─────────────
   const reportedNumbers = new Set<string>();
   for (const claim of extractNumericClaims(script)) {
-    const key = claimKey(claim);
+    const key = canonicalNumericClaimKey(claim);
     if (sourceClaims.has(key) || packClaims.has(key)) continue;
     if (hasAssumptionMarker(claim.sentence)) continue;
     if (isCommonKnowledgeClaim(claim, claim.sentence)) continue;

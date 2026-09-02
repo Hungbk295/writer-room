@@ -12,14 +12,17 @@ import {
   type SelectedHook,
 } from './hook-doi-thu.ts';
 import {
+  deriveAuthorizedClaimPermissions,
   deriveFactsLedger,
   hasDisputedCaveatLanguage,
+  type AuthorizedClaimPermission,
   type ResearchClaim,
   type ResearchEvidence,
   type ResearchMap,
 } from './research-map.ts';
 import {
   validateWriterVideoPlan,
+  type WriterVideoPlanBeat,
   type WriterVideoPlan,
 } from './video-plan.ts';
 
@@ -108,12 +111,24 @@ export interface BeatEvidence {
   evidenceIds: string[];
 }
 
+export const STORY_BEAT_KINDS = ['FACTUAL', 'NARRATIVE', 'PERSONA'] as const;
+export type StoryBeatKind = (typeof STORY_BEAT_KINDS)[number];
+
+export interface StoryVideoPlanBeat extends WriterVideoPlanBeat {
+  kind: StoryBeatKind;
+  personaEntryId?: string;
+}
+
+export interface StoryVideoPlan extends Omit<WriterVideoPlan, 'progression'> {
+  progression: StoryVideoPlanBeat[];
+}
+
 export interface ConfrontArtifact {
   schemaVersion: typeof CONFRONT_SCHEMA_VERSION;
   assessments: [HypothesisAssessment, HypothesisAssessment, HypothesisAssessment];
   selectedHypothesisId?: string;
   hookVerdict: HookVerdict;
-  finalPlan?: WriterVideoPlan;
+  finalPlan?: StoryVideoPlan;
   beatEvidence?: BeatEvidence[];
 }
 
@@ -128,6 +143,7 @@ export type StoryPlanningErrorCode =
   | 'STORY_HOOK'
   | 'STORY_PLAN'
   | 'STORY_EVIDENCE'
+  | 'STORY_PERSONA'
   | 'STORY_DISPUTED_UNQUALIFIED';
 
 export interface StoryPlanningValidationError {
@@ -142,7 +158,7 @@ export type DivergeValidationResult =
   | StoryPlanningValidationError;
 
 export type ConfrontValidationResult =
-  | { ok: true; artifact: ConfrontArtifact }
+  | { ok: true; artifact: ConfrontArtifact; authorizedClaims: AuthorizedClaimPermission[] }
   | StoryPlanningValidationError;
 
 export interface DivergeValidationContext {
@@ -161,6 +177,8 @@ export interface ConfrontValidationContext {
   divergeArtifact: DivergeArtifact;
   researchMap: ResearchMap;
   selectedHook: SelectedHook;
+  /** Coordinator-derived APPROVED Persona experience IDs; no Persona prose. */
+  approvedPersonaExperienceIds?: readonly string[];
   maxBytes?: number;
 }
 
@@ -202,7 +220,14 @@ const SELECTED_HOOK_KEYS = new Set(['id', 'type', 'typeLabel', 'text']);
 const BEAT_EVIDENCE_KEYS = new Set(['beatIndex', 'claimIds', 'evidenceIds']);
 const PLAN_KEYS = new Set(['coreInsight', 'memoryAnchor', 'progression', 'endingPayoff', 'cutList']);
 const MEMORY_ANCHOR_KEYS = new Set(['kind', 'value']);
-const PLAN_BEAT_KEYS = new Set(['beat', 'newInformation', 'characterOrArgumentChange', 'visualAnchor']);
+const PLAN_BEAT_KEYS = new Set([
+  'kind',
+  'beat',
+  'newInformation',
+  'characterOrArgumentChange',
+  'visualAnchor',
+  'personaEntryId',
+]);
 const ENDING_PAYOFF_KEYS = new Set(['resolvesOpening', 'audienceCanDo']);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 
@@ -663,6 +688,59 @@ function validateStrictPlanShape(raw: unknown, path: string): StoryPlanningValid
   return null;
 }
 
+function parseStoryVideoPlan(
+  raw: unknown,
+  basePlan: WriterVideoPlan,
+  approvedPersonaExperienceIds: readonly string[],
+): StoryVideoPlan | StoryPlanningValidationError {
+  if (!isRecord(raw) || !Array.isArray(raw['progression'])) {
+    return fail('STORY_PLAN', '$.finalPlan.progression must be an array', '$.finalPlan.progression');
+  }
+  const approvedPersonaIds = new Set(approvedPersonaExperienceIds);
+  const progression: StoryVideoPlanBeat[] = [];
+  for (const [index, rawBeat] of raw['progression'].entries()) {
+    if (!isRecord(rawBeat)) {
+      return fail('STORY_PLAN', `$.finalPlan.progression[${index}] must be an object`);
+    }
+    const kind = rawBeat['kind'];
+    if (!STORY_BEAT_KINDS.includes(kind as StoryBeatKind)) {
+      return fail(
+        'STORY_PLAN',
+        `$.finalPlan.progression[${index}].kind must be one of ${STORY_BEAT_KINDS.join(', ')}`,
+        `$.finalPlan.progression[${index}].kind`,
+      );
+    }
+    const personaEntryId = rawBeat['personaEntryId'];
+    if (kind !== 'PERSONA' && personaEntryId !== undefined) {
+      return fail(
+        'STORY_PERSONA',
+        `beat ${index} is ${String(kind)} and may not carry personaEntryId`,
+        `$.finalPlan.progression[${index}].personaEntryId`,
+      );
+    }
+    if (kind === 'PERSONA') {
+      if (
+        typeof personaEntryId !== 'string'
+        || !ID_RE.test(personaEntryId.trim())
+        || !approvedPersonaIds.has(personaEntryId.trim())
+      ) {
+        return fail(
+          'STORY_PERSONA',
+          `PERSONA beat ${index} needs a coordinator-approved Persona experience ID`,
+          `$.finalPlan.progression[${index}].personaEntryId`,
+        );
+      }
+    }
+    const baseBeat = basePlan.progression[index]!;
+    progression.push({
+      ...baseBeat,
+      kind: kind as StoryBeatKind,
+      ...(kind === 'PERSONA' ? { personaEntryId: (personaEntryId as string).trim() } : {}),
+    });
+  }
+  return { ...basePlan, progression };
+}
+
 function knownNonRejectedClaims(
   claimIds: readonly string[],
   claimById: ReadonlyMap<string, ResearchClaim>,
@@ -965,22 +1043,34 @@ function parseBeatEvidence(
   return { beatIndex: beatIndex as number, claimIds, evidenceIds };
 }
 
-function beatText(plan: WriterVideoPlan, beatIndex: number): string {
+function beatText(plan: StoryVideoPlan, beatIndex: number): string {
   const beat = plan.progression[beatIndex];
   return beat
     ? [beat.beat, beat.newInformation, beat.characterOrArgumentChange, beat.visualAnchor].join(' ')
     : '';
 }
 
+interface BeatGroundingSuccess {
+  ok: true;
+  groundedClaimIds: string[];
+  authorizedClaims: AuthorizedClaimPermission[];
+}
+
 function validateBeatGrounding(
   beatEvidence: readonly BeatEvidence[],
-  plan: WriterVideoPlan,
+  plan: StoryVideoPlan,
   researchMap: ResearchMap,
-): StoryPlanningValidationError | null {
-  if (beatEvidence.length !== plan.progression.length) {
+): BeatGroundingSuccess | StoryPlanningValidationError {
+  const factualBeatIndexes = new Set(
+    plan.progression
+      .map((beat, index) => beat.kind === 'FACTUAL' ? index : -1)
+      .filter((index) => index >= 0),
+  );
+  if (beatEvidence.length !== factualBeatIndexes.size) {
     return fail(
       'STORY_EVIDENCE',
-      `beatEvidence must contain one grounded mapping for each of ${plan.progression.length} progression beats`,
+      `beatEvidence must contain one grounded mapping for each of `
+        + `${factualBeatIndexes.size} FACTUAL beats; got ${beatEvidence.length}`,
       '$.beatEvidence',
     );
   }
@@ -988,6 +1078,7 @@ function validateBeatGrounding(
   const evidenceById = new Map(researchMap.evidence.map((item) => [item.id, item]));
   const seenIndexes = new Set<number>();
   const selectedEvidenceIds: string[] = [];
+  const groundedClaimIds: string[] = [];
 
   for (const item of beatEvidence) {
     if (item.beatIndex >= plan.progression.length || seenIndexes.has(item.beatIndex)) {
@@ -998,6 +1089,14 @@ function validateBeatGrounding(
       );
     }
     seenIndexes.add(item.beatIndex);
+    if (!factualBeatIndexes.has(item.beatIndex)) {
+      return fail(
+        'STORY_EVIDENCE',
+        `beatEvidence targets ${plan.progression[item.beatIndex]!.kind} beat ${item.beatIndex}; `
+          + 'only FACTUAL beats may carry claim/evidence grounding',
+        `$.beatEvidence[${item.beatIndex}]`,
+      );
+    }
     const claimError = knownNonRejectedClaims(item.claimIds, claimById, `$.beatEvidence[${item.beatIndex}].claimIds`);
     if (claimError) return claimError;
     const evidencedClaims = new Set<string>();
@@ -1029,6 +1128,9 @@ function validateBeatGrounding(
       );
     }
     for (const claimId of item.claimIds) {
+      if (!groundedClaimIds.includes(claimId)) groundedClaimIds.push(claimId);
+    }
+    for (const claimId of item.claimIds) {
       const claim = claimById.get(claimId)!;
       if (
         claim.status === 'DISPUTED'
@@ -1042,15 +1144,17 @@ function validateBeatGrounding(
       }
     }
   }
-  for (let index = 0; index < plan.progression.length; index += 1) {
+  for (const index of factualBeatIndexes) {
     if (!seenIndexes.has(index)) {
-      return fail('STORY_EVIDENCE', `beatEvidence is missing progression beat ${index}`, '$.beatEvidence');
+      return fail('STORY_EVIDENCE', `beatEvidence is missing FACTUAL beat ${index}`, '$.beatEvidence');
     }
   }
 
   const ledger = deriveFactsLedger(researchMap, selectedEvidenceIds);
   if (!ledger.ok) return fail('STORY_EVIDENCE', ledger.reason, '$.beatEvidence');
-  return null;
+  const permissions = deriveAuthorizedClaimPermissions(researchMap, selectedEvidenceIds);
+  if (!permissions.ok) return fail('STORY_EVIDENCE', permissions.reason, '$.beatEvidence');
+  return { ok: true, groundedClaimIds, authorizedClaims: permissions.permissions };
 }
 
 export function validateConfrontArtifact(
@@ -1127,6 +1231,7 @@ export function validateConfrontArtifact(
         assessments: [assessments[0]!, assessments[1]!, assessments[2]!],
         hookVerdict,
       },
+      authorizedClaims: [],
     };
   }
 
@@ -1144,6 +1249,12 @@ export function validateConfrontArtifact(
   if (planShapeError) return planShapeError;
   const planResult = validateWriterVideoPlan(value['finalPlan']);
   if (!planResult.ok) return fail('STORY_PLAN', planResult.reason, '$.finalPlan');
+  const storyPlan = parseStoryVideoPlan(
+    value['finalPlan'],
+    planResult.videoPlan,
+    context.approvedPersonaExperienceIds ?? [],
+  );
+  if ('ok' in storyPlan) return storyPlan;
 
   if (!Array.isArray(value['beatEvidence'])) {
     return fail('STORY_EVIDENCE', '$.beatEvidence must be an array', '$.beatEvidence');
@@ -1154,8 +1265,18 @@ export function validateConfrontArtifact(
     if ('ok' in parsed) return parsed;
     beatEvidence.push(parsed);
   }
-  const groundingError = validateBeatGrounding(beatEvidence, planResult.videoPlan, context.researchMap);
-  if (groundingError) return groundingError;
+  const grounding = validateBeatGrounding(beatEvidence, storyPlan, context.researchMap);
+  if (!grounding.ok) return grounding;
+  const orphanHookClaim = hookVerdict.claimIds.find(
+    (claimId) => !grounding.groundedClaimIds.includes(claimId),
+  );
+  if (orphanHookClaim) {
+    return fail(
+      'STORY_HOOK',
+      `hook claim "${orphanHookClaim}" is not grounded by any FACTUAL beat`,
+      '$.hookVerdict.claimIds',
+    );
+  }
 
   return {
     ok: true,
@@ -1164,9 +1285,10 @@ export function validateConfrontArtifact(
       assessments: [assessments[0]!, assessments[1]!, assessments[2]!],
       selectedHypothesisId,
       hookVerdict,
-      finalPlan: planResult.videoPlan,
+      finalPlan: storyPlan,
       beatEvidence,
     },
+    authorizedClaims: grounding.authorizedClaims,
   };
 }
 

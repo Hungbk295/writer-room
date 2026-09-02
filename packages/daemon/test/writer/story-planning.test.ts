@@ -218,18 +218,21 @@ function validConfront(): ConfrontArtifact {
       memoryAnchor: { kind: 'equation', value: 'quyền lựa chọn = khoảng chờ - áp lực cố định' },
       progression: [
         {
+          kind: 'FACTUAL',
           beat: 'Lối thoát',
           newInformation: 'Khoảng đệm bảo vệ quyền đổi hướng.',
           characterOrArgumentChange: 'Từ nhìn số dư sang nhìn lựa chọn.',
           visualAnchor: 'Một cánh cửa còn mở.',
         },
         {
+          kind: 'FACTUAL',
           beat: 'Đồng hồ',
           newInformation: 'Chi phí cố định làm thời gian lựa chọn ngắn lại.',
           characterOrArgumentChange: 'Áp lực được nhìn như một chiếc đồng hồ.',
           visualAnchor: 'Lịch đếm ngược.',
         },
         {
+          kind: 'FACTUAL',
           beat: 'Vị thế',
           newInformation: 'Khoảng chờ cho phép từ chối một thỏa thuận kém.',
           characterOrArgumentChange: 'Thời gian trở thành sức mạnh thương lượng.',
@@ -370,7 +373,82 @@ describe('validateConfrontArtifact', () => {
     if (!result.ok) return;
     expect(result.artifact.selectedHypothesisId).toBe('h-zoom');
     expect(selectedEvidenceIdsFromConfront(result.artifact)).toEqual(['e-choice', 'e-cost', 'e-wait']);
+    expect(result.authorizedClaims.map((permission) => permission.claimId)).toEqual([
+      'c-choice',
+      'c-cost',
+      'c-wait',
+    ]);
+    expect(result.authorizedClaims.some((permission) => permission.claimId === 'c-disputed')).toBe(false);
     expect(effectiveHookFromConfront(SELECTED_HOOK, result.artifact)).toEqual(SELECTED_HOOK);
+  });
+
+  test('allows NARRATIVE beats without evidence while keeping factual permission code-derived', () => {
+    const raw = copyConfront();
+    raw.finalPlan!.progression[0]!.kind = 'NARRATIVE';
+    raw.beatEvidence = [
+      {
+        beatIndex: 1,
+        claimIds: ['c-choice', 'c-cost'],
+        evidenceIds: ['e-choice', 'e-cost'],
+      },
+      { beatIndex: 2, claimIds: ['c-wait'], evidenceIds: ['e-wait'] },
+    ];
+
+    const result = validateConfrontArtifact(raw, CONTEXT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.artifact.finalPlan!.progression[0]).toMatchObject({ kind: 'NARRATIVE' });
+    expect(result.authorizedClaims.map((permission) => permission.claimId)).toEqual([
+      'c-choice',
+      'c-cost',
+      'c-wait',
+    ]);
+  });
+
+  test('requires PERSONA beats to cite a coordinator-approved experience ID', () => {
+    const raw = copyConfront();
+    raw.finalPlan!.progression[0]!.kind = 'PERSONA';
+    raw.finalPlan!.progression[0]!.personaEntryId = 'experience-A1';
+    raw.beatEvidence = [
+      {
+        beatIndex: 1,
+        claimIds: ['c-choice', 'c-cost'],
+        evidenceIds: ['e-choice', 'e-cost'],
+      },
+      { beatIndex: 2, claimIds: ['c-wait'], evidenceIds: ['e-wait'] },
+    ];
+
+    const missingApproval = validateConfrontArtifact(raw, CONTEXT);
+    expect(missingApproval.ok).toBe(false);
+    if (!missingApproval.ok) expect(missingApproval.errorCode).toBe('STORY_PERSONA');
+
+    const approved = validateConfrontArtifact(raw, {
+      ...CONTEXT,
+      approvedPersonaExperienceIds: ['experience-A1'],
+    });
+    expect(approved.ok).toBe(true);
+  });
+
+  test('rejects grounding or persona metadata on the wrong beat kind', () => {
+    const groundedNarrative = copyConfront();
+    groundedNarrative.finalPlan!.progression[0]!.kind = 'NARRATIVE';
+    groundedNarrative.beatEvidence = [
+      { beatIndex: 0, claimIds: ['c-choice'], evidenceIds: ['e-choice'] },
+      { beatIndex: 1, claimIds: ['c-cost'], evidenceIds: ['e-cost'] },
+    ];
+    const groundingResult = validateConfrontArtifact(groundedNarrative, CONTEXT);
+    expect(groundingResult.ok).toBe(false);
+    if (!groundingResult.ok) expect(groundingResult.errorCode).toBe('STORY_EVIDENCE');
+
+    const personaOnNarrative = copyConfront();
+    personaOnNarrative.finalPlan!.progression[0]!.kind = 'NARRATIVE';
+    personaOnNarrative.finalPlan!.progression[0]!.personaEntryId = 'experience-A1';
+    const personaResult = validateConfrontArtifact(personaOnNarrative, {
+      ...CONTEXT,
+      approvedPersonaExperienceIds: ['experience-A1'],
+    });
+    expect(personaResult.ok).toBe(false);
+    if (!personaResult.ok) expect(personaResult.errorCode).toBe('STORY_PERSONA');
   });
 
   test('assesses every DIVERGE hypothesis exactly once', () => {
@@ -547,6 +625,17 @@ describe('validateConfrontArtifact', () => {
     const failed = validateConfrontArtifact(materialChange, CONTEXT);
     expect(failed.ok).toBe(false);
     if (!failed.ok) expect(failed.errorCode).toBe('STORY_HOOK');
+  });
+
+  test('requires non-terminal hook claims to be grounded by a FACTUAL beat', () => {
+    const raw = copyConfront();
+    raw.hookVerdict.claimIds = ['c-disputed'];
+    const result = validateConfrontArtifact(raw, CONTEXT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errorCode).toBe('STORY_HOOK');
+      expect(result.reason).toContain('not grounded by any FACTUAL beat');
+    }
   });
 
   test('accepts an evidence-linked terminal hook REJECT only without a plan', () => {
