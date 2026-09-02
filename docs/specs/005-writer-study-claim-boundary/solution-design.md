@@ -581,7 +581,7 @@ interface CombinedWriterGateResult {
 }
 ```
 
-Editor codes use disjoint allowlists per kind. Reading-experience codes cover memory, progression, structure, payoff, ending, pacing, and prose clarity. Claim-boundary codes cover unauthorized empirical claims, specific drift, disputed-claim qualification, Persona provenance, assertion completeness, source misrepresentation, and arithmetic. The parser rejects a code paired with the wrong kind. Routing is deterministic: no defects plus a clean combined gate is `CLEAN`; reading defects are `AUTO_REPAIR`; any claim-boundary defect or failed combined gate is `FAILED_GATE`. `deterministic-gate.ts` remains unaware of Assertion Boundary; the coordinator invokes both validators and gives their results to the combiner.
+Editor codes use disjoint allowlists per kind. Reading-experience codes cover memory, progression, structure, payoff, ending, pacing, and prose clarity. Claim-boundary codes cover unauthorized empirical claims, specific drift, disputed-claim qualification, Persona provenance, assertion completeness, source misrepresentation, and arithmetic. The parser rejects a code paired with the wrong kind. Routing is deterministic: no defects plus a clean combined gate is `CLEAN`; a failed code-computed gate or reading defect is eligible for the existing one-shot `AUTO_REPAIR`, after which both code validators run again; any editor-declared `CLAIM_BOUNDARY` defect is `FAILED_GATE` immediately because no second semantic review fits the six-call ceiling. `deterministic-gate.ts` remains unaware of Assertion Boundary; the coordinator invokes both validators and gives their results to the combiner.
 
 #### Data Storage Changes
 
@@ -662,7 +662,7 @@ WRITE and REPAIR draft artifacts add required `assertionAnchors`. Legacy complet
 - WRITE starts with `freshContext=true` and receives the final plan, `effectiveHook`, the code-derived `authorizedClaims`, General Pack, Formula contract/content as currently applicable, and optional pinned Persona Pack. It does not receive raw ResearchMap topology or CONFRONT conversation memory.
 - The coordinator calls the legacy deterministic gate and Assertion Boundary independently, then combines their typed results. Assertion Boundary receives `authorizedClaims`, never the whole ResearchMap. Beat kinds do not alter either scan.
 - EDIT_REVIEW receives the script, outline, effective hook, writer assertion anchors, combined findings, and a compact projection of the same authorized claim/stance/experience records. It receives no raw source files.
-- REPAIR receives precise deterministic and `READING_EXPERIENCE` defects. A failed combined gate or any `CLAIM_BOUNDARY` editor defect bypasses automatic repair and ends as `FAILED_GATE` with exact quote and required classification/source/persona repair.
+- REPAIR may receive precise code-computed gate violations and `READING_EXPERIENCE` defects; both code validators run again afterward. Any editor-declared `CLAIM_BOUNDARY` defect bypasses automatic repair and ends as `FAILED_GATE` with exact quote and required classification/source/persona repair.
 
 ### Implementation Examples
 
@@ -713,9 +713,10 @@ The effective kind is FACT. Without a claim ID present in the code-derived permi
 12. EDIT_REVIEW independently checks experience, story quality, arithmetic, and
     semantic Claim Boundary using the compact permission index.
 13a. Clean combined gate + no defect: DONE.
-13b. Clean combined gate + READING_EXPERIENCE defect: one REPAIR, then re-gate.
-13c. Failed combined gate or any CLAIM_BOUNDARY defect: FAILED_GATE with exact repair
-     notes; no unreviewed automatic repair is allowed to become DONE.
+13b. Failed combined gate or READING_EXPERIENCE defect: one REPAIR, then rerun both
+     deterministic validators; DONE requires the repaired combined gate to pass.
+13c. Any editor-declared CLAIM_BOUNDARY defect: FAILED_GATE with exact repair notes;
+     no unreviewed automatic repair is allowed to become DONE.
 ```
 
 ### Checkpoint and Resume Flow
@@ -993,7 +994,7 @@ These are planning ranges only. They must not be displayed or billed as observed
 28. **Given** selected evidence for claims A and B while non-rejected claim C remains unselected, **then** code emits permissions only for A/B with only their selected evidence IDs/quotes, and C cannot authorize WRITE/gate/editor prose.
 29. **Given** hook KEEP/REWRITE referencing a claim outside the union of grounded FACTUAL beat claims, **then** CONFRONT rejects it; terminal hook REJECT remains valid without a plan.
 30. **Given** evidence quote `năm ngoái tôi lỗ gần 800 triệu`, **then** FACT paraphrase `có người lỗ gần 800 triệu chỉ trong một năm` preserves the protected amount and may pass, while `có người mất gần một tỷ chỉ trong một năm` fails for specific drift.
-31. **Given** an editor defect, **then** its code must belong to its declared kind; any `CLAIM_BOUNDARY` defect routes to `FAILED_GATE`, while a clean combined gate plus only `READING_EXPERIENCE` defects may route to one-shot repair.
+31. **Given** an editor defect, **then** its code must belong to its declared kind; any editor-declared `CLAIM_BOUNDARY` defect routes to `FAILED_GATE`, while code-computed gate failures and `READING_EXPERIENCE` defects may route to one-shot repair and must pass both code validators afterward.
 
 Minimum automated assertion fixtures are acceptance criteria 11-19 and 25-31. The implementation must keep the paraphrase pair in criterion 30 verbatim as a regression fixture because it distinguishes wording freedom from numeric drift.
 
