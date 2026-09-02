@@ -36,6 +36,7 @@ import {
   createWriterRoomV2,
   continueWriterRunV2,
   EDIT_REVIEW_STAGE,
+  evaluateWriterDraftVerdict,
   readStyledVersion,
   recoverInterruptedRestyles,
   recoverInterruptedWriterRuns,
@@ -584,6 +585,54 @@ describe('Writer v2 — editor review validation', () => {
   test('zero defects is a valid answer', () => {
     const result = validateEditorReview({ defects: [] }, cleanScript());
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('Writer v2 — one pure draft verdict boundary', () => {
+  const draft = { script: cleanScript() };
+
+  test('the four live/recovery entry paths cannot produce different verdicts for identical state', () => {
+    const identicalState = {
+      phase: 'GATE' as const,
+      gateResults: [{ passed: true, violations: [] }],
+      editorDefects: null,
+    };
+    const entryPaths = ['live-settle', 'boot-write', 'boot-gate', 'boot-repair'] as const;
+    const verdicts = Object.fromEntries(entryPaths.map((path) => [
+      path,
+      evaluateWriterDraftVerdict(structuredClone(identicalState), draft, true),
+    ]));
+    expect(verdicts).toEqual({
+      'live-settle': { kind: 'DONE', finalScript: draft.script },
+      'boot-write': { kind: 'DONE', finalScript: draft.script },
+      'boot-gate': { kind: 'DONE', finalScript: draft.script },
+      'boot-repair': { kind: 'DONE', finalScript: draft.script },
+    });
+  });
+
+  test('preserves the legacy pre-review, post-review, and post-repair decisions', () => {
+    const cleanGate = [{ passed: true, violations: [] }];
+    const dirtyGate = [{
+      passed: false,
+      violations: [{ code: 'NUMBER_UNSOURCED' as const, detail: 'missing amount' }],
+    }];
+
+    expect(evaluateWriterDraftVerdict({
+      phase: 'GATE', gateResults: dirtyGate, editorDefects: null,
+    }, draft, false)).toEqual({ kind: 'EDIT_REVIEW' });
+    expect(evaluateWriterDraftVerdict({
+      phase: 'EDIT_REVIEW', gateResults: cleanGate, editorDefects: [],
+    }, draft, false)).toEqual({ kind: 'DONE', finalScript: draft.script });
+    expect(evaluateWriterDraftVerdict({
+      phase: 'EDIT_REVIEW', gateResults: cleanGate,
+      editorDefects: [{ quote: ANCHOR_1, severity: 'MEDIUM', note: 'flat' }],
+    }, draft, false)).toEqual({ kind: 'REPAIR' });
+    expect(evaluateWriterDraftVerdict({
+      phase: 'GATE', gateResults: dirtyGate, editorDefects: [],
+    }, draft, true)).toEqual({
+      kind: 'FAILED_GATE',
+      violations: dirtyGate[0]!.violations,
+    });
   });
 });
 
@@ -1482,4 +1531,3 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
     await settled;
   });
 });
-

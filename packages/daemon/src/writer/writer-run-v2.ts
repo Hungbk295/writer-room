@@ -2422,6 +2422,90 @@ async function markWriterInterrupted(
   await saveWriterRunV2(run, dataDir);
 }
 
+export type WriterDraftVerdict =
+  | { kind: 'EDIT_REVIEW' }
+  | { kind: 'REPAIR' }
+  | { kind: 'DONE'; finalScript: string }
+  | { kind: 'FAILED_GATE'; violations: GateResult['violations'] };
+
+/**
+ * The single pure verdict boundary shared by live settle and boot recovery.
+ *
+ * This deliberately evaluates only the legacy gate contract for now. Keeping
+ * the decision pure makes the later combined-gate wiring one replacement here,
+ * instead of four subtly different recovery/live branches. `phase` separates
+ * the pre-review GATE state from the post-review EDIT_REVIEW state without
+ * adding a second, caller-owned verdict flag.
+ */
+export function evaluateWriterDraftVerdict(
+  run: Pick<WriterRunV2, 'phase' | 'gateResults' | 'editorDefects'>,
+  draft: Pick<WriterV2Draft, 'script'>,
+  isRepair: boolean,
+): WriterDraftVerdict {
+  const gate = run.gateResults.at(-1);
+  const gateClean = gate?.passed ?? false;
+
+  if (isRepair) {
+    return gateClean
+      ? { kind: 'DONE', finalScript: draft.script }
+      : { kind: 'FAILED_GATE', violations: gate?.violations ?? [] };
+  }
+
+  // A fresh WRITE always receives the independent editor pass, even when the
+  // legacy code gate is already red. Once that editor has settled, its persisted
+  // defect list determines DONE vs the one allowed REPAIR round.
+  if (run.phase !== 'EDIT_REVIEW' || run.editorDefects === null) {
+    return { kind: 'EDIT_REVIEW' };
+  }
+  if (gateClean && run.editorDefects.length === 0) {
+    return { kind: 'DONE', finalScript: draft.script };
+  }
+  return { kind: 'REPAIR' };
+}
+
+/** Apply the pure verdict without duplicating DONE/FAILED routing. */
+async function advanceFromWriterDraftVerdict(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  draft: WriterV2Draft,
+  isRepair: boolean,
+): Promise<void> {
+  const verdict = evaluateWriterDraftVerdict(run, draft, isRepair);
+  switch (verdict.kind) {
+    case 'DONE':
+      run.status = 'DONE';
+      run.phase = 'DONE';
+      run.finalScript = verdict.finalScript;
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      await notifyWriterV2Done(run, deps.dataDir);
+      return;
+
+    case 'FAILED_GATE':
+      await failRun(
+        deps,
+        run,
+        'WRITER_V2_GATE',
+        `Gate vẫn đỏ sau một vòng sửa:\n${formatGateViolations(verdict.violations)}`,
+        'FAILED_GATE',
+      );
+      return;
+
+    case 'EDIT_REVIEW':
+      run.phase = 'EDIT_REVIEW';
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      await dispatchEditReview(deps, run);
+      return;
+
+    case 'REPAIR':
+      run.phase = 'REPAIR';
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      await dispatchRepair(deps, run);
+  }
+}
+
 /**
  * After a draft settles (WRITE or REPAIR): run Layer 0, then either finish, fail the
  * gate, or dispatch EDIT_REVIEW. Shared by the live settle path and boot recovery so
@@ -2438,34 +2522,10 @@ async function advanceAfterDraft(
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
 
-  const gate = await runGateForRun(deps, run);
+  await runGateForRun(deps, run);
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
-
-  if (fromRepair) {
-    if (gate.passed) {
-      run.status = 'DONE';
-      run.phase = 'DONE';
-      run.finalScript = draft.script;
-      run.updatedAt = new Date().toISOString();
-      await saveWriterRunV2(run, deps.dataDir);
-      await notifyWriterV2Done(run, deps.dataDir);
-      return;
-    }
-    await failRun(
-      deps,
-      run,
-      'WRITER_V2_GATE',
-      `Gate vẫn đỏ sau một vòng sửa:\n${formatGateViolations(gate.violations)}`,
-      'FAILED_GATE',
-    );
-    return;
-  }
-
-  run.phase = 'EDIT_REVIEW';
-  run.updatedAt = new Date().toISOString();
-  await saveWriterRunV2(run, deps.dataDir);
-  await dispatchEditReview(deps, run);
+  await advanceFromWriterDraftVerdict(deps, run, draft, fromRepair);
 }
 
 async function advanceAfterEditorReview(
@@ -2481,23 +2541,7 @@ async function advanceAfterEditorReview(
   run.editorDefects = defects;
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
-
-  const gate = run.gateResults.at(-1);
-  const gateClean = gate?.passed ?? false;
-  if (gateClean && defects.length === 0) {
-    run.status = 'DONE';
-    run.phase = 'DONE';
-    run.finalScript = draft.script;
-    run.updatedAt = new Date().toISOString();
-    await saveWriterRunV2(run, deps.dataDir);
-    await notifyWriterV2Done(run, deps.dataDir);
-    return;
-  }
-
-  run.phase = 'REPAIR';
-  run.updatedAt = new Date().toISOString();
-  await saveWriterRunV2(run, deps.dataDir);
-  await dispatchRepair(deps, run);
+  await advanceFromWriterDraftVerdict(deps, run, draft, false);
 }
 
 /**
