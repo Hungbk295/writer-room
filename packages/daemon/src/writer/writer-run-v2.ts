@@ -41,7 +41,6 @@ import {
   formatGateViolations,
   runDeterministicGate,
   type GateResult,
-  type LedgerEntry,
 } from './deterministic-gate.ts';
 import { getChannelStyle } from './channel-style.ts';
 import { getGeneralPack } from './general-pack.ts';
@@ -50,11 +49,24 @@ import { getPersonaPack } from './persona-pack.ts';
 import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
-import { validateWriterVideoPlan, type WriterVideoPlan } from './video-plan.ts';
+import {
+  dispatchLegacyStudy,
+  packVideoIds,
+  STUDY_STAGE,
+  validateStudyArtifact,
+  type StudyArtifact,
+} from './study-orchestrator.ts';
+import type { WriterVideoPlan } from './video-plan.ts';
 
 export { DEFAULT_AGENT_IDS, type DefaultAgentId };
+export {
+  packVideoIds,
+  splitExactSourceParts,
+  STUDY_STAGE,
+  validateStudyArtifact,
+} from './study-orchestrator.ts';
+export type { StudyArtifact, StudyCoverageEntry } from './study-orchestrator.ts';
 
-export const STUDY_STAGE = 'study-v2';
 export const WRITE_STAGE = 'write-v2';
 export const EDIT_REVIEW_STAGE = 'edit-review-v2';
 export const REPAIR_STAGE = 'repair-v2';
@@ -78,8 +90,6 @@ const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 
-const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1';
-const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
 const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
@@ -90,22 +100,6 @@ export const WRITER_V2_ITEM_ID = 'piece';
 
 /** Absolute default band (plan §0): a script, not a slice of the source's length. */
 export const DEFAULT_WORD_RANGE = { minWords: 800, maxWords: 1500 } as const;
-
-/** A ledger this short is a writer that did not really read the pack. */
-const MIN_LEDGER_FACTS = 3;
-
-export interface StudyCoverageEntry {
-  videoId: string;
-  mainClaim: string;
-  angle: string;
-}
-
-export interface StudyArtifact {
-  coverageMap: StudyCoverageEntry[];
-  gap: string;
-  outline: WriterVideoPlan;
-  factsLedger: LedgerEntry[];
-}
 
 export interface WriterV2Draft {
   title: string;
@@ -400,13 +394,6 @@ export function formulaContractView(formula: FormulaArtifact): {
   };
 }
 
-/** Video ids a pack covers — from the record, falling back to the markdown. */
-export function packVideoIds(pack: WriterPack): string[] {
-  if (pack.videoIds?.length) return [...new Set(pack.videoIds)];
-  const ids = [...pack.markdown.matchAll(/- videoId:\s*`([^`]+)`/g)].map((m) => m[1]!);
-  return [...new Set(ids)];
-}
-
 function wordRangeFor(run: Pick<WriterRunV2, 'targetWords'>): { minWords: number; maxWords: number } {
   return run.targetWords !== undefined
     ? targetWordRange(run.targetWords)
@@ -414,101 +401,6 @@ function wordRangeFor(run: Pick<WriterRunV2, 'targetWords'>): { minWords: number
 }
 
 // ── Validators ────────────────────────────────────────────────────────────
-
-export function validateStudyArtifact(
-  parsed: unknown,
-  opts: { packMarkdown: string; videoIds: string[] },
-): { ok: true; study: StudyArtifact } | { ok: false; errorCode: string; reason: string } {
-  const p = parsed as Partial<StudyArtifact> | null;
-  if (!p || typeof p !== 'object') {
-    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'study output is not an object' };
-  }
-
-  const plan = validateWriterVideoPlan(p.outline);
-  if (!plan.ok) {
-    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: `outline: ${plan.reason}` };
-  }
-
-  const gap = typeof p.gap === 'string' ? p.gap.trim() : '';
-  if (!gap) {
-    return {
-      ok: false,
-      errorCode: 'AGENT_SCHEMA',
-      reason: 'gap must be a non-empty string — say what none of the source videos did',
-    };
-  }
-
-  if (!Array.isArray(p.coverageMap) || p.coverageMap.length === 0) {
-    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'coverageMap must be a non-empty array' };
-  }
-  const coverageMap: StudyCoverageEntry[] = [];
-  for (const [i, raw] of p.coverageMap.entries()) {
-    const entry = raw as Partial<StudyCoverageEntry> | null;
-    const videoId = typeof entry?.videoId === 'string' ? entry.videoId.trim() : '';
-    const mainClaim = typeof entry?.mainClaim === 'string' ? entry.mainClaim.trim() : '';
-    const angle = typeof entry?.angle === 'string' ? entry.angle.trim() : '';
-    if (!videoId || !mainClaim || !angle) {
-      return {
-        ok: false,
-        errorCode: 'AGENT_SCHEMA',
-        reason: `coverageMap[${i}] needs non-empty videoId, mainClaim and angle`,
-      };
-    }
-    coverageMap.push({ videoId, mainClaim, angle });
-  }
-  const covered = new Set(coverageMap.map((c) => c.videoId));
-  const missing = opts.videoIds.filter((id) => !covered.has(id));
-  if (missing.length > 0) {
-    return {
-      ok: false,
-      errorCode: 'STUDY_COVERAGE',
-      reason:
-        `coverageMap is missing pack video(s): ${missing.join(', ')} — every source video must be `
-        + 'accounted for before you can claim a gap',
-    };
-  }
-
-  if (!Array.isArray(p.factsLedger) || p.factsLedger.length < MIN_LEDGER_FACTS) {
-    return {
-      ok: false,
-      errorCode: 'STUDY_LEDGER',
-      reason:
-        `factsLedger needs at least ${MIN_LEDGER_FACTS} entries (got `
-        + `${Array.isArray(p.factsLedger) ? p.factsLedger.length : 0}) — these are the only facts the `
-        + 'writing stage may use, so a thin ledger means a thin piece',
-    };
-  }
-  const pack = opts.packMarkdown.normalize('NFC');
-  const factsLedger: LedgerEntry[] = [];
-  for (const [i, raw] of p.factsLedger.entries()) {
-    const entry = raw as Partial<LedgerEntry> | null;
-    const fact = typeof entry?.fact === 'string' ? entry.fact.trim() : '';
-    const quote = typeof entry?.quote === 'string' ? entry.quote.normalize('NFC').trim() : '';
-    if (!fact || !quote) {
-      return { ok: false, errorCode: 'STUDY_LEDGER', reason: `factsLedger[${i}] needs a fact and a quote` };
-    }
-    if (!pack.includes(quote)) {
-      return {
-        ok: false,
-        errorCode: 'STUDY_LEDGER',
-        reason:
-          `factsLedger[${i}] ("${fact}") quotes text that is not an exact substring of the topic pack. `
-          + 'Copy the characters verbatim — do not clean up punctuation, casing or spacing.',
-      };
-    }
-    const videoId = typeof entry?.videoId === 'string' ? entry.videoId.trim() : '';
-    if (videoId && opts.videoIds.length > 0 && !opts.videoIds.includes(videoId)) {
-      return {
-        ok: false,
-        errorCode: 'STUDY_LEDGER',
-        reason: `factsLedger[${i}] cites videoId "${videoId}", which is not in this pack`,
-      };
-    }
-    factsLedger.push({ fact, quote, ...(videoId ? { videoId } : {}) });
-  }
-
-  return { ok: true, study: { coverageMap, gap, outline: plan.videoPlan, factsLedger } };
-}
 
 export function validateWriterV2Draft(
   parsed: unknown,
@@ -651,120 +543,6 @@ export function validateEditorReview(
 }
 
 // ── Prompts ───────────────────────────────────────────────────────────────
-
-function buildStudyPrompt(opts: {
-  title: string;
-  brief: string;
-  audience: string;
-  formulaLabel: string;
-  videoIds: string[];
-  selectedHook?: SelectedHook;
-}): string {
-  return [
-    '# Writer v2 — STUDY (read the pack, pick the gap, commit to facts)',
-    '',
-    'You are NOT writing the piece in this turn. First read EVERY Markdown file listed',
-    'in `input/envelope.json` at `topicPack.contentFiles`, in the listed order. These',
-    'files are consecutive byte-exact parts of the authoritative topic pack; together',
-    'they are the only source of facts. Then use the compact contract, title/brief and',
-    'pack metadata. The assignment message gives absolute paths if this PTY has an older',
-    'working directory — use those absolute paths, not a guessed relative directory.',
-    'Do not open Chrome, a browser, Playwright or `file://`: the local Markdown file is',
-    'the complete pack and is deliberately prepared for the filesystem Read tool.',
-    '',
-    `## Audience: ${opts.audience}`,
-    `## Style formula: ${opts.formulaLabel}`,
-    '',
-    '## Title',
-    opts.title,
-    '',
-    '## Brief',
-    opts.brief,
-    '',
-    ...(opts.selectedHook
-      ? [
-          '## Selected opening hook (human-picked — do not replace)',
-          `Type: ${opts.selectedHook.typeLabel} (\`${opts.selectedHook.type}\`)`,
-          opts.selectedHook.text,
-          'Beat 1 must plant this debt. `endingPayoff.resolvesOpening` must pay THIS debt,',
-          'not a different image or question. Do not copy placeholder figures like `[X]%`',
-          'into `factsLedger` — only pack-verbatim quotes belong there.',
-          '',
-        ]
-      : []),
-    '## What to produce',
-    '',
-    '1. `coverageMap` — one entry per source video in the pack, saying what it actually',
-    `   claims and from which angle. All ${opts.videoIds.length} pack video(s) must appear:`,
-    `   ${opts.videoIds.join(', ') || '(see the pack)'}.`,
-    '2. `gap` — one thing none of those videos did, that this audience would want. This is',
-    '   the reason for the piece to exist. Not a new topic; a missing angle.',
-    '3. `outline` — the compression contract for the piece: `coreInsight`, one',
-    '   `memoryAnchor`, 2-8 `progression` beats (each with `newInformation`,',
-    '   `characterOrArgumentChange`, `visualAnchor`), `endingPayoff`, `cutList`.',
-    '   Every beat must add something new; a beat that restates an earlier beat under a',
-    '   new heading is a rejected outline.',
-    '4. `factsLedger` — every fact the piece is allowed to use, each with a quote copied',
-    '   VERBATIM from the pack (an exact substring — do not tidy punctuation or spacing)',
-    `   and the \`videoId\` it came from. At least ${MIN_LEDGER_FACTS} entries.`,
-    '',
-    '**This is the whole factual budget of the piece.** The writing stage will not see',
-    'the pack — only this ledger. A number or a case that is not in the ledger cannot be',
-    'used later, so put in what you will actually need.',
-    '',
-    'The quotes are checked programmatically against the pack; a paraphrase is rejected.',
-    '',
-    'Write JSON to `out/result.json`:',
-    '',
-    '```json',
-    '{',
-    '  "coverageMap": [ { "videoId": "...", "mainClaim": "...", "angle": "..." } ],',
-    '  "gap": "...",',
-    '  "outline": {',
-    '    "coreInsight": "...",',
-    '    "memoryAnchor": { "kind": "name|equation|contrast|image", "value": "..." },',
-    '    "progression": [ { "beat": "...", "newInformation": "...",',
-    '      "characterOrArgumentChange": "...", "visualAnchor": "..." } ],',
-    '    "endingPayoff": { "resolvesOpening": "...", "audienceCanDo": "..." },',
-    '    "cutList": ["..."]',
-    '  },',
-    '  "factsLedger": [ { "fact": "...", "videoId": "...", "quote": "<verbatim pack substring>" } ]',
-    '}',
-    '```',
-  ].join('\n');
-}
-
-/**
- * Split a large source into UTF-8-safe, byte-exact consecutive parts. Agent Read
- * paginates by physical line, so a single transcript paragraph can exceed its
- * per-call token ceiling even when offset/limit requests only one line. Joining
- * the returned strings always reconstructs the canonical source exactly: no
- * whitespace is inserted, removed or normalized, preserving verbatim evidence.
- */
-export function splitExactSourceParts(
-  content: string,
-  maxBytes = STUDY_SOURCE_PART_MAX_BYTES,
-): string[] {
-  if (!Number.isInteger(maxBytes) || maxBytes < 4) {
-    throw new Error('maxBytes must be an integer >= 4');
-  }
-  if (content.length === 0) return [''];
-  const parts: string[] = [];
-  let current = '';
-  let currentBytes = 0;
-  for (const char of content) {
-    const charBytes = Buffer.byteLength(char, 'utf8');
-    if (current && currentBytes + charBytes > maxBytes) {
-      parts.push(current);
-      current = '';
-      currentBytes = 0;
-    }
-    current += char;
-    currentBytes += charBytes;
-  }
-  if (current) parts.push(current);
-  return parts;
-}
 
 function buildWritePrompt(opts: {
   title: string;
@@ -1316,72 +1094,21 @@ async function dispatchStudy(
   formula: FormulaArtifact,
   options: { attempt?: number; freshContext?: boolean } = {},
 ): Promise<void> {
-  const videoIds = packVideoIds(pack);
-  const title = run.requestedTitle ?? run.brief;
-  const audience = run.audience ?? DEFAULT_AUDIENCE;
-  const sourceParts = splitExactSourceParts(pack.markdown);
-  const partNumberWidth = Math.max(3, String(sourceParts.length).length);
-  const sourceFiles = sourceParts.map((content, index) => ({
-    path: `topic-pack/part-${String(index + 1).padStart(partNumberWidth, '0')}-of-${String(sourceParts.length).padStart(partNumberWidth, '0')}.md`,
-    content,
-  }));
-  // Keep the envelope compact. The large topic pack is staged as line-readable
-  // Markdown next to it; embedding it as a JSON string would escape every newline
-  // and create one unreadable physical line for agent Read tools.
-  const envelope = {
-    contract: {
-      role: 'Writer v2 — STUDY stage',
-      audience,
-      formula: formulaContractView(formula),
-      packRole: 'the only source of facts',
-      generalPackRole: 'not visible in this stage — craft comes later',
-    },
-    title,
-    brief: run.brief,
-    ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
-    topicPack: {
-      id: pack.id,
-      title: pack.title,
-      channelTitle: pack.channelTitle,
-      videoIds,
-      channelIsNotNarrator: true,
-      contentFiles: sourceFiles.map((file) => `input/${file.path}`),
-      reconstruction: 'concatenate contentFiles in listed order with no separator',
-      warnings: pack.warnings,
-    },
-    instructions: {
-      coverageMap: 'one entry per pack video: what it claims, from which angle',
-      gap: 'one thing none of them did, that this audience wants',
-      outline: 'the compression contract (WriterVideoPlan shape)',
-      factsLedger: `at least ${MIN_LEDGER_FACTS} facts, each with a verbatim pack quote`,
-    },
-  };
-
-  const dispatch = await deps.scheduler.dispatchItem({
+  const dispatch = await dispatchLegacyStudy({
+    scheduler: deps.scheduler,
     batchId: run.id,
     itemId: WRITER_V2_ITEM_ID,
-    stage: STUDY_STAGE,
-    attempt: options.attempt ?? 1,
     templateId: run.agentId,
-    promptMarkdown: buildStudyPrompt({
-      title,
-      brief: run.brief,
-      audience,
-      formulaLabel: formulaContractView(formula).label || run.packTitle,
-      videoIds,
-      ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
-    }),
-    envelope,
-    inputFiles: sourceFiles,
-    inputHashes: [envelopeHash(envelope), contentHash(pack.markdown)],
-    promptVersion: STUDY_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
-    interactivePty: true,
-    freshContext: options.freshContext,
-    validateContent: (parsed) => {
-      const v = validateStudyArtifact(parsed, { packMarkdown: pack.markdown, videoIds });
-      return v.ok ? { ok: true as const } : { ok: false as const, errorCode: v.errorCode, reason: v.reason };
-    },
+    title: run.requestedTitle ?? run.brief,
+    brief: run.brief,
+    audience: run.audience ?? DEFAULT_AUDIENCE,
+    packTitle: run.packTitle,
+    ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
+    pack,
+    formula: formulaContractView(formula),
+    ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
+    ...(options.freshContext !== undefined ? { freshContext: options.freshContext } : {}),
   });
   await handleDispatchFailure(deps, run, dispatch, 'STUDY_DISPATCH_FAILED');
 }
