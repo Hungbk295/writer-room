@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildClaimBoundaryReviewIndex,
+  filterApprovedPersonaMarkdown,
   parsePersonaRegistry,
   validateAssertionBoundary,
   type AssertionAnchor,
@@ -25,7 +26,7 @@ const PERSONA = [
   '',
   '> quote nguồn',
   '',
-  '### A1. Mua nhà sớm rồi phải bán',
+  '### A1. Mua nhà sớm rồi phải bán — `[ĐÃ DUYỆT]`',
   '',
   '**Bản gốc**: host thật từng mất 500 triệu tại Hà Nội.',
   '',
@@ -98,6 +99,29 @@ describe('parsePersonaRegistry', () => {
       '> quote nguồn',
     ].join('\n'));
     expect(registry.entries[0]!.status).toBe('PENDING');
+  });
+
+  test('filter drops blockquote example lines from preamble and tail, keeps them inside APPROVED entries', () => {
+    // Coordinator note 3 (eng review 2026-09-02): after gate decision 1A the
+    // filtered markdown is a grounding source, so an UNAPPROVED "50 triệu"
+    // living in a vocabulary example quote must never survive the filter.
+    const filtered = filterApprovedPersonaMarkdown([
+      'Preamble chung của persona pack.',
+      '> ví dụ preamble có 999 triệu không được lọt',
+      '',
+      '### 1.1 Quỹ dự phòng — `[ĐÃ DUYỆT]`',
+      '**Lập trường kênh**: Với tôi, dự phòng nên là 1 năm.',
+      '> quote bằng chứng trong entry đã duyệt, 120 triệu, được giữ',
+      '',
+      '## Từ vựng cá nhân',
+      'Cách dán nhãn số khi lấy ví dụ:',
+      '> tôi lấy cái con số 50 triệu để mà cho nó tròn số cho dễ tính (103)',
+    ].join('\n'))!;
+    expect(filtered.approvedCount).toBe(1);
+    expect(filtered.markdown).not.toContain('999 triệu');
+    expect(filtered.markdown).not.toContain('50 triệu');
+    expect(filtered.markdown).toContain('120 triệu');
+    expect(filtered.markdown).toContain('Cách dán nhãn số');
   });
 
   test('makes a duplicated Persona ID ineligible everywhere it could grant permission', () => {

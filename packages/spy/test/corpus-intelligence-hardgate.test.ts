@@ -198,7 +198,9 @@ describe('Corpus Intelligence Hard-Gate P0 Constraints', () => {
       topicId: 'finance-vi', membershipId: seed.id, ownerSubject: 'local-desktop', idempotencyKey: 'analysis-expiry',
     });
     
-    const expired = await spy.corpus.expirePublicEvidence({ now: '2026-10-01T00:00:00.000Z' });
+    const expired = await spy.corpus.expirePublicEvidence({
+      now: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString(),
+    });
     expect(expired.purged).toBeGreaterThan(0);
     expect(spy.store.getP0CorpusMembership(seed.id)?.status).toBe('expired');
     expect(spy.store.listP0EvidenceRecords(seed.id).every((item) => item.status === 'expired')).toBe(true);

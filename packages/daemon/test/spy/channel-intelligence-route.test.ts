@@ -8,6 +8,7 @@ import type { HttpApp } from '../../src/http.ts';
 import { createHandler } from '../../src/http.ts';
 
 const UC = `UC${'b'.repeat(22)}`;
+const VIDEO = 'abc123def45';
 const roots: Array<{ root: string; spy: SpyService }> = [];
 
 afterEach(async () => {
@@ -66,6 +67,42 @@ describe('Spy C1 daemon HTTP routes', () => {
     const followed = await handler(new Request('http://127.0.0.1/api/spy/watchlists/local-desktop/channels?segment=followed'));
     expect(await followed.json()).toMatchObject({ channels: [{ youtubeUcId: UC, starred: true, watchStatus: 'paused' }] });
 
+    const vph = await handler(new Request(`http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}/vph`));
+    expect(vph.status).toBe(200);
+    expect(await vph.json()).toMatchObject({
+      youtubeUcId: UC, definitionVersion: 'vph/v1', segments: [], comparableCount: 0,
+      timezone: 'Asia/Ho_Chi_Minh',
+      provenance: { visibility: 'public', providerUsed: 'ytdlp', dataApiUsed: false },
+      coverage: { rawPointCount: 0, latestRunStatus: null, truncated: false },
+    });
+
+    const oneHour = await handler(new Request(`http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}/vph?window=1h&includeNonComparable=false`));
+    expect(oneHour.status).toBe(200);
+    expect(await oneHour.json()).toMatchObject({ requestedWindow: '1h', vphSegments: [], aggregations: { comparableCount: 0 } });
+
+    const invalidWindow = await handler(new Request(`http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}/vph?window=12h`));
+    expect(invalidWindow.status).toBe(422);
+    expect(await invalidWindow.json()).toMatchObject({ error: expect.stringContaining('invalid_window') });
+
+    const obsoleteVphRoute = await handler(new Request(`http://127.0.0.1/api/spy/channels/${UC}/vph`));
+    expect(obsoleteVphRoute.status).toBe(404);
+
+    const startRun = spy.store.createOrGetPublicObservationRun({
+      watchlistId: 'local-desktop', competitorChannelId: UC, planKind: 'daily', planVersion: 'route', localDate: '2026-08-30', playlistLimit: 1,
+    }).run;
+    const endRun = spy.store.createOrGetPublicObservationRun({
+      watchlistId: 'local-desktop', competitorChannelId: UC, planKind: 'daily', planVersion: 'route', localDate: '2026-08-31', playlistLimit: 1,
+    }).run;
+    const basePoint = {
+      sourceVideoId: VIDEO, youtubeUcId: UC, likeCount: null, commentCount: null, durationSec: 120, publishedAt: '2026-08-29T00:00:00.000Z', title: 'Measured',
+      availability: 'present' as const, viewQuality: 'known' as const, providerUsed: 'ytdlp' as const, inspectUsed: true,
+    };
+    spy.store.insertPublicVideoStatPoint({ ...basePoint, observationRunId: startRun.id, sampledAt: '2026-08-30T00:00:00.000Z', viewCount: 100 });
+    spy.store.insertPublicVideoStatPoint({ ...basePoint, observationRunId: endRun.id, sampledAt: '2026-08-31T00:00:00.000Z', viewCount: 1_300 });
+    const drilldown = await handler(new Request(`http://127.0.0.1/api/spy/videos/${VIDEO}/vph`));
+    expect(drilldown.status).toBe(200);
+    expect(await drilldown.json()).toMatchObject({ sourceVideoId: VIDEO, rawPoints: [{ viewCount: 100 }, { viewCount: 1_300 }], vphSegments: [{ value: 50 }] });
+
     const operationsDb = new Database(spy.store.databasePath, { readonly: true });
     expect(Number((operationsDb.prepare('SELECT COUNT(*) AS n FROM operations').get() as { n: number }).n)).toBe(0);
     operationsDb.close();
@@ -86,5 +123,25 @@ describe('Spy C1 daemon HTTP routes', () => {
     const unknown = await handler(new Request(`http://127.0.0.1/api/spy/channels/${unresolved}/star`, { method: 'PUT' }));
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toMatchObject({ error: expect.stringContaining('channel_unknown') });
+
+    const vphWithoutFollow = await handler(new Request(
+      `http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}/vph`,
+    ));
+    expect(vphWithoutFollow.status).toBe(404);
+    expect(await vphWithoutFollow.json()).toMatchObject({ error: expect.stringContaining('channel_not_followed') });
+  });
+
+  test('does not start a manual observation while the separate channel-watch kill switch is disabled', async () => {
+    const { handler } = await setup();
+    const follow = await handler(new Request(`http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cadence: 'daily' }),
+    }));
+    expect(follow.status).toBe(200);
+
+    const observe = await handler(new Request(`http://127.0.0.1/api/spy/watchlists/local-desktop/competitors/${UC}/observe`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    }));
+    expect(observe.status).toBe(409);
+    expect(await observe.json()).toMatchObject({ error: expect.stringContaining('channel_watch_disabled') });
   });
 });

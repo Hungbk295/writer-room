@@ -94,10 +94,19 @@ describe('parseAgentResultJson', () => {
       // Data dir not present in CI — skip.
       return;
     }
-    expect(() => JSON.parse(raw)).toThrow();
+    // A completed recovery can rewrite this optional local fixture into strict
+    // JSON. Keep the fixture assertion useful in either state; deterministic
+    // malformed-input cases above still prove the repair path itself.
+    let strictJson = true;
+    try {
+      JSON.parse(raw);
+    } catch {
+      strictJson = false;
+    }
     const r = parseAgentResultJson(raw);
     expect(r.ok).toBe(true);
     if (r.ok) {
+      expect(r.repaired).toBe(!strictJson);
       const v = r.value as { title: string; script: string };
       expect(v.title).toContain('LƯƠNG 25');
       expect(v.script.split(/\s+/).length).toBeGreaterThan(500);

@@ -18,6 +18,24 @@ export interface YoutubeVideoInfo {
   thumbnailUrl: string | null;
 }
 
+/**
+ * Public measurement shape used only by the competitor-watch collector.
+ * Unlike `YoutubeVideoInfo`, a missing metric remains `null`: a flat playlist
+ * is an inventory, not proof that a video has zero views.
+ */
+export interface YoutubeVideoObservationInfo {
+  sourceVideoId: string;
+  canonicalUrl: string;
+  title: string | null;
+  channelTitle: string | null;
+  channelId: string | null;
+  viewCount: number | null;
+  likeCount: number | null;
+  commentCount: number | null;
+  durationSec: number | null;
+  publishedAt: string | null;
+}
+
 export interface YoutubeTranscript {
   status: 'ok' | 'missing' | 'error';
   language: string | null;
@@ -35,6 +53,13 @@ export interface YoutubePort {
   fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
   streamUrl(canonicalUrl: string, signal?: AbortSignal): Promise<string>;
   thumbnail(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }>;
+  /**
+   * C3 public-watch capability.  Optional so existing Spy fixtures keep the
+   * legacy source-pack/video API untouched; the watch collector fails closed
+   * when its injected port does not implement it.
+   */
+  listChannelObservation?(canonicalUrl: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoObservationInfo[]>;
+  inspectVideoObservation?(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeVideoObservationInfo>;
 }
 
 interface YtDlpJson {
@@ -45,6 +70,8 @@ interface YtDlpJson {
   channel_id?: string;
   uploader?: string;
   view_count?: number;
+  like_count?: number;
+  comment_count?: number;
   duration?: number;
   upload_date?: string;
   timestamp?: number;
@@ -80,6 +107,40 @@ function toInfo(value: YtDlpJson): YoutubeVideoInfo {
     durationSec: Math.max(0, value.duration ?? 0),
     publishedAt: publishedAt(value),
     thumbnailUrl: value.thumbnail ?? value.thumbnails?.at(-1)?.url ?? null,
+  };
+}
+
+function nullableCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : null;
+}
+
+function nullableDuration(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function toObservationInfo(value: YtDlpJson, includeMetrics: boolean): YoutubeVideoObservationInfo {
+  const sourceVideoId = value.id ?? '';
+  if (!/^[A-Za-z0-9_-]{11}$/.test(sourceVideoId)) {
+    throw new AppError('provider_error', 'yt-dlp trả video ID không hợp lệ');
+  }
+  return {
+    sourceVideoId,
+    canonicalUrl: `https://www.youtube.com/watch?v=${sourceVideoId}`,
+    title: value.title ?? null,
+    channelTitle: value.channel ?? value.uploader ?? null,
+    channelId: value.channel_id ?? null,
+    // `--flat-playlist` is explicitly inventory-only.  Even if an adapter
+    // version happens to include a number, a VPH point is valid only after
+    // individual `inspectVideoObservation` metadata is read.
+    viewCount: includeMetrics ? nullableCount(value.view_count) : null,
+    likeCount: includeMetrics ? nullableCount(value.like_count) : null,
+    commentCount: includeMetrics ? nullableCount(value.comment_count) : null,
+    durationSec: includeMetrics ? nullableDuration(value.duration) : null,
+    publishedAt: publishedAt(value),
   };
 }
 
@@ -160,6 +221,45 @@ export class YtDlpAdapter implements YoutubePort {
         return [];
       }
     });
+  }
+
+  async listChannelObservation(
+    canonicalUrl: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<YoutubeVideoObservationInfo[]> {
+    const result = await requireSuccessfulProcess(
+      this.binary,
+      [
+        ...this.baseArgs(),
+        '--dump-single-json',
+        '--flat-playlist',
+        '--playlist-end',
+        String(limit),
+        canonicalUrl,
+      ],
+      { signal, timeoutMs: 120_000, maximumStdoutBytes: 32 * 1024 * 1024 },
+    );
+    const parsed = parseJson(result.stdout);
+    return (parsed.entries ?? []).flatMap((entry) => {
+      try {
+        return [toObservationInfo(entry, false)];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  async inspectVideoObservation(
+    canonicalUrl: string,
+    signal?: AbortSignal,
+  ): Promise<YoutubeVideoObservationInfo> {
+    const result = await requireSuccessfulProcess(
+      this.binary,
+      [...this.baseArgs(), '--dump-single-json', '--skip-download', canonicalUrl],
+      { signal, timeoutMs: 90_000, maximumStdoutBytes: 8 * 1024 * 1024 },
+    );
+    return toObservationInfo(parseJson(result.stdout), true);
   }
 
   /**

@@ -62,7 +62,7 @@ describe('Spy C1 channel roles', () => {
 
     store = new SpyStore(path);
     const readonly = new Database(path, { readonly: true });
-    expect(Number((readonly.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(7);
+    expect(Number((readonly.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(8);
     const channelColumns = (readonly.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>).map((row) => row.name);
     const competitorColumns = (readonly.prepare('PRAGMA table_info(competitors)').all() as Array<{ name: string }>).map((row) => row.name);
     expect(channelColumns).toEqual(expect.arrayContaining(['channel_id', 'youtube_uc_id', 'handle']));
@@ -77,7 +77,7 @@ describe('Spy C1 channel roles', () => {
     const competitor = readonly.prepare('SELECT note, watch_status, cadence FROM competitors WHERE id=?').get('comp-1') as Record<string, unknown>;
     expect(competitor).toMatchObject({ note: 'keep me', watch_status: 'followed', cadence: 'daily' });
     const forbiddenTables = readonly.prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('owned_channels', 'oauth_tokens', 'youtube_analytics', 'competitor_observation_runs', 'video_stat_points')`,
+      `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('owned_channels', 'oauth_tokens', 'youtube_analytics')`,
     ).all();
     expect(forbiddenTables).toHaveLength(0);
     readonly.close();
@@ -108,6 +108,32 @@ describe('Spy C1 channel roles', () => {
     expect(spy.store.listSavedChannels()).toHaveLength(0);
   });
 
+  test('completed channel result exposes the additive ChannelSummary contract', async () => {
+    const dir = await tempRoot('spy-c1-run-summary-');
+    spy = new SpyService({ dataRoot: dir });
+    await spy.init();
+    spy.store.upsertChannel({
+      channelId: 'youtube:channel:/@summary', youtubeUcId: UC, handle: '@summary', title: 'Summary',
+      subscriberCount: null, videoCount: null, totalViewCount: null, fetchedAt: '2026-08-30T00:00:00Z',
+    });
+    const operation = spy.store.createOrGetOperation({
+      kind: 'acquire_channel', ownerSubject: 'test', idempotencyKey: 'c1-run-summary-123', request: {},
+    });
+    const run = spy.store.createSpyRun({
+      operationId: operation.operation.id, kind: 'channel', canonicalSource: 'https://www.youtube.com/@summary/videos',
+      sourceIdentity: 'youtube:channel:/@summary', config: {},
+    });
+
+    const result = spy.getResult(run.id);
+    expect(result.run).toMatchObject({
+      youtubeUcId: UC,
+      channelSummary: {
+        youtubeUcId: UC, title: 'Summary', handle: '@summary', starred: false,
+        watchStatus: null, cadence: null, lastObservedAt: null, nextDueAt: null,
+      },
+    });
+  });
+
   test('local follow, pause, unfollow and summary fields use the canonical legacy relation', async () => {
     const dir = await tempRoot('spy-c1-follow-');
     spy = new SpyService({ dataRoot: dir });
@@ -126,7 +152,10 @@ describe('Spy C1 channel roles', () => {
     expect(spy.listWatchlistChannels('local-desktop', 'followed')).toEqual({
       channels: [{
         youtubeUcId: UC, title: 'Followed', handle: '@followed', starred: false, starredAt: null,
-        watchStatus: 'paused', cadence: 'manual', lastObservedAt: null, nextDueAt: null, note: 'watch',
+        watchStatus: 'paused', cadence: 'manual', lastObservedAt: null,
+        lastObservationStatus: null, lastObservationCompleteness: null,
+        comparableVph24hCount: 0, medianVph24h: null,
+        nextDueAt: null, note: 'watch',
       }],
       nextCursor: null,
     });

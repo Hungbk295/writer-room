@@ -85,6 +85,19 @@ export interface GateInput {
   forbiddenNames?: string[];
   /** Labels the writer itself declared coining, from the WRITE stage output. */
   declaredCoinedLabels?: string[];
+  /**
+   * The CITABLE part of an approved persona pack — `FilteredPersonaPack.citableText`,
+   * never the raw file and never the full filtered markdown. A third grounding
+   * source for checks 1 and 2, on top of factsLedger/pack: the channel's own
+   * approved stance/experience is not an outside claim it needs to separately cite.
+   * Absent/undefined whenever the run has no persona pack, which reproduces gate
+   * behaviour exactly as it was before persona packs existed.
+   * Decision: eng review 2026-09-02; narrowed from the full filtered markdown to
+   * `citableText` by CEO review 2026-09-03 (RC1) — passing the whole entry body
+   * let an approved cell license the `**Chuẩn chung**` figure it argues against,
+   * plus any proper noun inside that contrast block.
+   */
+  personaCitableText?: string;
 }
 
 export interface GateResult {
@@ -570,6 +583,11 @@ export function runDeterministicGate(input: GateInput): GateResult {
   const script = input.script.normalize('NFC');
   const pack = input.packMarkdown.normalize('NFC');
   const ledger = input.factsLedger ?? [];
+  // Already reduced to APPROVED entries' allowedText by the caller — see the doc
+  // comment on `GateInput.personaCitableText`. Empty string when there is no
+  // persona pack, so every lookup below against `persona` is simply a no-op miss.
+  const persona = (input.personaCitableText ?? '').normalize('NFC');
+  const personaClaims = new Set(extractNumericClaims(persona).map(canonicalNumericClaimKey));
 
   // ── 0. The ledger must itself be grounded in the pack ────────────────────
   const groundedLedger: LedgerEntry[] = [];
@@ -601,7 +619,7 @@ export function runDeterministicGate(input: GateInput): GateResult {
   const reportedNumbers = new Set<string>();
   for (const claim of extractNumericClaims(script)) {
     const key = canonicalNumericClaimKey(claim);
-    if (sourceClaims.has(key) || packClaims.has(key)) continue;
+    if (sourceClaims.has(key) || packClaims.has(key) || personaClaims.has(key)) continue;
     if (hasAssumptionMarker(claim.sentence)) continue;
     if (isCommonKnowledgeClaim(claim, claim.sentence)) continue;
     if (reportedNumbers.has(key)) continue;
@@ -609,9 +627,9 @@ export function runDeterministicGate(input: GateInput): GateResult {
     violations.push({
       code: 'NUMBER_UNSOURCED',
       detail:
-        `"${claim.raw}" has no source: it is not in factsLedger/pack, its sentence is not marked `
-        + 'as hypothetical (giả sử / ví dụ / thử hình dung / tạm lấy), and it does not qualify as '
-        + 'common knowledge (money, ages and multiples never do)',
+        `"${claim.raw}" has no source: it is not in factsLedger/pack/persona pack, its sentence is `
+        + 'not marked as hypothetical (giả sử / ví dụ / thử hình dung / tạm lấy), and it does not '
+        + 'qualify as common knowledge (money, ages and multiples never do)',
       quote: claim.sentence.slice(0, 200),
     });
   }
@@ -621,14 +639,14 @@ export function runDeterministicGate(input: GateInput): GateResult {
   const ledgerText = groundedLedger.map((e) => `${e.fact}\n${e.quote}`).join('\n');
   for (const { name, sentence } of extractProperNouns(script)) {
     if (name.length < 2) continue;
-    if (pack.includes(name) || ledgerText.includes(name)) continue;
+    if (pack.includes(name) || ledgerText.includes(name) || persona.includes(name)) continue;
     if (hasAssumptionMarker(sentence)) continue;
     if (reportedNames.has(name)) continue;
     reportedNames.add(name);
     violations.push({
       code: 'PROPER_NOUN_UNSOURCED',
       detail:
-        `proper noun "${name}" appears in neither the topic pack nor factsLedger — `
+        `proper noun "${name}" appears in neither the topic pack, factsLedger nor persona pack — `
         + 'a hypothetical person must stay unnamed',
       quote: sentence.slice(0, 200),
     });

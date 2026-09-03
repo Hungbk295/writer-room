@@ -13,3 +13,9 @@ test('builds encoded public channel routes', () => {
   expect(href({ name: 'spy-channels', segment: 'followed' })).toBe('#/spy/followed');
   expect(href({ name: 'spy-channel', youtubeUcId: 'UC test/1' })).toBe('#/spy/channel/UC%20test%2F1');
 });
+
+test('routes publishing-channel memory separately from Spy channels', () => {
+  expect(parseRoute('#/channels')).toEqual({ name: 'publishing-channels' });
+  expect(parseRoute('#/channels/tai-chinh')).toEqual({ name: 'publishing-channels', id: 'tai-chinh' });
+  expect(href({ name: 'publishing-channels', id: 'lịch sử' })).toBe('#/channels/l%E1%BB%8Bch%20s%E1%BB%AD');
+});

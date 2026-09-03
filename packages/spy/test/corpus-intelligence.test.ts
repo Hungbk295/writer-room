@@ -219,7 +219,12 @@ describe('Corpus Intelligence P0 vertical fixture flow', () => {
     const analysis = await spy.corpus.analyzeMembership({
       topicId: 'finance-vi', membershipId: promoted.id, ownerSubject: 'local-desktop', idempotencyKey: 'analysis-expiry',
     });
-    const expired = await spy.corpus.expirePublicEvidence({ now: '2026-10-01T00:00:00.000Z' });
+    // The evidence timestamps are deliberately produced by the service clock.
+    // Expire after the whole test fixture rather than relying on a calendar
+    // literal that eventually lands inside the 30-day window again.
+    const expired = await spy.corpus.expirePublicEvidence({
+      now: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000).toISOString(),
+    });
 
     expect(expired.considered).toBeGreaterThanOrEqual(6);
     expect(expired.purged).toBeGreaterThanOrEqual(6);

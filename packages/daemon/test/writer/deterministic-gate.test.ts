@@ -19,6 +19,7 @@ import {
   runDeterministicGate,
   type LedgerEntry,
 } from '../../src/writer/deterministic-gate.ts';
+import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
 import type { WriterVideoPlan } from '../../src/writer/video-plan.ts';
 
 const FIXTURES = join(import.meta.dir, 'fixtures');
@@ -268,6 +269,137 @@ describe('common-knowledge exemption', () => {
   test('a decimal is a measurement, not a convention', () => {
     const result = gate('Thông thường người ta mất 2,5 năm cho việc đó.');
     expect(result.violations.map((v) => v.code)).toContain('NUMBER_UNSOURCED');
+  });
+});
+
+/**
+ * `personaCitableText` is the APPROVED entries' `allowedText` union, produced by
+ * `filterApprovedPersonaMarkdown` — a third grounding source alongside
+ * factsLedger/pack for checks 1 and 2, same exact-match philosophy, no fuzziness.
+ * Decision: eng review 2026-09-02; narrowed from the full filtered markdown to
+ * `citableText` by CEO review 2026-09-03 (RC1).
+ *
+ * These tests deliberately go through the real filter instead of hand-writing the
+ * gate input: the whole point of RC1 is which PART of an approved entry becomes
+ * citable, so a test that skips the filter cannot see the bug.
+ */
+describe('persona pack as a third grounding source', () => {
+  const pack = '# pack\n\nKhông có con số nào ở đây.';
+
+  /** One approved stance cell shaped exactly like the real persona pack: an
+   * industry-standard contrast block, the channel's own position, then the
+   * transcript quote that evidences it. */
+  function approvedStance(chuanChung: string, lapTruong: string, quote: string): string {
+    return [
+      '# Persona Pack',
+      '',
+      '## 1. Bộ quan điểm (stance registry)',
+      '',
+      '### 1.1 Quỹ dự phòng — `[ĐÃ DUYỆT]`',
+      '',
+      `**Chuẩn chung**: ${chuanChung}`,
+      '',
+      `**Lập trường kênh**: ${lapTruong}`,
+      '',
+      `> ${quote}`,
+    ].join('\n');
+  }
+
+  test('[CRITICAL REGRESSION] without a persona pack, an unsourced amount fires exactly as before', () => {
+    const result = runDeterministicGate({
+      script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
+      packMarkdown: pack,
+    });
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('an amount inside the approved stance body passes', () => {
+    const filtered = filterApprovedPersonaMarkdown(
+      approvedStance('giới chuyên gia khuyên 3-6 tháng.', 'Tôi từng tiết kiệm 45 triệu trong một năm.', 'trích dẫn gốc'),
+    )!;
+    const result = runDeterministicGate({
+      script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
+      packMarkdown: pack,
+      personaCitableText: filtered.citableText,
+    });
+    expect(result.violations).toEqual([]);
+  });
+
+  test('an amount absent from both the pack and the persona pack still fails', () => {
+    const filtered = filterApprovedPersonaMarkdown(
+      approvedStance('giới chuyên gia khuyên 3-6 tháng.', 'Tôi ưu tiên quỹ dự phòng 12 tháng.', 'trích dẫn gốc'),
+    )!;
+    const result = runDeterministicGate({
+      script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
+      packMarkdown: pack,
+      personaCitableText: filtered.citableText,
+    });
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('[RC1] approving a cell does NOT license the Chuẩn chung material it argues against', () => {
+    // A realistic contrast block: it cites somebody else's authority and somebody
+    // else's number, precisely so the channel can reject them. Note the figure
+    // classes that matter here are money and proper nouns — a bare month count
+    // ("3-6 tháng") is common knowledge and never fires either way, so it cannot
+    // demonstrate anything about licensing.
+    const markdown = approvedStance(
+      'sách của Nguyễn Văn Bảo khuyên để dành 50 triệu trước khi đầu tư.',
+      'Tôi thấy con số đó quá cứng. Tôi chọn đủ 1 năm chi phí sinh hoạt rồi mới tính tiếp.',
+      'tôi luôn khuyên các bạn là khoảng dự phòng này nên là 1 năm',
+    );
+    const filtered = filterApprovedPersonaMarkdown(markdown)!;
+
+    // The model may READ the contrast — that is what makes "thường thì X, nhưng
+    // tôi Y" writable at all.
+    expect(filtered.markdown).toContain('50 triệu');
+    expect(filtered.markdown).toContain('Nguyễn Văn Bảo');
+    // It may NOT cite either: both belong to the position the cell exists to reject.
+    expect(filtered.citableText).not.toContain('50 triệu');
+    expect(filtered.citableText).not.toContain('Nguyễn Văn Bảo');
+    expect(filtered.citableText).toContain('1 năm');
+
+    const borrowedNumber = runDeterministicGate({
+      script: 'Giới chuyên gia khuyên để dành 50 triệu trước khi đầu tư.',
+      packMarkdown: pack,
+      personaCitableText: filtered.citableText,
+    });
+    expect(borrowedNumber.violations.map((v) => v.code)).toContain('NUMBER_UNSOURCED');
+
+    const borrowedName = runDeterministicGate({
+      script: 'Chuyên gia Nguyễn Văn Bảo khuyên nên tiết kiệm sớm.',
+      packMarkdown: pack,
+      personaCitableText: filtered.citableText,
+    });
+    expect(borrowedName.violations.map((v) => v.code)).toContain('PROPER_NOUN_UNSOURCED');
+  });
+
+  test('[RC1] the transcript blockquote inside an approved cell is readable but not citable', () => {
+    const filtered = filterApprovedPersonaMarkdown(
+      approvedStance('chuẩn ngành là 3-6 tháng.', 'Tôi chọn 1 năm.', 'tôi lấy con số 50 triệu cho tròn'),
+    )!;
+    expect(filtered.markdown).toContain('50 triệu');
+    expect(filtered.citableText).not.toContain('50 triệu');
+  });
+
+  test('a proper noun present in an approved experience body passes', () => {
+    const filtered = filterApprovedPersonaMarkdown([
+      '# Persona Pack',
+      '',
+      '## 2. Kho trải nghiệm phóng tác',
+      '',
+      '### A1. Người bạn vội mua nhà — `[ĐÃ DUYỆT]`',
+      '',
+      '**Phóng tác** (3-5 câu): Người bạn của tôi tên Lan từng vội mua nhà.',
+      '',
+      '**Ghi chú khi dùng**: không gắn tuổi và nơi chốn cùng lúc.',
+    ].join('\n'))!;
+    const result = runDeterministicGate({
+      script: 'Người bạn của tôi tên Lan từng vội mua nhà.',
+      packMarkdown: pack,
+      personaCitableText: filtered.citableText,
+    });
+    expect(result.violations.map((v) => v.code)).not.toContain('PROPER_NOUN_UNSOURCED');
   });
 });
 

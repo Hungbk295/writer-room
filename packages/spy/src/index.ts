@@ -31,9 +31,15 @@ import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
+import { PublicObservationService } from './channel-intelligence/observations.ts';
 import type {
   FollowChannelInput,
   FollowChannelResult,
+  PublicChannelVphRead,
+  PublicObservationOptions,
+  PublicObservationResult,
+  PublicVideoVphRead,
+  PublicVphQuery,
   StarChannelResult,
   UnfollowChannelResult,
   WatchlistChannelsResult,
@@ -201,6 +207,11 @@ function pickDimensions(payload: unknown, dimensions: string[]): unknown {
   return picked;
 }
 
+function stableUcIdFromSource(value: string): string | null {
+  const match = /(?:^|[/=:])(UC[A-Za-z0-9_-]{22})(?=$|[/?#])/i.exec(value);
+  return match?.[1] ?? null;
+}
+
 export class SpyService {
   readonly dataRoot: string;
   readonly artifacts: ArtifactStore;
@@ -217,6 +228,8 @@ export class SpyService {
   readonly corpus: CorpusIntelligenceService;
   /** C1 local bookmark/follow role boundary; storage-only by construction. */
   readonly roles: SpyRoleService;
+  /** C3 yt-dlp-only public observation/VPH boundary. */
+  readonly publicObservations: PublicObservationService;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
@@ -242,6 +255,7 @@ export class SpyService {
     // Desktop installers bundle yt-dlp next to the daemon.  Development keeps
     // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
     this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
+    this.publicObservations = new PublicObservationService(this.store, this.youtube);
     this.media = opts.media ?? new FfmpegAdapter();
     if (opts.dataApi) {
       this.dataApi = opts.dataApi;
@@ -325,6 +339,26 @@ export class SpyService {
     return this.acquisition.videoSpy(input, ownerSubject);
   }
 
+  /** Explicit C3 collection; no Data API fallback, agent, PTY, or operation row. */
+  observePublicChannel(input: { youtubeUcId: string } & PublicObservationOptions): Promise<PublicObservationResult> {
+    return this.publicObservations.observe(input);
+  }
+
+  getPublicChannelVph(youtubeUcId: string, watchlistId = 'local-desktop', query: PublicVphQuery = {}): PublicChannelVphRead {
+    if (!/^UC[A-Za-z0-9_-]{22}$/.test(youtubeUcId)) {
+      throw new AppError('invalid_input', 'channel_unresolved_or_invalid: VPH cần stable UC identity');
+    }
+    const summary = this.roles.summary(youtubeUcId, watchlistId);
+    if (!summary?.watchStatus) {
+      throw new AppError('not_found', 'channel_not_followed: chỉ đọc VPH trong public watchlist đã Follow');
+    }
+    return this.publicObservations.readVph(youtubeUcId, query, watchlistId);
+  }
+
+  getPublicVideoVph(sourceVideoId: string, watchlistId = 'local-desktop', query: PublicVphQuery = {}): PublicVideoVphRead {
+    return this.publicObservations.readVideoVph(sourceVideoId, query, watchlistId);
+  }
+
   /** Xoá spy run (huỷ operation đang chạy nếu cần). */
   deleteSpyRun(spyRunId: string): boolean {
     const run = this.store.getSpyRun(spyRunId);
@@ -365,8 +399,16 @@ export class SpyService {
     const run = this.store.getSpyRun(spyRunId);
     if (!run) throw new AppError('not_found', 'Spy run không tồn tại');
     const videos = this.store.listVideoSnapshots(spyRunId);
+    const channel = this.store.getChannel(run.sourceIdentity);
+    const youtubeUcId = channel?.youtubeUcId ?? stableUcIdFromSource(run.sourceIdentity);
     return {
-      run,
+      // Additive C1 fields let the channel workspace render role state while
+      // preserving every legacy SpyRun field and snapshot shape.
+      run: {
+        ...run,
+        youtubeUcId,
+        channelSummary: youtubeUcId ? this.roles.summary(youtubeUcId) : null,
+      },
       videos: videos.map((video) => ({
         ...video,
         transcriptCount: this.store.transcriptSegmentCount(video.id),
@@ -1296,7 +1338,24 @@ export class SpyService {
     watchlistId = 'local-desktop',
     segment: 'saved' | 'followed' = 'saved',
   ): WatchlistChannelsResult {
-    return this.roles.list(watchlistId, segment);
+    const listed = this.roles.list(watchlistId, segment);
+    // The list is a read-only projection.  Enrich only existing followed
+    // relations from persisted VPH points; this must never contact yt-dlp or
+    // turn Saved/Star into a background collection action.
+    if (segment !== 'followed') return listed;
+    return {
+      ...listed,
+      channels: listed.channels.map((channel) => {
+        const vph = this.publicObservations.readVph(channel.youtubeUcId, { window: '24h' }, watchlistId);
+        return {
+          ...channel,
+          lastObservationStatus: vph.coverage.latestRunStatus,
+          lastObservationCompleteness: vph.coverage.latestRunCompleteness,
+          comparableVph24hCount: vph.aggregations.comparableCount,
+          medianVph24h: vph.aggregations.medianVph,
+        };
+      }),
+    };
   }
 
   followChannel(youtubeUcId: string, input: FollowChannelInput = {}): FollowChannelResult {

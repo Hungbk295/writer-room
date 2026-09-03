@@ -97,8 +97,19 @@ export async function getGeneralPack(relPath: string, dataDir?: string): Promise
       hash: hashGeneralPack(markdown),
       markdown,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    // ENOENT is a real absence and stays `null`; every other read failure
+    // (permissions, I/O, a directory where a file was expected) is a problem the
+    // caller must not mistake for "the file is not there". Without this split a
+    // run reports the file as missing while it sits on disk, sending whoever
+    // debugs it to the wrong place. Same split, same reason, as
+    // `persona-pack.ts`'s `getPersonaPack` (eng review 2026-09-02); these two
+    // siblings were left behind and caught by CEO review 2026-09-03.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(
+      `[general-pack] failed to read ${cleaned}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
 }
 

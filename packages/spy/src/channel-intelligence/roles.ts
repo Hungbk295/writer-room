@@ -181,6 +181,13 @@ export class SpyRoleService {
       watchStatus: relation?.watchStatus ?? null,
       cadence: relation?.cadence ?? null,
       lastObservedAt: relation?.lastObservedAt ?? null,
+      // The role boundary is deliberately provider-free.  C3's read model
+      // enriches these fields for followed-list reads without making a list
+      // or a Star action create an observation.
+      lastObservationStatus: null,
+      lastObservationCompleteness: null,
+      comparableVph24hCount: null,
+      medianVph24h: null,
       nextDueAt: relation ? nextDueAt(relation) : null,
       note: saved?.note ?? relation?.note ?? null,
     };

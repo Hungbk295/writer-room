@@ -43,9 +43,16 @@ import {
   type GateResult,
 } from './deterministic-gate.ts';
 import { getChannelStyle } from './channel-style.ts';
+import {
+  appendEditorialSuggestions,
+  getChannelProfile,
+  getEditorialNotebook,
+  type LessonKind,
+} from './channel-profile.ts';
 import { getGeneralPack } from './general-pack.ts';
 import { clearHookState } from './hook-board.ts';
-import { getPersonaPack } from './persona-pack.ts';
+import { getApprovedPersonaPack, type PersonaPack } from './persona-pack.ts';
+import { getReusableProcedure } from './reusable-procedure.ts';
 import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
@@ -79,6 +86,9 @@ export const REPAIR_STAGE = 'repair-v2';
  * a restyle can be dispatched from.
  */
 export const RESTYLE_STAGE = 'restyle-v1';
+/** Human-triggered side operation on a DONE article. It proposes durable lessons;
+ * it never edits the channel notebook directly. */
+export const POSTMORTEM_STAGE = 'writer-postmortem-v1';
 
 /**
  * Writer v2 is deliberately a live, human-observable PTY workflow. The author
@@ -89,11 +99,13 @@ export const RESTYLE_STAGE = 'restyle-v1';
 const AUTHOR_PTY_SESSION_GROUP = 'writer-v2-author';
 const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
+const POSTMORTEM_PTY_SESSION_GROUP = 'writer-v2-postmortem';
 
 const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
 const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
+const POSTMORTEM_PROMPT_VERSION = 'writer-v2-postmortem-v1';
 
 /** The one item id every stage of a v2 run uses (one run = one piece). */
 export const WRITER_V2_ITEM_ID = 'piece';
@@ -119,6 +131,18 @@ export interface EditorDefect {
   quote: string;
   severity: EditorDefectSeverity;
   note: string;
+}
+
+export interface PostmortemLesson {
+  kind: LessonKind;
+  text: string;
+  reason: string;
+}
+
+export interface WriterPostmortem {
+  lessons: PostmortemLesson[];
+  agentId: DefaultAgentId;
+  createdAt: string;
 }
 
 /**
@@ -159,6 +183,14 @@ export interface WriterRunV2 {
   targetWords?: number;
   /** Who this channel talks to — stated, because STUDY picks a gap against it. */
   audience?: string;
+  /** Publishing-channel identity. Optional only so pre-feature run JSON remains readable. */
+  channelId?: string;
+  /** Human-authored channel notebook pin. Injected into WRITE, never STUDY. */
+  editorialPath?: string;
+  editorialHash?: string;
+  /** Optional native SKILL.md chosen by the channel profile and pinned for WRITE. */
+  procedureId?: string;
+  procedureHash?: string;
   /** Topic pack — the ONLY source of facts. Required. */
   packId: string;
   packTitle: string;
@@ -195,6 +227,11 @@ export interface WriterRunV2 {
    * still the DONE run it was; only the side operation failed. */
   restyleError?: { code: string; reason: string; at: string };
   styled?: StyledVersion[];
+  /** A DONE-side operation: agent suggestions remain proposals until the owner approves them. */
+  reviewingPostmortem?: { attempt: number; startedAt: string };
+  postmortemAttempt?: number;
+  postmortem?: WriterPostmortem;
+  postmortemError?: { code: string; reason: string; at: string };
   /**
    * Pre-write hook loop. Optional on every run written before this existed.
    * Status stays DRAFT while any of these are in flight.
@@ -553,6 +590,8 @@ function buildWritePrompt(opts: {
   wordRange: { minWords: number; maxWords: number };
   forbiddenNames: string[];
   generalPackPath: string;
+  editorialPath?: string;
+  procedurePath?: string;
   personaPackPath?: string;
   selectedHook?: SelectedHook;
 }): string {
@@ -598,6 +637,20 @@ function buildWritePrompt(opts: {
     '  examples of a move NOT to copy.',
     ...(opts.personaPackPath
       ? [`- **Persona pack** (\`${opts.personaPackPath}\`): WHO the narrator is — see below.`]
+      : []),
+    ...(opts.editorialPath
+      ? [
+          `- **Sổ tay biên tập** (\`${opts.editorialPath}\`, staged at \`input/editorial.md\`):`,
+          '  the durable decisions of THIS publishing channel — audience, priorities, refusals',
+          '  and lessons approved from earlier articles. Follow it, but never use it as a fact source.',
+        ]
+      : []),
+    ...(opts.procedurePath
+      ? [
+          `- **Quy trình dùng lại** (\`${opts.procedurePath}\`, staged at \`input/procedure.md\`):`,
+          '  the approved working procedure for this channel. Apply its steps where they do not',
+          '  conflict with the facts ledger or hard rules below.',
+        ]
       : []),
     '- **factsLedger**: the ONLY facts you may state. Every number, name, place, study or',
     '  case in your script must trace to an entry here.',
@@ -664,6 +717,64 @@ function buildWritePrompt(opts: {
     '  "beatAnchors": ["..."], "coinedLabels": [] }',
     '```',
   ].join('\n');
+}
+
+function buildPostmortemPrompt(): string {
+  return [
+    '# Tổng kết sau bài — đề xuất, không tự sửa sổ tay',
+    '',
+    'Đọc toàn bộ `input/article.md`, `input/editorial.md` và metadata trong',
+    '`input/envelope.json`. Rút ra 1–3 kinh nghiệm BỀN VỮNG cho lần viết sau của',
+    'chính kênh này.',
+    '',
+    'Chỉ đề xuất điều có thể tái dùng:',
+    '- KEEP: một cách làm đã hiệu quả và nên giữ;',
+    '- AVOID: một lỗi hoặc thói quen nên tránh;',
+    '- TRY: một thử nghiệm cụ thể đáng làm ở bài sau.',
+    '',
+    'Không chép lại dữ kiện/chủ đề riêng của bài. Không lặp điều đã có trong sổ tay.',
+    'Không đề xuất chung chung kiểu “viết hấp dẫn hơn”. Mỗi đề xuất phải là một chỉ dẫn',
+    'có thể hành động và `reason` phải chỉ ra tín hiệu trong run khiến bạn kết luận vậy.',
+    'Đây chỉ là hộp chờ: người viết sẽ duyệt sau.',
+    '',
+    'Write JSON to `out/result.json`:',
+    '',
+    '```json',
+    '{ "lessons": [',
+    '  { "kind": "KEEP", "text": "...", "reason": "..." }',
+    '] }',
+    '```',
+  ].join('\n');
+}
+
+export function validatePostmortem(
+  parsed: unknown,
+): { ok: true; lessons: PostmortemLesson[] } | { ok: false; errorCode: string; reason: string } {
+  const value = parsed as { lessons?: unknown } | null;
+  if (!value || typeof value !== 'object' || !Array.isArray(value.lessons)) {
+    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'lessons phải là một mảng' };
+  }
+  if (value.lessons.length < 1 || value.lessons.length > 3) {
+    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'lessons cần 1–3 phần tử' };
+  }
+  const lessons: PostmortemLesson[] = [];
+  for (const [index, raw] of value.lessons.entries()) {
+    const lesson = raw as Partial<PostmortemLesson> | null;
+    const text = typeof lesson?.text === 'string' ? lesson.text.replace(/\s+/g, ' ').trim() : '';
+    const reason = typeof lesson?.reason === 'string' ? lesson.reason.replace(/\s+/g, ' ').trim() : '';
+    if (lesson?.kind !== 'KEEP' && lesson?.kind !== 'AVOID' && lesson?.kind !== 'TRY') {
+      return { ok: false, errorCode: 'AGENT_SCHEMA', reason: `lessons[${index}].kind phải là KEEP/AVOID/TRY` };
+    }
+    if (text.length < 15 || text.length > 500 || reason.length < 10 || reason.length > 800) {
+      return {
+        ok: false,
+        errorCode: 'AGENT_SCHEMA',
+        reason: `lessons[${index}] cần text 15–500 ký tự và reason 10–800 ký tự`,
+      };
+    }
+    lessons.push({ kind: lesson.kind, text, reason });
+  }
+  return { ok: true, lessons };
 }
 
 function buildWriteContinuationPrompt(opts: {
@@ -754,12 +865,34 @@ function buildEditReviewPrompt(opts: {
   ].join('\n');
 }
 
+/** Rule 1's wording branches on whether this run has a persona pack — a fourth
+ * valid fix (tracing to it) only exists when there is one to trace to. */
+function repairRuleOneLines(hasPersona: boolean): string[] {
+  const groundingNoun = hasPersona ? '`factsLedger` or the persona pack' : '`factsLedger`';
+  const fixCount = hasPersona ? 'Four' : 'Three';
+  const personaFix = hasPersona
+    ? ' A fourth: trace it verbatim to the persona pack (the channel\'s own approved'
+      + ' stance/experience), if it is genuinely there.'
+    : '';
+  const sourceNoun = hasPersona ? 'ledger/persona pack' : 'ledger';
+  return [
+    `1. Every number/name/case must still trace to ${groundingNoun}. ${fixCount} valid fixes for an`,
+    '   unsourced number: delete it, mark its sentence as openly hypothetical ("giả sử…"),',
+    '   or — if it is genuinely common knowledge (an everyday time span, a canonical',
+    '   fraction, a widely-known convention) — attribute it in the prose ("chuyên gia',
+    `   thường khuyên…", "thông thường…").${personaFix} Inventing a source is not a fix.`,
+    '   Money, ages, "N lần" and years never qualify as common knowledge; those must come',
+    `   from the ${sourceNoun} or go.`,
+  ];
+}
+
 function buildRepairPrompt(opts: {
   beatCount: number;
   wordRange: { minWords: number; maxWords: number };
   forbiddenNames: string[];
   gateViolations: string;
   defectCount: number;
+  hasPersona: boolean;
 }): string {
   return [
     '# Writer v2 — REPAIR (one round, in place)',
@@ -776,13 +909,7 @@ function buildRepairPrompt(opts: {
     '',
     '## Hard rules',
     '',
-    '1. Every number/name/case must still trace to `factsLedger`. Three valid fixes for an',
-    '   unsourced number: delete it, mark its sentence as openly hypothetical ("giả sử…"),',
-    '   or — if it is genuinely common knowledge (an everyday time span, a canonical',
-    '   fraction, a widely-known convention) — attribute it in the prose ("chuyên gia',
-    '   thường khuyên…", "thông thường…"). Inventing a source is not a fix. Money, ages,',
-    '   "N lần" and years never qualify as common knowledge; those must come from the',
-    '   ledger or go.',
+    ...repairRuleOneLines(opts.hasPersona),
     '2. A hypothetical person stays unnamed.',
     `3. Length stays in ${opts.wordRange.minWords}-${opts.wordRange.maxWords} words.`,
     `4. Forbidden host identities: ${
@@ -911,6 +1038,7 @@ export async function createWriterPostV2(deps: WriterV2Deps): Promise<WriterRunV
 /** The user-facing preflight contract: it resolves and pins every dependency,
  * but deliberately does not create a clone or call `requestTurn`. */
 export interface WriterV2RoomInput {
+    channelId: string;
     brief: string;
     title?: string;
     audience?: string;
@@ -923,6 +1051,7 @@ export interface WriterV2RoomInput {
 }
 
 export interface WriterV2PostConfigInput {
+  channelId: string;
   brief: string;
   title?: string;
   audience?: string;
@@ -953,10 +1082,13 @@ export async function updateWriterPostV2(
     throw new Error('writer agent và editor agent phải khác nhau');
   }
 
+  const channelId = input.channelId.trim();
+  const channel = channelId ? await getChannelProfile(channelId, deps.dataDir) : null;
+  if (!channel) throw new Error('Hồ sơ kênh không tồn tại hoặc channelId chưa được chọn');
   const brief = input.brief.trim();
   const packId = input.packId.trim();
-  const generalPackPath = input.generalPack.trim();
-  const formulaId = input.formulaId.trim();
+  const generalPackPath = input.generalPack.trim() || channel.defaultGeneralPack || '';
+  const formulaId = input.formulaId.trim() || channel.defaultFormulaId || '';
   let targetWords: number | undefined;
   if (input.targetWords !== undefined && input.targetWords !== null) {
     const n = Number(input.targetWords);
@@ -972,13 +1104,31 @@ export async function updateWriterPostV2(
   const formula = formulaId ? await getFormula(formulaId, deps.dataDir) : null;
   if (formulaId && !formula) throw new Error('Formula không tồn tại');
   const normalized = formula ? normalizeFormula(formula) : null;
+  const editorial = await getEditorialNotebook(channelId, deps.dataDir);
+  if (!editorial) throw new Error('Không đọc được sổ tay biên tập của kênh');
+  const procedure = channel.defaultProcedure
+    ? await getReusableProcedure(channel.defaultProcedure, deps.dataDir)
+    : null;
+  if (channel.defaultProcedure && !procedure) {
+    throw new Error(`Quy trình mặc định không tồn tại: ${channel.defaultProcedure}`);
+  }
 
   const previousTitle = (post.requestedTitle ?? '').trim();
+  post.channelId = channelId;
+  post.editorialPath = editorial.path;
+  post.editorialHash = editorial.hash;
+  if (procedure) {
+    post.procedureId = procedure.id;
+    post.procedureHash = procedure.hash;
+  } else {
+    delete post.procedureId;
+    delete post.procedureHash;
+  }
   post.brief = brief;
   const requestedTitle = input.title?.trim();
   if (requestedTitle) post.requestedTitle = requestedTitle;
   else delete post.requestedTitle;
-  const audience = input.audience?.trim();
+  const audience = input.audience?.trim() || channel.audience;
   if (audience) post.audience = audience;
   else delete post.audience;
   if (targetWords !== undefined) post.targetWords = targetWords;
@@ -995,7 +1145,7 @@ export async function updateWriterPostV2(
   post.formulaHash = formula ? pinFormulaHash(formula) : '';
   post.agentId = input.agentId;
   post.editorAgentId = input.editorAgentId;
-  post.phase = requestedTitle && brief && pack && generalPack && formula ? 'READY' : 'CONFIGURING';
+  post.phase = requestedTitle && brief && pack && generalPack && formula && editorial ? 'READY' : 'CONFIGURING';
   // Title is the input the hook loop was generated against. Changing it
   // silently keeping an old selection would open the wrong video.
   if (previousTitle !== (requestedTitle ?? '')) {
@@ -1021,6 +1171,7 @@ export async function createWriterRoomV2(
   const post = await createWriterPostV2(deps);
   try {
     return await updateWriterPostV2(deps, post.id, {
+      channelId: input.channelId,
       brief: input.brief,
       title: input.title ?? input.brief,
       ...(input.audience !== undefined ? { audience: input.audience } : {}),
@@ -1052,6 +1203,19 @@ export async function runWriterRoomV2(deps: WriterV2Deps, runId: string): Promis
   if (!pack) throw new Error('Source Pack của room không còn tồn tại');
   if (!run.requestedTitle?.trim() || !run.brief.trim() || !run.packId || !run.generalPackPath || !run.formulaId) {
     throw new Error('Writer v2 post chưa đủ cấu hình để Run');
+  }
+  if (!run.channelId) throw new Error('Chưa chọn Hồ sơ kênh cho bài viết');
+  const channel = await getChannelProfile(run.channelId, deps.dataDir);
+  if (!channel) throw new Error('Hồ sơ kênh của bài viết không còn tồn tại');
+  const editorial = await getEditorialNotebook(run.channelId, deps.dataDir);
+  if (!editorial || editorial.hash !== run.editorialHash) {
+    throw new Error('Sổ tay biên tập đã thay đổi sau khi Save; hãy Update configuration để pin lại');
+  }
+  if (run.procedureId) {
+    const procedure = await getReusableProcedure(run.procedureId, deps.dataDir);
+    if (!procedure || procedure.hash !== run.procedureHash) {
+      throw new Error('Quy trình dùng lại đã thay đổi sau khi Save; hãy Update configuration để pin lại');
+    }
   }
   if (run.agentId === run.editorAgentId) {
     throw new Error('writer agent và editor agent phải khác nhau');
@@ -1151,11 +1315,42 @@ async function dispatchWrite(
   const study = run.study;
   if (!study) throw new Error('[writer-v2] dispatchWrite called before study was set');
   const pack = await getWriterPack(run.packId, deps.dataDir);
-  const generalPack = await getGeneralPack(run.generalPackPath, deps.dataDir);
+  // `getGeneralPack` now throws on a non-ENOENT read failure instead of flattening
+  // it into `null` (CEO review 2026-09-03). That throw must not escape: this
+  // function runs inside the settle listener, whose only handler is a
+  // `console.error`, so an uncaught error here would leave the run RUNNING
+  // forever. Same shape as the persona guard just below.
+  let generalPack: Awaited<ReturnType<typeof getGeneralPack>>;
+  try {
+    generalPack = await getGeneralPack(run.generalPackPath, deps.dataDir);
+  } catch (err) {
+    await failRun(
+      deps,
+      run,
+      'GENERAL_PACK_UNREADABLE',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
   const formula = await getFormula(run.formulaId, deps.dataDir);
+  const editorial = run.channelId ? await getEditorialNotebook(run.channelId, deps.dataDir) : null;
+  const procedure = run.procedureId ? await getReusableProcedure(run.procedureId, deps.dataDir) : null;
   // Optional and independent of the required packs above: absent is a normal,
   // fully-supported state (pipeline runs exactly as it did before persona packs).
-  const personaPack = await getPersonaPack(deps.dataDir);
+  // `getApprovedPersonaPack` also collapses "file has zero APPROVED entries"
+  // into that same absent state — see its doc comment.
+  let personaPack: PersonaPack | null;
+  try {
+    personaPack = await getApprovedPersonaPack(deps.dataDir);
+  } catch (err) {
+    await failRun(
+      deps,
+      run,
+      'PERSONA_PACK_UNREADABLE',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
   if (!pack || !generalPack || !formula) {
     await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack, general pack or formula disappeared before WRITE');
     return;
@@ -1167,6 +1362,24 @@ async function dispatchWrite(
       'GENERAL_PACK_CHANGED',
       `General pack "${run.generalPackPath}" đã bị sửa sau khi run bắt đầu (hash pin ${run.generalPackHash.slice(0, 12)}…). `
       + 'Tạo run mới để dùng bản mới.',
+    );
+    return;
+  }
+  if (run.channelId && (!editorial || editorial.hash !== run.editorialHash)) {
+    await failRun(
+      deps,
+      run,
+      'EDITORIAL_CHANGED',
+      `Sổ tay biên tập của kênh "${run.channelId}" đã bị sửa sau khi run bắt đầu. Tạo run mới để dùng bản mới.`,
+    );
+    return;
+  }
+  if (run.procedureId && (!procedure || procedure.hash !== run.procedureHash)) {
+    await failRun(
+      deps,
+      run,
+      'PROCEDURE_CHANGED',
+      `Quy trình "${run.procedureId}" đã bị sửa sau khi run bắt đầu. Tạo run mới để dùng bản mới.`,
     );
     return;
   }
@@ -1201,6 +1414,28 @@ async function dispatchWrite(
       role: 'HOW this channel makes moves. Never a source of facts, cases or numbers.',
       contentFile: 'input/general-pack.md',
     },
+    ...(editorial
+      ? {
+          editorial: {
+            channelId: run.channelId,
+            path: editorial.path,
+            hash: editorial.hash,
+            role: 'Durable publishing-channel decisions. Never a source of facts.',
+            contentFile: 'input/editorial.md',
+          },
+        }
+      : {}),
+    ...(procedure
+      ? {
+          procedure: {
+            id: procedure.id,
+            path: procedure.path,
+            hash: procedure.hash,
+            role: 'Approved reusable workflow for this writing turn.',
+            contentFile: 'input/procedure.md',
+          },
+        }
+      : {}),
     ...(personaPack
       ? {
           personaPack: {
@@ -1245,6 +1480,8 @@ async function dispatchWrite(
       wordRange,
       forbiddenNames,
       generalPackPath: generalPack.path,
+      ...(editorial ? { editorialPath: editorial.path } : {}),
+      ...(procedure ? { procedurePath: procedure.path } : {}),
       ...(personaPack ? { personaPackPath: personaPack.path } : {}),
       ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     })}${continuation
@@ -1253,23 +1490,41 @@ async function dispatchWrite(
     envelope,
     inputFiles: [
       { path: 'general-pack.md', content: generalPack.markdown },
+      ...(editorial ? [{ path: 'editorial.md', content: editorial.markdown }] : []),
+      ...(procedure ? [{ path: 'procedure.md', content: procedure.instructions }] : []),
       ...(personaPack ? [{ path: 'persona-pack.md', content: personaPack.markdown }] : []),
       ...(stagedPreviousDraft ? [{ path: 'previous-draft.md', content: stagedPreviousDraft }] : []),
     ],
     inputHashes: [
       envelopeHash(envelope),
       contentHash(generalPack.markdown),
+      ...(editorial ? [editorial.hash] : []),
+      ...(procedure ? [procedure.hash] : []),
       ...(personaPack ? [contentHash(personaPack.markdown)] : []),
       ...(stagedPreviousDraft ? [contentHash(stagedPreviousDraft)] : []),
     ],
     // Only when a persona pack is actually staged does the prompt text differ
     // from the pre-persona-pack shape — so only then does the turn key change.
-    promptVersion: personaPack ? `${WRITE_PROMPT_VERSION}-persona-v1` : WRITE_PROMPT_VERSION,
+    promptVersion: [
+      WRITE_PROMPT_VERSION,
+      personaPack ? 'persona-v1' : '',
+      editorial ? 'editorial-v1' : '',
+      procedure ? 'procedure-v1' : '',
+    ].filter(Boolean).join('-'),
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,
-    // A timed-out CLI pane may be stuck mid-prompt. Keep the visible author pane
-    // identity, but launch this recovery turn with a clean CLI context.
-    ...(continuation ? { freshContext: true } : {}),
+    // Blindness is a property of the turn, not just of the envelope. WRITE must
+    // not inherit CLI context from STUDY — an author pane that still remembers
+    // the study turn can quote source the envelope deliberately withheld. That
+    // applies to the very first WRITE, not only to a continuation: this used to
+    // be `continuation ? ... : {}`, which left the initial WRITE resuming the
+    // same pane STUDY had just used. A continuation additionally needs it
+    // because a timed-out CLI pane may be stuck mid-prompt.
+    freshContext: true,
+    // See the STUDY dispatch: the coordinator counts dispatches, so a scheduler
+    // content-retry would be a model call nobody counted. WRITE's retry path is
+    // the coordinator's own continuation (`WriteContinuation`), which is counted.
+    maxContentRetries: 0,
     validateContent: (parsed) => {
       const v = validateWriterV2Draft(parsed, {
         outline: study.outline,
@@ -1444,6 +1699,28 @@ export async function runGateForRun(
     run.gateResults.push(result);
     return result;
   }
+  // Re-loaded and re-filtered here rather than reusing the WRITE-time pin:
+  // this gate runs after BOTH WRITE and REPAIR (`advanceAfterDraft` is the
+  // only caller), and a persona pack edited mid-run is accepted drift — same
+  // choice as the WRITE-time pin (see the comment on `run.personaPackHash =`
+  // above). A read error here is treated the same as an absent file — the
+  // gate simply runs without a persona source. This is DELIBERATELY the
+  // opposite of `dispatchWrite`, which fails the run (PERSONA_PACK_UNREADABLE)
+  // on the same error: at dispatch the model has not run yet and a broken
+  // persona means the narrator would silently lose their identity, so fail
+  // loud; here the WRITE turn is already done and paid for, and the worst
+  // case of a missing persona source is a FALSE VIOLATION (stricter gate),
+  // never a false pass. Do not "fix" the two sites to match.
+  // Only the CITABLE slice reaches the gate, never the full filtered markdown:
+  // an approved cell must not license the `**Chuẩn chung**` figure it argues
+  // against (CEO review 2026-09-03, RC1). WRITE still stages the full markdown —
+  // the model reads the contrast, it just cannot cite its numbers.
+  let personaCitableText: string | undefined;
+  try {
+    personaCitableText = (await getApprovedPersonaPack(deps.dataDir))?.citableText;
+  } catch {
+    personaCitableText = undefined;
+  }
   const result = runDeterministicGate({
     script: draft.script,
     packMarkdown: pack.markdown,
@@ -1452,6 +1729,7 @@ export async function runGateForRun(
     wordRange: wordRangeFor(run),
     forbiddenNames: forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title }),
     ...(draft.coinedLabels ? { declaredCoinedLabels: draft.coinedLabels } : {}),
+    ...(personaCitableText ? { personaCitableText } : {}),
   });
   run.gateResults.push(result);
   return result;
@@ -1540,6 +1818,10 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
       forbiddenNames,
       gateViolations: formatGateViolations(violations),
       defectCount: defects.length,
+      // The pin from WRITE, not a re-read: whether this repair prompt may
+      // mention the persona pack tracks the same run-level fact `dispatchWrite`
+      // decided when it staged (or didn't stage) the filtered pack.
+      hasPersona: run.personaPackHash !== undefined,
     }),
     envelope,
     inputHashes: [envelopeHash(envelope)],
@@ -2084,6 +2366,176 @@ async function handleRestyleSettle(dataDir: string, event: ItemSettledResult): P
     title: validated.title,
     script: validated.script,
   });
+}
+
+// ── Tổng kết sau bài (DONE side operation) ────────────────────────────────
+
+async function recordPostmortemError(
+  dataDir: string,
+  run: WriterRunV2,
+  code: string,
+  reason: string,
+): Promise<void> {
+  delete run.reviewingPostmortem;
+  run.postmortemError = { code, reason, at: new Date().toISOString() };
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, dataDir);
+}
+
+async function commitPostmortem(
+  dataDir: string,
+  run: WriterRunV2,
+  lessons: PostmortemLesson[],
+): Promise<void> {
+  if (!run.channelId) throw new Error('Run thiếu channelId nên không thể lưu tổng kết');
+  await appendEditorialSuggestions(
+    run.channelId,
+    lessons.map((lesson) => ({ ...lesson, sourceRunId: run.id })),
+    dataDir,
+  );
+  run.postmortem = {
+    lessons,
+    agentId: run.editorAgentId,
+    createdAt: new Date().toISOString(),
+  };
+  delete run.reviewingPostmortem;
+  delete run.postmortemError;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, dataDir);
+}
+
+async function dispatchPostmortem(deps: WriterV2Deps, run: WriterRunV2): Promise<void> {
+  const article = run.finalScript;
+  if (!article || !run.channelId) throw new Error('Run thiếu bài hoàn chỉnh hoặc channelId');
+  const editorial = await getEditorialNotebook(run.channelId, deps.dataDir);
+  if (!editorial) throw new Error('Không đọc được sổ tay biên tập của kênh');
+  const attempt = run.reviewingPostmortem?.attempt ?? 1;
+  const envelope = {
+    contract: { role: 'Tổng kết sau bài', output: '1–3 durable suggestions for human approval' },
+    runId: run.id,
+    channelId: run.channelId,
+    title: run.requestedTitle ?? run.draft?.title ?? run.brief,
+    outlineChanges: run.draft?.outlineChanges ?? [],
+    editorDefects: run.editorDefects ?? [],
+    gateResults: run.gateResults.map((gate) => ({ passed: gate.passed, violations: gate.violations })),
+    articleFile: 'input/article.md',
+    editorialFile: 'input/editorial.md',
+  };
+  const dispatch = await deps.scheduler.dispatchItem({
+    batchId: run.id,
+    itemId: WRITER_V2_ITEM_ID,
+    stage: POSTMORTEM_STAGE,
+    attempt,
+    templateId: run.editorAgentId,
+    promptMarkdown: buildPostmortemPrompt(),
+    envelope,
+    inputFiles: [
+      { path: 'article.md', content: article },
+      { path: 'editorial.md', content: editorial.markdown },
+    ],
+    inputHashes: [envelopeHash(envelope), contentHash(article), editorial.hash],
+    promptVersion: POSTMORTEM_PROMPT_VERSION,
+    sessionGroup: POSTMORTEM_PTY_SESSION_GROUP,
+    interactivePty: true,
+    freshContext: true,
+    budgetScope: `${run.id}:postmortem:${attempt}`,
+    validateContent: (parsed) => {
+      const validated = validatePostmortem(parsed);
+      return validated.ok
+        ? { ok: true as const }
+        : { ok: false as const, errorCode: validated.errorCode, reason: validated.reason };
+    },
+  });
+  if (dispatch.status !== 'RUNNING') {
+    await recordPostmortemError(
+      deps.dataDir,
+      run,
+      dispatch.reason ?? 'POSTMORTEM_DISPATCH_FAILED',
+      `Không dispatch được tổng kết (${dispatch.status})`,
+    );
+  }
+}
+
+export async function startWriterPostmortem(
+  deps: WriterV2Deps,
+  runId: string,
+): Promise<WriterRunV2> {
+  const run = await getWriterRunV2(runId, deps.dataDir);
+  if (!run) throw new Error('Writer v2 run không tồn tại');
+  if (run.status !== 'DONE' || !run.finalScript) throw new Error('Chỉ tổng kết được run đã DONE');
+  if (!run.channelId || !(await getChannelProfile(run.channelId, deps.dataDir))) {
+    throw new Error('Run chưa gắn Hồ sơ kênh hợp lệ');
+  }
+  if (run.reviewingPostmortem) throw new Error('Agent đang tổng kết bài này');
+  if (run.postmortem) throw new Error('Bài này đã có tổng kết');
+  const attempt = (run.postmortemAttempt ?? 0) + 1;
+  run.postmortemAttempt = attempt;
+  run.reviewingPostmortem = { attempt, startedAt: new Date().toISOString() };
+  delete run.postmortemError;
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+  await dispatchPostmortem(deps, run);
+  return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+}
+
+export function registerWriterV2PostmortemListener(
+  scheduler: LaneScheduler,
+  deps: { dataDir: string },
+): () => void {
+  return scheduler.onItemSettled((event) => {
+    if (event.stage !== POSTMORTEM_STAGE) return;
+    void handlePostmortemSettle(deps.dataDir, event).catch((err) => {
+      console.error('[writer-v2] postmortem settle failed:', (err as Error).message);
+    });
+  });
+}
+
+/** Clear/commit postmortem side operations interrupted by a daemon restart. */
+export async function recoverInterruptedPostmortems(dataDir: string): Promise<void> {
+  const summaries = await listWriterRunsV2(dataDir);
+  for (const summary of summaries) {
+    const run = await getWriterRunV2(summary.id, dataDir);
+    if (!run?.reviewingPostmortem) continue;
+    const attempt = run.reviewingPostmortem.attempt;
+    try {
+      const raw = await readFile(
+        join(stageAttemptDir(dataDir, run.id, attempt, POSTMORTEM_STAGE), 'out', 'result.json'),
+        'utf8',
+      );
+      const validated = validatePostmortem(JSON.parse(raw) as unknown);
+      if (!validated.ok) throw new Error(validated.reason);
+      await commitPostmortem(dataDir, run, validated.lessons);
+      console.log(`[writer-v2] cứu được tổng kết của run ${run.id} sau daemon restart`);
+    } catch (err) {
+      await recordPostmortemError(
+        dataDir,
+        run,
+        'POSTMORTEM_INTERRUPTED',
+        `Tổng kết bị ngắt khi daemon restart: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+async function handlePostmortemSettle(dataDir: string, event: ItemSettledResult): Promise<void> {
+  const run = await getWriterRunV2(event.batchId, dataDir);
+  if (!run?.reviewingPostmortem || run.reviewingPostmortem.attempt !== event.attempt) return;
+  if (event.outcome !== 'COMMITTED' || !event.artifactHash) {
+    await recordPostmortemError(
+      dataDir,
+      run,
+      event.errorCode ?? 'POSTMORTEM_FAILED',
+      event.errorReason ?? 'Agent không hoàn tất tổng kết',
+    );
+    return;
+  }
+  const parsed = await readCommittedArtifact<unknown>(dataDir, event);
+  const validated = validatePostmortem(parsed);
+  if (!validated.ok) {
+    await recordPostmortemError(dataDir, run, validated.errorCode, validated.reason);
+    return;
+  }
+  await commitPostmortem(dataDir, run, validated.lessons);
 }
 
 function stageAttemptDir(

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import {
   api,
+  type ChannelProfile,
   type ChannelStyleSummary,
   type FormulaSummary,
   type GateResult,
@@ -122,6 +123,7 @@ export function WriterV2Page() {
                   <div class="meta" style={{ marginTop: '0.15rem', display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <span class={statusClass(run.status)}>{run.status}</span>
                     <span>{PHASE_LABEL[run.phase] ?? run.phase}</span>
+                    {run.channelId && <span class="chip">Kênh: {run.channelId}</span>}
                     <span class="chip" style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem' }}>
                       {run.phase === 'DONE' ? '100%' : run.phase === 'EDIT_REVIEW' ? '85%' : run.phase === 'GATE' ? '75%' : run.phase === 'WRITE' ? '52%' : run.phase === 'STUDY' ? '22%' : run.phase === 'READY' ? '10%' : '5%'}
                     </span>
@@ -130,6 +132,7 @@ export function WriterV2Page() {
                         🎨 {run.styledCount} styled
                       </span>
                     )}
+                    {run.hasPostmortem && <span class="chip teal">📝 đã tổng kết</span>}
                     <span>{new Date(run.updatedAt).toLocaleString()}</span>
                   </div>
                 </div>
@@ -167,6 +170,17 @@ function HookPanel({
   const canClarify = draft && Boolean(run.requestedTitle?.trim()) && !configurationDirty && !generating && !busy;
   const canSuggest = draft && questions.length > 0 && answers.length === questions.length
     && answers.every((a) => a.trim()) && !generating && !busy && !configurationDirty;
+  // Every reason `canSuggest` can be false, in the order the user hits them.
+  const unanswered = questions.length > 0 && answers.filter((a) => a.trim()).length < questions.length;
+  const suggestBlockedReason = !draft
+    ? 'Chỉ gợi ý hook khi post còn ở DRAFT.'
+    : configurationDirty
+      ? 'Save configuration trước khi gợi ý hook.'
+      : generating || busy
+        ? null
+        : unanswered
+          ? `Trả lời cả ${questions.length} câu trên rồi mới gợi ý được (đang thiếu ${questions.length - answers.filter((a) => a.trim()).length}).`
+          : null;
   const errorText = localError ?? (
     run.hookError ? `${run.hookError.code}: ${run.hookError.reason}` : null
   );
@@ -253,9 +267,21 @@ function HookPanel({
               />
             </label>
           ))}
-          <button class="btn teal" type="button" disabled={!canSuggest} onClick={() => void suggest()}>
+          <button
+            class="btn teal"
+            type="button"
+            disabled={!canSuggest}
+            title={suggestBlockedReason ?? 'Gợi ý 3–5 hook từ thư viện hook đối thủ'}
+            onClick={() => void suggest()}
+          >
             {busy && run.generatingHook?.step === 'suggest' ? 'Đang gợi ý…' : 'Gợi ý hook'}
           </button>
+          {/* A disabled button with no stated reason is a dead end, and this one
+              sits on the only path into a run. The Run button already explains
+              itself the same way. */}
+          {suggestBlockedReason && (
+            <span class="muted" style={{ fontSize: '0.85rem' }}>{suggestBlockedReason}</span>
+          )}
         </div>
       )}
 
@@ -323,9 +349,11 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [run, setRun] = useState<WriterRunV2 | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [packs, setPacks] = useState<WriterPackSummary[]>([]);
+  const [channels, setChannels] = useState<ChannelProfile[]>([]);
   const [generalPacks, setGeneralPacks] = useState<GeneralPackSummary[]>([]);
   const [formulas, setFormulas] = useState<FormulaSummary[]>([]);
   const [title, setTitle] = useState('');
+  const [channelId, setChannelId] = useState('');
   const [brief, setBrief] = useState('');
   const [audience, setAudience] = useState('');
   const [targetWords, setTargetWords] = useState('');
@@ -355,15 +383,17 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [styledMarkdown, setStyledMarkdown] = useState<string | null>(null);
   const [loadingStyled, setLoadingStyled] = useState(false);
   const [copiedStyled, setCopiedStyled] = useState(false);
+  const [startingPostmortem, setStartingPostmortem] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([api.listWriterPacks(), api.listGeneralPacks(), api.listFormulas()])
-      .then(([packData, generalData, formulaData]) => {
+    void Promise.all([api.listWriterPacks(), api.listGeneralPacks(), api.listFormulas(), api.listChannelProfiles()])
+      .then(([packData, generalData, formulaData, channelData]) => {
         if (!alive) return;
         setPacks(packData.packs);
         setGeneralPacks(generalData.packs);
         setFormulas(formulaData.formulas);
+        setChannels(channelData.channels);
       })
       .catch((err) => { if (alive) setError(err instanceof Error ? err.message : String(err)); });
     return () => { alive = false; };
@@ -406,7 +436,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
         if (!alive) return;
         setRun(data);
         // A restyle runs while the run stays DONE, so status alone can't drive the poll.
-        if (data.status === 'RUNNING' || data.restyling || data.generatingHook) {
+        if (data.status === 'RUNNING' || data.restyling || data.generatingHook || data.reviewingPostmortem) {
           timer = window.setTimeout(() => void tick(), 2000);
         }
       } catch (err) {
@@ -423,6 +453,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
   useEffect(() => {
     if (!run) return;
     setTitle(run.requestedTitle ?? '');
+    setChannelId(run.channelId ?? '');
     setBrief(run.brief);
     setAudience(run.audience ?? '');
     setTargetWords(run.targetWords === undefined ? '' : String(run.targetWords));
@@ -431,7 +462,9 @@ export function WriterV2RunPage({ id }: { id: string }) {
     setFormulaId(run.formulaId);
     setAgentId(run.agentId);
     setEditorAgentId(run.editorAgentId);
-  }, [run?.id]);
+    const profile = channels.find((channel) => channel.id === run.channelId);
+    if (profile?.defaultStyle) setStyleId(profile.defaultStyle);
+  }, [run?.id, channels]);
 
   if (!run && error) {
     return (
@@ -446,7 +479,8 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const script = run.finalScript ?? run.draft?.script ?? null;
   const canRerun = run.status === 'FAILED' || run.status === 'FAILED_GATE';
   const configurationDirty = run.status === 'DRAFT' && (
-    title.trim() !== (run.requestedTitle ?? '')
+    channelId !== (run.channelId ?? '')
+    || title.trim() !== (run.requestedTitle ?? '')
     || brief.trim() !== run.brief
     || audience.trim() !== (run.audience ?? '')
     || targetWords.trim() !== (run.targetWords === undefined ? '' : String(run.targetWords))
@@ -485,12 +519,23 @@ export function WriterV2RunPage({ id }: { id: string }) {
   );
   const styledVersions = [...(run.styled ?? [])].sort((a, b) => b.version - a.version);
 
+  const chooseChannel = (nextId: string) => {
+    setChannelId(nextId);
+    const profile = channels.find((channel) => channel.id === nextId);
+    if (!profile) return;
+    if (profile.audience) setAudience(profile.audience);
+    if (profile.defaultGeneralPack) setGeneralPack(profile.defaultGeneralPack);
+    if (profile.defaultFormulaId) setFormulaId(profile.defaultFormulaId);
+    if (profile.defaultStyle) setStyleId(profile.defaultStyle);
+  };
+
   const rerun = async () => {
     if (!canRerun || rerunning) return;
     setError(null);
     setRerunning(true);
     try {
       const next = await api.startWriterRunV2({
+        channelId: run.channelId ?? '',
         brief: run.brief,
         ...(run.requestedTitle ? { title: run.requestedTitle } : {}),
         ...(run.audience ? { audience: run.audience } : {}),
@@ -546,6 +591,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
     setSaving(true);
     try {
       const next = await api.updateWriterPostV2(run.id, {
+        channelId,
         brief,
         ...(title.trim() ? { title: title.trim() } : {}),
         ...(audience.trim() ? { audience: audience.trim() } : {}),
@@ -573,6 +619,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
       const post = await api.createWriterPostV2();
       createdId = post.id;
       const copy = await api.updateWriterPostV2(post.id, {
+        channelId: run.channelId ?? '',
         brief: run.brief,
         title: run.requestedTitle || run.brief || 'Bản nháp Writer v2',
         ...(run.audience ? { audience: run.audience } : {}),
@@ -617,6 +664,18 @@ export function WriterV2RunPage({ id }: { id: string }) {
     const baseName = (run.requestedTitle || run.brief || 'writer-post').trim();
     const safeName = baseName.replace(/[^\w\s\u00C0-\u1EF9.-]/gi, '_').replace(/\s+/g, '-').slice(0, 80) || 'writer-post';
     downloadTextFile(script, `${safeName}.txt`);
+  };
+
+  const startPostmortem = async () => {
+    if (run.status !== 'DONE' || startingPostmortem || run.postmortem || run.reviewingPostmortem) return;
+    setError(null); setStartingPostmortem(true);
+    try {
+      const next = await api.startWriterPostmortem(run.id);
+      setRun(next);
+      setPollKey((value) => value + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally { setStartingPostmortem(false); }
   };
 
   const restyle = async () => {
@@ -754,6 +813,18 @@ export function WriterV2RunPage({ id }: { id: string }) {
               )}
             </>
           )}
+          {run.status === 'DONE' && (
+            <button
+              class="btn secondary"
+              type="button"
+              disabled={startingPostmortem || Boolean(run.reviewingPostmortem) || Boolean(run.postmortem)}
+              onClick={() => void startPostmortem()}
+            >
+              {run.reviewingPostmortem || startingPostmortem
+                ? 'Đang tổng kết…'
+                : run.postmortem ? '✓ Đã tổng kết' : '📝 Tổng kết sau bài'}
+            </button>
+          )}
           {canContinueWrite && (
             <button
               class="btn teal"
@@ -796,6 +867,30 @@ export function WriterV2RunPage({ id }: { id: string }) {
       <section class="panel" style={{ marginTop: '1rem' }}>
           <h2>Post configuration</h2>
           <div class="stack" style={{ gap: '0.85rem', marginTop: '0.75rem' }}>
+            <div class="field">
+              <span>Hồ sơ kênh</span>
+              <div class="field-action-group">
+                <select
+                  value={channelId}
+                  disabled={run.status !== 'DRAFT'}
+                  onChange={(e) => chooseChannel((e.target as HTMLSelectElement).value)}
+                >
+                  <option value="">Chọn kênh xuất bản…</option>
+                  {channelId && !channels.some((channel) => channel.id === channelId) && (
+                    <option value={channelId}>{channelId} (không còn hồ sơ)</option>
+                  )}
+                  {channels.map((channel) => (
+                    <option key={channel.id} value={channel.id}>{channel.displayName} · {channel.topic}</option>
+                  ))}
+                </select>
+                <a class="btn secondary" href={href({ name: 'publishing-channels', id: channelId || undefined })}>
+                  Quản lý kênh
+                </a>
+              </div>
+              {channels.length === 0 && (
+                <span class="muted small">Chưa có Hồ sơ kênh. Tạo một kênh trước khi Save configuration.</span>
+              )}
+            </div>
             <label class="field">
               <span>Title</span>
               <input
@@ -944,9 +1039,11 @@ export function WriterV2RunPage({ id }: { id: string }) {
 
           <h3 style={{ marginTop: '1rem' }}>Pinned configuration</h3>
           <div class="meta" style={{ alignItems: 'flex-start' }}>
+            <span>Kênh: {run.channelId || '—'}{run.editorialHash ? ` · sổ tay ${run.editorialHash.slice(0, 12)}…` : ''}</span>
             <span>Source: {run.packId || '—'}{run.packHash ? ` · sha256 ${run.packHash}` : ''}</span>
             <span>General: {run.generalPackPath || '—'}{run.generalPackVersion ? ` · v${run.generalPackVersion}` : ''}{run.generalPackHash ? ` · sha256 ${run.generalPackHash}` : ''}</span>
             <span>Formula: {run.formulaId || '—'}{run.formulaVersion ? ` · v${run.formulaVersion}` : ''}{run.formulaHash ? ` · sha256 ${run.formulaHash}` : ''}</span>
+            {run.procedureId && <span>Quy trình: {run.procedureId} · sha256 {run.procedureHash?.slice(0, 12)}…</span>}
           </div>
           <p class="muted" style={{ marginBottom: 0 }}>
             {run.status === 'DRAFT'
@@ -1093,6 +1190,38 @@ export function WriterV2RunPage({ id }: { id: string }) {
                 </li>
               ))}
             </ul>
+          )}
+        </section>
+      )}
+
+      {run.status === 'DONE' && (
+        <section class="panel" style={{ marginTop: '1rem' }}>
+          <h2>Tổng kết sau bài</h2>
+          {run.reviewingPostmortem && <p><span class="chip warn">Agent biên tập đang rút 1–3 kinh nghiệm bền vững…</span></p>}
+          {run.postmortemError && <p class="error">{run.postmortemError.code}: {run.postmortemError.reason}</p>}
+          {!run.postmortem && !run.reviewingPostmortem && (
+            <p class="muted">Bấm “Tổng kết sau bài” ở đầu trang. Kết quả chỉ vào hộp chờ, chưa tự sửa sổ tay.</p>
+          )}
+          {run.postmortem && (
+            <>
+              <p class="muted small">Do {run.postmortem.agentId} đề xuất · {new Date(run.postmortem.createdAt).toLocaleString()}</p>
+              <div class="lesson-list">
+                {run.postmortem.lessons.map((lesson, index) => (
+                  <div class="lesson-card" key={index}>
+                    <span class={`chip lesson-${lesson.kind.toLowerCase()}`}>
+                      {lesson.kind === 'KEEP' ? 'Nên giữ' : lesson.kind === 'AVOID' ? 'Nên tránh' : 'Nên thử'}
+                    </span>
+                    <strong>{lesson.text}</strong>
+                    <p class="muted small">{lesson.reason}</p>
+                  </div>
+                ))}
+              </div>
+              {run.channelId && (
+                <a class="btn secondary" href={href({ name: 'publishing-channels', id: run.channelId })}>
+                  Duyệt trong Kênh & kinh nghiệm →
+                </a>
+              )}
+            </>
           )}
         </section>
       )}

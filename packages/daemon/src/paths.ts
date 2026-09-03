@@ -73,6 +73,25 @@ export function channelStylesRoot(root = dataRoot()): string {
 }
 
 /**
+ * Publishing-channel profiles and their human-authored editorial notebooks.
+ * This is deliberately separate from Spy topics and harvested YouTube channels:
+ * one publishing channel can research many topics, and one topic can feed more
+ * than one publishing channel.
+ */
+export function publishingChannelsRoot(root = dataRoot()): string {
+  return join(root, 'channels');
+}
+
+/**
+ * User-authored reusable Writer procedures in the native Codex skill shape.
+ * Keeping these below the data root makes them portable with the user's clean
+ * Writer Room data package instead of baking learned procedures into the app.
+ */
+export function writerProceduresRoot(root = dataRoot()): string {
+  return join(root, '.agents', 'skills');
+}
+
+/**
  * Competitor hook libraries (Writer v2 pre-write). One markdown file of hook
  * formulas mined from other channels — craft frames only, never facts. The
  * agent reads this when suggesting a few openings; the UI does not browse it.

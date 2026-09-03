@@ -48,3 +48,24 @@ test('uses the C1 star and competitor mutation methods without operation polling
   expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({ cadence: 'daily', watchStatus: 'followed' });
   expect(JSON.parse(String(requests[3]?.init?.body))).toEqual({ watchStatus: 'paused' });
 });
+
+test('uses explicit C3 public observation, VPH read, and separate watch settings contracts', async () => {
+  const requests: Array<{ input: string; init?: RequestInit }> = [];
+  mockFetch({ run: {}, segments: [], enabled: false }, requests);
+
+  await api.observeSpyChannel('local-desktop', 'UC_test', { inspectCap: 8 });
+  await api.getSpyChannelVph('local-desktop', 'UC_test', { window: '7d', includeNonComparable: false });
+  await api.getSpyVideoVph('abc123def45', { from: '2026-08-30T00:00:00.000Z' });
+  await api.getChannelWatchSettings();
+  await api.updateChannelWatchSettings({ enabled: true });
+
+  expect(requests.map((request) => [request.input, request.init?.method])).toEqual([
+    ['/api/spy/watchlists/local-desktop/competitors/UC_test/observe', 'POST'],
+    ['/api/spy/watchlists/local-desktop/competitors/UC_test/vph?window=7d&includeNonComparable=false', undefined],
+    ['/api/spy/videos/abc123def45/vph?from=2026-08-30T00%3A00%3A00.000Z', undefined],
+    ['/api/settings/channel-watch', undefined],
+    ['/api/settings/channel-watch', 'PUT'],
+  ]);
+  expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ inspectCap: 8 });
+  expect(JSON.parse(String(requests[4]?.init?.body))).toEqual({ enabled: true });
+});

@@ -24,6 +24,7 @@ export interface WriterRunV2Summary {
   requestedTitle?: string;
   targetWords?: number;
   audience?: string;
+  channelId?: string;
   packId: string;
   packTitle: string;
   packHash?: string;
@@ -42,6 +43,8 @@ export interface WriterRunV2Summary {
   defectCount: number;
   /** How many restyled versions this run has produced (0 for every pre-restyle run). */
   styledCount: number;
+  hasPostmortem: boolean;
+  reviewingPostmortem: boolean;
   /** Weighted Director-board progress (0–100). Computed on read, not persisted. */
   progressPercent: number;
   activeRole: WriterV2ActiveRole;
@@ -107,6 +110,7 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     ...(run.requestedTitle ? { requestedTitle: run.requestedTitle } : {}),
     ...(run.targetWords !== undefined ? { targetWords: run.targetWords } : {}),
     ...(run.audience ? { audience: run.audience } : {}),
+    ...(run.channelId ? { channelId: run.channelId } : {}),
     packId: run.packId,
     packTitle: run.packTitle,
     ...(run.packHash ? { packHash: run.packHash } : {}),
@@ -124,6 +128,8 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     gateViolationCount: latestGate?.violations.length ?? 0,
     defectCount: run.editorDefects?.length ?? 0,
     styledCount: run.styled?.length ?? 0,
+    hasPostmortem: Boolean(run.postmortem),
+    reviewingPostmortem: Boolean(run.reviewingPostmortem),
     progressPercent: progress.progressPercent,
     activeRole: progress.activeRole,
   };

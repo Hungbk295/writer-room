@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FormulaArtifact } from '@writer-room/training-core';
 import { createAgentHarness, type AgentHarness } from '../../src/harness.ts';
-import type { ItemSettledResult, LaneScheduler } from '../../src/pipeline/lane-scheduler.ts';
+import type { DispatchItemParams, ItemSettledResult, LaneScheduler } from '../../src/pipeline/lane-scheduler.ts';
 import type { PipelineLedgerRow } from '../../src/pipeline/ledger.ts';
 import { listJobNotifications } from '../../src/notifications.ts';
 import { saveFormula } from '../../src/training/storage.ts';
@@ -30,6 +30,10 @@ import {
   startHookSuggest,
 } from '../../src/writer/hook-board.ts';
 import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from '../../src/writer/run-store-v2.ts';
+import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
+import { createChannelProfile, listEditorialSuggestions, updateChannelProfile } from '../../src/writer/channel-profile.ts';
+import { createReusableProcedure } from '../../src/writer/reusable-procedure.ts';
+import { hashPersonaPack } from '../../src/writer/persona-pack.ts';
 import {
   computeWriterV2Progress,
   createWriterPostV2,
@@ -40,18 +44,23 @@ import {
   readStyledVersion,
   recoverInterruptedRestyles,
   recoverInterruptedWriterRuns,
+  POSTMORTEM_STAGE,
+  recoverInterruptedPostmortems,
   REPAIR_STAGE,
+  registerWriterV2PostmortemListener,
   registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
   runWriterRoomV2,
   RESTYLE_STAGE,
   startRestyle,
+  startWriterPostmortem,
   startWriterRunV2,
   STUDY_STAGE,
   splitExactSourceParts,
   validateEditorReview,
   validateStudyArtifact,
   validateWriterV2Draft,
+  validatePostmortem,
   updateWriterPostV2,
   WRITE_STAGE,
   WRITER_V2_ITEM_ID,
@@ -62,6 +71,10 @@ let harness: AgentHarness;
 let turnLaunches: Map<number, { mode: string; interactiveRequired?: boolean; forceHeadless: boolean }>;
 let turnAgents: Map<number, string>;
 let stageAgents: Map<string, string>;
+/** Every `dispatchItem` call the production code made this test, in order. Lets a
+ * test assert on the dispatch *parameters* (call budget, context isolation), which
+ * the ledger and the settle events do not carry. */
+let dispatches: DispatchItemParams[];
 
 const VIDEO_ID = 'PJPhR58LBYA';
 const PACK_QUOTE = 'nguyên tắc chi tiêu chỉ có ý nghĩa khi bạn biết mình đang trả cho cái gì';
@@ -94,6 +107,15 @@ const CHANNEL_STYLE = [
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'wr-writer-v2-'));
   harness = await createAgentHarness({ dataDir: dir, defaultProjectRoot: dir });
+  // Record dispatch parameters without changing behaviour: every call still runs
+  // the real scheduler. The harness is rebuilt per test, so the patch dies with it.
+  dispatches = [];
+  const scheduler = harness.pipeline.scheduler;
+  const realDispatchItem = scheduler.dispatchItem.bind(scheduler);
+  scheduler.dispatchItem = (params: DispatchItemParams) => {
+    dispatches.push(params);
+    return realDispatchItem(params);
+  };
   turnLaunches = new Map();
   turnAgents = new Map();
   stageAgents = new Map();
@@ -109,6 +131,7 @@ beforeEach(async () => {
   });
   registerWriterV2SettleListener(harness.pipeline.scheduler, { dataDir: dir });
   registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: dir });
+  registerWriterV2PostmortemListener(harness.pipeline.scheduler, { dataDir: dir });
   registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: dir });
   mkdirSync(join(dir, 'channel-styles'), { recursive: true });
   writeFileSync(join(dir, 'channel-styles', STYLE_ID), CHANNEL_STYLE, 'utf8');
@@ -118,6 +141,11 @@ beforeEach(async () => {
     '# Hook đối thủ\n<!-- version: 1 -->\n\nKhung crisis-by-hour, forked-paths, stat-open.\n',
     'utf8',
   );
+  await createChannelProfile({
+    id: 'finance',
+    displayName: 'Kênh Tài chính',
+    topic: 'Tài chính cá nhân',
+  }, dir);
   mkdirSync(join(dir, 'general-packs'), { recursive: true });
   writeFileSync(
     join(dir, 'general-packs', 'hieu-tv.md'),
@@ -269,6 +297,7 @@ async function startRun(): Promise<string> {
   const run = await startWriterRunV2(
     { scheduler: harness.pipeline.scheduler, dataDir: dir },
     {
+      channelId: 'finance',
       brief: 'Vì sao lương tăng mà vẫn hết tiền',
       title: 'Lương tăng, quyền chọn giảm',
       packId: pack.id,
@@ -282,6 +311,8 @@ async function startRun(): Promise<string> {
   // The general pack is pinned by content hash, and the editor is not the writer.
   expect(run.generalPackHash).toHaveLength(64);
   expect(run.generalPackVersion).toBe(1);
+  expect(run.channelId).toBe('finance');
+  expect(run.editorialHash).toHaveLength(64);
   expect(run.editorAgentId).not.toBe(run.agentId);
   return run.id;
 }
@@ -315,6 +346,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     const saved = await updateWriterPostV2(
       { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
       {
+        channelId: 'finance',
         brief: 'Kiểm tra post trước khi chạy', title: 'Một title đã chuẩn bị',
         audience: 'Người đi làm', targetWords: 1_234,
         packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
@@ -351,6 +383,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     await updateWriterPostV2(
       { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
       {
+        channelId: 'finance',
         brief: 'Có brief nhưng thiếu pack', packId: '', generalPack: '', formulaId: '',
         agentId: 'codex', editorAgentId: 'claude',
       },
@@ -370,6 +403,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     await updateWriterPostV2(
       { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
       {
+        channelId: 'finance',
         brief: 'Kiểm tra room trước khi chạy', title: 'Một title đã chuẩn bị',
         packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
         agentId: 'codex', editorAgentId: 'claude',
@@ -405,6 +439,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     const room = await createWriterRoomV2(
       { scheduler: harness.pipeline.scheduler, dataDir: dir },
       {
+        channelId: 'finance',
         brief: 'Legacy external caller', packId, generalPack: 'hieu-tv.md',
         formulaId: 'formula-v2-test', agentId: 'codex',
       },
@@ -701,12 +736,15 @@ describe('Writer v2 — end to end', () => {
     expect(stagedPack).toBe(PACK_MARKDOWN);
     expect(studyEnvelope.topicPack.contentFiles).toHaveLength(1);
     expect(studyEnvelope.topicPack.markdown).toBeUndefined();
+    expect(await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'editorial.md')).exists()).toBe(false);
 
     expect((await completeStage(runId, STUDY_STAGE, STUDY_RESULT)).outcome).toBe('COMMITTED');
     const afterStudy = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
     expect(afterStudy!.study!.factsLedger).toHaveLength(3);
     expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'general-pack.md')).text())
       .toContain('## TASTE DNA');
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'editorial.md')).text())
+      .toContain('Sổ tay biên tập');
     const writeEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
     ) as { generalPack: { contentFile: string; markdown?: string } };
@@ -743,6 +781,32 @@ describe('Writer v2 — end to end', () => {
     expect(summaries[0]!.hasScript).toBe(true);
   });
 
+  test('STUDY and WRITE spend exactly one model call per dispatch, each in a fresh context', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    const study = dispatches.filter((d) => d.stage === STUDY_STAGE);
+    const write = dispatches.filter((d) => d.stage === WRITE_STAGE);
+    expect(study).toHaveLength(1);
+    expect(write).toHaveLength(1);
+
+    // The run has a hard ceiling of model calls after hook selection, and the
+    // coordinator counts dispatches. The scheduler's default content-retry is 2,
+    // which the coordinator cannot see: leaving it on turns one counted dispatch
+    // into up to three uncounted model calls. Retrying still exists — it moved up
+    // to the coordinator (STUDY attempt 2, WRITE continuation), where it is counted.
+    expect(study[0]!.maxContentRetries).toBe(0);
+    expect(write[0]!.maxContentRetries).toBe(0);
+
+    // Blindness is a property of the turn, not only of the envelope. The author
+    // keeps one visible pane across STUDY and WRITE, so without freshContext the
+    // initial WRITE would resume the very CLI context that just read the source
+    // the WRITE envelope deliberately withholds.
+    expect(study[0]!.freshContext).not.toBe(false);
+    expect(write[0]!.freshContext).toBe(true);
+  });
+
   test('WRITE runs exactly as before when no persona pack file exists (backward compatible)', async () => {
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
@@ -774,23 +838,29 @@ describe('Writer v2 — end to end', () => {
       '<!-- version: 1 -->',
       '',
       '## 1. Bộ quan điểm (stance registry)',
-      '### 1.1 Quỹ dự phòng bao lâu',
+      '### 1.1 Quỹ dự phòng bao lâu — `[ĐÃ DUYỆT]`',
       '**Lập trường kênh**: 1 năm chi phí sinh hoạt.',
     ].join('\n');
     mkdirSync(join(dir, 'writer'), { recursive: true });
     writeFileSync(join(dir, 'writer', 'persona-pack.md'), personaMarkdown, 'utf8');
+    // Only APPROVED entries survive staging (T1) — with the single stance
+    // above marked `[ĐÃ DUYỆT]`, the filtered pack keeps the shared preamble
+    // and that entry, re-serialized (not a byte-identical copy of the file).
+    const filtered = filterApprovedPersonaMarkdown(personaMarkdown)!;
+    expect(filtered.approvedCount).toBe(1);
 
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
 
     expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).text())
-      .toBe(personaMarkdown);
+      .toBe(filtered.markdown);
     const writeEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
     ) as { personaPack: { contentFile: string; path: string; hash: string } };
     expect(writeEnvelope.personaPack.contentFile).toBe('input/persona-pack.md');
     expect(writeEnvelope.personaPack.path).toBe('persona-pack.md');
+    expect(writeEnvelope.personaPack.hash).toBe(hashPersonaPack(filtered.markdown));
     const prompt = await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text();
     expect(prompt).toContain('## Persona pack');
     expect(prompt).toContain('stance registry');
@@ -804,6 +874,42 @@ describe('Writer v2 — end to end', () => {
     await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
     const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
     expect(done!.personaPackHash).toBe(writeEnvelope.personaPack.hash);
+  });
+
+  test('a persona pack with zero APPROVED entries runs exactly like no persona pack at all', async () => {
+    // No `[ĐÃ DUYỆT]`/`[APPROVED]` marker anywhere — under T2 this stays
+    // PENDING (stance and experience alike), so nothing survives filtering.
+    const pendingOnlyMarkdown = [
+      '# Persona Pack — chưa có gì được duyệt',
+      '### 1.1 Một lập trường chưa duyệt',
+      '**Lập trường kênh**: Với tôi, đây là một lựa chọn.',
+    ].join('\n');
+    mkdirSync(join(dir, 'writer'), { recursive: true });
+    writeFileSync(join(dir, 'writer', 'persona-pack.md'), pendingOnlyMarkdown, 'utf8');
+    expect(filterApprovedPersonaMarkdown(pendingOnlyMarkdown)).toBeNull();
+
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).exists())
+      .toBe(false);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { personaPack?: unknown };
+    expect(writeEnvelope.personaPack).toBeUndefined();
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .not.toContain('## Persona pack');
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.personaPackHash).toBeUndefined();
   });
 
   test('a fabricated case never reaches DONE — it ends FAILED_GATE', async () => {
@@ -885,6 +991,90 @@ describe('Writer v2 — end to end', () => {
     const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r != null && r.status !== 'RUNNING');
     expect(failed!.status).toBe('FAILED');
     expect(failed!.errorCode).toBe('GENERAL_PACK_CHANGED');
+  });
+
+  test('editing the channel notebook mid-run stops WRITE instead of silently switching', async () => {
+    const runId = await startRun();
+    writeFileSync(
+      join(dir, 'channels', 'finance', 'editorial.md'),
+      '# Sổ tay biên tập\n\n- Một quyết định mới giữa run.\n',
+      'utf8',
+    );
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (run) => run != null && run.status !== 'RUNNING');
+    expect(failed!.status).toBe('FAILED');
+    expect(failed!.errorCode).toBe('EDITORIAL_CHANGED');
+  });
+
+  test('a channel default procedure is pinned and staged only in WRITE', async () => {
+    const procedure = await createReusableProcedure({
+      id: 'finance-checklist',
+      description: 'Dùng khi viết bài tài chính để kiểm tra các phép tính và lời kêu gọi hành động.',
+      instructions: '# Checklist tài chính\n\n1. Tính lại mọi con số.\n2. Đọc riêng phần kết trước khi giao.',
+    }, dir);
+    await updateChannelProfile('finance', {
+      id: 'finance', displayName: 'Kênh Tài chính', topic: 'Tài chính cá nhân',
+      defaultProcedure: procedure.id,
+    }, dir);
+    const runId = await startRun();
+    const started = (await getWriterRunV2(runId, dir))!;
+    expect(started.procedureId).toBe(procedure.id);
+    expect(started.procedureHash).toBe(procedure.hash);
+    expect(await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'procedure.md')).exists()).toBe(false);
+
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (run) => run?.phase === 'WRITE');
+    const row = await waitForLedgerRow(runId, WRITE_STAGE, 1);
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'procedure.md')).text())
+      .toContain('Tính lại mọi con số');
+
+    const settled = waitForSettled(harness.pipeline.scheduler, WRITE_STAGE, 1);
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
+    await settled;
+  });
+});
+
+describe('Writer v2 — tổng kết sau bài', () => {
+  const deps = () => ({ scheduler: harness.pipeline.scheduler, dataDir: dir });
+
+  test('validates a compact 1–3 lesson proposal', () => {
+    expect(validatePostmortem({ lessons: [] }).ok).toBe(false);
+    expect(validatePostmortem({
+      lessons: [{ kind: 'KEEP', text: 'Giữ câu hỏi tự soi ở phần mở đầu.', reason: 'Hook tạo đúng món nợ cho phần kết.' }],
+    }).ok).toBe(true);
+  });
+
+  test('a DONE run can generate suggestions without editing editorial.md', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (run) => run?.phase === 'WRITE');
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm', script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'], beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await waitUntil(() => getWriterRunV2(runId, dir), (run) => run?.phase === 'EDIT_REVIEW');
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    await waitUntil(() => getWriterRunV2(runId, dir), (run) => run?.status === 'DONE');
+
+    const beforeEditorial = await Bun.file(join(dir, 'channels', 'finance', 'editorial.md')).text();
+    const started = await startWriterPostmortem(deps(), runId);
+    expect(started.reviewingPostmortem?.attempt).toBe(1);
+    expect(await Bun.file(join(itemRunDir(runId, POSTMORTEM_STAGE), 'input', 'article.md')).text())
+      .toContain(ANCHOR_1);
+
+    const lesson = {
+      kind: 'KEEP' as const,
+      text: 'Giữ câu hỏi tự soi ở phần mở đầu để phần kết trả lại đúng món nợ.',
+      reason: 'Hook và ending cùng quay lại câu hỏi về khoản chi cố định.',
+    };
+    expect((await completeStage(runId, POSTMORTEM_STAGE, { lessons: [lesson] })).outcome).toBe('COMMITTED');
+    const reviewed = await waitUntil(() => getWriterRunV2(runId, dir), (run) => Boolean(run?.postmortem));
+    expect(reviewed!.status).toBe('DONE');
+    expect(reviewed!.postmortem?.lessons).toEqual([lesson]);
+    expect(await Bun.file(join(dir, 'channels', 'finance', 'editorial.md')).text()).toBe(beforeEditorial);
+    expect(await listEditorialSuggestions('finance', dir)).toEqual([
+      { ...lesson, sourceRunId: runId },
+    ]);
   });
 });
 
@@ -1254,6 +1444,7 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
     try {
       const h = await createAgentHarness({ dataDir: tmp, defaultProjectRoot: tmp });
       registerWriterV2SettleListener(h.pipeline.scheduler, { dataDir: tmp });
+      await createChannelProfile({ id: 'finance', displayName: 'Kênh Tài chính', topic: 'Tài chính' }, tmp);
       mkdirSync(join(tmp, 'general-packs'), { recursive: true });
       writeFileSync(join(tmp, 'general-packs', 'hieu-tv.md'), '# gp\n<!-- version: 1 -->\n', 'utf8');
       const formula = makeFormula();
@@ -1267,6 +1458,7 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
       const run = await createWriterRoomV2(
         { scheduler: h.pipeline.scheduler, dataDir: tmp },
         {
+          channelId: 'finance',
           brief: 'brief',
           title: 'title',
           packId: pack.id,
@@ -1304,6 +1496,7 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
     try {
       h = await createAgentHarness({ dataDir: tmp, defaultProjectRoot: tmp });
       registerWriterV2SettleListener(h.pipeline.scheduler, { dataDir: tmp });
+      await createChannelProfile({ id: 'finance', displayName: 'Kênh Tài chính', topic: 'Tài chính' }, tmp);
       mkdirSync(join(tmp, 'general-packs'), { recursive: true });
       writeFileSync(
         join(tmp, 'general-packs', 'hieu-tv.md'),
@@ -1330,6 +1523,7 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
       const room = await createWriterRoomV2(
         { scheduler: h.pipeline.scheduler, dataDir: tmp },
         {
+          channelId: 'finance',
           brief: 'brief',
           title: 'title',
           packId: pack.id,
@@ -1385,6 +1579,7 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
     await saveFormula(makeFormula(), dir);
     const post = await createWriterPostV2(deps());
     await updateWriterPostV2(deps(), post.id, {
+      channelId: 'finance',
       brief: 'Vì sao lương tăng mà vẫn hết tiền',
       title: 'Lương tăng, quyền chọn giảm',
       packId: pack.id,
@@ -1484,6 +1679,7 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
     await saveWriterRunV2(post, dir);
 
     await updateWriterPostV2(deps(), postId, {
+      channelId: 'finance',
       brief: post.brief,
       title: 'Title mới hoàn toàn',
       packId: post.packId,

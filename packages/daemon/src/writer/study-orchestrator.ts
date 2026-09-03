@@ -363,6 +363,14 @@ export async function dispatchLegacyStudy(
     inputFiles: sourceFiles,
     inputHashes: [envelopeHash(envelope), contentHash(input.pack.markdown)],
     promptVersion: STUDY_PROMPT_VERSION,
+    // The run has a hard ceiling of 6 model calls after hook selection, and the
+    // coordinator counts *dispatches*. The scheduler's default content-retry is
+    // invisible to that counter, so one dispatch could quietly become three model
+    // calls. Retrying is not given up — it moves up a level: the coordinator owns
+    // the retry budget (STUDY attempt 2 via `continueWriterRunV2`), where it is
+    // counted. Do not restore the default here without also teaching the
+    // coordinator to read `retriesUsed`.
+    maxContentRetries: 0,
     sessionGroup: input.sessionGroup,
     interactivePty: true,
     freshContext: input.freshContext,

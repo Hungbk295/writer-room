@@ -187,18 +187,35 @@ function textBetween(section: string, start: RegExp, end?: RegExp): string {
   return value.trim();
 }
 
+interface PersonaParsedEntry extends PersonaRegistryEntry {
+  /** Exact span of this entry's own section in the normalized markdown —
+   * used only by `filterApprovedPersonaMarkdown` to re-slice verbatim text.
+   * Not part of the public `PersonaRegistry` shape. */
+  start: number;
+  end: number;
+}
+
 /**
- * Parse only channel-owned material from Persona Pack. For stances, source
+ * Shared scan behind `parsePersonaRegistry` and `filterApprovedPersonaMarkdown`.
+ * Parses only channel-owned material from Persona Pack. For stances, source
  * transcript quotes and “chuẩn chung” stay outside allowedText. For experience
  * archetypes, “Bản gốc” is excluded; only “Phóng tác” may authorize first-person
  * detail.
  */
-export function parsePersonaRegistry(markdown: string): PersonaRegistry {
+function parsePersonaSections(markdown: string): {
+  normalized: string;
+  entries: PersonaParsedEntry[];
+  violations: PersonaRegistryViolation[];
+  /** Offset where the first entry heading starts — everything before it is
+   * the file's shared preamble (title, house rules, section intros). */
+  preambleEnd: number;
+} {
   const normalized = markdown.normalize('NFC');
   const headings = [...normalized.matchAll(/^###\s+(1\.\d+|A\d+)\.?\s+(.+)$/gmu)];
-  const entries: PersonaRegistryEntry[] = [];
+  const entries: PersonaParsedEntry[] = [];
   const violations: PersonaRegistryViolation[] = [];
   const seen = new Set<string>();
+  const preambleEnd = headings[0]?.index ?? normalized.length;
 
   for (const [index, match] of headings.entries()) {
     const code = match[1]!;
@@ -227,9 +244,16 @@ export function parsePersonaRegistry(markdown: string): PersonaRegistry {
     const pending = /\[CHỜ CHỦ KÊNH DUYỆT\]/iu.test(section);
     const rejected = /\[(?:TỪ CHỐI|REJECTED)\]/iu.test(section);
     const explicitlyApproved = /\[(?:ĐÃ DUYỆT|APPROVED)\]/iu.test(section);
+    // Fail-closed for BOTH entry kinds (eng review 2026-09-02). Earlier this
+    // only applied to STANCE — an experience with no marker at all defaulted
+    // to APPROVED, i.e. file presence alone granted narrator permission. Now
+    // an entry of either kind is APPROVED only with an explicit
+    // [ĐÃ DUYỆT]/[APPROVED] marker in its own section; no marker, or an
+    // explicit [CHỜ CHỦ KÊNH DUYỆT], both leave it PENDING until the channel
+    // owner marks it.
     const status: PersonaEntryStatus = rejected
       ? 'REJECTED'
-      : pending || (isStance && !explicitlyApproved)
+      : pending || !explicitlyApproved
       ? 'PENDING'
       : 'APPROVED';
     const allowedText = isStance
@@ -252,10 +276,85 @@ export function parsePersonaRegistry(markdown: string): PersonaRegistry {
       status: allowedText ? status : 'REJECTED',
       allowedText,
       guardrails,
+      start,
+      end,
     });
   }
 
-  return { hash: hashPersona(markdown), entries, violations };
+  return { normalized, entries, violations, preambleEnd };
+}
+
+export function parsePersonaRegistry(markdown: string): PersonaRegistry {
+  const { entries, violations } = parsePersonaSections(markdown);
+  return {
+    hash: hashPersona(markdown),
+    entries: entries.map(({ start: _start, end: _end, ...entry }) => entry),
+    violations,
+  };
+}
+
+export interface FilteredPersonaPack {
+  markdown: string;
+  approvedCount: number;
+  /**
+   * The APPROVED entries' `allowedText` blocks only, joined — i.e. the channel's
+   * own stance sentences and Phóng tác bodies, WITHOUT the `**Chuẩn chung**`
+   * contrast block, without the transcript blockquotes, without the preamble and
+   * vocabulary tail.
+   *
+   * `markdown` and this field answer two different questions, and conflating them
+   * was a real permission bug (CEO review 2026-09-03, RC1). `markdown` is what the
+   * model may READ: the Chuẩn chung block belongs there, because "thường thì X,
+   * nhưng tôi Y" is the whole point of a deliberately off-standard stance. This
+   * field is what the model may CITE: approving cell 1.1 must not turn the
+   * industry figure the channel is arguing AGAINST ("3-6 tháng") into a grounded
+   * number the script can state unsourced.
+   */
+  citableText: string;
+}
+
+/**
+ * Reduce a persona pack to the only material that may ever reach the model:
+ * the file's shared preamble (everything before the first entry heading),
+ * each entry whose status is APPROVED (verbatim, marker included), and
+ * everything after the LAST entry section — the personal-vocabulary block,
+ * which is phrasing, not a claim, and carries no approval status of its own.
+ * PENDING and REJECTED entries are dropped entirely; a run must never see
+ * them just because the file happens to still contain them.
+ *
+ * The preamble and tail keep their prose but LOSE their `>` blockquote lines:
+ * those are transcript example quotes, and after gate decision 1A anything in
+ * this filtered markdown becomes a valid grounding source for numbers/proper
+ * nouns — an unapproved "50 triệu" in a vocabulary example must not silently
+ * license that figure in a script. Quotes inside an APPROVED entry stay:
+ * approving the entry approved its evidence.
+ *
+ * Returns `null` when zero entries are APPROVED. Every caller (WRITE staging,
+ * the deterministic gate) must then behave exactly as if there were no
+ * persona pack file at all — this is the fail-closed rule T2 exists for:
+ * a file sitting on disk grants no permission by itself.
+ */
+export function filterApprovedPersonaMarkdown(markdown: string): FilteredPersonaPack | null {
+  const { normalized, entries, preambleEnd } = parsePersonaSections(markdown);
+  const approved = entries.filter((entry) => entry.status === 'APPROVED');
+  if (approved.length === 0) return null;
+  const preamble = stripBlockquotes(normalized.slice(0, preambleEnd)).trim();
+  const tailStart = entries.at(-1)!.end;
+  const tail = stripBlockquotes(normalized.slice(tailStart)).trim();
+  const body = approved.map((entry) => normalized.slice(entry.start, entry.end).trim()).join('\n\n');
+  const citableText = approved.map((entry) => entry.allowedText.trim()).filter(Boolean).join('\n\n');
+  return {
+    markdown: [preamble, body, tail].filter(Boolean).join('\n\n'),
+    approvedCount: approved.length,
+    citableText,
+  };
+}
+
+function stripBlockquotes(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*>/.test(line))
+    .join('\n');
 }
 
 function lower(text: string): string {

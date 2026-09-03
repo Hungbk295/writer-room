@@ -129,6 +129,10 @@ export interface SpyChannelSummary {
   watchStatus: SpyWatchStatus | null;
   cadence: SpyCadence | null;
   lastObservedAt: string | null;
+  lastObservationStatus?: SpyPublicObservationRun['status'] | null;
+  lastObservationCompleteness?: SpyPublicObservationRun['completeness'] | null;
+  comparableVph24hCount?: number | null;
+  medianVph24h?: number | null;
   nextDueAt?: string | null;
   note: string | null;
 }
@@ -139,6 +143,110 @@ export type ChannelSummary = SpyChannelSummary;
 export interface SpyWatchlistChannelsResponse {
   channels: SpyChannelSummary[];
   nextCursor: string | null;
+}
+
+export interface SpyPublicObservationRun {
+  id: string;
+  providerUsed: 'ytdlp';
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'unavailable';
+  completeness: 'complete' | 'partial' | 'unavailable';
+  startedAt: string;
+  completedAt: string | null;
+  inspectAttempted: number;
+  inspectOk: number;
+}
+
+export interface SpyPublicVphSegment {
+  sourceVideoId: string;
+  title: string | null;
+  publishedAt: string | null;
+  durationSec: number | null;
+  requestedWindow: '1h' | '24h' | '7d';
+  actualElapsedHours: number | null;
+  value: number | null;
+  method: 'deterministic' | 'insufficient_sample' | 'unavailable';
+  comparability: 'comparable_1h' | 'comparable_24h' | 'comparable_7d' | 'not_comparable_to_1h' | 'not_comparable_to_24h' | 'not_comparable_to_7d' | 'stretched' | 'coverage_daily_only' | 'insufficient_sample' | 'unavailable';
+  reason?: string;
+  start: { sampledAt: string; viewCount: number } | null;
+  end: { sampledAt: string; viewCount: number } | null;
+  availability: 'present' | 'missing' | 'private' | 'error' | null;
+  viewQuality: 'known' | 'unknown' | 'decreased_vs_prior' | null;
+  inspectUsed: boolean | null;
+  providerUsed: 'ytdlp';
+  definitionVersion: 'vph/v1';
+}
+
+export interface SpyPublicVphQuery {
+  window?: '1h' | '24h' | '7d';
+  from?: string;
+  to?: string;
+  ageBucket?: '0-48h' | '2-7d' | '7-30d';
+  durationBucket?: 'short' | 'medium' | 'long';
+  publishedWeekday?: number;
+  includeNonComparable?: boolean;
+  cursor?: string;
+}
+
+export interface SpyPublicVphRead {
+  youtubeUcId: string;
+  requestedWindow: '1h' | '24h' | '7d';
+  definitionVersion: 'vph/v1';
+  timezone: string;
+  observedAt: string | null;
+  provenance: { visibility: 'public'; providerUsed: 'ytdlp'; dataApiUsed: false; definitionVersion: 'vph/v1' };
+  coverage: {
+    rawPointCount: number;
+    videoCount: number;
+    latestRunStatus: SpyPublicObservationRun['status'] | null;
+    latestRunCompleteness: SpyPublicObservationRun['completeness'] | null;
+    latestRunAt: string | null;
+    inspectedVideoCount: number;
+    unavailablePointCount: number;
+    truncated: boolean;
+    nextCursor: string | null;
+  };
+  videos: Array<{
+    sourceVideoId: string; title: string | null; publishedAt: string | null; durationSec: number | null;
+    latestSampledAt: string | null; latestViewCount: number | null;
+    availability: SpyPublicVphSegment['availability']; viewQuality: SpyPublicVphSegment['viewQuality']; inspectUsed: boolean | null;
+  }>;
+  vphSegments: SpyPublicVphSegment[];
+  vphTimeline: SpyPublicVphSegment[];
+  aggregations: {
+    medianVph: number | null; comparableCount: number; measuredCount: number; unavailableCount: number;
+    cohorts: Array<{ ageBucket: '0-48h' | '2-7d' | '7-30d'; sampleCount: number; medianVph: number | null; p25: number | null; p75: number | null; reason?: 'insufficient_sample' }>;
+  };
+  /** Compatibility alias for the existing table/chart component. */
+  segments: SpyPublicVphSegment[];
+  medianVph24h: number | null;
+  comparableCount: number;
+  notes: string[];
+}
+
+export interface SpyPublicVideoVphRead {
+  sourceVideoId: string;
+  youtubeUcId: string;
+  requestedWindow: SpyPublicVphRead['requestedWindow'];
+  definitionVersion: 'vph/v1';
+  timezone: string;
+  provenance: SpyPublicVphRead['provenance'];
+  coverage: Pick<SpyPublicVphRead['coverage'], 'rawPointCount' | 'truncated' | 'nextCursor' | 'unavailablePointCount'>;
+  rawPoints: Array<{
+    id: string; observationRunId: string; sourceVideoId: string; youtubeUcId: string | null; sampledAt: string;
+    viewCount: number | null; likeCount: number | null; commentCount: number | null; durationSec: number | null;
+    publishedAt: string | null; title: string | null; availability: SpyPublicVphSegment['availability'];
+    viewQuality: SpyPublicVphSegment['viewQuality']; providerUsed: 'ytdlp'; inspectUsed: boolean; createdAt: string;
+  }>;
+  vphSegments: SpyPublicVphSegment[];
+}
+
+export interface ChannelWatchSettings {
+  enabled: boolean;
+  timezone: string;
+  dailyHourLocal: string;
+  playlistLimit: number;
+  inspectCap: number;
+  perRelationWallClockMs: number;
 }
 
 export interface SpyStarChannelResponse {
@@ -325,6 +433,45 @@ export interface GeneralPackSummary {
   hash: string;
 }
 
+export interface ChannelProfile {
+  id: string;
+  displayName: string;
+  topic: string;
+  youtubeIds: string[];
+  audience?: string;
+  defaultGeneralPack?: string;
+  defaultFormulaId?: string;
+  defaultStyle?: string;
+  defaultProcedure?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EditorialNotebook {
+  channelId: string;
+  path: string;
+  markdown: string;
+  hash: string;
+  wordCount: number;
+}
+
+export type LessonKind = 'KEEP' | 'AVOID' | 'TRY';
+
+export interface EditorialSuggestion {
+  kind: LessonKind;
+  text: string;
+  reason?: string;
+  sourceRunId?: string;
+}
+
+export interface ReusableProcedure {
+  id: string;
+  description: string;
+  instructions: string;
+  path: string;
+  hash: string;
+}
+
 export interface WriterV2LedgerEntry {
   fact: string;
   videoId?: string;
@@ -402,6 +549,11 @@ export interface WriterRunV2 {
   requestedTitle?: string;
   targetWords?: number;
   audience?: string;
+  channelId?: string;
+  editorialPath?: string;
+  editorialHash?: string;
+  procedureId?: string;
+  procedureHash?: string;
   packId: string;
   packTitle: string;
   packHash?: string;
@@ -429,6 +581,14 @@ export interface WriterRunV2 {
   restyling?: { version: number; styleId: string; startedAt: string };
   restyleError?: { code: string; reason: string; at: string };
   styled?: StyledVersion[];
+  reviewingPostmortem?: { attempt: number; startedAt: string };
+  postmortemAttempt?: number;
+  postmortem?: {
+    lessons: Array<{ kind: LessonKind; text: string; reason: string }>;
+    agentId: string;
+    createdAt: string;
+  };
+  postmortemError?: { code: string; reason: string; at: string };
   generatingHook?: { step: 'clarify' | 'suggest'; attempt: number; startedAt: string };
   hookTurnAttempt?: number;
   hookClarify?: { questions: string[]; answers?: string[] };
@@ -453,6 +613,7 @@ export interface WriterRunV2Summary {
   requestedTitle?: string;
   targetWords?: number;
   audience?: string;
+  channelId?: string;
   packId: string;
   packTitle: string;
   packHash?: string;
@@ -470,6 +631,8 @@ export interface WriterRunV2Summary {
   gateViolationCount: number;
   defectCount: number;
   styledCount: number;
+  hasPostmortem: boolean;
+  reviewingPostmortem: boolean;
   progressPercent?: number;
   activeRole?: WriterV2ActiveRole;
 }
@@ -1284,6 +1447,19 @@ export interface SpyLoopSettings {
   };
 }
 
+function spyVphQuerySuffix(query?: SpyPublicVphQuery): string {
+  const params = new URLSearchParams();
+  if (query?.window) params.set('window', query.window);
+  if (query?.from) params.set('from', query.from);
+  if (query?.to) params.set('to', query.to);
+  if (query?.ageBucket) params.set('ageBucket', query.ageBucket);
+  if (query?.durationBucket) params.set('durationBucket', query.durationBucket);
+  if (query?.publishedWeekday !== undefined) params.set('publishedWeekday', String(query.publishedWeekday));
+  if (query?.includeNonComparable !== undefined) params.set('includeNonComparable', String(query.includeNonComparable));
+  if (query?.cursor) params.set('cursor', query.cursor);
+  return params.size > 0 ? `?${params}` : '';
+}
+
 export const api = {
 
   health: () => request<Health>('/api/health'),
@@ -1334,6 +1510,22 @@ export const api = {
       `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}`,
       { method: 'DELETE' },
     ),
+  observeSpyChannel: (watchlistId: string, youtubeUcId: string, body?: { playlistLimit?: number; inspectCap?: number }) =>
+    request<{ run: SpyPublicObservationRun; reused: boolean; inspected: number; notes: string[] }>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}/observe`,
+      { method: 'POST', body: JSON.stringify(body ?? {}) },
+    ),
+  getSpyChannelVph: (watchlistId: string, youtubeUcId: string, query?: SpyPublicVphQuery) => {
+    const suffix = spyVphQuerySuffix(query);
+    return request<SpyPublicVphRead>(
+      `/api/spy/watchlists/${encodeURIComponent(watchlistId)}/competitors/${encodeURIComponent(youtubeUcId)}/vph${suffix}`,
+    );
+  },
+  getSpyVideoVph: (sourceVideoId: string, query?: SpyPublicVphQuery) =>
+    request<SpyPublicVideoVphRead>(`/api/spy/videos/${encodeURIComponent(sourceVideoId)}/vph${spyVphQuerySuffix(query)}`),
+  getChannelWatchSettings: () => request<ChannelWatchSettings>('/api/settings/channel-watch'),
+  updateChannelWatchSettings: (patch: Partial<ChannelWatchSettings>) =>
+    request<ChannelWatchSettings>('/api/settings/channel-watch', { method: 'PUT', body: JSON.stringify(patch) }),
 
   startChannel: (body: {
     url: string;
@@ -1480,6 +1672,46 @@ export const api = {
 
 
   // ── Write Loop v2 ────────────────────────────────────────────────────────
+  listChannelProfiles: () => request<{ channels: ChannelProfile[] }>('/api/writer/channels'),
+  getChannelProfile: (id: string) =>
+    request<ChannelProfile>(`/api/writer/channels/${encodeURIComponent(id)}`),
+  createChannelProfile: (body: Omit<ChannelProfile, 'createdAt' | 'updatedAt'>) =>
+    request<ChannelProfile>('/api/writer/channels', { method: 'POST', body: JSON.stringify(body) }),
+  updateChannelProfile: (id: string, body: Omit<ChannelProfile, 'id' | 'createdAt' | 'updatedAt'>) =>
+    request<ChannelProfile>(`/api/writer/channels/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+  getEditorialNotebook: (channelId: string) =>
+    request<EditorialNotebook>(`/api/writer/channels/${encodeURIComponent(channelId)}/editorial`),
+  updateEditorialNotebook: (channelId: string, markdown: string, expectedHash: string) =>
+    request<EditorialNotebook>(`/api/writer/channels/${encodeURIComponent(channelId)}/editorial`, {
+      method: 'PUT', body: JSON.stringify({ markdown, expectedHash }),
+    }),
+  listEditorialSuggestions: (channelId: string) =>
+    request<{ suggestions: EditorialSuggestion[] }>(
+      `/api/writer/channels/${encodeURIComponent(channelId)}/inbox`,
+    ),
+  addEditorialSuggestion: (channelId: string, suggestion: EditorialSuggestion) =>
+    request<{ added: EditorialSuggestion[] }>(`/api/writer/channels/${encodeURIComponent(channelId)}/inbox`, {
+      method: 'POST', body: JSON.stringify({ suggestion }),
+    }),
+  approveEditorialSuggestion: (channelId: string, suggestion: EditorialSuggestion) =>
+    request<EditorialNotebook>(`/api/writer/channels/${encodeURIComponent(channelId)}/inbox/approve`, {
+      method: 'POST', body: JSON.stringify({ suggestion }),
+    }),
+  dismissEditorialSuggestion: (channelId: string, suggestion: EditorialSuggestion) =>
+    request<{ ok: boolean }>(`/api/writer/channels/${encodeURIComponent(channelId)}/inbox/dismiss`, {
+      method: 'POST', body: JSON.stringify({ suggestion }),
+    }),
+  listReusableProcedures: () => request<{ procedures: ReusableProcedure[] }>('/api/writer/procedures'),
+  getReusableProcedure: (id: string) =>
+    request<ReusableProcedure>(`/api/writer/procedures/${encodeURIComponent(id)}`),
+  createReusableProcedure: (body: { id: string; description: string; instructions: string }) =>
+    request<ReusableProcedure>('/api/writer/procedures', { method: 'POST', body: JSON.stringify(body) }),
+  updateReusableProcedure: (id: string, body: { description: string; instructions: string }) =>
+    request<ReusableProcedure>(`/api/writer/procedures/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
   listGeneralPacks: () => request<{ packs: GeneralPackSummary[] }>('/api/writer/general-packs'),
   getGeneralPack: (path: string) =>
     request<GeneralPackSummary & { markdown: string }>(
@@ -1489,6 +1721,7 @@ export const api = {
   getWriterRunV2: (id: string) =>
     request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}`),
   startWriterRunV2: (body: {
+    channelId: string;
     brief: string;
     title?: string;
     audience?: string;
@@ -1506,6 +1739,7 @@ export const api = {
   createWriterPostV2: () =>
     request<WriterRunV2>('/api/writer/v2/posts', { method: 'POST', body: JSON.stringify({}) }),
   updateWriterPostV2: (id: string, body: {
+    channelId: string;
     brief: string;
     title?: string;
     audience?: string;
@@ -1535,6 +1769,7 @@ export const api = {
       method: 'PUT', body: JSON.stringify({ selectedId }),
     }),
   createWriterRoomV2: (body: {
+    channelId: string;
     brief: string;
     title?: string;
     audience?: string;
@@ -1564,6 +1799,10 @@ export const api = {
     request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}/restyle`, {
       method: 'POST',
       body: JSON.stringify({ styleId }),
+    }),
+  startWriterPostmortem: (id: string) =>
+    request<WriterRunV2>(`/api/writer/v2/runs/${encodeURIComponent(id)}/postmortem`, {
+      method: 'POST', body: JSON.stringify({}),
     }),
   getWriterRunV2Styled: (id: string, version: number) =>
     request<{ markdown: string }>(

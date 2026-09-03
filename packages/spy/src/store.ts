@@ -17,12 +17,19 @@ import type {
 } from './schema.ts';
 import type {
   PublicCompetitorRecord,
+  PublicObservationCompleteness,
+  PublicObservationPlanKind,
+  PublicObservationRun,
+  PublicObservationStatus,
+  PublicVideoAvailability,
+  PublicVideoStatPoint,
+  PublicViewQuality,
   PublicWatchCadence,
   PublicWatchStatus,
   SavedChannelRecord,
 } from './channel-intelligence/types.ts';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -230,15 +237,9 @@ CREATE TABLE IF NOT EXISTS competitors (
 CREATE INDEX IF NOT EXISTS idx_competitors_owner
   ON competitors(owner_channel_id, created_at);
 
--- v7: local saved research. This is deliberately independent from competitors:
--- starring never creates a watch relation or a provider operation.
-CREATE TABLE IF NOT EXISTS saved_channels (
-  youtube_uc_id TEXT PRIMARY KEY,
-  starred_at TEXT NOT NULL,
-  note TEXT,
-  updated_at TEXT NOT NULL
-);
-
+-- v7 saved_channels is created by the explicit migration below. It is deliberately
+-- independent from competitors: starring never creates a watch relation or a
+-- provider operation.
 CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
   text,
   content='transcript_segments',
@@ -594,6 +595,59 @@ const MIGRATION_6_TO_7 = {
 } as const;
 
 /**
+ * C3 stores raw public measurements at video grain.  A channel-level snapshot
+ * cannot support VPH, so these facts are append-only and deliberately separate
+ * from `video_snapshots` (which belongs to a disposable manual Spy run).
+ */
+const MIGRATION_7_TO_8 = `
+CREATE TABLE IF NOT EXISTS competitor_observation_runs (
+  id TEXT PRIMARY KEY,
+  owner_channel_id TEXT NOT NULL,
+  competitor_channel_id TEXT NOT NULL,
+  plan_kind TEXT NOT NULL CHECK(plan_kind IN ('daily','manual')),
+  plan_version TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  provider_used TEXT NOT NULL CHECK(provider_used='ytdlp'),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','partial','failed','unavailable')),
+  completeness TEXT NOT NULL CHECK(completeness IN ('complete','partial','unavailable')),
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  playlist_limit INTEGER NOT NULL,
+  inspect_attempted INTEGER NOT NULL DEFAULT 0,
+  inspect_ok INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(owner_channel_id, competitor_channel_id, plan_kind, local_date, plan_version)
+);
+CREATE INDEX IF NOT EXISTS idx_competitor_observation_due
+  ON competitor_observation_runs(owner_channel_id, competitor_channel_id, local_date DESC);
+
+CREATE TABLE IF NOT EXISTS video_stat_points (
+  id TEXT PRIMARY KEY,
+  observation_run_id TEXT NOT NULL REFERENCES competitor_observation_runs(id),
+  source_video_id TEXT NOT NULL,
+  youtube_uc_id TEXT,
+  sampled_at TEXT NOT NULL,
+  view_count INTEGER,
+  like_count INTEGER,
+  comment_count INTEGER,
+  duration_sec REAL,
+  published_at TEXT,
+  title TEXT,
+  availability TEXT NOT NULL CHECK(availability IN ('present','missing','private','error')),
+  view_quality TEXT NOT NULL CHECK(view_quality IN ('known','unknown','decreased_vs_prior')),
+  provider_used TEXT NOT NULL CHECK(provider_used='ytdlp'),
+  inspect_used INTEGER NOT NULL CHECK(inspect_used IN (0,1)),
+  created_at TEXT NOT NULL,
+  UNIQUE(observation_run_id, source_video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_video_stat_points_video_time
+  ON video_stat_points(source_video_id, sampled_at);
+CREATE INDEX IF NOT EXISTS idx_video_stat_points_channel_time
+  ON video_stat_points(youtube_uc_id, sampled_at DESC);
+`;
+
+/**
  * Cột thêm vào bảng v5 sau khi v5 đã ra đời (DB dev có thể đã ở version 5 mà
  * thiếu cột). Chạy ALTER idempotent mỗi lần mở DB — rẻ và không cần bump version.
  */
@@ -892,6 +946,30 @@ function parseJson<T>(value: unknown): T {
   return JSON.parse(String(value)) as T;
 }
 
+interface PublicPointCursor {
+  sampledAt: string;
+  sourceVideoId: string;
+  createdAt: string;
+}
+
+function publicPointCursor(sampledAt: string, sourceVideoId: string, createdAt: string): string {
+  return Buffer.from(JSON.stringify({ sampledAt, sourceVideoId, createdAt }), 'utf8').toString('base64url');
+}
+
+function parsePublicPointCursor(value: string | null | undefined): PublicPointCursor | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PublicPointCursor>;
+    if (
+      typeof parsed.sampledAt !== 'string' || Number.isNaN(Date.parse(parsed.sampledAt)) ||
+      typeof parsed.sourceVideoId !== 'string' || typeof parsed.createdAt !== 'string'
+    ) return null;
+    return { sampledAt: parsed.sampledAt, sourceVideoId: parsed.sourceVideoId, createdAt: parsed.createdAt };
+  } catch {
+    return null;
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -936,6 +1014,48 @@ function publicCompetitorFromRow(row: Row): PublicCompetitorRecord {
     cadence: String(row['cadence'] ?? 'daily') as PublicWatchCadence,
     lastObservedAt: nullableString(row['last_observed_at']),
     lastObservationStatus: nullableString(row['last_observation_status']),
+    createdAt: String(row['created_at']),
+  };
+}
+
+function publicObservationRunFromRow(row: Row): PublicObservationRun {
+  return {
+    id: String(row['id']),
+    watchlistId: String(row['owner_channel_id']),
+    competitorChannelId: String(row['competitor_channel_id']),
+    planKind: String(row['plan_kind']) as PublicObservationPlanKind,
+    planVersion: String(row['plan_version']),
+    localDate: String(row['local_date']),
+    providerUsed: 'ytdlp',
+    status: String(row['status']) as PublicObservationStatus,
+    completeness: String(row['completeness']) as PublicObservationCompleteness,
+    startedAt: String(row['started_at']),
+    completedAt: nullableString(row['completed_at']),
+    errorCode: nullableString(row['error_code']),
+    errorMessage: nullableString(row['error_message']),
+    playlistLimit: Number(row['playlist_limit']),
+    inspectAttempted: Number(row['inspect_attempted']),
+    inspectOk: Number(row['inspect_ok']),
+  };
+}
+
+function publicVideoStatPointFromRow(row: Row): PublicVideoStatPoint {
+  return {
+    id: String(row['id']),
+    observationRunId: String(row['observation_run_id']),
+    sourceVideoId: String(row['source_video_id']),
+    youtubeUcId: nullableString(row['youtube_uc_id']),
+    sampledAt: String(row['sampled_at']),
+    viewCount: row['view_count'] === null ? null : Number(row['view_count']),
+    likeCount: row['like_count'] === null ? null : Number(row['like_count']),
+    commentCount: row['comment_count'] === null ? null : Number(row['comment_count']),
+    durationSec: row['duration_sec'] === null ? null : Number(row['duration_sec']),
+    publishedAt: nullableString(row['published_at']),
+    title: nullableString(row['title']),
+    availability: String(row['availability']) as PublicVideoAvailability,
+    viewQuality: String(row['view_quality']) as PublicViewQuality,
+    providerUsed: 'ytdlp',
+    inspectUsed: Number(row['inspect_used']) === 1,
     createdAt: String(row['created_at']),
   };
 }
@@ -1168,6 +1288,9 @@ export class SpyStore {
       if (version < 7) {
         this.migrate6To7();
       }
+      if (version < 8) {
+        this.migrate7To8();
+      }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
       }
@@ -1201,10 +1324,13 @@ export class SpyStore {
       }
     }
     // Fresh v7 databases already have the column; migrated v6 databases have
-    // it after migrate6To7. Keep index creation after the explicit migration
-    // so opening a v6 table never references a column that does not exist yet.
+    // it after migrate6To7. Keep C1 object/index creation after the explicit
+    // migration so opening a v6 table never references a column that does not
+    // exist yet.
+    this.database.exec(MIGRATION_6_TO_7.savedChannels);
     this.database.exec(MIGRATION_6_TO_7.channelsAliasIndex);
     this.database.exec(MIGRATION_6_TO_7.savedChannelsIndex);
+    this.database.exec(MIGRATION_7_TO_8);
   }
 
   /** Apply the C1 additions to an already-created v6 database. */
@@ -1255,6 +1381,19 @@ export class SpyStore {
       this.database.exec(MIGRATION_6_TO_7.channelsAliasIndex);
       this.database.exec(MIGRATION_6_TO_7.savedChannelsIndex);
       this.database.prepare('UPDATE schema_version SET version=?').run(7);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw error;
+    }
+  }
+
+  /** C3 only adds tables/indexes, but remains an explicit versioned upgrade. */
+  private migrate7To8(): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.exec(MIGRATION_7_TO_8);
+      this.database.prepare('UPDATE schema_version SET version=?').run(8);
       this.database.exec('COMMIT');
     } catch (error) {
       try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
@@ -2381,6 +2520,246 @@ export class SpyStore {
        WHERE owner_channel_id=? AND competitor_channel_id=?`,
     ).run(observedAt, status ?? null, ownerChannelId, competitorChannelId);
     return this.getPublicCompetitor(ownerChannelId, competitorChannelId)!;
+  }
+
+  createOrGetPublicObservationRun(input: {
+    watchlistId: string;
+    competitorChannelId: string;
+    planKind: PublicObservationPlanKind;
+    planVersion: string;
+    localDate: string;
+    playlistLimit: number;
+    startedAt?: string;
+  }): { run: PublicObservationRun; created: boolean } {
+    const existing = this.database.prepare(
+      `SELECT * FROM competitor_observation_runs
+       WHERE owner_channel_id=? AND competitor_channel_id=? AND plan_kind=? AND local_date=? AND plan_version=?`,
+    ).get(
+      input.watchlistId, input.competitorChannelId, input.planKind, input.localDate, input.planVersion,
+    ) as Row | undefined;
+    if (existing) return { run: publicObservationRunFromRow(existing), created: false };
+    const id = randomUUID();
+    const startedAt = input.startedAt ?? nowIso();
+    this.database.prepare(
+      `INSERT INTO competitor_observation_runs
+       (id,owner_channel_id,competitor_channel_id,plan_kind,plan_version,local_date,provider_used,status,completeness,started_at,playlist_limit)
+       VALUES (?,?,?,?,?,?,'ytdlp','running','partial',?,?)`,
+    ).run(
+      id, input.watchlistId, input.competitorChannelId, input.planKind, input.planVersion,
+      input.localDate, startedAt, input.playlistLimit,
+    );
+    return { run: this.getPublicObservationRun(id)!, created: true };
+  }
+
+  getPublicObservationRun(id: string): PublicObservationRun | null {
+    const row = this.database.prepare('SELECT * FROM competitor_observation_runs WHERE id=?').get(id) as Row | undefined;
+    return row ? publicObservationRunFromRow(row) : null;
+  }
+
+  updatePublicObservationRun(input: {
+    id: string;
+    status: PublicObservationStatus;
+    completeness: PublicObservationCompleteness;
+    completedAt?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    inspectAttempted?: number;
+    inspectOk?: number;
+  }): PublicObservationRun {
+    const current = this.getPublicObservationRun(input.id);
+    if (!current) throw new AppError('not_found', 'Public observation run không tồn tại');
+    this.database.prepare(
+      `UPDATE competitor_observation_runs SET
+       status=?, completeness=?, completed_at=?, error_code=?, error_message=?, inspect_attempted=?, inspect_ok=?
+       WHERE id=?`,
+    ).run(
+      input.status,
+      input.completeness,
+      input.completedAt === undefined ? current.completedAt : input.completedAt,
+      input.errorCode === undefined ? current.errorCode : input.errorCode,
+      input.errorMessage === undefined ? current.errorMessage : input.errorMessage,
+      input.inspectAttempted ?? current.inspectAttempted,
+      input.inspectOk ?? current.inspectOk,
+      input.id,
+    );
+    return this.getPublicObservationRun(input.id)!;
+  }
+
+  insertPublicVideoStatPoint(input: Omit<PublicVideoStatPoint, 'id' | 'createdAt'>): PublicVideoStatPoint {
+    const id = randomUUID();
+    const createdAt = nowIso();
+    this.database.prepare(
+      `INSERT OR IGNORE INTO video_stat_points
+       (id,observation_run_id,source_video_id,youtube_uc_id,sampled_at,view_count,like_count,comment_count,duration_sec,published_at,title,availability,view_quality,provider_used,inspect_used,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ytdlp',?,?)`,
+    ).run(
+      id, input.observationRunId, input.sourceVideoId, input.youtubeUcId, input.sampledAt,
+      input.viewCount, input.likeCount, input.commentCount, input.durationSec, input.publishedAt,
+      input.title, input.availability, input.viewQuality, input.inspectUsed ? 1 : 0, createdAt,
+    );
+    const row = this.database.prepare(
+      'SELECT * FROM video_stat_points WHERE observation_run_id=? AND source_video_id=?',
+    ).get(input.observationRunId, input.sourceVideoId) as Row;
+    return publicVideoStatPointFromRow(row);
+  }
+
+  listPublicObservationRuns(watchlistId: string, competitorChannelId: string, limit = 100): PublicObservationRun[] {
+    const rows = this.database.prepare(
+      `SELECT * FROM competitor_observation_runs WHERE owner_channel_id=? AND competitor_channel_id=?
+       ORDER BY started_at DESC LIMIT ?`,
+    ).all(watchlistId, competitorChannelId, Math.max(1, Math.min(limit, 500))) as Row[];
+    return rows.map(publicObservationRunFromRow);
+  }
+
+  /**
+   * Time-ordered, explicit-cursor read for public telemetry.  A VPH chart
+   * must never silently drop later lexical video ids just because it hit a
+   * global limit; callers receive `truncated` and a cursor when this page is
+   * incomplete.
+   */
+  listPublicVideoStatPointsPage(input: {
+    youtubeUcId: string;
+    from?: string | null;
+    to?: string | null;
+    cursor?: string | null;
+    limit?: number;
+  }): { points: PublicVideoStatPoint[]; truncated: boolean; nextCursor: string | null } {
+    const where = ['youtube_uc_id=?'];
+    const args: Array<string | number> = [input.youtubeUcId];
+    if (input.from) {
+      where.push('sampled_at>=?');
+      args.push(input.from);
+    }
+    if (input.to) {
+      where.push('sampled_at<=?');
+      args.push(input.to);
+    }
+    const cursor = parsePublicPointCursor(input.cursor);
+    if (cursor) {
+      where.push(`(sampled_at>? OR (sampled_at=? AND source_video_id>?) OR (sampled_at=? AND source_video_id=? AND created_at>?))`);
+      args.push(cursor.sampledAt, cursor.sampledAt, cursor.sourceVideoId, cursor.sampledAt, cursor.sourceVideoId, cursor.createdAt);
+    }
+    const limit = Math.max(1, Math.min(input.limit ?? 2_000, 10_000));
+    const rows = this.database.prepare(
+      `SELECT * FROM video_stat_points WHERE ${where.join(' AND ')}
+       ORDER BY sampled_at ASC, source_video_id ASC, created_at ASC LIMIT ?`,
+    ).all(...args, limit + 1) as Row[];
+    const truncated = rows.length > limit;
+    const page = truncated ? rows.slice(0, limit) : rows;
+    const last = page.at(-1);
+    return {
+      points: page.map(publicVideoStatPointFromRow),
+      truncated,
+      nextCursor: truncated && last
+        ? publicPointCursor(String(last['sampled_at']), String(last['source_video_id']), String(last['created_at']))
+        : null,
+    };
+  }
+
+  /** Compatibility read for existing callers/tests; new chart reads use page metadata. */
+  listPublicVideoStatPoints(youtubeUcId: string, limit = 2_000): PublicVideoStatPoint[] {
+    return this.listPublicVideoStatPointsPage({ youtubeUcId, limit }).points;
+  }
+
+  /**
+   * Complete bounded-history read used to derive a channel projection before
+   * pagination.  VPH pairs are per-video facts, so deriving them from a
+   * global cursor page can split a pair across pages and change the median.
+   * Raw drill-downs remain paginated through the page methods below.
+   */
+  listAllPublicVideoStatPoints(input: {
+    youtubeUcId: string;
+    from?: string | null;
+    to?: string | null;
+  }): PublicVideoStatPoint[] {
+    const where = ['youtube_uc_id=?'];
+    const args: string[] = [input.youtubeUcId];
+    if (input.from) {
+      where.push('sampled_at>=?');
+      args.push(input.from);
+    }
+    if (input.to) {
+      where.push('sampled_at<=?');
+      args.push(input.to);
+    }
+    const rows = this.database.prepare(
+      `SELECT * FROM video_stat_points WHERE ${where.join(' AND ')}
+       ORDER BY source_video_id ASC, sampled_at ASC, created_at ASC`,
+    ).all(...args) as Row[];
+    return rows.map(publicVideoStatPointFromRow);
+  }
+
+  listPublicVideoStatPointsForVideoPage(input: {
+    sourceVideoId: string;
+    from?: string | null;
+    to?: string | null;
+    cursor?: string | null;
+    limit?: number;
+  }): { points: PublicVideoStatPoint[]; truncated: boolean; nextCursor: string | null } {
+    const where = ['source_video_id=?'];
+    const args: Array<string | number> = [input.sourceVideoId];
+    if (input.from) {
+      where.push('sampled_at>=?');
+      args.push(input.from);
+    }
+    if (input.to) {
+      where.push('sampled_at<=?');
+      args.push(input.to);
+    }
+    const cursor = parsePublicPointCursor(input.cursor);
+    if (cursor) {
+      // source_video_id is constant in this read, but retain the same stable
+      // keyset ordering as the channel chart so cursors are unambiguous.
+      where.push(`(sampled_at>? OR (sampled_at=? AND created_at>?))`);
+      args.push(cursor.sampledAt, cursor.sampledAt, cursor.createdAt);
+    }
+    const limit = Math.max(1, Math.min(input.limit ?? 500, 5_000));
+    const rows = this.database.prepare(
+      `SELECT * FROM video_stat_points WHERE ${where.join(' AND ')}
+       ORDER BY sampled_at ASC, source_video_id ASC, created_at ASC LIMIT ?`,
+    ).all(...args, limit + 1) as Row[];
+    const truncated = rows.length > limit;
+    const page = truncated ? rows.slice(0, limit) : rows;
+    const last = page.at(-1);
+    return {
+      points: page.map(publicVideoStatPointFromRow),
+      truncated,
+      nextCursor: truncated && last
+        ? publicPointCursor(String(last['sampled_at']), String(last['source_video_id']), String(last['created_at']))
+        : null,
+    };
+  }
+
+  /** Complete per-video history for deterministic segment derivation. */
+  listAllPublicVideoStatPointsForVideo(input: {
+    sourceVideoId: string;
+    from?: string | null;
+    to?: string | null;
+  }): PublicVideoStatPoint[] {
+    const where = ['source_video_id=?'];
+    const args: string[] = [input.sourceVideoId];
+    if (input.from) {
+      where.push('sampled_at>=?');
+      args.push(input.from);
+    }
+    if (input.to) {
+      where.push('sampled_at<=?');
+      args.push(input.to);
+    }
+    const rows = this.database.prepare(
+      `SELECT * FROM video_stat_points WHERE ${where.join(' AND ')}
+       ORDER BY sampled_at ASC, created_at ASC`,
+    ).all(...args) as Row[];
+    return rows.map(publicVideoStatPointFromRow);
+  }
+
+  getPreviousKnownPublicView(youtubeUcId: string, sourceVideoId: string): number | null {
+    const row = this.database.prepare(
+      `SELECT view_count FROM video_stat_points
+       WHERE youtube_uc_id=? AND source_video_id=? AND availability='present' AND view_count IS NOT NULL
+       ORDER BY sampled_at DESC, created_at DESC LIMIT 1`,
+    ).get(youtubeUcId, sourceVideoId) as Row | undefined;
+    return row?.['view_count'] === null || row?.['view_count'] === undefined ? null : Number(row['view_count']);
   }
 
   getLatestProfile(scope: string, scopeId: string, kind: string): {

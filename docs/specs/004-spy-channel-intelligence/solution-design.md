@@ -8,6 +8,8 @@ owners: [Product Owner, Writer Room Engineering]
 
 # Solution Design Document
 
+> Trạng thái triển khai thực tế được ghi riêng tại [implementation-status.md](./implementation-status.md). File này vẫn bao gồm cả thiết kế cho các phase chưa triển khai.
+
 ## Validation Checklist
 
 ### CRITICAL GATES (Must Pass)

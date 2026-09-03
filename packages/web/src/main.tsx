@@ -10,6 +10,7 @@ import { SpyChannelsPage, SpyChannelPage } from './pages/SpyChannel.tsx';
 import { WriterPage, WriterPackPage } from './pages/Writer.tsx';
 import { WriterV2Page, WriterV2RunPage } from './pages/WriterV2.tsx';
 import { ChannelStylesPage } from './pages/ChannelStyles.tsx';
+import { ChannelsPage } from './pages/Channels.tsx';
 import { FormulasPage, FormulaPage } from './pages/Training.tsx';
 import { TrainingLabPage, TrainingLabRunPage } from './pages/TrainingLab.tsx';
 import { StudioListPage, StudioSessionPage } from './pages/Studio.tsx';
@@ -128,6 +129,9 @@ function App() {
       break;
     case 'writer-v2-run':
       page = <WriterV2RunPage id={route.id} />;
+      break;
+    case 'publishing-channels':
+      page = <ChannelsPage id={route.id} />;
       break;
     case 'channel-styles':
       page = <ChannelStylesPage path={route.path} />;

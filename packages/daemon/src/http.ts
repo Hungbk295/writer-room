@@ -53,6 +53,8 @@ import { TEAM_CHANNEL } from './agents/index.ts';
 import { createJobDoneNotification, listJobNotifications, markJobNotificationRead } from './notifications.ts';
 import { handleGetSpyLoopConfig, handlePutSpyLoopConfig, loadSpyLoopConfig } from './spy/loop-config.ts';
 import { LoopScheduler } from './spy/loop-scheduler.ts';
+import { ChannelWatchScheduler } from './spy/channel-watch-scheduler.ts';
+import { isValidIanaTimeZone, loadChannelWatchConfig, saveChannelWatchConfig } from './spy/channel-watch-config.ts';
 import { sendTelegramReport } from './spy/report-telegram.ts';
 import { createSpyLoopAdapter, type SpyLoopAdapter } from './spy/loop-contract.ts';
 import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
@@ -99,12 +101,15 @@ import {
   createWriterRoomV2,
   continueWriterRunV2,
   readStyledVersion,
+  recoverInterruptedPostmortems,
   recoverInterruptedRestyles,
   recoverInterruptedWriterRuns,
+  registerWriterV2PostmortemListener,
   registerWriterV2RestyleListener,
   registerWriterV2SettleListener,
   runWriterRoomV2,
   startRestyle,
+  startWriterPostmortem,
   startWriterRunV2,
   updateWriterPostV2,
   withWriterV2Progress,
@@ -119,6 +124,26 @@ import {
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2 } from './writer/run-store-v2.ts';
 import { getGeneralPack, listGeneralPacks } from './writer/general-pack.ts';
 import { getChannelStyle, listChannelStyles } from './writer/channel-style.ts';
+import {
+  appendEditorialSuggestions,
+  approveEditorialSuggestion,
+  createChannelProfile,
+  dismissEditorialSuggestion,
+  getChannelProfile,
+  getEditorialNotebook,
+  listChannelProfiles,
+  listEditorialSuggestions,
+  updateChannelProfile,
+  updateEditorialNotebook,
+  type ChannelProfileInput,
+  type EditorialSuggestion,
+} from './writer/channel-profile.ts';
+import {
+  createReusableProcedure,
+  getReusableProcedure,
+  listReusableProcedures,
+  updateReusableProcedure,
+} from './writer/reusable-procedure.ts';
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -382,8 +407,72 @@ function c1FollowInput(body: Record<string, unknown>, watchlistId: string): Foll
   };
 }
 
+function channelVphQuery(params: URLSearchParams, timezone: string): {
+  window?: '1h' | '24h' | '7d';
+  from?: string | null;
+  to?: string | null;
+  ageBucket?: string | null;
+  durationBucket?: string | null;
+  publishedWeekday?: number | null;
+  includeNonComparable?: boolean;
+  cursor?: string | null;
+  timezone: string;
+} {
+  const rawWindow = params.get('window');
+  if (rawWindow !== null && rawWindow !== '1h' && rawWindow !== '24h' && rawWindow !== '7d') {
+    throw new AppError('invalid_input', 'invalid_window: window phải là 1h, 24h hoặc 7d');
+  }
+  const iso = (name: 'from' | 'to') => {
+    const value = params.get(name);
+    if (value !== null && Number.isNaN(Date.parse(value))) {
+      throw new AppError('invalid_input', `${name} phải là ISO-8601 hợp lệ`);
+    }
+    return value;
+  };
+  const from = iso('from');
+  const to = iso('to');
+  if (from && to && Date.parse(from) > Date.parse(to)) {
+    throw new AppError('invalid_input', 'from không được sau to');
+  }
+  const ageBucket = params.get('ageBucket');
+  if (ageBucket !== null && !['0-48h', '2-7d', '7-30d'].includes(ageBucket)) {
+    throw new AppError('invalid_input', 'ageBucket không hợp lệ');
+  }
+  const durationBucket = params.get('durationBucket');
+  if (durationBucket !== null && !['short', 'medium', 'long'].includes(durationBucket)) {
+    throw new AppError('invalid_input', 'durationBucket không hợp lệ');
+  }
+  const publishedWeekdayRaw = params.get('publishedWeekday');
+  const publishedWeekday = publishedWeekdayRaw === null ? null : Number(publishedWeekdayRaw);
+  if (publishedWeekday !== null && (!Number.isInteger(publishedWeekday) || publishedWeekday < 0 || publishedWeekday > 6)) {
+    throw new AppError('invalid_input', 'publishedWeekday phải từ 0 đến 6');
+  }
+  const includeRaw = params.get('includeNonComparable');
+  if (includeRaw !== null && includeRaw !== 'true' && includeRaw !== 'false') {
+    throw new AppError('invalid_input', 'includeNonComparable phải là true hoặc false');
+  }
+  const cursor = params.get('cursor');
+  if (cursor !== null) {
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+      if (
+        typeof parsed['sampledAt'] !== 'string' || Number.isNaN(Date.parse(parsed['sampledAt'])) ||
+        typeof parsed['sourceVideoId'] !== 'string' || typeof parsed['createdAt'] !== 'string'
+      ) throw new Error('invalid shape');
+    } catch {
+      throw new AppError('invalid_input', 'cursor VPH không hợp lệ');
+    }
+  }
+  return {
+    ...(rawWindow ? { window: rawWindow } : {}),
+    from, to, ageBucket, durationBucket, publishedWeekday,
+    ...(includeRaw === null ? {} : { includeNonComparable: includeRaw === 'true' }),
+    cursor, timezone,
+  };
+}
+
 function isSpyRolePath(pathname: string): boolean {
-  return pathname.startsWith('/api/spy/channels/') || pathname.startsWith('/api/spy/watchlists/');
+  return pathname.startsWith('/api/spy/channels/') || pathname.startsWith('/api/spy/watchlists/') || pathname.startsWith('/api/spy/videos/');
 }
 
 /** Do not reflect provider transport, credentials, URLs, or raw model output through the P0 API. */
@@ -412,6 +501,7 @@ export interface HttpApp {
   webRoot: string;
   loopScheduler: LoopScheduler | null;
   loop: SpyLoopAdapter | null;
+  channelWatchScheduler?: ChannelWatchScheduler | null;
   /** Hourly retention sweep for public P0 artifacts; optional for isolated route tests. */
   p0RetentionTimer?: ReturnType<typeof setInterval>;
 }
@@ -465,6 +555,7 @@ export async function createHttpApp(): Promise<HttpApp> {
   // Separate listener on purpose: a restyle runs against a run that is already DONE,
   // and handleWriterV2Settle returns early for anything whose status is not RUNNING.
   registerWriterV2RestyleListener(harness.pipeline.scheduler, { dataDir: root });
+  registerWriterV2PostmortemListener(harness.pipeline.scheduler, { dataDir: root });
   registerWriterV2HookListener(harness.pipeline.scheduler, { dataDir: root });
   // …and because that listener only ever fires on `onItemSettled`, a restyle that was
   // in flight when the daemon went down would never settle at all: `reconcileOnBoot`
@@ -482,6 +573,9 @@ export async function createHttpApp(): Promise<HttpApp> {
   });
   void recoverInterruptedRestyles(root).catch((err) => {
     console.error('[writer-v2] recoverInterruptedRestyles failed:', (err as Error).message);
+  });
+  void recoverInterruptedPostmortems(root).catch((err) => {
+    console.error('[writer-v2] recoverInterruptedPostmortems failed:', (err as Error).message);
   });
 
   // Spy Loop Scheduler — catch-up on boot, daily tick + 08:00 digest.
@@ -511,6 +605,12 @@ export async function createHttpApp(): Promise<HttpApp> {
     loopScheduler.start();
   }
 
+  // C3 is a separate public yt-dlp-only scheduler.  Its own config defaults
+  // disabled, so constructing it has zero provider effect and cannot inherit
+  // any Data API/P0 loop behavior.
+  const channelWatchScheduler = SPY_FEATURE.enabled ? new ChannelWatchScheduler(spy, root) : null;
+  channelWatchScheduler?.start();
+
   // Retention is independent of collection.  A paused/kill-switched P0 loop
   // must still remove public artifacts once their 30-day window ends.
   const runP0Retention = () => {
@@ -525,7 +625,7 @@ export async function createHttpApp(): Promise<HttpApp> {
   // keeps the existing workspace location.  Never place mutable user data here:
   // application resources are read-only on macOS and often protected on Windows.
   const webRoot = resolve(process.env.WRITER_ROOM_WEB_ROOT || join(APP_ROOT, 'packages/web/dist'));
-  return { spy, spyMcp, generalPackMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, p0RetentionTimer };
+  return { spy, spyMcp, generalPackMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, channelWatchScheduler, p0RetentionTimer };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
@@ -556,6 +656,26 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const info = spyMcp?.info();
         if (!info) return error('Spy MCP đang tắt', 404);
         return json(info);
+      }
+
+      // C3 uses its own config; do not merge it into spy-loop.json or spy.json.
+      if (method === 'GET' && pathname === '/api/settings/channel-watch') {
+        return json(await loadChannelWatchConfig(dataRoot()));
+      }
+      if (method === 'PUT' && pathname === '/api/settings/channel-watch') {
+        const body = await readBody(req);
+        if (typeof body['timezone'] === 'string' && !isValidIanaTimeZone(body['timezone'])) {
+          return error('timezone phải là IANA timezone hợp lệ', 422);
+        }
+        const patch = {
+          ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
+          ...(typeof body['timezone'] === 'string' ? { timezone: body['timezone'] } : {}),
+          ...(typeof body['dailyHourLocal'] === 'string' ? { dailyHourLocal: body['dailyHourLocal'] } : {}),
+          ...(typeof body['playlistLimit'] === 'number' ? { playlistLimit: body['playlistLimit'] } : {}),
+          ...(typeof body['inspectCap'] === 'number' ? { inspectCap: body['inspectCap'] } : {}),
+          ...(typeof body['perRelationWallClockMs'] === 'number' ? { perRelationWallClockMs: body['perRelationWallClockMs'] } : {}),
+        };
+        return json(await saveChannelWatchConfig(dataRoot(), patch));
       }
 
       // Same purpose as /api/spy/mcp, for the General Pack MCP.
@@ -593,6 +713,23 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(spy.unstarChannel(youtubeUcId));
       }
 
+      const spyVphMatch = /^\/api\/spy\/watchlists\/([^/]+)\/competitors\/([^/]+)\/vph$/.exec(pathname);
+      if (method === 'GET' && spyVphMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const watchlistId = decodeSpyRolePathId(spyVphMatch[1]!, 'watchlistId');
+        const youtubeUcId = decodeSpyRolePathId(spyVphMatch[2]!, 'youtubeUcId');
+        const config = await loadChannelWatchConfig(dataRoot());
+        return json(spy.getPublicChannelVph(youtubeUcId, watchlistId, channelVphQuery(url.searchParams, config.timezone)));
+      }
+
+      const spyVideoVphMatch = /^\/api\/spy\/videos\/([^/]+)\/vph$/.exec(pathname);
+      if (method === 'GET' && spyVideoVphMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const config = await loadChannelWatchConfig(dataRoot());
+        const sourceVideoId = decodeSpyRolePathId(spyVideoVphMatch[1]!, 'sourceVideoId');
+        return json(spy.getPublicVideoVph(sourceVideoId, 'local-desktop', channelVphQuery(url.searchParams, config.timezone)));
+      }
+
       const spyCompetitorMatch = /^\/api\/spy\/watchlists\/([^/]+)\/competitors\/([^/]+)$/.exec(pathname);
       if ((method === 'PUT' || method === 'PATCH' || method === 'DELETE') && spyCompetitorMatch) {
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
@@ -603,6 +740,23 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const input = c1FollowInput(body, watchlistId);
         if (method === 'PATCH') return json(spy.updateFollowedChannel(youtubeUcId, input));
         return json(spy.followChannel(youtubeUcId, input));
+      }
+
+      const spyObserveMatch = /^\/api\/spy\/watchlists\/([^/]+)\/competitors\/([^/]+)\/observe$/.exec(pathname);
+      if (method === 'POST' && spyObserveMatch) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        const config = await loadChannelWatchConfig(dataRoot());
+        if (!config.enabled) {
+          throw new AppError('conflict', 'channel_watch_disabled: bật daily watch trước khi thu thập public sample');
+        }
+        const body = await readBody(req);
+        const playlistLimit = typeof body['playlistLimit'] === 'number' ? body['playlistLimit'] : undefined;
+        const inspectCap = typeof body['inspectCap'] === 'number' ? body['inspectCap'] : undefined;
+        return json(await spy.observePublicChannel({
+          watchlistId: decodeSpyRolePathId(spyObserveMatch[1]!, 'watchlistId'),
+          youtubeUcId: decodeSpyRolePathId(spyObserveMatch[2]!, 'youtubeUcId'),
+          planKind: 'manual', playlistLimit, inspectCap,
+        }));
       }
 
       // ── In-app completion notifications ────────────────────────────────
@@ -1637,6 +1791,165 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
 
 
 
+      // ── Hồ sơ kênh + sổ tay biên tập (file-first) ─────────────
+      if (method === 'GET' && pathname === '/api/writer/channels') {
+        return json({ channels: await listChannelProfiles(dataRoot()) });
+      }
+      if (method === 'POST' && pathname === '/api/writer/channels') {
+        const body = await readBody(req);
+        try {
+          const input: ChannelProfileInput = {
+            id: String(body['id'] ?? ''),
+            displayName: String(body['displayName'] ?? ''),
+            topic: String(body['topic'] ?? ''),
+            youtubeIds: Array.isArray(body['youtubeIds']) ? body['youtubeIds'].map(String) : [],
+            ...(typeof body['audience'] === 'string' ? { audience: body['audience'] } : {}),
+            ...(typeof body['defaultGeneralPack'] === 'string' ? { defaultGeneralPack: body['defaultGeneralPack'] } : {}),
+            ...(typeof body['defaultFormulaId'] === 'string' ? { defaultFormulaId: body['defaultFormulaId'] } : {}),
+            ...(typeof body['defaultStyle'] === 'string' ? { defaultStyle: body['defaultStyle'] } : {}),
+            ...(typeof body['defaultProcedure'] === 'string' ? { defaultProcedure: body['defaultProcedure'] } : {}),
+          };
+          return json(await createChannelProfile(input, dataRoot()), 201);
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không tạo được Hồ sơ kênh', 400);
+        }
+      }
+      const channelEditorialMatch = /^\/api\/writer\/channels\/([^/]+)\/editorial$/.exec(pathname);
+      if (method === 'GET' && channelEditorialMatch) {
+        const notebook = await getEditorialNotebook(decodeURIComponent(channelEditorialMatch[1]!), dataRoot());
+        if (!notebook) return error('Hồ sơ kênh không tồn tại', 404);
+        return json(notebook);
+      }
+      if (method === 'PUT' && channelEditorialMatch) {
+        const body = await readBody(req);
+        try {
+          return json(await updateEditorialNotebook(
+            decodeURIComponent(channelEditorialMatch[1]!),
+            String(body['markdown'] ?? ''),
+            dataRoot(),
+            typeof body['expectedHash'] === 'string' ? body['expectedHash'] : undefined,
+          ));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không lưu được Sổ tay biên tập', 409);
+        }
+      }
+      const channelInboxApproveMatch = /^\/api\/writer\/channels\/([^/]+)\/inbox\/approve$/.exec(pathname);
+      if (method === 'POST' && channelInboxApproveMatch) {
+        const body = await readBody(req);
+        try {
+          const suggestion = body['suggestion'] as EditorialSuggestion;
+          return json(await approveEditorialSuggestion(
+            decodeURIComponent(channelInboxApproveMatch[1]!), suggestion, dataRoot(),
+          ));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không duyệt được kinh nghiệm', 400);
+        }
+      }
+      const channelInboxDismissMatch = /^\/api\/writer\/channels\/([^/]+)\/inbox\/dismiss$/.exec(pathname);
+      if (method === 'POST' && channelInboxDismissMatch) {
+        const body = await readBody(req);
+        try {
+          await dismissEditorialSuggestion(
+            decodeURIComponent(channelInboxDismissMatch[1]!), body['suggestion'] as EditorialSuggestion, dataRoot(),
+          );
+          return json({ ok: true });
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không bỏ qua được kinh nghiệm', 400);
+        }
+      }
+      const channelInboxMatch = /^\/api\/writer\/channels\/([^/]+)\/inbox$/.exec(pathname);
+      if (method === 'GET' && channelInboxMatch) {
+        try {
+          return json({ suggestions: await listEditorialSuggestions(
+            decodeURIComponent(channelInboxMatch[1]!), dataRoot(),
+          ) });
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không đọc được hộp chờ', 404);
+        }
+      }
+      if (method === 'POST' && channelInboxMatch) {
+        const body = await readBody(req);
+        try {
+          const raw = body['suggestion'] as Partial<EditorialSuggestion> | undefined;
+          if (!raw || (raw.kind !== 'KEEP' && raw.kind !== 'AVOID' && raw.kind !== 'TRY')) {
+            return error('suggestion.kind phải là KEEP/AVOID/TRY');
+          }
+          const suggestion: EditorialSuggestion = {
+            kind: raw.kind,
+            text: String(raw.text ?? ''),
+            ...(typeof raw.reason === 'string' ? { reason: raw.reason } : {}),
+            ...(typeof raw.sourceRunId === 'string' ? { sourceRunId: raw.sourceRunId } : {}),
+          };
+          return json({ added: await appendEditorialSuggestions(
+            decodeURIComponent(channelInboxMatch[1]!), [suggestion], dataRoot(),
+          ) }, 201);
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không thêm được kinh nghiệm', 400);
+        }
+      }
+      const channelProfileMatch = /^\/api\/writer\/channels\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && channelProfileMatch) {
+        const channel = await getChannelProfile(decodeURIComponent(channelProfileMatch[1]!), dataRoot());
+        if (!channel) return error('Hồ sơ kênh không tồn tại', 404);
+        return json(channel);
+      }
+      if (method === 'PUT' && channelProfileMatch) {
+        const body = await readBody(req);
+        const channelId = decodeURIComponent(channelProfileMatch[1]!);
+        try {
+          const input: ChannelProfileInput = {
+            id: channelId,
+            displayName: String(body['displayName'] ?? ''),
+            topic: String(body['topic'] ?? ''),
+            youtubeIds: Array.isArray(body['youtubeIds']) ? body['youtubeIds'].map(String) : [],
+            ...(typeof body['audience'] === 'string' ? { audience: body['audience'] } : {}),
+            ...(typeof body['defaultGeneralPack'] === 'string' ? { defaultGeneralPack: body['defaultGeneralPack'] } : {}),
+            ...(typeof body['defaultFormulaId'] === 'string' ? { defaultFormulaId: body['defaultFormulaId'] } : {}),
+            ...(typeof body['defaultStyle'] === 'string' ? { defaultStyle: body['defaultStyle'] } : {}),
+            ...(typeof body['defaultProcedure'] === 'string' ? { defaultProcedure: body['defaultProcedure'] } : {}),
+          };
+          return json(await updateChannelProfile(channelId, input, dataRoot()));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không lưu được Hồ sơ kênh', 400);
+        }
+      }
+
+      // ── Quy trình dùng lại — native SKILL.md under the data root ───────
+      if (method === 'GET' && pathname === '/api/writer/procedures') {
+        return json({ procedures: await listReusableProcedures(dataRoot()) });
+      }
+      if (method === 'POST' && pathname === '/api/writer/procedures') {
+        const body = await readBody(req);
+        try {
+          return json(await createReusableProcedure({
+            id: String(body['id'] ?? ''),
+            description: String(body['description'] ?? ''),
+            instructions: String(body['instructions'] ?? ''),
+          }, dataRoot()), 201);
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không tạo được quy trình', 400);
+        }
+      }
+      const procedureMatch = /^\/api\/writer\/procedures\/([^/]+)$/.exec(pathname);
+      if (method === 'GET' && procedureMatch) {
+        const procedure = await getReusableProcedure(decodeURIComponent(procedureMatch[1]!), dataRoot());
+        if (!procedure) return error('Quy trình không tồn tại', 404);
+        return json(procedure);
+      }
+      if (method === 'PUT' && procedureMatch) {
+        const body = await readBody(req);
+        const id = decodeURIComponent(procedureMatch[1]!);
+        try {
+          return json(await updateReusableProcedure(id, {
+            id,
+            description: String(body['description'] ?? ''),
+            instructions: String(body['instructions'] ?? ''),
+          }, dataRoot()));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : 'Không lưu được quy trình', 400);
+        }
+      }
+
       // ── General packs (Write Loop v2) ─────────────────────────
       // Read-only over `writer-room-data/general-packs/*.md`: the file is authored and
       // reviewed by a human, so there is no create/update endpoint on purpose.
@@ -1757,6 +2070,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             postId,
             {
+              channelId: String(body['channelId'] ?? ''),
               brief: String(body['brief'] ?? ''),
               ...(typeof body['title'] === 'string' ? { title: body['title'] } : {}),
               ...(typeof body['audience'] === 'string' ? { audience: body['audience'] } : {}),
@@ -1784,9 +2098,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'POST' && pathname === '/api/writer/v2/runs') {
         const body = await readBody(req);
         const brief = String(body['brief'] ?? '').trim();
+        const channelId = String(body['channelId'] ?? '').trim();
         const packId = String(body['packId'] ?? '').trim();
         const generalPack = String(body['generalPack'] ?? '').trim();
         const formulaId = String(body['formulaId'] ?? '').trim();
+        if (!channelId) return error('channelId bắt buộc — hãy chọn Hồ sơ kênh');
         if (!brief) return error('brief bắt buộc');
         if (!packId) return error('packId bắt buộc');
         if (!generalPack) return error('generalPack bắt buộc — vd "hieu-tv.md"');
@@ -1807,6 +2123,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const run = await startWriterRunV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             {
+              channelId,
               brief,
               packId,
               generalPack,
@@ -1831,9 +2148,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'POST' && pathname === '/api/writer/v2/rooms') {
         const body = await readBody(req);
         const brief = String(body['brief'] ?? '').trim();
+        const channelId = String(body['channelId'] ?? '').trim();
         const packId = String(body['packId'] ?? '').trim();
         const generalPack = String(body['generalPack'] ?? '').trim();
         const formulaId = String(body['formulaId'] ?? '').trim();
+        if (!channelId) return error('channelId bắt buộc — hãy chọn Hồ sơ kênh');
         if (!brief) return error('brief bắt buộc');
         if (!packId) return error('packId bắt buộc');
         if (!generalPack) return error('generalPack bắt buộc — vd "hieu-tv.md"');
@@ -1854,7 +2173,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const room = await createWriterRoomV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             {
-              brief, packId, generalPack, formulaId,
+              channelId, brief, packId, generalPack, formulaId,
               ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
               ...(typeof body['audience'] === 'string' && body['audience'].trim()
                 ? { audience: body['audience'].trim() } : {}),
@@ -1912,6 +2231,18 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const msg = err instanceof Error ? err.message : 'Không restyle được Writer v2 run';
           const status = /không tồn tại/i.test(msg) ? 404 : 400;
           return error(msg, status);
+        }
+      }
+      const writerV2PostmortemMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/postmortem$/.exec(pathname);
+      if (method === 'POST' && writerV2PostmortemMatch) {
+        const runId = decodeURIComponent(writerV2PostmortemMatch[1]!);
+        try {
+          return json(withWriterV2Progress(await startWriterPostmortem(
+            { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() }, runId,
+          )));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Không tổng kết được bài viết';
+          return error(msg, /không tồn tại/i.test(msg) ? 404 : 400);
         }
       }
       const writerV2StyledMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/styled\/(\d+)$/.exec(pathname);
@@ -2475,6 +2806,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(started);
       }
 
+      // API typos must be JSON 404s, never the SPA shell. In particular this
+      // prevents an obsolete VPH path from looking like a successful chart
+      // response to an external client.
+      if (pathname.startsWith('/api/')) return error('Not found', 404);
+
       // Static UI (Tauri webview / local)
       if (method === 'GET') {
         if (!existsSync(webRoot)) {
@@ -2552,6 +2888,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   const shutdown = async () => {
     if (app.p0RetentionTimer) clearInterval(app.p0RetentionTimer);
     app.loopScheduler?.dispose();
+    app.channelWatchScheduler?.dispose();
     app.spyMcp?.stop();
     app.generalPackMcp?.stop();
     app.harness.dispose();

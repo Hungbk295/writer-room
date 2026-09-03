@@ -2,7 +2,7 @@
  * Writer Source Pack — create, rename, merge (multi-channel).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,6 +12,8 @@ import {
   renameWriterPack,
   videoSectionsFromMarkdown,
 } from '../../src/writer-packs.ts';
+import { getGeneralPack } from '../../src/writer/general-pack.ts';
+import { getHookLibrary } from '../../src/writer/hook-library.ts';
 
 let dir: string;
 
@@ -130,5 +132,51 @@ describe('mergeIntoWriterPack', () => {
 
     const loaded = await getWriterPack(base.id, dir);
     expect(loaded?.title).toBe('Topic pack');
+  });
+});
+
+/**
+ * A missing file and an unreadable file are different problems, and collapsing
+ * them sends whoever debugs a failed run to the wrong place: the run reports the
+ * pack as gone while it sits on disk. `persona-pack.ts` split these in eng review
+ * 2026-09-02; its two siblings were left behind until CEO review 2026-09-03.
+ */
+describe('pack loaders separate absence from unreadability', () => {
+  test('a missing general pack is still a plain null, not an error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wr-packload-'));
+    try {
+      expect(await getGeneralPack('nope.md', dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a general pack path that is a directory throws instead of reading as absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wr-packload-'));
+    try {
+      mkdirSync(join(dir, 'general-packs', 'trap.md'), { recursive: true });
+      await expect(getGeneralPack('trap.md', dir)).rejects.toThrow(/general-pack.*failed to read/s);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a missing hook library is still a plain null, not an error', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wr-packload-'));
+    try {
+      expect(await getHookLibrary('nope.md', dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a hook library path that is a directory throws instead of reading as absent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wr-packload-'));
+    try {
+      mkdirSync(join(dir, 'hook-libraries', 'trap.md'), { recursive: true });
+      await expect(getHookLibrary('trap.md', dir)).rejects.toThrow(/hook-library.*failed to read/s);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
