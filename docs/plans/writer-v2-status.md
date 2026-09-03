@@ -27,14 +27,16 @@ như hai loại assertion (`STANCE`, `PERSONA_EXPERIENCE`) và như thứ đang 
 
 | | Giá trị | Phạm vi đo |
 |---|---|---|
-| Test vùng writer | **216 pass / 0 fail / 1105 assertions** | `bun test packages/daemon/test/writer/` trên **working tree** (gồm lane persona chưa commit) |
-| Test toàn repo | **751 pass / 0 fail** | `bun test` trên working tree |
-| Test vùng writer @`81aa99c` | 193 pass / 948 assertions | worktree tách rời **chỉ chứa commit sạch** — con số lịch sử, không so trực tiếp với 216 |
+| Test vùng writer | **222 pass / 0 fail / 1118 assertions** | `bun test packages/daemon/test/writer/` trên commit `17d6bad` |
+| Test toàn repo | **757 pass / 0 fail** | `bun test` trên commit `17d6bad` |
+| Test vùng writer @`81aa99c` | 193 pass / 948 assertions | worktree tách rời **chỉ chứa commit sạch** — con số lịch sử, không so trực tiếp |
 | Source artifact | **7 file** force-add trong 3 commit (`6bd1ae1` 5 · `96c73c9` 1 · `b51de0b` 1); **8 file** tracked tổng cộng dưới `writer-room-data/` | `git ls-files writer-room-data/` |
-| Dòng module | Bảng module ở `writer-v2-status.md` §3 đo trên `81aa99c`; working tree lớn hơn (vd `writer-run-v2.ts` 2615 → 3047) | — |
+| Dòng module | Bảng module ở `writer-v2-status.md` §3 đo trên `81aa99c`; working tree lớn hơn (vd `writer-run-v2.ts` 2615 → 3060) | — |
 
-**Vì sao hai con số test không mâu thuẫn:** 193 đo trên commit sạch, 216 đo trên working
-tree đang mang thêm lane persona. Luôn ghi kèm phạm vi khi trích một con số test.
+**Trạng thái code:** ba lane đã land trong một commit `17d6bad` (2026-09-03). Tách theo
+lane **bất khả thi và đã chứng minh bằng thực nghiệm**: `http.ts` làm `channelId` thành bắt
+buộc trong `WriterV2PostConfigInput`, nên stage riêng lane writer cho 3 lỗi TS và 3 test
+đỏ. Rollback hiện là `git revert 17d6bad`, không tách được từng lane.
 
 ---
 
@@ -179,7 +181,8 @@ các thay đổi đang unstaged của lane khác trong shared worktree.
 
 Số dòng trong bảng trên đo **trên `81aa99c`**, không phải trên working tree — working
 tree đang mang thêm lane persona (`assertion-boundary.ts` 858 → 940, `writer-run-v2.ts`
-2615 → 3047). `writer-run-v2.ts` giảm **2888 → 2615** dòng qua hai refactor thuần.
+2615 → 3060). `writer-run-v2.ts` giảm **2888 → 2615** dòng qua hai refactor thuần, rồi
+phình lại khi ba lane land.
 
 **193 test pass / 0 fail / 948 assertions** khi chạy
 `bun test packages/daemon/test/writer/` trong detached worktree chỉ chứa commit
@@ -283,8 +286,8 @@ dispatch, each in a fresh context"*.
 
 ## 5. Đang chặn
 
-Cả B và C nghẽn ở cùng một chỗ: lane persona đang giữ 8 file uncommitted trong
-`writer-run-v2.ts`.
+Nút thắt cũ (lane persona giữ file uncommitted) đã gỡ: ba lane land tại `17d6bad`.
+Còn lại đúng một việc chặn, và nó cần chủ kênh chứ không cần code.
 
 1. Duyệt entry trong `writer-room-data/writer/persona-pack.md` — hiện **0/16 approved**
    (8 stance + 8 experience; xác minh bằng `parsePersonaRegistry`, không phải bằng grep).
@@ -293,9 +296,9 @@ Cả B và C nghẽn ở cùng một chỗ: lane persona đang giữ 8 file unco
    ⚠️ Bẫy khi duyệt: chỉ 8 stance mang marker `[CHỜ CHỦ KÊNH DUYỆT]` nhìn thấy được; 8
    experience (A1–A8) **không mang marker nào** nhưng vẫn PENDING theo mặc định T2. Đọc
    file bằng mắt sẽ tưởng chỉ có 8 thứ cần duyệt.
-2. Xác nhận cho lane persona commit.
-3. Restart daemon sau khi mọi run settle.
-4. Run test persona → mở khoá mảng B và C.
+2. Restart daemon sau khi mọi run settle.
+3. Chạy **một** run thật qua hook board với persona bật → mở khoá mảng B và C.
+   Đây sẽ là lần đầu tiên hook board chạy: 0/20 run trước đó có `selectedHook`.
 
 ---
 

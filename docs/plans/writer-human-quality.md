@@ -1,6 +1,6 @@
 # Writer v2 — Human Quality
 
-> Cập nhật: 2026-09-03 · Code: **chưa commit** · Số liệu: xem khối dùng chung bên dưới
+> Cập nhật: 2026-09-03 · Code: đã land tại `17d6bad` · Số liệu: xem khối dùng chung bên dưới
 > Tài liệu ngữ cảnh cho chủ kênh và các terminal phối hợp. Không phải rule nạp vào agent prompt.
 
 Doc chị em: [`writer-v2-status.md`](./writer-v2-status.md) — lane Blind Study + Claim
@@ -23,14 +23,16 @@ của cùng một tài liệu:
 
 | | Giá trị | Phạm vi đo |
 |---|---|---|
-| Test vùng writer | **216 pass / 0 fail / 1105 assertions** | `bun test packages/daemon/test/writer/` trên **working tree** (gồm lane persona chưa commit) |
-| Test toàn repo | **751 pass / 0 fail** | `bun test` trên working tree |
-| Test vùng writer @`81aa99c` | 193 pass / 948 assertions | worktree tách rời **chỉ chứa commit sạch** — con số lịch sử, không so trực tiếp với 216 |
+| Test vùng writer | **222 pass / 0 fail / 1118 assertions** | `bun test packages/daemon/test/writer/` trên commit `17d6bad` |
+| Test toàn repo | **757 pass / 0 fail** | `bun test` trên commit `17d6bad` |
+| Test vùng writer @`81aa99c` | 193 pass / 948 assertions | worktree tách rời **chỉ chứa commit sạch** — con số lịch sử, không so trực tiếp |
 | Source artifact | **7 file** force-add trong 3 commit (`6bd1ae1` 5 · `96c73c9` 1 · `b51de0b` 1); **8 file** tracked tổng cộng dưới `writer-room-data/` | `git ls-files writer-room-data/` |
-| Dòng module | Bảng module ở `writer-v2-status.md` §3 đo trên `81aa99c`; working tree lớn hơn (vd `writer-run-v2.ts` 2615 → 3047) | — |
+| Dòng module | Bảng module ở `writer-v2-status.md` §3 đo trên `81aa99c`; working tree lớn hơn (vd `writer-run-v2.ts` 2615 → 3060) | — |
 
-**Vì sao hai con số test không mâu thuẫn:** 193 đo trên commit sạch, 216 đo trên working
-tree đang mang thêm lane persona. Luôn ghi kèm phạm vi khi trích một con số test.
+**Trạng thái code:** ba lane đã land trong một commit `17d6bad` (2026-09-03). Tách theo
+lane **bất khả thi và đã chứng minh bằng thực nghiệm**: `http.ts` làm `channelId` thành bắt
+buộc trong `WriterV2PostConfigInput`, nên stage riêng lane writer cho 3 lỗi TS và 3 test
+đỏ. Rollback hiện là `git revert 17d6bad`, không tách được từng lane.
 
 ---
 
@@ -221,13 +223,12 @@ cả hai mở, writer nói quan điểm *lấy từ persona pack* — vừa tự
 
 ## PHẦN 3 — TRẠNG THÁI & VIỆC CÒN LẠI
 
-**Code:** 8 file vùng writer, ~840 dòng, typecheck sạch, **chưa commit**. Số test: xem
-khối dùng chung ở đầu doc (216 vùng writer / 751 toàn repo, đo trên working tree).
-Lưu ý: `writer-run-v2.ts` đang có cả thay đổi của terminal topic-flow — sync trước khi commit.
+**Code:** đã land tại `17d6bad` cùng hai lane kia, typecheck sạch. Số test: xem khối dùng
+chung ở đầu doc. Tách theo lane đã thử và **bất khả thi** — chi tiết trong khối đó.
 
 | # | Việc | Ai | Chặn gì |
 |---|---|---|---|
-| 1 | Xác nhận commit | Chủ kênh | Mọi bước sau |
+| 1 | ~~Xác nhận commit~~ — xong, `17d6bad` | — | — |
 | 2 | Duyệt entry: `[CHỜ CHỦ KÊNH DUYỆT]` → `[ĐÃ DUYỆT]` — **0/16 approved** (8 stance + 8 experience) | Chủ kênh | Chưa duyệt = persona tắt hoàn toàn |
 | 3 | Restart daemon (chờ run settle) + run test persona | Terminal writer | Đèn xanh cho topic-flow |
 | 4 | Đọc so 2 cặp A/B trong `exports/` | Chủ kênh | Move nào vào general pack |
