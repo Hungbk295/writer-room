@@ -12,6 +12,7 @@ import {
   type SelectedHook,
 } from './hook-doi-thu.ts';
 import {
+  DISPUTED_CAVEAT_MARKERS,
   deriveAuthorizedClaimPermissions,
   deriveFactsLedger,
   hasDisputedCaveatLanguage,
@@ -28,6 +29,8 @@ import {
 
 export const DIVERGE_SCHEMA_VERSION = 'writer-study-diverge-v1' as const;
 export const CONFRONT_SCHEMA_VERSION = 'writer-study-confront-v1' as const;
+export const DIVERGE_PROMPT_VERSION = 'writer-v2-diverge-v1' as const;
+export const CONFRONT_PROMPT_VERSION = 'writer-v2-confront-v1' as const;
 export const MAX_DIVERGE_BYTES = 16 * 1024;
 export const MAX_CONFRONT_BYTES = 32 * 1024;
 
@@ -266,6 +269,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function unknownKey(value: Record<string, unknown>, allowed: ReadonlySet<string>): string | null {
   return Object.keys(value).find((key) => !allowed.has(key)) ?? null;
+}
+
+function promptKeyList(keys: ReadonlySet<string>): string {
+  return [...keys].map((key) => `\`${key}\``).join(', ');
 }
 
 function serializedBytes(value: unknown): number | null {
@@ -1307,4 +1314,340 @@ export function effectiveHookFromConfront(
 /** Stable, de-duplicated evidence selection for mechanical ledger derivation. */
 export function selectedEvidenceIdsFromConfront(confront: ConfrontArtifact): string[] {
   return [...new Set((confront.beatEvidence ?? []).flatMap((item) => item.evidenceIds))];
+}
+
+const DIVERGE_PROMPT_EXAMPLE: DivergeArtifact = {
+  schemaVersion: DIVERGE_SCHEMA_VERSION,
+  hypotheses: [
+    {
+      id: 'h-contradiction',
+      provocation: 'CONTRADICTION',
+      thesisHypothesis: 'Thứ làm ta thấy an toàn đôi khi lại làm quyền đổi hướng nhỏ đi.',
+      beliefBefore: 'Người xem tin tích lũy thêm cam kết luôn làm đời sống vững hơn.',
+      beliefAfter: 'Người xem nhận ra an toàn còn nằm ở những lựa chọn mình vẫn có thể từ chối.',
+      centralTension: 'Cảm giác chắc chắn tăng lên trong khi lối thoát thực tế hẹp lại.',
+      hookDebt: 'Giải thích nghịch lý giữa vẻ chắc chắn và quyền rời đi.',
+      beatQuestions: [
+        'Cam kết nào âm thầm lấy đi quyền đổi hướng?',
+        'Dấu hiệu nào cho thấy cảm giác an toàn đang đánh lừa ta?',
+      ],
+      evidenceNeeds: [
+        'Điều gì cho thấy một cam kết có thể làm khả năng từ chối giảm đi?',
+        'Cần kiểm tra khi nào tích lũy thêm không đồng nghĩa với linh hoạt hơn?',
+      ],
+      falsifiers: [
+        'Nếu cam kết lớn hơn vẫn luôn giữ nguyên quyền đổi hướng thì nghịch lý này sai.',
+      ],
+      proposedPayoff: 'Người xem có một phép thử dựa trên quyền lựa chọn còn lại.',
+    },
+    {
+      id: 'h-zoom-in',
+      provocation: 'ZOOM_IN',
+      thesisHypothesis: 'Cơ chế đáng nhìn là khoảnh khắc thời gian chờ biến thành áp lực phải nhận lời.',
+      beliefBefore: 'Người xem tin sức mạnh thương lượng chủ yếu đến từ vị thế hiện tại.',
+      beliefAfter: 'Người xem thấy khả năng chờ mới quyết định mình có thể bỏ qua một lựa chọn tệ hay không.',
+      centralTension: 'Mỗi cam kết cố định làm chiếc đồng hồ ra quyết định chạy nhanh hơn.',
+      hookDebt: 'Làm rõ khoảnh khắc quyền chờ đợi biến mất.',
+      beatQuestions: [
+        'Điều gì khiến một người không còn đủ thời gian để nói không?',
+        'Khả năng chờ thay đổi một cuộc thương lượng ra sao?',
+      ],
+      evidenceNeeds: [
+        'Cần xác định cơ chế nối áp lực cố định với thời gian ra quyết định?',
+        'Bằng chứng nào phân biệt vị thế bề ngoài với khả năng chờ thực tế?',
+      ],
+      falsifiers: [
+        'Nếu khả năng chờ không làm thay đổi hành vi thương lượng thì cơ chế này không đứng vững.',
+      ],
+      proposedPayoff: 'Người xem biết quan sát chiếc đồng hồ quyết định thay vì chỉ nhìn vị thế.',
+    },
+    {
+      id: 'h-inversion',
+      provocation: 'INVERSION',
+      thesisHypothesis: 'Giữ mọi cánh cửa mở quá lâu có thể biến tự do thành cách né một cam kết đáng làm.',
+      beliefBefore: 'Người xem tin càng giữ được nhiều lựa chọn thì quyết định càng tốt.',
+      beliefAfter: 'Người xem phân biệt quyền đổi hướng có chủ đích với thói quen không chịu chọn.',
+      centralTension: 'Linh hoạt bảo vệ ta khỏi lựa chọn xấu nhưng cũng có thể giữ ta đứng yên.',
+      hookDebt: 'Chỉ ra điểm quyền lựa chọn đảo chiều thành trì hoãn.',
+      beatQuestions: [
+        'Khi nào một cánh cửa mở còn tạo ra giá trị?',
+        'Dấu hiệu nào cho thấy linh hoạt đã trở thành né tránh?',
+      ],
+      evidenceNeeds: [
+        'Cần đối chiếu lợi ích của linh hoạt với chi phí của việc không cam kết?',
+        'Điều gì cho thấy một giới hạn tự chọn có thể cải thiện hành động?',
+      ],
+      falsifiers: [
+        'Nếu giữ thêm lựa chọn luôn làm hành động tốt hơn thì phép đảo chiều này bị bác bỏ.',
+      ],
+      proposedPayoff: 'Người xem có tiêu chí để đóng một cánh cửa mà không đánh mất quyền tự chủ.',
+    },
+  ],
+};
+
+/**
+ * Stable, context-free DIVERGE instructions. Runtime title/brief/hook data lives
+ * in the stage envelope; keeping it out of this function makes the prompt text
+ * independently hashable and keeps accidental source material out of the API.
+ */
+export function buildDivergePrompt(): string {
+  return [
+    '# Writer v2 — DIVERGE (tạo ba hành trình niềm tin, chưa lập outline)',
+    '',
+    'Đọc `input/envelope.json` để lấy title, brief, audience và selectedHook đã được con người chọn.',
+    'Bạn đang ở một phiên SOURCE-BLIND: bạn không biết Topic Pack có gì và không được cố đoán.',
+    'Không hỏi xin nguồn, không mở hay dò file ngoài những file được liệt kê trong envelope, không nhắc',
+    'video/transcript/source ID/host, không bịa số liệu cụ thể và không chép lại chi tiết nguồn giả định.',
+    'Một con số chỉ được lặp lại nếu nó đã xuất hiện nguyên dạng trong selectedHook.',
+    '',
+    'Nhiệm vụ duy nhất: tạo đúng ba hypothesis cạnh tranh để CONFRONT kiểm bằng evidence sau này.',
+    'Đây KHÔNG phải ba cách diễn đạt của một ý và KHÔNG phải ba outline. Không viết mở bài, thân bài,',
+    'kết bài, section, beat order, narration, intro, outro hay thứ tự “đầu tiên/sau đó/cuối cùng”.',
+    '',
+    '## Belief shift là tiêu chuẩn chất lượng',
+    '',
+    '- `beliefBefore` là điều NGƯỜI XEM tin trước khi xem; `beliefAfter` là điều NGƯỜI XEM tin sau khi xem.',
+    '- Mỗi candidate phải đổi một niềm tin khác nhau về bản chất, không chỉ đổi ví dụ, nhân vật hay câu chữ.',
+    '- Hai candidate cùng đi từ “tôi cần cố hơn” sang “tôi cần đổi hệ thống” vẫn là TRÙNG, dù dùng hai ví dụ khác nhau.',
+    '- `thesisHypothesis`, `beliefBefore`, `beliefAfter`, `centralTension` phải khác đáng kể giữa cả ba candidate.',
+    '- `hookDebt` nói món nợ nhận thức phải trả; `proposedPayoff` nói người xem hiểu/làm được gì khi món nợ được trả.',
+    '- `beatQuestions` chỉ là các câu hỏi cần mở khóa, không phải danh sách phần hay trình tự kể chuyện.',
+    '',
+    '## Bốn provocation — chọn đúng ba loại khác nhau',
+    '',
+    '- `CONTRADICTION`: tìm một sự thật đối nghịch nhưng đáng tin làm tiền đề trực giác trở nên chưa đủ.',
+    '- `ZOOM_IN`: thu hẹp vào một cơ chế, khoảnh khắc hay quyết định có hệ quả; không tóm tắt toàn chủ đề.',
+    '- `EXTREME_TEST`: đẩy logic tới trường hợp biên để thấy điều kiện nào làm nó đứng vững hoặc gãy.',
+    '- `INVERSION`: hỏi khi nào bài học tưởng đúng đảo chiều và điều ngược lại mới hữu ích.',
+    'Dùng ba provocation khác nhau; tên provocation không tự làm candidate khác biệt — belief shift mới làm được điều đó.',
+    '',
+    '## evidenceNeeds và falsifiers',
+    '',
+    '- `evidenceNeeds` gồm 1–8 CÂU HỎI cần evidence trả lời, không phải khẳng định rằng evidence đã tồn tại.',
+    '  ĐÚNG: “Điều gì cho thấy áp lực cố định làm quyền từ chối giảm đi?”',
+    '  SAI: “Dữ liệu đã chứng minh áp lực cố định luôn làm quyền từ chối giảm.”',
+    '- `falsifiers` gồm 1–8 ĐIỀU KIỆN quan sát được khiến hypothesis sai hoặc không đứng vững.',
+    '  ĐÚNG: “Nếu khả năng chờ không đổi hành vi thương lượng thì hypothesis này sai.”',
+    '  SAI: “Khả năng chờ ảnh hưởng đến thương lượng.”',
+    '- `beatQuestions` gồm 2–8 câu, mỗi câu phải kết thúc bằng `?`. Mọi array không được có phần tử trùng.',
+    '',
+    '## Strict JSON contract',
+    '',
+    `Output phải JSON-serializable và không quá ${MAX_DIVERGE_BYTES} bytes. Chỉ ghi JSON vào \`out/result.json\`; không Markdown, không giải thích ngoài JSON.`,
+    `Top-level chỉ được có đúng các key: ${promptKeyList(TOP_DIVERGE_KEYS)}. \`schemaVersion\` = \`${DIVERGE_SCHEMA_VERSION}\`.`,
+    `Mỗi hypothesis chỉ được có đúng các key: ${promptKeyList(HYPOTHESIS_KEYS)}.`,
+    'Không thêm key “hữu ích” nào khác. `id` phải unique, tối đa 80 ký tự, bắt đầu bằng chữ/số',
+    'và chỉ dùng chữ/số hoặc `._:-`; mọi chuỗi phải không rỗng và tối đa 4000 ký tự.',
+    'Phải có đúng ba hypothesis và đúng ba provocation khác nhau.',
+    '',
+    'Ví dụ output đầy đủ, hợp lệ về schema và đúng mức abstraction:',
+    '',
+    '```json',
+    JSON.stringify(DIVERGE_PROMPT_EXAMPLE, null, 2),
+    '```',
+  ].join('\n');
+}
+
+const CONFRONT_EXAMPLE_ZOOM = DIVERGE_PROMPT_EXAMPLE.hypotheses[1];
+const CONFRONT_EXAMPLE_REBUILT_ZOOM: StoryHypothesis = {
+  ...CONFRONT_EXAMPLE_ZOOM,
+  beliefAfter: 'Người xem thấy áp lực cố định và khả năng chờ cùng quyết định quyền từ chối.',
+  evidenceNeeds: [
+    'Cần xác định cơ chế nối áp lực cố định với thời gian ra quyết định?',
+    'Điều gì cho thấy khả năng chờ thay đổi quyền từ chối một lựa chọn tệ?',
+  ],
+};
+
+const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
+  schemaVersion: CONFRONT_SCHEMA_VERSION,
+  assessments: [
+    {
+      hypothesisId: 'h-contradiction',
+      verdict: 'KEEP',
+      supportClaimIds: ['claim-choice'],
+      counterClaimIds: [],
+      falsifierHits: [],
+      unsupportedEvidenceNeeds: [],
+      deltas: [],
+    },
+    {
+      hypothesisId: 'h-zoom-in',
+      verdict: 'REBUILD',
+      supportClaimIds: ['claim-pressure', 'claim-wait'],
+      counterClaimIds: [],
+      falsifierHits: [],
+      unsupportedEvidenceNeeds: [CONFRONT_EXAMPLE_ZOOM.evidenceNeeds[1]!],
+      deltas: [
+        {
+          field: 'beliefAfter',
+          before: CONFRONT_EXAMPLE_ZOOM.beliefAfter,
+          after: CONFRONT_EXAMPLE_REBUILT_ZOOM.beliefAfter,
+          reason: 'Evidence chỉ đỡ cơ chế kết hợp giữa áp lực cố định và khả năng chờ.',
+          claimIds: ['claim-pressure', 'claim-wait'],
+        },
+        {
+          field: 'evidenceNeeds',
+          before: JSON.stringify(CONFRONT_EXAMPLE_ZOOM.evidenceNeeds),
+          after: JSON.stringify(CONFRONT_EXAMPLE_REBUILT_ZOOM.evidenceNeeds),
+          reason: 'Câu hỏi cũ đòi một phép so sánh mà ResearchMap không cung cấp.',
+          claimIds: ['claim-pressure', 'claim-wait'],
+        },
+      ],
+      rebuiltHypothesis: CONFRONT_EXAMPLE_REBUILT_ZOOM,
+    },
+    {
+      hypothesisId: 'h-inversion',
+      verdict: 'REJECT',
+      supportClaimIds: [],
+      counterClaimIds: ['claim-overload'],
+      falsifierHits: [DIVERGE_PROMPT_EXAMPLE.hypotheses[2].falsifiers[0]!],
+      unsupportedEvidenceNeeds: [],
+      deltas: [],
+    },
+  ],
+  selectedHypothesisId: 'h-zoom-in',
+  hookVerdict: {
+    status: 'KEEP',
+    rationale: 'Hook được claim về áp lực cố định chống lưng mà không cần đổi lời hứa.',
+    claimIds: ['claim-pressure'],
+  },
+  finalPlan: {
+    coreInsight: 'Quyền từ chối phụ thuộc cả áp lực cố định lẫn khả năng chờ.',
+    memoryAnchor: {
+      kind: 'equation',
+      value: 'quyền lựa chọn = khả năng chờ - áp lực cố định',
+    },
+    progression: [
+      {
+        kind: 'FACTUAL',
+        beat: 'Lối thoát',
+        newInformation: 'Khoảng đệm bảo vệ quyền đổi hướng.',
+        characterOrArgumentChange: 'Từ nhìn tài sản sang nhìn lựa chọn còn lại.',
+        visualAnchor: 'Một cánh cửa còn mở.',
+      },
+      {
+        kind: 'NARRATIVE',
+        beat: 'Câu hỏi ở giữa',
+        newInformation: 'Đổi nhịp bằng một câu hỏi dẫn sang cơ chế.',
+        characterOrArgumentChange: 'Người xem chuyển từ kết quả sang nguyên nhân.',
+        visualAnchor: 'Một chiếc đồng hồ bắt đầu chạy.',
+      },
+      {
+        kind: 'FACTUAL',
+        beat: 'Áp lực',
+        newInformation: 'Cam kết cố định làm thời gian quyết định ngắn lại.',
+        characterOrArgumentChange: 'Áp lực được nhìn như một giới hạn thời gian.',
+        visualAnchor: 'Lịch đếm ngược.',
+      },
+      {
+        kind: 'FACTUAL',
+        beat: 'Vị thế',
+        newInformation: 'Khả năng chờ cho phép từ chối một lựa chọn kém.',
+        characterOrArgumentChange: 'Thời gian trở thành sức mạnh thương lượng.',
+        visualAnchor: 'Hai lời đề nghị trên bàn.',
+      },
+    ],
+    endingPayoff: {
+      resolvesOpening: 'Vẻ an toàn không đủ nếu quyền rời đi đã biến mất.',
+      audienceCanDo: 'Kiểm tra khả năng chờ và áp lực cố định trước một cam kết mới.',
+    },
+    cutList: ['Không biến kế hoạch thành danh sách công thức rời rạc.'],
+  },
+  beatEvidence: [
+    { beatIndex: 0, claimIds: ['claim-choice'], evidenceIds: ['evidence-choice'] },
+    { beatIndex: 2, claimIds: ['claim-pressure'], evidenceIds: ['evidence-pressure'] },
+    { beatIndex: 3, claimIds: ['claim-wait'], evidenceIds: ['evidence-wait'] },
+  ],
+};
+
+/** Stable CONFRONT instructions; validated DIVERGE/RESEARCH data is staged separately. */
+export function buildConfrontPrompt(): string {
+  return [
+    '# Writer v2 — CONFRONT (để evidence sửa hoặc giết ý tưởng)',
+    '',
+    'Đọc `input/envelope.json`, rồi đọc đúng các file validated DIVERGE và ResearchMap được envelope liệt kê.',
+    'Bạn chỉ được dùng các claim/evidence ID có trong ResearchMap, selectedHook và danh sách',
+    'approved Persona experience ID đã pin. Không dò raw Topic Pack, General Pack, Formula hay Persona prose.',
+    'Mục tiêu không phải bảo vệ ý tưởng ban đầu. Nếu evidence bác hypothesis hoặc không đỡ được hook,',
+    '`REJECT` là kết luận đúng — không phải một lần làm bài thất bại.',
+    '',
+    '## Đánh giá đủ ba hypothesis',
+    '',
+    '- `assessments` phải có đúng ba entry và đánh giá mỗi hypothesis ID đúng một lần.',
+    '- `verdict` chỉ là `KEEP`, `REBUILD`, hoặc `REJECT`; ít nhất một hypothesis phải sống bằng KEEP/REBUILD.',
+    '- KEEP/REBUILD cần ít nhất một `supportClaimIds` không REJECTED. Một claim không được vừa support vừa counter.',
+    '- Mỗi assessment luôn phải có đủ năm array: `supportClaimIds`, `counterClaimIds`, `falsifierHits`,',
+    '  `unsupportedEvidenceNeeds`, `deltas` và các ID tương ứng; khi không có dữ liệu hãy dùng `[]`, không bỏ key.',
+    '- KEEP không được có `falsifierHits`. `falsifierHits` phải chép đúng chuỗi từ falsifiers của hypothesis gốc.',
+    '- `unsupportedEvidenceNeeds` chỉ được chép đúng câu hỏi từ evidenceNeeds của hypothesis gốc.',
+    '- REJECT phải chỉ ra ít nhất một counter claim, falsifier hit, hoặc evidence need chưa được đáp ứng.',
+    '- Chỉ REBUILD được có `deltas` và `rebuiltHypothesis`; KEEP/REJECT phải dùng `deltas: []` và bỏ `rebuiltHypothesis`.',
+    '',
+    '## REBUILD là thay đổi có kiểm toán, không phải sửa câu chữ',
+    '',
+    `Mỗi delta chỉ được đổi một field trong: ${HYPOTHESIS_DELTA_FIELDS.map((field) => `\`${field}\``).join(', ')}.`,
+    '`before` phải khớp CHÍNH XÁC giá trị gốc; `after` phải khớp CHÍNH XÁC giá trị trong rebuiltHypothesis;',
+    '`reason` không rỗng và `claimIds` phải chứa claim hợp lệ giải thích thay đổi.',
+    'Với field dạng array (`beatQuestions`, `evidenceNeeds`, `falsifiers`), encode `before` và `after` bằng',
+    '`JSON.stringify(array)` — chuỗi JSON compact, đúng thứ tự, không thêm khoảng trắng tùy ý.',
+    'Ví dụ: `["câu A?","câu B?"]`, không phải `câu A?, câu B?`.',
+    'MỌI field thay đổi phải có đúng một delta; field không đổi không được khai delta. ID và provocation phải giữ nguyên.',
+    '`rebuiltHypothesis` phải lặp lại đầy đủ schema hypothesis: beatQuestions có 2–8 câu kết thúc bằng `?`;',
+    'evidenceNeeds và falsifiers có 1–8 mục đúng dạng câu hỏi/điều kiện; các array không trùng.',
+    'REBUILD bắt buộc đổi ít nhất một trong thesisHypothesis/beliefBefore/beliefAfter/centralTension;',
+    'chỉ sửa payoff hay danh sách câu hỏi vẫn là no-op và sẽ bị reject.',
+    '',
+    '## Hook verdict',
+    '',
+    '- `hookVerdict.status` chỉ là `KEEP`, `REWRITE`, `REJECT`; cả ba đều cần rationale và ít nhất một claimId không REJECTED.',
+    '- KEEP/REWRITE: mọi hook claimId phải nằm trong union claimIds của các FACTUAL beat đã grounded.',
+    '- REWRITE: thêm `replacementHook` đủ `id`, `type`, `typeLabel`, `text`; ID phải mới, type/typeLabel phải giữ',
+    `  loại hook con người đã chọn (${COMPETITOR_HOOK_TYPES.join('|')}), text phải đổi thật và giữ ít nhất`,
+    '  0.70 lexical overlap với lời hứa cũ. Muốn đổi lời hứa thì dùng REJECT.',
+    '- KEEP và REJECT không được có `replacementHook`.',
+    '- REJECT là terminal: vẫn trả ba assessments và hookVerdict có evidence-linked claimIds, nhưng PHẢI BỎ',
+    '  `selectedHypothesisId`, `finalPlan`, `beatEvidence`. Không cố dựng plan để cứu một hook evidence không đỡ được.',
+    '',
+    '## Final plan và typed beats',
+    '',
+    '- Với hook KEEP/REWRITE, chọn một hypothesis đã KEEP/REBUILD rồi trả `selectedHypothesisId`, `finalPlan`, `beatEvidence`.',
+    '- `finalPlan` chỉ có `coreInsight`, `memoryAnchor`, `progression`, `endingPayoff`, `cutList`.',
+    '- `memoryAnchor` chỉ có `kind` (`name|equation|contrast|image`) và `value`.',
+    '- `progression` có 2–8 beat tiến triển. Mỗi beat chỉ có `kind`, `beat`, `newInformation`,',
+    '  `characterOrArgumentChange`, `visualAnchor`, và chỉ PERSONA mới được thêm `personaEntryId`.',
+    '- `endingPayoff` chỉ có `resolvesOpening`, `audienceCanDo`; `cutList` là tối đa 8 chuỗi không rỗng.',
+    '- FACTUAL: cần đúng một beatEvidence ở đúng `beatIndex`, với claimIds không REJECTED và evidenceIds',
+    '  SUPPORTS/QUALIFIES đúng các claim đó. Mỗi claim của beat phải có evidence dương tương ứng.',
+    '- NARRATIVE: không có beatEvidence và không có personaEntryId; chỉ dùng cho chuyển nhịp/câu hỏi dẫn.',
+    '- PERSONA: không có beatEvidence; bắt buộc một `personaEntryId` nằm trong approved experience ID allowlist.',
+    '- Khai NARRATIVE hoặc PERSONA để né evidence KHÔNG có tác dụng: toàn bộ script sau này vẫn bị Claim Boundary',
+    '  quét độc lập; factual payload không có authorized claim vẫn fail gate.',
+    '- DISPUTED claim chỉ được vào beat khi văn beat giữ caveat/xung đột nhìn thấy được, chẳng hạn:',
+    `  ${DISPUTED_CAVEAT_MARKERS.map((marker) => `“${marker}”`).join(', ')}.`,
+    '- Các FACTUAL mapping phải chọn ít nhất ba exact evidence khác nhau theo `(videoId, quote)` để ledger legacy hợp lệ.',
+    '',
+    '## Strict JSON contract',
+    '',
+    `Output phải JSON-serializable và không quá ${MAX_CONFRONT_BYTES} bytes. Chỉ ghi JSON vào \`out/result.json\`; không Markdown ngoài file.`,
+    `Top-level chỉ được có: ${promptKeyList(TOP_CONFRONT_KEYS)}.`,
+    `\`schemaVersion\` = \`${CONFRONT_SCHEMA_VERSION}\`. Không thêm key ngoài allowlist ở bất kỳ object lồng nào.`,
+    `Assessment keys: ${promptKeyList(ASSESSMENT_KEYS)}.`,
+    `Mỗi \`rebuiltHypothesis\` dùng lại đúng allowlist DIVERGE: ${promptKeyList(HYPOTHESIS_KEYS)}.`,
+    `\`replacementHook\` chỉ có ${promptKeyList(SELECTED_HOOK_KEYS)} và typeLabel phải khớp hook registry.`,
+    `Delta keys: ${promptKeyList(DELTA_KEYS)}.`,
+    `Hook verdict keys: ${promptKeyList(HOOK_VERDICT_KEYS)}.`,
+    `FinalPlan keys: ${promptKeyList(PLAN_KEYS)}; memoryAnchor keys: ${promptKeyList(MEMORY_ANCHOR_KEYS)}.`,
+    `Progression beat keys: ${promptKeyList(PLAN_BEAT_KEYS)}; endingPayoff keys: ${promptKeyList(ENDING_PAYOFF_KEYS)}.`,
+    `BeatEvidence keys: ${promptKeyList(BEAT_EVIDENCE_KEYS)}; beatIndex là integer không âm và không trùng.`,
+    'Giới hạn array: support/counter/hook claimIds tối đa 32; falsifierHits/unsupportedEvidenceNeeds/deltas',
+    'tối đa 8; delta.claimIds và beatEvidence.claimIds 1–16; beatEvidence.evidenceIds 1–32.',
+    'Mọi ID/string bắt buộc phải không rỗng; ID tối đa 80 ký tự, bắt đầu bằng chữ/số và chỉ dùng',
+    'chữ/số hoặc `._:-`; các array ID/string không được chứa phần tử trùng.',
+    '',
+    'Ví dụ output non-terminal đầy đủ dưới đây dùng ID minh họa; thay chúng bằng ID thật trong hai artifact input:',
+    '',
+    '```json',
+    JSON.stringify(CONFRONT_PROMPT_EXAMPLE, null, 2),
+    '```',
+  ].join('\n');
 }

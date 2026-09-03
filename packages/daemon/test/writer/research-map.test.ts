@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  buildResearchPrompt,
   coverageMapFromResearchMap,
   deriveAuthorizedClaimPermissions,
   deriveFactsLedger,
   RESEARCH_MAP_SCHEMA_VERSION,
+  RESEARCH_PROMPT_VERSION,
   validateResearchMap,
-  type ResearchMap,
+  type ResearchMapAgentOutput,
 } from '../../src/writer/research-map.ts';
 
 const PACK = [
@@ -44,7 +46,7 @@ const CONTEXT = {
   originGroupByVideoId: ORIGIN_GROUPS,
 } as const;
 
-function validMap(): ResearchMap {
+function validMap(): ResearchMapAgentOutput {
   return {
     schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
     sourceAudit: [
@@ -52,21 +54,18 @@ function validMap(): ResearchMap {
         videoId: 'v1',
         mainClaim: 'Quỹ dự phòng bảo vệ khả năng đổi việc.',
         angle: 'quyền lựa chọn',
-        originGroup: 'origin-a',
         limitations: ['không định lượng mức quỹ'],
       },
       {
         videoId: 'v2',
         mainClaim: 'Nợ dài hạn làm hẹp lựa chọn nghề nghiệp.',
         angle: 'chi phí cơ hội',
-        originGroup: 'origin-b',
         limitations: [],
       },
       {
         videoId: 'v3',
         mainClaim: 'Kế hoạch cần khoảng đệm.',
         angle: 'bất định',
-        originGroup: 'origin-a',
         limitations: [],
       },
     ],
@@ -76,7 +75,6 @@ function validMap(): ResearchMap {
         text: 'Khoảng đệm tài chính bảo vệ quyền đổi hướng.',
         status: 'MULTI_SOURCE_ATTESTED',
         evidenceIds: ['e-choice-1', 'e-choice-2'],
-        independentOriginGroups: ['origin-a', 'origin-b'],
         caveats: ['pack không đo mức tác động'],
       },
       {
@@ -84,7 +82,6 @@ function validMap(): ResearchMap {
         text: 'Kế hoạch tốt cần chừa chỗ cho bất ngờ.',
         status: 'ATTESTED',
         evidenceIds: ['e-buffer-1'],
-        independentOriginGroups: ['origin-a'],
         caveats: [],
       },
     ],
@@ -117,7 +114,7 @@ function validMap(): ResearchMap {
   };
 }
 
-function copyMap(): ResearchMap {
+function copyMap(): ResearchMapAgentOutput {
   return structuredClone(validMap());
 }
 
@@ -133,14 +130,13 @@ const LOSS_PACK = [
   'năm ngoái tôi lỗ gần 800 triệu',
 ].join('\n');
 
-function lossMap(claimText: string): ResearchMap {
+function lossMap(claimText: string): ResearchMapAgentOutput {
   return {
     schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
     sourceAudit: [{
       videoId: 'v-loss',
       mainClaim: 'Nguồn mô tả một khoản lỗ.',
       angle: 'rủi ro',
-      originGroup: 'origin-loss',
       limitations: [],
     }],
     claims: [{
@@ -148,7 +144,6 @@ function lossMap(claimText: string): ResearchMap {
       text: claimText,
       status: 'ATTESTED',
       evidenceIds: ['e-loss'],
-      independentOriginGroups: ['origin-loss'],
       caveats: [],
     }],
     evidence: [{
@@ -170,6 +165,82 @@ const LOSS_CONTEXT = {
   originGroupByVideoId: { 'v-loss': 'origin-loss' },
 } as const;
 
+function promptJsonExample(prompt: string): unknown {
+  const match = prompt.match(/```json\n([\s\S]+?)\n```/u);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]!);
+}
+
+describe('RESEARCH prompt contract', () => {
+  test('teaches exact Transcript grounding, code-owned provenance, and the strict allowlist', () => {
+    const prompt = buildResearchPrompt();
+    expect(RESEARCH_PROMPT_VERSION).toBe('writer-v2-research-v1');
+    for (const key of [
+      'schemaVersion',
+      'sourceAudit',
+      'claims',
+      'evidence',
+      'conflicts',
+      'openQuestions',
+      'overusedAngles',
+      'videoId',
+      'mainClaim',
+      'angle',
+      'limitations',
+      'id',
+      'text',
+      'status',
+      'evidenceIds',
+      'caveats',
+      'claimId',
+      'quote',
+      'relation',
+      'claimIds',
+      'explanation',
+    ]) {
+      expect(prompt).toContain(`\`${key}\``);
+    }
+    expect(prompt).toContain('substring CHÍNH XÁC');
+    expect(prompt).toContain('ĐÚNG videoId');
+    expect(prompt).toContain('Không lấy title, heading, `videoId`, URL hoặc metadata');
+    expect(prompt).toContain('KHÔNG khai `originGroup`');
+    expect(prompt).toContain('KHÔNG khai `independentOriginGroups`');
+    expect(prompt).toContain('Coordinator đã biết provenance và sẽ tự điền cả hai');
+    expect(prompt).toContain('Không gợi ý outline, hook, thesis, beat, beat order');
+    expect(prompt).toContain('PACK CHỨNG THỰC GÌ');
+    expect(prompt).toContain('“Có người mất gần một tỷ trong một năm.” vì số đã trôi');
+    expect(prompt).toContain('Có cả positive evidence và CONTRADICTS');
+    expect(prompt).toContain('không quá 61440 bytes');
+
+    const example = promptJsonExample(prompt) as ResearchMapAgentOutput;
+    expect(example.sourceAudit.every((source) => !('originGroup' in source))).toBe(true);
+    expect(example.claims.every((claim) => !('independentOriginGroups' in claim))).toBe(true);
+    const examplePack = [
+      '## Video một',
+      '',
+      '- videoId: `video-1`',
+      '',
+      '### Transcript',
+      '',
+      'Khoảng đệm giúp một người còn lựa chọn đổi hướng.',
+      'Một cam kết rõ ràng đôi khi giúp quyết định dứt khoát hơn.',
+      '',
+      '## Video hai',
+      '',
+      '- videoId: `video-2`',
+      '',
+      '### Transcript',
+      '',
+      'Cam kết cố định có thể làm thời gian lựa chọn ngắn lại.',
+    ].join('\n');
+    expect(validateResearchMap(example, {
+      packMarkdown: examplePack,
+      videoIds: ['video-1', 'video-2'],
+      originGroupByVideoId: { 'video-1': 'group-a', 'video-2': 'group-b' },
+    }).ok).toBe(true);
+  });
+});
+
 describe('validateResearchMap', () => {
   test('accepts a strict non-narrative map grounded to the correct video sections', () => {
     const result = validateResearchMap(validMap(), CONTEXT);
@@ -179,6 +250,15 @@ describe('validateResearchMap', () => {
       { videoId: 'v1', mainClaim: 'Quỹ dự phòng bảo vệ khả năng đổi việc.', angle: 'quyền lựa chọn' },
       { videoId: 'v2', mainClaim: 'Nợ dài hạn làm hẹp lựa chọn nghề nghiệp.', angle: 'chi phí cơ hội' },
       { videoId: 'v3', mainClaim: 'Kế hoạch cần khoảng đệm.', angle: 'bất định' },
+    ]);
+    expect(result.researchMap.sourceAudit.map((source) => source.originGroup)).toEqual([
+      'origin-a',
+      'origin-b',
+      'origin-a',
+    ]);
+    expect(result.researchMap.claims.map((claim) => claim.independentOriginGroups)).toEqual([
+      ['origin-a', 'origin-b'],
+      ['origin-a'],
     ]);
   });
 
@@ -212,8 +292,6 @@ describe('validateResearchMap', () => {
 
   test('does not count two videos in one origin group as independent corroboration', () => {
     const raw = copyMap();
-    raw.sourceAudit[1]!.originGroup = 'origin-a';
-    raw.claims[0]!.independentOriginGroups = ['origin-a'];
     const result = validateResearchMap(raw, {
       ...CONTEXT,
       originGroupByVideoId: { v1: 'origin-a', v2: 'origin-a', v3: 'origin-a' },
@@ -224,12 +302,41 @@ describe('validateResearchMap', () => {
     expect(result.reason).toContain('MULTI_SOURCE_ATTESTED');
   });
 
-  test('does not trust origin groups invented by the research agent', () => {
-    const result = validateResearchMap(validMap(), { packMarkdown: PACK, videoIds: VIDEO_IDS });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.errorCode).toBe('RESEARCH_ORIGIN');
-    expect(result.reason).toContain('coordinator-pinned');
+  test('hydrates the conservative unknown origin when no trusted provenance exists', () => {
+    const raw = copyMap();
+    raw.claims[0]!.status = 'ATTESTED';
+    const result = validateResearchMap(raw, { packMarkdown: PACK, videoIds: VIDEO_IDS });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.researchMap.sourceAudit.every((source) => source.originGroup === 'unknown')).toBe(true);
+    expect(result.researchMap.claims.every(
+      (claim) => claim.independentOriginGroups.length === 1
+        && claim.independentOriginGroups[0] === 'unknown',
+    )).toBe(true);
+  });
+
+  test('rejects either coordinator-owned provenance field in raw model output', () => {
+    const declaredSource = copyMap() as ResearchMapAgentOutput & {
+      sourceAudit: Array<ResearchMapAgentOutput['sourceAudit'][number] & { originGroup?: string }>;
+    };
+    declaredSource.sourceAudit[0]!.originGroup = 'origin-a';
+    const sourceResult = validateResearchMap(declaredSource, CONTEXT);
+    expect(sourceResult.ok).toBe(false);
+    if (!sourceResult.ok) {
+      expect(sourceResult.errorCode).toBe('RESEARCH_SCHEMA');
+      expect(sourceResult.path).toBe('$.sourceAudit[0].originGroup');
+    }
+
+    const declaredClaim = copyMap() as ResearchMapAgentOutput & {
+      claims: Array<ResearchMapAgentOutput['claims'][number] & { independentOriginGroups?: string[] }>;
+    };
+    declaredClaim.claims[0]!.independentOriginGroups = ['origin-a', 'origin-b'];
+    const claimResult = validateResearchMap(declaredClaim, CONTEXT);
+    expect(claimResult.ok).toBe(false);
+    if (!claimResult.ok) {
+      expect(claimResult.errorCode).toBe('RESEARCH_SCHEMA');
+      expect(claimResult.path).toBe('$.claims[0].independentOriginGroups');
+    }
   });
 
   test('rejects evidence/claim references that disagree in either direction', () => {
@@ -383,7 +490,6 @@ describe('deriveFactsLedger', () => {
       text: `Agent-authored interpretation ${number}.`,
       status: 'ATTESTED',
       evidenceIds: [`e-duplicate-${number}`],
-      independentOriginGroups: ['origin-a'],
       caveats: [],
     }));
     raw.evidence = [1, 2, 3].map((number) => ({
@@ -449,13 +555,27 @@ describe('deriveAuthorizedClaimPermissions', () => {
   test('fails closed for rejected or contradicting selected evidence', () => {
     const rejected = copyMap();
     rejected.claims[1]!.status = 'REJECTED';
-    const rejectedResult = deriveAuthorizedClaimPermissions(rejected, ['e-buffer-1']);
+    const rejectedValidated = validateResearchMap(rejected, CONTEXT);
+    expect(rejectedValidated.ok).toBe(true);
+    if (!rejectedValidated.ok) return;
+    const rejectedResult = deriveAuthorizedClaimPermissions(
+      rejectedValidated.researchMap,
+      ['e-buffer-1'],
+    );
     expect(rejectedResult.ok).toBe(false);
     if (!rejectedResult.ok) expect(rejectedResult.reason).toContain('REJECTED');
 
     const contradicted = copyMap();
     contradicted.evidence[2]!.relation = 'CONTRADICTS';
-    const contradictedResult = deriveAuthorizedClaimPermissions(contradicted, ['e-buffer-1']);
+    contradicted.claims[1]!.status = 'REJECTED';
+    const contradictedValidated = validateResearchMap(contradicted, CONTEXT);
+    expect(contradictedValidated.ok).toBe(true);
+    if (!contradictedValidated.ok) return;
+    contradictedValidated.researchMap.claims[1]!.status = 'ATTESTED';
+    const contradictedResult = deriveAuthorizedClaimPermissions(
+      contradictedValidated.researchMap,
+      ['e-buffer-1'],
+    );
     expect(contradictedResult.ok).toBe(false);
     if (!contradictedResult.ok) expect(contradictedResult.reason).toContain('CONTRADICTS');
   });

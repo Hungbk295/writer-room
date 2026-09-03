@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { HOOK_TYPE_LABELS, type SelectedHook } from '../../src/writer/hook-doi-thu.ts';
 import {
+  buildConfrontPrompt,
+  buildDivergePrompt,
+  CONFRONT_PROMPT_VERSION,
   CONFRONT_SCHEMA_VERSION,
+  DIVERGE_PROMPT_VERSION,
   DIVERGE_SCHEMA_VERSION,
   effectiveHookFromConfront,
   selectedEvidenceIdsFromConfront,
@@ -266,6 +270,139 @@ function copyDiverge(): DivergeArtifact {
 function copyConfront(): ConfrontArtifact {
   return structuredClone(validConfront());
 }
+
+function promptJsonExample(prompt: string): unknown {
+  const match = prompt.match(/```json\n([\s\S]+?)\n```/u);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]!);
+}
+
+describe('story-planning prompt contracts', () => {
+  test('DIVERGE prompt teaches the full strict schema and semantic distinctness', () => {
+    const prompt = buildDivergePrompt();
+    expect(DIVERGE_PROMPT_VERSION).toBe('writer-v2-diverge-v1');
+    for (const provocation of ['CONTRADICTION', 'ZOOM_IN', 'EXTREME_TEST', 'INVERSION']) {
+      expect(prompt).toContain(provocation);
+    }
+    for (const key of [
+      'schemaVersion',
+      'hypotheses',
+      'thesisHypothesis',
+      'beliefBefore',
+      'beliefAfter',
+      'centralTension',
+      'hookDebt',
+      'beatQuestions',
+      'evidenceNeeds',
+      'falsifiers',
+      'proposedPayoff',
+    ]) {
+      expect(prompt).toContain(`\`${key}\``);
+    }
+    expect(prompt).toContain('NGƯỜI XEM');
+    expect(prompt).toContain('Hai candidate cùng đi từ');
+    expect(prompt).toContain('KHÔNG phải ba outline');
+    expect(prompt).toContain('ĐÚNG: “Điều gì cho thấy');
+    expect(prompt).toContain('SAI: “Dữ liệu đã chứng minh');
+    expect(prompt).toContain('ĐÚNG: “Nếu khả năng chờ');
+    expect(prompt).toContain('SAI: “Khả năng chờ ảnh hưởng');
+    expect(prompt).toContain('không quá 16384 bytes');
+
+    const example = promptJsonExample(prompt);
+    expect(validateDivergeArtifact(example).ok).toBe(true);
+  });
+
+  test('CONFRONT prompt locks deltas, hook evidence, typed beats, and terminal rejection', () => {
+    const prompt = buildConfrontPrompt();
+    expect(CONFRONT_PROMPT_VERSION).toBe('writer-v2-confront-v1');
+    for (const verdict of ['KEEP', 'REBUILD', 'REJECT']) expect(prompt).toContain(`\`${verdict}\``);
+    for (const key of [
+      'schemaVersion',
+      'assessments',
+      'selectedHypothesisId',
+      'hookVerdict',
+      'finalPlan',
+      'beatEvidence',
+      'hypothesisId',
+      'verdict',
+      'supportClaimIds',
+      'counterClaimIds',
+      'falsifierHits',
+      'unsupportedEvidenceNeeds',
+      'deltas',
+      'rebuiltHypothesis',
+      'field',
+      'before',
+      'after',
+      'reason',
+      'claimIds',
+      'status',
+      'rationale',
+      'replacementHook',
+      'beatIndex',
+      'evidenceIds',
+      'coreInsight',
+      'memoryAnchor',
+      'progression',
+      'endingPayoff',
+      'cutList',
+      'personaEntryId',
+    ]) {
+      expect(prompt).toContain(`\`${key}\``);
+    }
+    expect(prompt).toContain('đúng ba entry');
+    expect(prompt).toContain('JSON.stringify(array)');
+    expect(prompt).toContain('MỌI field thay đổi');
+    expect(prompt).toContain('union claimIds của các FACTUAL beat');
+    expect(prompt).toContain('REJECT là terminal');
+    expect(prompt).toContain('FACTUAL: cần đúng một beatEvidence');
+    expect(prompt).toContain('NARRATIVE: không có beatEvidence');
+    expect(prompt).toContain('PERSONA: không có beatEvidence');
+    expect(prompt).toContain('né evidence KHÔNG có tác dụng');
+    expect(prompt).toContain('không quá 32768 bytes');
+
+    const example = promptJsonExample(prompt) as ConfrontArtifact;
+    expect(Object.keys(example)).toEqual([
+      'schemaVersion',
+      'assessments',
+      'selectedHypothesisId',
+      'hookVerdict',
+      'finalPlan',
+      'beatEvidence',
+    ]);
+    const divergeExample = promptJsonExample(buildDivergePrompt()) as DivergeArtifact;
+    const exampleResearchMap: ResearchMap = {
+      schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
+      sourceAudit: [
+        { videoId: 'video-1', mainClaim: 'Quyền đổi hướng.', angle: 'lựa chọn', originGroup: 'g1', limitations: [] },
+        { videoId: 'video-2', mainClaim: 'Áp lực cố định.', angle: 'thời gian', originGroup: 'g2', limitations: [] },
+        { videoId: 'video-3', mainClaim: 'Khả năng chờ.', angle: 'thương lượng', originGroup: 'g3', limitations: [] },
+        { videoId: 'video-4', mainClaim: 'Quá tải lựa chọn.', angle: 'phản biện', originGroup: 'g4', limitations: [] },
+      ],
+      claims: [
+        { id: 'claim-choice', text: 'Khoảng đệm bảo vệ quyền đổi hướng.', status: 'ATTESTED', evidenceIds: ['evidence-choice'], independentOriginGroups: ['g1'], caveats: [] },
+        { id: 'claim-pressure', text: 'Cam kết cố định làm thời gian quyết định ngắn lại.', status: 'ATTESTED', evidenceIds: ['evidence-pressure'], independentOriginGroups: ['g2'], caveats: [] },
+        { id: 'claim-wait', text: 'Khả năng chờ hỗ trợ quyền từ chối.', status: 'ATTESTED', evidenceIds: ['evidence-wait'], independentOriginGroups: ['g3'], caveats: [] },
+        { id: 'claim-overload', text: 'Thêm lựa chọn có thể làm hành động chậm lại.', status: 'ATTESTED', evidenceIds: ['evidence-overload'], independentOriginGroups: ['g4'], caveats: [] },
+      ],
+      evidence: [
+        { id: 'evidence-choice', claimId: 'claim-choice', videoId: 'video-1', quote: 'Khoảng đệm bảo vệ quyền đổi hướng.', relation: 'SUPPORTS' },
+        { id: 'evidence-pressure', claimId: 'claim-pressure', videoId: 'video-2', quote: 'Cam kết cố định làm thời gian quyết định ngắn lại.', relation: 'SUPPORTS' },
+        { id: 'evidence-wait', claimId: 'claim-wait', videoId: 'video-3', quote: 'Khả năng chờ hỗ trợ quyền từ chối.', relation: 'QUALIFIES' },
+        { id: 'evidence-overload', claimId: 'claim-overload', videoId: 'video-4', quote: 'Thêm lựa chọn có thể làm hành động chậm lại.', relation: 'SUPPORTS' },
+      ],
+      conflicts: [],
+      openQuestions: [],
+      overusedAngles: [],
+    };
+    const validation = validateConfrontArtifact(example, {
+      divergeArtifact: divergeExample,
+      researchMap: exampleResearchMap,
+      selectedHook: SELECTED_HOOK,
+    });
+    expect(validation.ok).toBe(true);
+  });
+});
 
 describe('validateDivergeArtifact', () => {
   test('accepts three source-blind, materially distinct belief journeys', () => {

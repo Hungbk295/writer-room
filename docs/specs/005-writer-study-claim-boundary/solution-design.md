@@ -353,12 +353,20 @@ interface ResearchMap {
 }
 ```
 
+The interface above is the **validated in-memory shape**. Raw RESEARCH model
+output omits `ResearchSourceAudit.originGroup` and
+`ResearchClaim.independentOriginGroups`; both keys are outside the raw schema
+allowlist. After video/evidence references validate, application code hydrates
+`originGroup` from coordinator-pinned provenance and derives each claim's
+`independentOriginGroups` from its evidence. If code already knows an answer,
+the model is not asked to repeat it merely so code can compare the repetition.
+
 Validation rules:
 
 - One `sourceAudit` entry per Topic Pack video ID and no unknown video ID.
 - Every evidence quote is an exact substring of the pinned Topic Pack and its video association is valid.
 - Every referenced claim/evidence ID resolves; rejected claims cannot enter the facts ledger.
-- `MULTI_SOURCE_ATTESTED` requires positive (`SUPPORTS`/`QUALIFIES`) evidence from at least two distinct, nonempty `originGroup` values pinned by the coordinator. `CONTRADICTS` evidence is excluded from supporting-origin counts. The research agent may not declare source independence.
+- `MULTI_SOURCE_ATTESTED` requires positive (`SUPPORTS`/`QUALIFIES`) evidence from at least two distinct, nonempty `originGroup` values pinned by the coordinator. `CONTRADICTS` evidence is excluded from supporting-origin counts. The research agent may not emit either provenance field; their presence is `RESEARCH_SCHEMA`, even when the value happens to match.
 - Any claim containing both positive and `CONTRADICTS` evidence is ineligible for `ATTESTED` or `MULTI_SOURCE_ATTESTED`; it must be `DISPUTED` or `REJECTED`. `DISPUTED` requires both evidence directions plus a nonempty claim caveat or top-level conflict payload, so the agent cannot choose the stronger label for the same evidence set.
 - Every protected specific in `ResearchClaim.text` must resolve to the same canonical specific in at least one exact evidence quote owned by that claim. Protected specifics include money, measured percentages, ages, dated years, “N lần” multiples, and detected proper nouns. A claim containing an invented or drifted specific fails RESEARCH before it can become permission.
 - Until a separately trusted provenance extension is wired, current pack paths conservatively pin every origin to `unknown`, so multi-source status cannot pass. This is a temporary safe fallback, not the final provenance design; neither model output nor repeated videos may upgrade it.

@@ -13,6 +13,7 @@ import {
 import { videoSectionsFromMarkdown } from '../writer-packs.ts';
 
 export const RESEARCH_MAP_SCHEMA_VERSION = 'writer-research-map-v1' as const;
+export const RESEARCH_PROMPT_VERSION = 'writer-v2-research-v1' as const;
 export const MAX_RESEARCH_MAP_BYTES = 60 * 1024;
 
 export const RESEARCH_STATUSES = [
@@ -94,6 +95,17 @@ export interface ResearchMap {
   overusedAngles: string[];
 }
 
+/**
+ * Model-authored shape before validation. Provenance fields are deliberately
+ * absent: when application code already knows an answer, asking a model to
+ * repeat it and then comparing the repetition only creates retry risk. The
+ * validator hydrates both fields into the validated `ResearchMap` above.
+ */
+export type ResearchMapAgentOutput = Omit<ResearchMap, 'sourceAudit' | 'claims'> & {
+  sourceAudit: Array<Omit<ResearchSourceAudit, 'originGroup'>>;
+  claims: Array<Omit<ResearchClaim, 'independentOriginGroups'>>;
+};
+
 export type AuthorizedResearchStatus = Exclude<ResearchStatus, 'REJECTED'>;
 
 /**
@@ -149,8 +161,8 @@ const TOP_LEVEL_KEYS = new Set([
   'openQuestions',
   'overusedAngles',
 ]);
-const SOURCE_AUDIT_KEYS = new Set(['videoId', 'mainClaim', 'angle', 'originGroup', 'limitations']);
-const CLAIM_KEYS = new Set(['id', 'text', 'status', 'evidenceIds', 'independentOriginGroups', 'caveats']);
+const SOURCE_AUDIT_KEYS = new Set(['videoId', 'mainClaim', 'angle', 'limitations']);
+const CLAIM_KEYS = new Set(['id', 'text', 'status', 'evidenceIds', 'caveats']);
 const EVIDENCE_KEYS = new Set(['id', 'claimId', 'videoId', 'quote', 'relation']);
 const CONFLICT_KEYS = new Set(['claimIds', 'explanation']);
 
@@ -195,6 +207,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function unknownKey(value: Record<string, unknown>, allowed: ReadonlySet<string>): string | null {
   return Object.keys(value).find((key) => !allowed.has(key)) ?? null;
+}
+
+function promptKeyList(keys: ReadonlySet<string>): string {
+  return [...keys].map((key) => `\`${key}\``).join(', ');
 }
 
 function normalizeTopologyKey(key: string): string {
@@ -271,12 +287,6 @@ function serializedBytes(value: unknown): number | null {
   } catch {
     return null;
   }
-}
-
-function sameSet(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) return false;
-  const expected = new Set(right);
-  return left.every((value) => expected.has(value));
 }
 
 function sourceSections(
@@ -389,19 +399,19 @@ export function validateResearchMap(
     if (typeof mainClaim !== 'string') return mainClaim;
     const angle = requiredString(raw['angle'], `${path}.angle`);
     if (typeof angle !== 'string') return angle;
-    const originGroup = idString(raw['originGroup'], `${path}.originGroup`);
-    if (typeof originGroup !== 'string') return originGroup;
-    const trustedOriginGroup = context.originGroupByVideoId?.[videoId]?.trim() || 'unknown';
-    if (originGroup !== trustedOriginGroup) {
-      return fail(
-        'RESEARCH_ORIGIN',
-        `${path}.originGroup must equal coordinator-pinned provenance "${trustedOriginGroup}"; `
-        + 'the research agent may not declare source independence',
-        `${path}.originGroup`,
-      );
-    }
     const limitations = stringArray(raw['limitations'], `${path}.limitations`, { max: 32 });
     if (!Array.isArray(limitations)) return limitations;
+    // Provenance is coordinator-owned. `originGroup` is intentionally absent
+    // from the raw allowlist above and is filled only after the video ID has
+    // been checked against the pinned manifest.
+    const originGroup = context.originGroupByVideoId?.[videoId]?.trim() || 'unknown';
+    if (!ID_RE.test(originGroup)) {
+      return fail(
+        'RESEARCH_ORIGIN',
+        `coordinator-pinned origin group for videoId "${videoId}" must match ${ID_RE.source}`,
+        `${path}.videoId`,
+      );
+    }
     sourceAudit.push({ videoId, mainClaim, angle, originGroup, limitations });
   }
 
@@ -477,12 +487,6 @@ export function validateResearchMap(
       ids: true,
     });
     if (!Array.isArray(listedEvidenceIds)) return listedEvidenceIds;
-    const independentOriginGroups = stringArray(
-      raw['independentOriginGroups'],
-      `${path}.independentOriginGroups`,
-      { min: 1, max: 32, ids: true },
-    );
-    if (!Array.isArray(independentOriginGroups)) return independentOriginGroups;
     const caveats = stringArray(raw['caveats'], `${path}.caveats`, { max: 32 });
     if (!Array.isArray(caveats)) return caveats;
     claims.push({
@@ -490,7 +494,9 @@ export function validateResearchMap(
       text,
       status: status as ResearchStatus,
       evidenceIds: listedEvidenceIds,
-      independentOriginGroups,
+      // Hydrated from this claim's validated evidence below. The model cannot
+      // declare independence that coordinator-pinned provenance does not show.
+      independentOriginGroups: [],
       caveats,
     });
   }
@@ -537,12 +543,7 @@ export function validateResearchMap(
       );
     }
     const derivedGroups = [...new Set(items.map((item) => auditByVideo.get(item.videoId)!.originGroup))];
-    if (!sameSet(claim.independentOriginGroups, derivedGroups)) {
-      return fail(
-        'RESEARCH_ORIGIN',
-        `claim "${claim.id}" independentOriginGroups must equal evidence-derived groups: ${derivedGroups.join(', ')}`,
-      );
-    }
+    claim.independentOriginGroups = derivedGroups;
     const positiveItems = items.filter(
       (item) => item.relation === 'SUPPORTS' || item.relation === 'QUALIFIES',
     );
@@ -770,4 +771,152 @@ export function deriveFactsLedger(
     };
   }
   return { ok: true, factsLedger };
+}
+
+const RESEARCH_PROMPT_EXAMPLE: ResearchMapAgentOutput = {
+  schemaVersion: RESEARCH_MAP_SCHEMA_VERSION,
+  sourceAudit: [
+    {
+      videoId: 'video-1',
+      mainClaim: 'Khoảng đệm bảo vệ khả năng đổi hướng.',
+      angle: 'quyền lựa chọn',
+      limitations: ['Transcript không định lượng mức tác động.'],
+    },
+    {
+      videoId: 'video-2',
+      mainClaim: 'Cam kết cố định có thể thu hẹp thời gian ra quyết định.',
+      angle: 'áp lực thời gian',
+      limitations: ['Ví dụ chỉ phản ánh một bối cảnh.'],
+    },
+  ],
+  claims: [
+    {
+      id: 'claim-choice',
+      text: 'Khoảng đệm có thể bảo vệ quyền đổi hướng.',
+      status: 'ATTESTED',
+      evidenceIds: ['evidence-choice'],
+      caveats: ['Pack không cho biết cơ chế này mạnh tới đâu.'],
+    },
+    {
+      id: 'claim-pressure',
+      text: 'Cam kết cố định luôn làm quyết định tốt hơn.',
+      status: 'DISPUTED',
+      evidenceIds: ['evidence-pressure-for', 'evidence-pressure-against'],
+      caveats: ['Hai transcript mô tả tác động theo hướng khác nhau.'],
+    },
+  ],
+  evidence: [
+    {
+      id: 'evidence-choice',
+      claimId: 'claim-choice',
+      videoId: 'video-1',
+      quote: 'Khoảng đệm giúp một người còn lựa chọn đổi hướng.',
+      relation: 'SUPPORTS',
+    },
+    {
+      id: 'evidence-pressure-for',
+      claimId: 'claim-pressure',
+      videoId: 'video-1',
+      quote: 'Một cam kết rõ ràng đôi khi giúp quyết định dứt khoát hơn.',
+      relation: 'QUALIFIES',
+    },
+    {
+      id: 'evidence-pressure-against',
+      claimId: 'claim-pressure',
+      videoId: 'video-2',
+      quote: 'Cam kết cố định có thể làm thời gian lựa chọn ngắn lại.',
+      relation: 'CONTRADICTS',
+    },
+  ],
+  conflicts: [
+    {
+      claimIds: ['claim-choice', 'claim-pressure'],
+      explanation: 'Quyền đổi hướng và lợi ích của cam kết phụ thuộc vào bối cảnh khác nhau.',
+    },
+  ],
+  openQuestions: ['Điều kiện nào quyết định cam kết trở thành hỗ trợ hay áp lực?'],
+  overusedAngles: ['Liệt kê lời khuyên mà không chỉ ra giới hạn của evidence.'],
+};
+
+/** Stable RESEARCH instructions; title/brief/audience and source files are staged separately. */
+export function buildResearchPrompt(): string {
+  return [
+    '# Writer v2 — RESEARCH (lập bản đồ evidence, không đề xuất câu chuyện)',
+    '',
+    'Đọc `input/envelope.json`, rồi đọc MỌI file trong `topicPack.contentFiles` theo đúng thứ tự.',
+    'Envelope chỉ cung cấp title, brief, audience và source manifest. Bạn KHÔNG được xem selectedHook,',
+    'DIVERGE hypotheses, General Pack, Formula hay Persona Pack; không hỏi xin hoặc cố đoán chúng.',
+    '',
+    'Nhiệm vụ duy nhất là mô tả PACK CHỨNG THỰC GÌ: từng nguồn nói gì, evidence exact nào hỗ trợ/',
+    'mâu thuẫn/giới hạn claim nào, còn xung đột và câu hỏi mở nào. Status không tuyên bố sự thật ngoài đời;',
+    'nó chỉ mô tả mức chứng thực bên trong pack đã pin.',
+    '',
+    '## Ranh giới chống story topology',
+    '',
+    'Không gợi ý outline, hook, thesis, beat, beat order, intro, ending, payoff, narration, script, story spine,',
+    'memory anchor, progression hay recommendation — ở top-level hoặc giấu trong object lồng. “Giúp thêm”',
+    'bằng cấu trúc bài là LỖI schema, không phải đóng góp. Chỉ lập evidence map; không sắp thứ tự kể chuyện.',
+    '',
+    '## Source audit và provenance do code sở hữu',
+    '',
+    '- `sourceAudit` phải có đúng một entry cho MỖI videoId trong source manifest; không thiếu, không trùng,',
+    '  không thêm ID ngoài pack. Mỗi entry chỉ có `videoId`, `mainClaim`, `angle`, `limitations`.',
+    '- KHÔNG khai `originGroup` ở sourceAudit và KHÔNG khai `independentOriginGroups` ở claim.',
+    '  Coordinator đã biết provenance và sẽ tự điền cả hai sau validation. Có mặt dù giá trị đúng vẫn là',
+    '  `RESEARCH_SCHEMA`; đừng bắt code so lại một đáp án code đã biết.',
+    '- `limitations` là 0–32 giới hạn cụ thể của transcript, không phải lời khuyên dựng bài.',
+    '',
+    '## Evidence phải truy được tới đúng Transcript',
+    '',
+    '- `evidence` có 1–256 entry. Mỗi entry chỉ có `id`, `claimId`, `videoId`, `quote`, `relation`.',
+    '- `quote` phải là substring CHÍNH XÁC, liên tục, NFC, của phần `### Transcript` thuộc ĐÚNG videoId.',
+    '  Copy nguyên ký tự, dấu câu và khoảng trắng; không sửa chính tả, rút gọn hay paraphrase quote.',
+    '- Không lấy title, heading, `videoId`, URL hoặc metadata ngoài Transcript làm quote, dù text đó có trong file.',
+    '- `relation` chỉ là `SUPPORTS`, `QUALIFIES`, hoặc `CONTRADICTS`.',
+    '- Mỗi evidence ID unique, phải trỏ tới claim tồn tại; claim phải liệt kê lại đúng evidence ID đó.',
+    '  Liên kết hai chiều phải khớp: evidence.claimId ↔ claims[].evidenceIds.',
+    '',
+    '## Claim, protected specifics và status',
+    '',
+    '- `claims` có 1–128 entry. Mỗi claim chỉ có `id`, `text`, `status`, `evidenceIds`, `caveats`.',
+    '  Claim ID phải unique; evidence ID cũng phải unique trong toàn artifact.',
+    '- `text` được paraphrase proposition, nhưng mọi số tiền, phần trăm đo lường, tuổi, năm, “N lần” và',
+    '  proper noun trong text phải xuất hiện với cùng specific trong ít nhất một exact quote CỦA CHÍNH claim.',
+    '  Lý do: text sẽ trở thành quyền paraphrase ở WRITE; quote chỉ cấp quyền cho concrete specifics thực có.',
+    '  ĐÚNG: quote “năm ngoái tôi lỗ gần 800 triệu” → text “Có người lỗ gần 800 triệu trong một năm.”',
+    '  SAI: cùng quote đó → text “Có người mất gần một tỷ trong một năm.” vì số đã trôi.',
+    '- `evidenceIds` có 1–64 ID unique. `caveats` có 0–32 chuỗi unique.',
+    '- `ATTESTED`: có SUPPORTS/QUALIFIES và không có CONTRADICTS.',
+    '- `MULTI_SOURCE_ATTESTED`: như ATTESTED, đồng thời positive evidence thuộc ít nhất hai origin group',
+    '  khác nhau đã được coordinator pin. Chỉ dùng khi source manifest xác nhận; không tự suy luận độc lập.',
+    '- Có cả positive evidence và CONTRADICTS thì bắt buộc `DISPUTED` hoặc `REJECTED`, không được chọn nhãn mạnh.',
+    '- `DISPUTED`: cần cả SUPPORTS/QUALIFIES lẫn CONTRADICTS, và phải có caveat không rỗng hoặc một',
+    '  `conflicts` entry chứa claim đó. `REJECTED` dùng khi pack không chống lưng được proposition như đã viết.',
+    '',
+    '## Conflicts và danh sách cuối',
+    '',
+    '- `conflicts` có tối đa 64 entry; mỗi entry chỉ có `claimIds` (2–8 ID unique đã tồn tại) và',
+    '  `explanation` không rỗng.',
+    '- `openQuestions` và `overusedAngles` mỗi array tối đa 64 chuỗi không rỗng, không trùng.',
+    '- Không lặp source text để làm output phình to; chỉ giữ exact quote thực sự cần cho claim.',
+    '',
+    '## Strict JSON contract',
+    '',
+    `Output phải JSON-serializable và không quá ${MAX_RESEARCH_MAP_BYTES} bytes. Chỉ ghi JSON vào \`out/result.json\`; không Markdown ngoài file.`,
+    `Top-level chỉ được có: ${promptKeyList(TOP_LEVEL_KEYS)}.`,
+    `\`schemaVersion\` = \`${RESEARCH_MAP_SCHEMA_VERSION}\`. Không thêm key ngoài allowlist ở bất kỳ object lồng nào.`,
+    `SourceAudit keys: ${promptKeyList(SOURCE_AUDIT_KEYS)}.`,
+    `Claim keys: ${promptKeyList(CLAIM_KEYS)}. Evidence keys: ${promptKeyList(EVIDENCE_KEYS)}.`,
+    `Conflict keys: ${promptKeyList(CONFLICT_KEYS)}.`,
+    'Mọi chuỗi bắt buộc phải không rỗng và tối đa 8000 ký tự. ID tối đa 80 ký tự, bắt đầu bằng chữ/số',
+    'và chỉ dùng chữ/số hoặc `._:-`.',
+    'Mọi array string/ID không được có phần tử trùng.',
+    '',
+    'Ví dụ output đầy đủ về cấu trúc. ID và quote dưới đây chỉ minh họa; thay bằng videoId và exact Transcript',
+    'quote thật từ pack. Nếu pack có số video khác, sourceAudit phải có đúng số entry tương ứng:',
+    '',
+    '```json',
+    JSON.stringify(RESEARCH_PROMPT_EXAMPLE, null, 2),
+    '```',
+  ].join('\n');
 }
