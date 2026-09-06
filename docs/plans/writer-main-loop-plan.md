@@ -163,7 +163,7 @@ trước, chưa nối gì; 3→sửa prompt STUDY trước, nếu vẫn copy dá
 (T6), chỉnh General Pack; 5→sửa prompt editor (đã có checklist).
 
 Export baseline: `writer-room-data/exports/baseline-pre-006-798eeb53.md` (đã có).
-Export post-006: `writer-room-data/exports/post-006-b4deeb0f.md` — **chưa có**, run đang chạy
+| 2026-09-06 | T3 post-006 | run `b4deeb0f` | **FAILED_GATE** 16:43Z sau 1 REPAIR; STUDY 10 phút, WRITE 13, EDIT 0?, REPAIR 10; 4 dispatch/4 stage; 1397 từ | Outline đủ frame/mode/turn, 6 beat không kề trùng; editor mục 14 bắt beat 1 `canh` có kết luận (MEDIUM). Gate lần 1: 4 `NUMBER_UNSOURCED` gồm **"26%" false positive** (pack ASR ghi `26 ph`, gate chỉ biết `%`/`phần trăm`) + 2 số suy ra (200.000×26%, 40÷30) không đánh dấu giả định. REPAIR bỏ 26% nhưng suy ra "hơn 50.000 người" → gate 2 chặn. Export `exports/post-006-b4deeb0f.md` |
 (xem nhật ký dưới).
 
 Chủ kênh điền bảng khi cả hai bản đã DONE. **Sau T5 mới được lấy một hạng mục ra khỏi bãi đỗ**,
@@ -218,6 +218,6 @@ Quyết định 2026-09-06 sau khi đọc bài view cao của Hiếu TV và Anh 
 | 2026-09-06 | T3 lần 1 | post `798eeb53`, turn 158 | hook-clarify FAILED `AGENT_EXIT` sau 45 phút, out/ rỗng | bridge app chết sau restart daemon, pane không bao giờ spawn; xem bài học ở T2 |
 | 2026-09-06 | T3 baseline pre-006 | run `798eeb53` | DONE 12:50Z; clarify 2 phút, suggest 2 phút, STUDY 6 phút, WRITE 8 phút, EDIT 0 phút?, REPAIR 7 phút | lần 1 fail vì bridge; lần 2 sau reload app đi hết luồng; export `writer-room-data/exports/baseline-pre-006-798eeb53.md`. Gate lần 1 bắt "26%" kèm tên tổ chức bịa (`NUMBER_UNSOURCED`); editor 5 defect (1 HIGH cùng số đó, 4 MEDIUM: phản bác yếu, phép nhân sai đơn vị, so sánh không có mốc, câu cuối rời hình ảnh mở); REPAIR 1 lần, re-gate pass. 1390 từ, 6 beat, ledger 22 |
 | 2026-09-06 16:21Z | T3 post-006 | run `b4deeb0f` | **đang chạy**: `status: RUNNING`, `phase: WRITE` lúc đọc (GET, không tác động) | post-006 tại daemon `04916e6`; pack "5 nghề dễ kiếm tiền nhưng rất khó giàu"; general pack `hieu-tv.md` v2; `formulaId/Version/Hash` rỗng đúng như thiết kế 006. Chưa có export; ghi tiếp khi DONE |
-| | T4 | | | |
+| | T4 | đang chạy (teammate runs-post006) | | |
 | | T5 | | | |
 | | T6 | | | |

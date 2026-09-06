@@ -66,5 +66,6 @@ Commit CHỈ file của lane; không `git add -A`.
 |---|---|---|---|---|
 | 2026-09-06 | spec | — | SDD 006 và plan này | |
 | 2026-09-06 | A | `e3f3d0d` | 429 dòng, 30 quote đã grep-verify, 15 heading | tỷ lệ trích 41%; `canh` và `doi-y` chỉ 2 lối; quote 137 có ASR xấu, đã gắn cảnh báo |
+| 2026-09-06 | D | run `b4deeb0f` | FAILED_GATE sau repair; outline đúng schema; editor mục 14 hoạt động | tín hiệu mở khoá đầu tiên: gate không nhận `26 ph` (ASR của phần trăm) → sửa `deterministic-gate.ts` `normalizeUnit`; số suy ra cần marker giả định, prompt REPAIR phải nhắc |
 | 2026-09-06 | C | `04916e6` | 434 pass / 0 fail toàn daemon; typecheck + web tsc + ui:build sạch | bỏ Formula khỏi writer; mode pack staged WRITE/REPAIR; prompt WRITE/EDIT/REPAIR bump; UI bỏ select Formula, thêm chip mode/turn |
 | 2026-09-06 | B | `a64db7c` | 241 pass / 0 fail; typecheck sạch | thêm ngoài scope: `story-planning.ts` (module bãi đỗ) phải mở allowlist vì dùng chung validator; chấp nhận |
