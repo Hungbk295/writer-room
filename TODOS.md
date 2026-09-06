@@ -192,3 +192,43 @@ model prior), không phải một như hai doc đang ghi.
 **Context:** Nguồn arXiv 2604.22971 — **chưa xác minh được**, cần đọc lại trước khi dựa vào.
 **Effort:** S về code, lớn về chi phí chạy. **Priority:** P3.
 **Depends on:** mảng C.
+
+## 13. Nối Assertion Boundary vào gate (validator thứ hai)
+
+**What:** Gọi `combineWriterGateResults` / `routeEditorOutcome` từ `runGateForRun` thay vì
+chỉ `runDeterministicGate`.
+
+**Why:** `writer-hard-gate.ts` (231 dòng) có **0 file src import** — chỉ test của chính nó.
+Nó chứa nửa tất định của ADR-004/005: 5 loại assertion, kiểm anchor, defect biên tập có
+kiểu, và định tuyến CLEAN / AUTO_REPAIR / FAILED_GATE. Sơ đồ trong `writer-v2-status.md`
+từng vẽ gate có hai tầng validator; thực tế chạy một. Đã sửa sơ đồ 2026-09-05.
+
+Hệ quả hiện tại: lớp bảo vệ của luồng mới bằng đúng luồng cũ. Mọi thứ chỉ bắt được bằng
+anchor và loại phát ngôn — `"theo tôi"` gắn vào một fact, PERSONA beat trích archetype
+chưa duyệt, số cụ thể khai sai loại — đều không có ai kiểm.
+
+**Pros:** Bật một cơ chế đã viết xong và có test, không phải xây mới.
+**Cons:** Gate chặt hơn thì run đang chạy được có thể bắt đầu FAILED_GATE. Cần chạy vài
+run thật trước để biết ngưỡng.
+
+**Context:** `assertion-boundary.ts` đã nằm trong luồng nhưng chỉ dùng
+`filterApprovedPersonaMarkdown`. Phần validator của nó vào luồng qua `writer-hard-gate.ts`.
+Bắt đầu từ `runGateForRun` trong `writer-run-v2.ts`.
+
+**Effort:** M (human ~1 ngày / CC ~40ph). **Priority:** P1.
+**Depends on:** nên sau ít nhất một run thật với persona bật, để có baseline.
+
+## 14. Claim Boundary trong prompt biên tập
+
+**What:** Thêm section Claim Boundary vào `buildEditReviewPrompt`, đổi output defect từ
+`{quote, severity, note}` sang `kind` + `code`.
+
+**Why:** `buildEditReviewPrompt` hiện **0** lần nhắc Claim Boundary. Đây là nửa "independent
+reviewer" của ADR-005, và nó là tầng duy nhất bắt được mệnh đề thực nghiệm **không số,
+không tên riêng** — ví dụ trong SDD: *"Tôi tin bất động sản luôn an toàn hơn cổ phiếu"*.
+Sàn tất định không thể bắt loại này bằng bất kỳ luật nào.
+
+**Pros:** Đóng AC 13. **Cons:** Là kiểm ngữ nghĩa nên do model chấm; cần eval (mục 4) để
+biết recall thật.
+
+**Effort:** M. **Priority:** P2. **Depends on:** mục 13 (định dạng defect có kiểu).

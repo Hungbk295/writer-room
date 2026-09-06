@@ -120,9 +120,10 @@ phát ngôn, và không cho marker quan điểm hạ cấp một factual detecto
 └─────────────────────────────────────────────────────────────┘
         │
         ▼
-      WRITE ──► GATE (2 validator) ──► EDIT_REVIEW ──► REPAIR (1 lần)
-                deterministic
-                + assertion boundary
+      WRITE ──► GATE ──────────────► EDIT_REVIEW ──► REPAIR (1 lần)
+                deterministic  ✅ chạy
+                assertion      ❌ CHƯA NỐI — xem §4
+                boundary
 ```
 
 **Vì sao ba call chứ không hai.** Bản MVP hai call đạt được *research không thấy outline*,
@@ -173,11 +174,11 @@ các thay đổi đang unstaged của lane khác trong shared worktree.
 
 | File | Dòng | Vai trò |
 |---|---|---|
-| `story-planning.ts` | 1653 | DIVERGE/CONFRONT schema, prompt, validator, typed beat |
+| `story-planning.ts` | 1653 | DIVERGE/CONFRONT schema, prompt, validator, typed beat. **0 file src import — chỉ test của chính nó** |
 | `assertion-boundary.ts` | 858 | 5 loại assertion, anchor, persona registry |
 | `research-map.ts` | 922 | ResearchMap schema, exact quote, permission, ledger |
 | `study-orchestrator.ts` | 383 | STUDY contract, input allowlist, envelope, dispatch |
-| `writer-hard-gate.ts` | 231 | Hợp nhất 2 validator, typed editor defect, routing |
+| `writer-hard-gate.ts` | 231 | Hợp nhất 2 validator, typed editor defect, routing. **0 file src import — chỉ test của chính nó** |
 
 Số dòng trong bảng trên đo **trên `81aa99c`**, không phải trên working tree — working
 tree đang mang thêm lane persona (`assertion-boundary.ts` 858 → 940, `writer-run-v2.ts`
@@ -223,11 +224,24 @@ Không lỗ nào do test tìm ra. Tất cả đến từ rà chéo giữa các m
 
 ## 4. Chưa implement
 
-### Mảng B — Editor Claim Boundary
+### Mảng B — Claim Boundary, cả hai nửa đều chưa chạy
 
-`buildEditReviewPrompt` hiện **0** mention Claim Boundary. Nửa deterministic của ADR-005
-xong; nửa independent reviewer chưa có gì. Thiếu: section Claim Boundary trong prompt,
-compact admissibility index, output `kind` + `code` thay vì `{quote, severity, note}`.
+Trước đây mục này ghi "nửa deterministic của ADR-005 xong". **Sai** — nó được *viết* xong,
+không phải *chạy*. Xác minh 2026-09-05:
+
+- `runGateForRun` (`writer-run-v2.ts`) chỉ gọi `runDeterministicGate`. Một validator,
+  không phải hai.
+- `writer-hard-gate.ts` (231 dòng) chứa `combineWriterGateResults`, `routeEditorOutcome`,
+  `validateTypedEditorReview` — tức nửa tất định của ADR-004/005 và toàn bộ định tuyến
+  editor có kiểu. **0 file src import**, chỉ `writer-hard-gate.test.ts`.
+- `assertion-boundary.ts` CÓ được import vào luồng thật, nhưng **chỉ để lọc persona**
+  (`filterApprovedPersonaMarkdown`). 5 loại assertion và cơ chế anchor không ai gọi.
+- `buildEditReviewPrompt` vẫn **0** lần nhắc Claim Boundary.
+
+Nên lớp bảo vệ của luồng hiện tại bằng đúng luồng trước khi có SDD 005: một validator tất
+định. Thiếu để nối: gọi `combineWriterGateResults` trong `runGateForRun`, section Claim
+Boundary trong prompt biên tập, compact admissibility index, output `kind` + `code` thay
+vì `{quote, severity, note}`.
 
 AC 13 phụ thuộc hoàn toàn vào đây — `"Tôi tin bất động sản luôn an toàn hơn cổ phiếu"`,
 mệnh đề thực nghiệm không số không tên riêng, deterministic floor **không thể** bắt.
