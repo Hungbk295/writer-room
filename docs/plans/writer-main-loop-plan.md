@@ -218,6 +218,7 @@ Quyết định 2026-09-06 sau khi đọc bài view cao của Hiếu TV và Anh 
 | 2026-09-06 | T3 lần 1 | post `798eeb53`, turn 158 | hook-clarify FAILED `AGENT_EXIT` sau 45 phút, out/ rỗng | bridge app chết sau restart daemon, pane không bao giờ spawn; xem bài học ở T2 |
 | 2026-09-06 | T3 baseline pre-006 | run `798eeb53` | DONE 12:50Z; clarify 2 phút, suggest 2 phút, STUDY 6 phút, WRITE 8 phút, EDIT 0 phút?, REPAIR 7 phút | lần 1 fail vì bridge; lần 2 sau reload app đi hết luồng; export `writer-room-data/exports/baseline-pre-006-798eeb53.md`. Gate lần 1 bắt "26%" kèm tên tổ chức bịa (`NUMBER_UNSOURCED`); editor 5 defect (1 HIGH cùng số đó, 4 MEDIUM: phản bác yếu, phép nhân sai đơn vị, so sánh không có mốc, câu cuối rời hình ảnh mở); REPAIR 1 lần, re-gate pass. 1390 từ, 6 beat, ledger 22 |
 | 2026-09-06 16:21Z | T3 post-006 | run `b4deeb0f` | **đang chạy**: `status: RUNNING`, `phase: WRITE` lúc đọc (GET, không tác động) | post-006 tại daemon `04916e6`; pack "5 nghề dễ kiếm tiền nhưng rất khó giàu"; general pack `hieu-tv.md` v2; `formulaId/Version/Hash` rỗng đúng như thiết kế 006. Chưa có export; ghi tiếp khi DONE |
-| | T4 | đang chạy (teammate runs-post006) | | |
+| 2026-09-06 17:25Z | gate fix | `907ef89` | 262 pass / 0 fail; typecheck sạch | gate nhận `ph` là phần trăm (+4 test); WRITE/REPAIR thêm luật số tự tính phải bỏ hoặc đánh dấu giả định; prompt version bump. **Cần restart daemon + Cmd+R app** trước run kế tiếp |
+| | T4 | đang chạy (teammate runs-post006) trên `04916e6` | | |
 | | T5 | | | |
 | | T6 | | | |
