@@ -243,6 +243,19 @@ niềm tin có thật, mạnh, đứng trọn trước khi bị toán học tr�
 Giả định phổ biến (cần thiên tài, cổ phần, hoặc thừa kế mới giàu) được nêu ở dạng mạnh nhất rồi
 mới bị phản bác bằng dữ kiện về triệu phú tự thân.
 
+### Lối G — Tự đưa mình lên ghế bị cáo
+
+> Tuy nhiên nếu mà anh chị nào có theo D gỏi tôi qua Facebook thì chắc là ít nhiều có biết là
+> tôi có sở hữu một số cái xe trong đó có những cái chiếc là nó thuộc cái phiên bản giới hạn khá
+> là Đắc tiền vậy tại sao một người luôn miệng kêu gọi tiết kiệm lại sở hữu những cái chiếc xe
+> hơi đắt tiền như vậy liệu chăng là những cái mà tôi nói nó là tiền hậu bất nhất Nói một đằng
+> là một nẻo thì đó cũng là một phần Lý do vì sao mà tôi thực hiện cái chuỗi bài này (file `08`,
+> videoId `UMe0s6vDn0M`)
+
+Khác mọi lối phía trên ở chỗ câu cãi không nhắm vào người nghe hay một trường phái, mà nhắm
+thẳng vào chính người kể — uy tín của cả chuỗi bài bị đặt cược vào một câu trả lời chưa được
+đưa ra; câu trả lời chỉ tới nhiều beat sau, không phải ngay trong đoạn này.
+
 ### Ví dụ dở
 
 > Một phản biện hợp lý là: đời người đâu thể lúc nào cũng đo đếm. Đúng vậy. (bản nháp AI,
@@ -311,6 +324,19 @@ không biến mất, nó chỉ bị pha loãng.
 Ngưỡng đã nêu ngay trước đó (phép thử nghỉ một tháng) bị đẩy tới một input cực đoan hơn (một
 năm) mà không thêm biến nào ngoài chính phép thử đó — cái lộ ra là tốc độ mòn dần, không chỉ có
 hay không.
+
+### Lối D — Đẩy chính nguyên tắc của mình tới một hành vi cực đoan
+
+> riêng cho cá nhân tôi thì cũng đã khá lâu rồi Tôi có một cái nguyên tắc Nghe có vẻ là nó hơi
+> lạ đó là nếu mà các công ty mà tôi đang làm việc họ phải trả cho tôi một cái mức thù lao cao
+> hơn cái giá trị mà tôi đang tạo ra thì tôi sẽ chủ động trao đổi với công ty đó và nếu cần thì
+> tôi sẽ chủ động nghĩ việc (file `137`, videoId `7ZN1hgjyYnc` — transcript đoạn này còn đọc
+> được rõ, đã kiểm tay từng chữ)
+
+Nguyên tắc "tiền đo giá trị tạo ra" (xem phép lật `doi-don-vi`) tự nó bị đẩy tới ngưỡng cực
+đoan: được trả CAO hơn giá trị mình tạo ra lại là lý do để chủ động nghỉ việc, không phải một
+tin vui — không thêm biến nào ngoài chính nguyên tắc đã nêu, chỉ đẩy nó tới tình huống mà phần
+lớn người nghe sẽ không tự nghĩ tới.
 
 ### Ví dụ dở — bản nháp AI
 
@@ -463,6 +489,16 @@ hệ quả cụ thể, không dừng lại ở một khái niệm trừu tượn
 
 Câu đầu gọi tên đúng cách hiểu dễ bị hiểu lầm ("giúp mua được rẻ hơn") trước khi câu sau lật lại
 nó — khác lối A/B ở chỗ hiểu lầm được phát biểu thành lời, không chỉ ngầm sửa.
+
+### Lối D — Tự nhận mình đã tính sai, rồi đổi hẳn thói quen
+
+> thật ra là cho tới cách đây vài năm Tôi vẫn theo cái chủ trương tiết kiệm bay đi đâu thì tôi
+> cũng chỉ bay hàng phổ thông nhưng mà Rồi Tới một lúc tôi chợt nhận ra là có vẻ như mình đáng
+> tính sai mình đáng tính già hóa non (file `07`, videoId `PJPhR58LBYA`)
+
+Khác lối A/B/C ở chỗ đây không phải một câu tự sửa nằm trong lúc đang nói, mà là thú nhận thẳng
+một thói quen đã giữ "cách đây vài năm" là sai — đổi ý được đặt mốc thời gian rõ ràng (trước/
+sau), không phải một khoảnh khắc mơ hồ.
 
 ### Ví dụ dở — bản nháp AI
 
