@@ -984,6 +984,79 @@ describe('Writer v2 — end to end', () => {
     ]);
   });
 
+  test('an ungrounded EDIT_REVIEW answer fails the run without a second content-retry dispatch', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'EDIT_REVIEW');
+
+    // A defect quoting prose that is not in the script fails `validateEditorReview`
+    // inside the scheduler's own `validateContent`, before this ever reaches
+    // `handleWriterV2Settle`'s EDIT_REVIEW branch.
+    const settled = await completeStage(runId, EDIT_REVIEW_STAGE, {
+      defects: [{ quote: 'không có câu này trong script', severity: 'HIGH', note: 'x' }],
+    });
+    expect(settled.outcome).toBe('FAILED');
+    expect(settled.errorCode).toBe('AGENT_UNGROUNDED');
+
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'FAILED');
+    expect(failed!.phase).toBe('FAILED');
+    expect(failed!.errorCode).toBe('AGENT_UNGROUNDED');
+
+    // maxContentRetries: 0 means the scheduler never re-dispatched the editor to
+    // fix its own answer — exactly one EDIT_REVIEW dispatch, no attempt 2 row.
+    const editReviewDispatches = dispatches.filter((d) => d.stage === EDIT_REVIEW_STAGE);
+    expect(editReviewDispatches).toHaveLength(1);
+    expect(editReviewDispatches[0]!.maxContentRetries).toBe(0);
+    expect(harness.pipeline.ledger.all().find((r) =>
+      r.batchId === runId && r.itemId === WRITER_V2_ITEM_ID && r.stage === EDIT_REVIEW_STAGE && r.attempt === 2
+    )).toBeUndefined();
+  });
+
+  test('a malformed REPAIR draft fails the run without a second content-retry dispatch', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: fabricatedScript(),
+      outlineChanges: ['thêm case'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'EDIT_REVIEW');
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'REPAIR');
+
+    // Drops a beat anchor — fails `validateWriterV2Draft` inside the scheduler's
+    // own `validateContent`, before this ever reaches `handleWriterV2Settle`'s
+    // REPAIR branch.
+    const settled = await completeStage(runId, REPAIR_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: fabricatedScript(),
+      beatAnchors: [ANCHOR_1],
+    });
+    expect(settled.outcome).toBe('FAILED');
+    expect(settled.errorCode).toBe('BEAT_ANCHORS');
+
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'FAILED');
+    expect(failed!.phase).toBe('FAILED');
+    expect(failed!.errorCode).toBe('BEAT_ANCHORS');
+
+    const repairDispatches = dispatches.filter((d) => d.stage === REPAIR_STAGE);
+    expect(repairDispatches).toHaveLength(1);
+    expect(repairDispatches[0]!.maxContentRetries).toBe(0);
+    expect(harness.pipeline.ledger.all().find((r) =>
+      r.batchId === runId && r.itemId === WRITER_V2_ITEM_ID && r.stage === REPAIR_STAGE && r.attempt === 2
+    )).toBeUndefined();
+  });
+
   test('editing the general pack mid-run stops the run instead of silently switching', async () => {
     const runId = await startRun();
     writeFileSync(join(dir, 'general-packs', 'hieu-tv.md'), '# Hieu TV\n<!-- version: 2 -->\n', 'utf8');

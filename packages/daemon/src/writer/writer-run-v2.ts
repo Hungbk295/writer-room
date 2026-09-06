@@ -1771,6 +1771,11 @@ async function dispatchEditReview(deps: WriterV2Deps, run: WriterRunV2): Promise
     sessionGroup: EDITOR_PTY_SESSION_GROUP,
     interactivePty: true,
     freshContext: true,
+    // See the STUDY/WRITE dispatches: the coordinator counts dispatches, so a
+    // scheduler content-retry here would be a model call nobody counted. If the
+    // editor returns broken JSON the run fails with the validator's errorCode
+    // instead of silently re-prompting — the reader notes it and hits continue.
+    maxContentRetries: 0,
     validateContent: (parsed) => {
       const v = validateEditorReview(parsed, draft.script);
       return v.ok ? { ok: true as const } : { ok: false as const, errorCode: v.errorCode, reason: v.reason };
@@ -1828,6 +1833,12 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     promptVersion: REPAIR_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,
+    // See the STUDY/WRITE dispatches: the coordinator counts dispatches, so a
+    // scheduler content-retry here would be a model call nobody counted. If the
+    // repair turn returns broken JSON the run fails with the validator's
+    // errorCode instead of silently re-prompting — the reader notes it and
+    // hits continue.
+    maxContentRetries: 0,
     validateContent: (parsed) => {
       const v = validateWriterV2Draft(parsed, {
         outline: study.outline,
