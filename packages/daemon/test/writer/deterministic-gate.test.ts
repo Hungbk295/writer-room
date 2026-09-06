@@ -149,6 +149,54 @@ describe('money unit normalisation', () => {
   });
 });
 
+/**
+ * Run `b4deeb0f` (2026-09-06): the source pack is an ASR transcript, and ASR
+ * clips "phần trăm" to "ph" — "có tới 26 ph lái xe có trình độ từ cao đẳng trở
+ * lên". The ledger quoted that exact ASR wording, the script wrote "26%", and
+ * the gate reported NUMBER_UNSOURCED because `normalizeUnit` had no entry for
+ * "ph" — the same false positive also blocked baseline run `798eeb53`.
+ */
+describe('ASR "ph" is recognised as phần trăm', () => {
+  const ledgerQuote = 'có khoảng 200.000 lái xe trong đó có tới 26 ph lái xe có trình độ từ cao đẳng trở lên';
+  const pack = `# pack\n\n${ledgerQuote}.`;
+  const ledger: LedgerEntry[] = [{ fact: '26% lái xe trình độ cao đẳng trở lên', quote: ledgerQuote }];
+
+  test('script "26%" is sourced by a ledger quote spelling it "26 ph"', () => {
+    const result = runDeterministicGate({
+      script: 'Nhưng tới 26% có trình độ từ cao đẳng trở lên.',
+      packMarkdown: pack,
+      factsLedger: ledger,
+    });
+    expect(result.violations).toEqual([]);
+  });
+
+  test('without a matching ledger/pack quote, "26%" is still unsourced', () => {
+    const result = runDeterministicGate({
+      script: 'Nhưng tới 26% có trình độ từ cao đẳng trở lên.',
+      packMarkdown: '# pack\n\nKhông có con số nào ở đây.',
+    });
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('"26 phút" is a duration, never coerced into a percent', () => {
+    const claims = extractNumericClaims('Anh ấy chờ 26 phút rồi mới vào.');
+    expect(claims).toEqual([{ raw: '26 phút', value: 26, unit: 'phút', sentence: 'Anh ấy chờ 26 phút rồi mới vào.' }]);
+  });
+
+  test('"ph" in the script itself is also read as percent', () => {
+    const claims = extractNumericClaims('Có tới 26 ph lái xe có trình độ cao.');
+    expect(claims).toEqual([
+      { raw: '26 ph', value: 26, unit: '%', sentence: 'Có tới 26 ph lái xe có trình độ cao.' },
+    ]);
+  });
+
+  test('the "ph" guard does not fire inside "phần trăm", "phổ biến" or "phần"', () => {
+    expect(extractNumericClaims('Có 26 phần trăm số người được hỏi.').map((c) => c.unit)).toEqual(['%']);
+    expect(extractNumericClaims('Cách làm này khá 5 phổ biến rồi.')).toEqual([]);
+    expect(extractNumericClaims('Anh ấy chia 5 phần bằng nhau.')).toEqual([]);
+  });
+});
+
 describe('proper noun extraction', () => {
   test('clause-initial capitals are not names, mid-sentence ones are', () => {
     // "Minh" opens its sentence here, so it is deliberately NOT a candidate —

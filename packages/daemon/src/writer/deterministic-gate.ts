@@ -200,7 +200,7 @@ const COMMON_KNOWLEDGE_MARKERS = [
  */
 const NOT_LETTER = '(?![\\p{L}\\p{M}])';
 const UNIT_PATTERN = 'triệu|nghìn|ngàn|tỷ|tỉ|đồng|usd|đô|tuổi|lần|%|phần trăm|năm|tháng|tuần|ngày|giờ|phút|người'
-  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}`;
+  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}|ph${NOT_LETTER}`;
 
 const DIGIT_CLAIM_RE = new RegExp(`(\\d[\\d.,]*)\\s*(${UNIT_PATTERN})`, 'giu');
 
@@ -239,6 +239,12 @@ function normalizeUnit(unit: string): string {
   if (u === 'tỉ') return 'tỷ';
   if (u === 'ngàn') return 'nghìn';
   if (u === 'phần trăm') return '%';
+  // ASR shorthand for "phần trăm": ASR transcripts (the source packs themselves)
+  // routinely clip it to "ph" — e.g. "26 ph lái xe có trình độ..." for "26 phần
+  // trăm". `UNIT_PATTERN`'s `ph${NOT_LETTER}` guard only ever matches the bare
+  // token (never "phút"/"phổ biến"/"phần" — next char there is a letter), so this
+  // mapping never misfires on those. See run `b4deeb0f`.
+  if (u === 'ph') return '%';
   if (u === 'đô') return 'usd';
   // Short money suffixes are spellings, not different units.
   if (u === 'k') return 'nghìn';
@@ -457,7 +463,7 @@ const SINGLE_PROTECTED_NUMERAL_PATTERN = [
 ].join('|');
 const SINGLE_PROTECTED_UNIT_PATTERN =
   'triệu|nghìn|ngàn|tỷ|tỉ|đồng|usd|đô|tuổi|lần|%|phần trăm'
-  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}`;
+  + `|tr${NOT_LETTER}|đ${NOT_LETTER}|k${NOT_LETTER}|ph${NOT_LETTER}`;
 const SINGLE_PROTECTED_CLAIM_RE = new RegExp(
   `\\b(${SINGLE_PROTECTED_NUMERAL_PATTERN})\\s+(${SINGLE_PROTECTED_UNIT_PATTERN})`,
   'giu',

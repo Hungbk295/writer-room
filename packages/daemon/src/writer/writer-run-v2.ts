@@ -99,9 +99,9 @@ const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 const POSTMORTEM_PTY_SESSION_GROUP = 'writer-v2-postmortem';
 
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v4-beat-grammar-no-formula-v1';
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v5-derived-number-rule-v1';
 const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v3-beat-grammar-v1';
-const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v2-mode-pack-v1';
+const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v3-derived-number-rule-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
 const POSTMORTEM_PROMPT_VERSION = 'writer-v2-postmortem-v1';
 
@@ -711,12 +711,16 @@ function buildWritePrompt(opts: {
     '   openly hypothetical one and MARK it: "giả sử…", "ví dụ…", "thử hình dung…",',
     '   "tạm lấy…". Never give a hypothetical person a name, an age and a place — that is',
     '   a fabricated biography, not an illustration.',
-    '3. At most 2 coined labels in the whole piece, and list them in `coinedLabels`. Plain',
+    '4. **A number you compute yourself from a ledger figure (multiplying, dividing,',
+    '   turning a percentage into a headcount, converting to days) is an UNSOURCED',
+    '   number.** Either drop it, or write the calculation out in the open and mark it as',
+    '   an assumption ("tạm tính…", "ước chừng…", "giả sử…").',
+    '5. At most 2 coined labels in the whole piece, and list them in `coinedLabels`. Plain',
     '   language beats a new term.',
-    `4. You are not the pack's host. Forbidden identities: ${
+    `6. You are not the pack's host. Forbidden identities: ${
       opts.forbiddenNames.length ? opts.forbiddenNames.map((n) => `"${n}"`).join(', ') : '(none)'
     }.`,
-    '5. Vietnamese prose. Do not mention, enumerate or visibly perform the rules.',
+    '7. Vietnamese prose. Do not mention, enumerate or visibly perform the rules.',
     '',
     '## Before you write',
     '',
@@ -943,14 +947,18 @@ function buildRepairPrompt(opts: {
     '## Hard rules',
     '',
     ...repairRuleOneLines(opts.hasPersona),
-    '2. A hypothetical person stays unnamed.',
-    `3. Length stays in ${opts.wordRange.minWords}-${opts.wordRange.maxWords} words.`,
-    `4. Forbidden host identities: ${
+    '2. **A number you compute yourself from a ledger figure (multiplying, dividing,',
+    '   turning a percentage into a headcount, converting to days) is a number with NO',
+    '   source.** Either drop it, or write the calculation out in the open and mark it as',
+    '   an assumption ("tạm tính…", "ước chừng…", "giả sử…").',
+    '3. A hypothetical person stays unnamed.',
+    `4. Length stays in ${opts.wordRange.minWords}-${opts.wordRange.maxWords} words.`,
+    `5. Forbidden host identities: ${
       opts.forbiddenNames.length ? opts.forbiddenNames.map((n) => `"${n}"`).join(', ') : '(none)'
     }.`,
-    `5. Re-declare all ${opts.beatCount} \`beatAnchors\` against the REPAIRED script — if you`,
+    `6. Re-declare all ${opts.beatCount} \`beatAnchors\` against the REPAIRED script — if you`,
     '   edited an anchor sentence, quote the new wording.',
-    "6. Keep each beat's `mode` (outline.progression[i].mode) exactly as committed — a repair",
+    "7. Keep each beat's `mode` (outline.progression[i].mode) exactly as committed — a repair",
     '   fixes prose, it does not change what a beat is doing.',
     '',
     'This is the ONLY repair round. After it, the gate runs again and the run either',
