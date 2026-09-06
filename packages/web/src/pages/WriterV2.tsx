@@ -11,7 +11,6 @@ import {
   api,
   type ChannelProfile,
   type ChannelStyleSummary,
-  type FormulaSummary,
   type GateResult,
   type GeneralPackSummary,
   type WriterPackSummary,
@@ -351,7 +350,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [packs, setPacks] = useState<WriterPackSummary[]>([]);
   const [channels, setChannels] = useState<ChannelProfile[]>([]);
   const [generalPacks, setGeneralPacks] = useState<GeneralPackSummary[]>([]);
-  const [formulas, setFormulas] = useState<FormulaSummary[]>([]);
   const [title, setTitle] = useState('');
   const [channelId, setChannelId] = useState('');
   const [brief, setBrief] = useState('');
@@ -359,7 +357,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [targetWords, setTargetWords] = useState('');
   const [packId, setPackId] = useState('');
   const [generalPack, setGeneralPack] = useState('');
-  const [formulaId, setFormulaId] = useState('');
   const [agentId, setAgentId] = useState<string>('codex');
   const [editorAgentId, setEditorAgentId] = useState<string>('claude');
   const [saving, setSaving] = useState(false);
@@ -387,12 +384,11 @@ export function WriterV2RunPage({ id }: { id: string }) {
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([api.listWriterPacks(), api.listGeneralPacks(), api.listFormulas(), api.listChannelProfiles()])
-      .then(([packData, generalData, formulaData, channelData]) => {
+    void Promise.all([api.listWriterPacks(), api.listGeneralPacks(), api.listChannelProfiles()])
+      .then(([packData, generalData, channelData]) => {
         if (!alive) return;
         setPacks(packData.packs);
         setGeneralPacks(generalData.packs);
-        setFormulas(formulaData.formulas);
         setChannels(channelData.channels);
       })
       .catch((err) => { if (alive) setError(err instanceof Error ? err.message : String(err)); });
@@ -459,7 +455,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
     setTargetWords(run.targetWords === undefined ? '' : String(run.targetWords));
     setPackId(run.packId);
     setGeneralPack(run.generalPackPath);
-    setFormulaId(run.formulaId);
     setAgentId(run.agentId);
     setEditorAgentId(run.editorAgentId);
     const profile = channels.find((channel) => channel.id === run.channelId);
@@ -486,7 +481,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
     || targetWords.trim() !== (run.targetWords === undefined ? '' : String(run.targetWords))
     || packId !== run.packId
     || generalPack !== run.generalPackPath
-    || formulaId !== run.formulaId
     || agentId !== run.agentId
     || editorAgentId !== run.editorAgentId
   );
@@ -525,7 +519,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
     if (!profile) return;
     if (profile.audience) setAudience(profile.audience);
     if (profile.defaultGeneralPack) setGeneralPack(profile.defaultGeneralPack);
-    if (profile.defaultFormulaId) setFormulaId(profile.defaultFormulaId);
     if (profile.defaultStyle) setStyleId(profile.defaultStyle);
   };
 
@@ -542,7 +535,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
         ...(run.targetWords !== undefined ? { targetWords: run.targetWords } : {}),
         packId: run.packId,
         generalPack: run.generalPackPath,
-        formulaId: run.formulaId,
         agentId: run.agentId,
         editorAgentId: run.editorAgentId,
       });
@@ -598,7 +590,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
         ...(targetWords.trim() ? { targetWords: Number(targetWords) } : {}),
         packId,
         generalPack,
-        formulaId,
         agentId,
         editorAgentId,
       });
@@ -626,7 +617,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
         ...(run.targetWords !== undefined ? { targetWords: run.targetWords } : {}),
         packId: run.packId,
         generalPack: run.generalPackPath,
-        formulaId: run.formulaId,
         agentId: run.agentId,
         editorAgentId: run.editorAgentId,
       });
@@ -958,22 +948,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
                   ))}
                 </select>
               </label>
-              <label class="field">
-                <span>Formula</span>
-                <select
-                  value={formulaId}
-                  disabled={run.status !== 'DRAFT'}
-                  onChange={(e) => setFormulaId((e.target as HTMLSelectElement).value)}
-                >
-                  <option value="">Chọn Formula…</option>
-                  {formulaId && !formulas.some((formula) => formula.id === formulaId) && (
-                    <option value={formulaId}>{formulaId} · v{run.formulaVersion}</option>
-                  )}
-                  {formulas.map((formula) => (
-                    <option key={formula.id} value={formula.id}>{formula.label} · v{formula.version}</option>
-                  ))}
-                </select>
-              </label>
             </div>
             <div class="form-grid-3">
               <label class="field">
@@ -1042,7 +1016,6 @@ export function WriterV2RunPage({ id }: { id: string }) {
             <span>Kênh: {run.channelId || '—'}{run.editorialHash ? ` · sổ tay ${run.editorialHash.slice(0, 12)}…` : ''}</span>
             <span>Source: {run.packId || '—'}{run.packHash ? ` · sha256 ${run.packHash}` : ''}</span>
             <span>General: {run.generalPackPath || '—'}{run.generalPackVersion ? ` · v${run.generalPackVersion}` : ''}{run.generalPackHash ? ` · sha256 ${run.generalPackHash}` : ''}</span>
-            <span>Formula: {run.formulaId || '—'}{run.formulaVersion ? ` · v${run.formulaVersion}` : ''}{run.formulaHash ? ` · sha256 ${run.formulaHash}` : ''}</span>
             {run.procedureId && <span>Quy trình: {run.procedureId} · sha256 {run.procedureHash?.slice(0, 12)}…</span>}
           </div>
           <p class="muted" style={{ marginBottom: 0 }}>
@@ -1086,10 +1059,18 @@ export function WriterV2RunPage({ id }: { id: string }) {
           </ul>
           <h3>Outline</h3>
           <p style={{ fontSize: '0.9rem' }}>{run.study.outline.coreInsight}</p>
+          <p style={{ fontSize: '0.85rem' }}>
+            <span class="chip">Khuôn: {run.study.outline.frame.kind}</span>{' '}
+            <span class="muted">{run.study.outline.frame.value}</span>
+          </p>
           <ul class="list">
             {run.study.outline.progression.map((b, i) => (
               <li key={i} style={{ fontSize: '0.85rem' }}>
                 <strong>{b.beat}</strong> — mới: {b.newInformation}
+                <div style={{ marginTop: '0.15rem' }}>
+                  <span class="chip">{b.mode}</span>{' '}
+                  <span class="chip">{b.turn}</span>
+                </div>
               </li>
             ))}
           </ul>

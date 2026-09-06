@@ -560,8 +560,11 @@ export interface WriterRunV2 {
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
+  /** @deprecated SDD 006: Formula is no longer a Writer v2 input — always blank/0 on a new run. */
   formulaId: string;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaVersion: number;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaHash: string;
   agentId: string;
   editorAgentId: string;
@@ -620,8 +623,11 @@ export interface WriterRunV2Summary {
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
+  /** @deprecated SDD 006: Formula is no longer a Writer v2 input — always blank/0 on a new run. */
   formulaId: string;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaVersion: number;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaHash: string;
   agentId: string;
   editorAgentId: string;
@@ -671,10 +677,21 @@ export interface WriterEditorialDecision {
   retrieveWarnings: string[];
 }
 
+/** Beat grammar (SDD 006 §3) — mirrors `packages/daemon/src/writer/video-plan.ts`. */
+export type WriterBeatMode = 'canh' | 'mo-so' | 'phan-bac' | 'cuc-tri' | 'zoom-chu' | 'doi-y';
+export type WriterBeatTurn =
+  | 'doi-don-vi' | 'doi-chu-the' | 'doi-thang' | 'doi-ten' | 'doi-thoi-diem' | 'doi-cau-hoi';
+export type WriterFrameKind = 'nhan-vat' | 'an-du' | 'con-so';
+
 export interface WriterVideoPlan {
   coreInsight: string;
   memoryAnchor: {
     kind: 'name' | 'equation' | 'contrast' | 'image';
+    value: string;
+  };
+  /** The one thread that runs through the whole piece (SDD 006 §3 Khuôn table). */
+  frame: {
+    kind: WriterFrameKind;
     value: string;
   };
   progression: Array<{
@@ -682,10 +699,20 @@ export interface WriterVideoPlan {
     newInformation: string;
     characterOrArgumentChange: string;
     visualAnchor: string;
+    /** How this beat is played (SDD 006 §3 Mode table). */
+    mode: WriterBeatMode;
+    /** The lateral turn applied to `familiarObject` (SDD 006 §3 Phép lật table). */
+    turn: WriterBeatTurn;
+    familiarObject: string;
+    whyNotEarlier: string;
   }>;
   endingPayoff: {
     resolvesOpening: string;
     audienceCanDo: string;
+    /** The straight answer to the hook's question the ending must NOT be. */
+    directAnswer: string;
+    /** The hook's question, reframed — this is what the ending actually resolves to. */
+    reframedQuestion: string;
   };
   cutList: string[];
 }
@@ -1728,7 +1755,8 @@ export const api = {
     targetWords?: number;
     packId: string;
     generalPack: string;
-    formulaId: string;
+    /** @deprecated SDD 006: Formula is no longer a Writer v2 input; ignored by the server. */
+    formulaId?: string;
     agentId?: string;
     editorAgentId?: string;
   }) =>
@@ -1746,7 +1774,8 @@ export const api = {
     targetWords?: number;
     packId: string;
     generalPack: string;
-    formulaId: string;
+    /** @deprecated SDD 006: Formula is no longer a Writer v2 input; ignored by the server. */
+    formulaId?: string;
     agentId: string;
     editorAgentId: string;
   }) => request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}`, {
@@ -1776,7 +1805,8 @@ export const api = {
     targetWords?: number;
     packId: string;
     generalPack: string;
-    formulaId: string;
+    /** @deprecated SDD 006: Formula is no longer a Writer v2 input; ignored by the server. */
+    formulaId?: string;
     agentId?: string;
     editorAgentId?: string;
   }) =>

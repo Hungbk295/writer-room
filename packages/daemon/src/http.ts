@@ -2101,12 +2101,10 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const channelId = String(body['channelId'] ?? '').trim();
         const packId = String(body['packId'] ?? '').trim();
         const generalPack = String(body['generalPack'] ?? '').trim();
-        const formulaId = String(body['formulaId'] ?? '').trim();
         if (!channelId) return error('channelId bắt buộc — hãy chọn Hồ sơ kênh');
         if (!brief) return error('brief bắt buộc');
         if (!packId) return error('packId bắt buộc');
         if (!generalPack) return error('generalPack bắt buộc — vd "hieu-tv.md"');
-        if (!formulaId) return error('formulaId bắt buộc — v2 dùng Formula làm hợp đồng style');
         for (const key of ['agentId', 'editorAgentId'] as const) {
           const raw = body[key];
           if (raw !== undefined && !isDefaultAgentId(raw)) {
@@ -2127,7 +2125,6 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
               brief,
               packId,
               generalPack,
-              formulaId,
               ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
               ...(typeof body['audience'] === 'string' && body['audience'].trim()
                 ? { audience: body['audience'].trim() }
@@ -2151,12 +2148,10 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const channelId = String(body['channelId'] ?? '').trim();
         const packId = String(body['packId'] ?? '').trim();
         const generalPack = String(body['generalPack'] ?? '').trim();
-        const formulaId = String(body['formulaId'] ?? '').trim();
         if (!channelId) return error('channelId bắt buộc — hãy chọn Hồ sơ kênh');
         if (!brief) return error('brief bắt buộc');
         if (!packId) return error('packId bắt buộc');
         if (!generalPack) return error('generalPack bắt buộc — vd "hieu-tv.md"');
-        if (!formulaId) return error('formulaId bắt buộc — v2 dùng Formula làm hợp đồng style');
         for (const key of ['agentId', 'editorAgentId'] as const) {
           const raw = body[key];
           if (raw !== undefined && !isDefaultAgentId(raw)) {
@@ -2173,7 +2168,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const room = await createWriterRoomV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             {
-              channelId, brief, packId, generalPack, formulaId,
+              channelId, brief, packId, generalPack,
               ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
               ...(typeof body['audience'] === 'string' && body['audience'].trim()
                 ? { audience: body['audience'].trim() } : {}),

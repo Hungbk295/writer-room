@@ -29,13 +29,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { FormulaArtifact } from '@writer-room/training-core';
-import { normalizeFormula } from '@writer-room/training-core';
 import { DEFAULT_AGENT_IDS, type DefaultAgentId } from '../agents/defaults.ts';
 import { createJobDoneNotification } from '../notifications.ts';
 import { writerRoot } from '../paths.ts';
 import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
-import { getFormula } from '../training/storage.ts';
 import { getWriterPack, type WriterPack } from '../writer-packs.ts';
 import {
   formatGateViolations,
@@ -51,6 +48,7 @@ import {
 } from './channel-profile.ts';
 import { getGeneralPack } from './general-pack.ts';
 import { clearHookState } from './hook-board.ts';
+import { getModePack, validateModePack } from './mode-pack.ts';
 import { getApprovedPersonaPack, type PersonaPack } from './persona-pack.ts';
 import { getReusableProcedure } from './reusable-procedure.ts';
 import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
@@ -101,9 +99,9 @@ const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 const POSTMORTEM_PTY_SESSION_GROUP = 'writer-v2-postmortem';
 
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v3-exact-length-hook-v1';
-const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v2-hook-v1';
-const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v1';
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v4-beat-grammar-no-formula-v1';
+const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v3-beat-grammar-v1';
+const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v2-mode-pack-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
 const POSTMORTEM_PROMPT_VERSION = 'writer-v2-postmortem-v1';
 
@@ -205,9 +203,20 @@ export interface WriterRunV2 {
    * packs existed still reads back unchanged; a `null`/undefined value means
    * "this run's WRITE stage ran without a persona pack", not "unknown". */
   personaPackHash?: string;
-  /** Style contract (replaces the Profile pin). */
+  /** Content hash of `writer/mode-pack.md`, pinned at WRITE dispatch time
+   * (SDD 006 §5). Required for WRITE to run at all — unlike the persona pack,
+   * a run cannot reach DONE without one — but optional on the type so every
+   * run persisted before beat grammar existed still reads back unchanged. */
+  modePackHash?: string;
+  /**
+   * @deprecated SDD 006 §2/§7: Formula is no longer a Writer v2 input. Kept
+   * only so runs persisted before this change still read back unchanged; a
+   * new run always writes `''`/`0`/`''` here and never resolves a Formula.
+   */
   formulaId: string;
+  /** @deprecated SDD 006 §2/§7 — see `formulaId`. */
   formulaVersion: number;
+  /** @deprecated SDD 006 §2/§7 — see `formulaId`. */
   formulaHash: string;
   agentId: DefaultAgentId;
   /** Layer 1 must not be the writer grading itself. */
@@ -398,39 +407,6 @@ function contentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-export function pinFormulaHash(formula: FormulaArtifact): string {
-  return createHash('sha256').update(JSON.stringify(formula)).digest('hex');
-}
-
-/**
- * The style contract as the writer sees it: rule statements only.
- *
- * `training-core`'s `toTrainingDraftView` is the same projection but documents
- * itself as NOT-for-Writer, because a Formula statement can be source-bound and v1
- * required a migrated Profile instead. v2 reverses that on purpose: a Formula that
- * has been through the lab (rule verdicts) and a Studio merge IS the style
- * contract, and the anti-fabrication half of what a Profile used to promise is now
- * enforced by the gate rather than by prose in a rubric.
- */
-export function formulaContractView(formula: FormulaArtifact): {
-  id: string;
-  version: number;
-  label: string;
-  rules: Array<{ id: string; statement: string; role?: string }>;
-} {
-  const current = normalizeFormula(formula);
-  return {
-    id: current.id,
-    version: current.version,
-    label: current.origin === 'COMPOUND' ? (current.genre ?? '') : (current.channelTitle ?? ''),
-    rules: current.rules.map((r) => ({
-      id: r.id,
-      statement: r.statement,
-      ...(r.role ? { role: r.role } : {}),
-    })),
-  };
-}
-
 function wordRangeFor(run: Pick<WriterRunV2, 'targetWords'>): { minWords: number; maxWords: number } {
   return run.targetWords !== undefined
     ? targetWordRange(run.targetWords)
@@ -581,15 +557,34 @@ export function validateEditorReview(
 
 // ── Prompts ───────────────────────────────────────────────────────────────
 
+/** Short reminder of the frame's rule (SDD 006 §3 Khuôn table) — the writer already
+ * committed to `frame.kind` at STUDY; WRITE only needs the rule, not the table. */
+function frameRuleFor(kind: WriterVideoPlan['frame']['kind']): string {
+  switch (kind) {
+    case 'nhan-vat':
+      return 'theo `channel-styles/nhan-vat-xuyen-suot.md` S2: tên, tuổi, nghề rồi dừng — không '
+        + 'kể thêm; một foil ở mở và một foil ở kết; nhân vật không bao giờ nói ra một câu trích '
+        + 'từ `factsLedger`.';
+    case 'an-du':
+      return 'ẩn dụ phải suy luận tiếp được (không chỉ trang trí) và quay lại đúng ở payoff.';
+    case 'con-so':
+      return 'một con số từ `factsLedger` đi xuyên suốt mọi beat và đóng lại ở payoff.';
+    default:
+      return '';
+  }
+}
+
 function buildWritePrompt(opts: {
   title: string;
   brief: string;
   audience: string;
+  outline: WriterVideoPlan;
   beatCount: number;
   ledgerCount: number;
   wordRange: { minWords: number; maxWords: number };
   forbiddenNames: string[];
   generalPackPath: string;
+  modePackPath: string;
   editorialPath?: string;
   procedurePath?: string;
   personaPackPath?: string;
@@ -598,12 +593,13 @@ function buildWritePrompt(opts: {
   return [
     '# Writer v2 — WRITE (one pass, outline + ledger + the channel general pack)',
     '',
-    'Read `input/envelope.json` for the style formula, outline and facts ledger. Then read',
-    'the WHOLE normal Markdown general pack at `input/general-pack.md`. It is deliberately',
-    'a separate file so it remains readable by line. The assignment message gives absolute',
-    'paths if this PTY has an older working directory — use those paths when needed.',
-    'Do not use Chrome, a browser, Playwright or `file://`; read the staged local Markdown',
-    'file with the filesystem Read tool.',
+    'Read `input/envelope.json` for the outline and facts ledger. Then read the WHOLE',
+    'normal Markdown general pack at `input/general-pack.md` and the WHOLE mode pack at',
+    '`input/mode-pack.md`. Both are deliberately separate files so they remain readable',
+    'by line. The assignment message gives absolute paths if this PTY has an older',
+    'working directory — use those paths when needed. Do not use Chrome, a browser,',
+    'Playwright or `file://`; read the staged local Markdown files with the filesystem',
+    'Read tool.',
     '',
     `## Title\n${opts.title}`,
     '',
@@ -628,8 +624,32 @@ function buildWritePrompt(opts: {
     'notes, anchors or the prompt. The count must be inside this band before you reply',
     '"done" or call `team_turn_complete`.',
     '',
+    '## Mode pack',
+    '',
+    `Read the WHOLE mode pack at \`input/mode-pack.md\` (\`${opts.modePackPath}\`) before writing`,
+    'a single beat. For EVERY beat in `outline.progression`, pick exactly one lối (approach)',
+    "under that beat's stated `mode`, and adapt its structure/rhythm to THIS piece's own",
+    'material — never paste a quote verbatim, and never borrow its numbers, names, or case',
+    'into your script (those belong to a different source video). State which lối you picked',
+    'for each beat in `outlineChanges`.',
+    '',
+    '## Khuôn',
+    '',
+    `This whole piece runs one thread: \`${opts.outline.frame.kind}\` — ${opts.outline.frame.value}.`,
+    frameRuleFor(opts.outline.frame.kind),
+    '',
+    '## Câu mở bài (first sentences)',
+    '',
+    'The first three sentences must NOT be a topic sentence (an abstract claim about "a',
+    'story like this" or "many people feel..."). At least one of them must be something',
+    'concrete: a time, a place, an object, a number from `factsLedger`, or a sentence someone',
+    'actually said. The human-picked hook above still opens the piece; if that hook is',
+    'already a scene (a time/place/object), this rule is already satisfied by it.',
+    '',
     '## What each input is for',
     '',
+    `- **Mode pack** (\`${opts.modePackPath}\`): the real quotes and craft instructions for`,
+    '  each beat mode and lateral turn. See "## Mode pack" above.',
     `- **General pack** (\`${opts.generalPackPath}\`): HOW this channel makes moves — hook`,
     '  shapes, example strategy, payoff shapes, taste DNA, and what it deliberately',
     '  refuses to do. **Never a source of facts.** Do not take a number, a case, a person',
@@ -654,7 +674,9 @@ function buildWritePrompt(opts: {
       : []),
     '- **factsLedger**: the ONLY facts you may state. Every number, name, place, study or',
     '  case in your script must trace to an entry here.',
-    '- **outline**: the compression contract. Follow the beats; do not print field names.',
+    '- **outline**: the compression contract. Every beat carries `mode`, `turn` and',
+    '  `familiarObject` — perform that beat\'s `mode` correctly (see the mode pack) and apply',
+    "  `turn` to `familiarObject`. Follow the beats' shape; do not print field names.",
     '',
     ...(opts.personaPackPath
       ? [
@@ -843,6 +865,16 @@ function buildEditReviewPrompt(opts: {
     '    answering "no" to the question about the 30% threshold was in fact the safe signal.',
     '12. **Ending — image.** Does the final sentence close the CONCRETE image the opening set',
     '    up, or does it dissolve into an abstract proposition?',
+    '13. **Câu mở bài.** Are any of the first three sentences a topic sentence (an abstract',
+    '    claim about "a story like this", instead of a time/place/object/number/quoted line)?',
+    '    A topic sentence in the first three is a MEDIUM defect.',
+    "14. **Mode per beat.** `outline.progression[i].mode` says how each beat should be played.",
+    '    For each beat, does the prose actually do it — a `canh` beat with a time/place/object/',
+    '    action and no conclusion inside it; a `mo-so` beat with a ledger number and the',
+    '    arithmetic exposed; a `phan-bac` beat with the counter-argument built BEFORE it is',
+    '    answered? A beat that does not perform its stated mode is a MEDIUM defect — quote it.',
+    '15. **Adjacent rhythm.** Do two beats next to each other read in the same rhythm — the',
+    '    same way into the sentence, the same shape of paragraph close? That is a HIGH defect.',
     '',
     '## Output rules',
     '',
@@ -854,7 +886,7 @@ function buildEditReviewPrompt(opts: {
     '  what is wrong, in place.',
     '- An empty `defects` array is a valid, respected answer. Do not invent defects to look',
     '  thorough.',
-    '- The checklist is where to look, not a defect quota. Twelve items passing clean is a',
+    '- The checklist is where to look, not a defect quota. Fifteen items passing clean is a',
     '  clean piece, not a review you did badly.',
     '',
     'Write JSON to `out/result.json`:',
@@ -898,8 +930,9 @@ function buildRepairPrompt(opts: {
     '# Writer v2 — REPAIR (one round, in place)',
     '',
     'Read `input/envelope.json`: your script, the outline, the gate violations, and the',
-    "editor's defects. Fix exactly those. Keep everything that already works — this is a",
-    'repair, not a rewrite.',
+    "editor's defects. Read `input/mode-pack.md` again if a fix touches a beat's mode. Fix",
+    'exactly what was flagged. Keep everything that already works — this is a repair, not a',
+    'rewrite.',
     '',
     '## Gate violations (code, not opinion — these are not negotiable)',
     '',
@@ -917,6 +950,8 @@ function buildRepairPrompt(opts: {
     }.`,
     `5. Re-declare all ${opts.beatCount} \`beatAnchors\` against the REPAIRED script — if you`,
     '   edited an anchor sentence, quote the new wording.',
+    "6. Keep each beat's `mode` (outline.progression[i].mode) exactly as committed — a repair",
+    '   fixes prose, it does not change what a beat is doing.',
     '',
     'This is the ONLY repair round. After it, the gate runs again and the run either',
     'finishes or stops for a human. Do not perform compliance; actually fix the facts.',
@@ -1045,7 +1080,8 @@ export interface WriterV2RoomInput {
     targetWords?: number;
     packId: string;
     generalPack: string;
-    formulaId: string;
+    /** @deprecated SDD 006 §2/§7: accepted from old callers, never resolved or used. */
+    formulaId?: string;
     agentId?: DefaultAgentId;
     editorAgentId?: DefaultAgentId;
 }
@@ -1058,7 +1094,8 @@ export interface WriterV2PostConfigInput {
   targetWords?: number;
   packId: string;
   generalPack: string;
-  formulaId: string;
+  /** @deprecated SDD 006 §2/§7: accepted from old callers, never resolved or used. */
+  formulaId?: string;
   agentId: DefaultAgentId;
   editorAgentId: DefaultAgentId;
 }
@@ -1088,7 +1125,6 @@ export async function updateWriterPostV2(
   const brief = input.brief.trim();
   const packId = input.packId.trim();
   const generalPackPath = input.generalPack.trim() || channel.defaultGeneralPack || '';
-  const formulaId = input.formulaId.trim() || channel.defaultFormulaId || '';
   let targetWords: number | undefined;
   if (input.targetWords !== undefined && input.targetWords !== null) {
     const n = Number(input.targetWords);
@@ -1101,9 +1137,6 @@ export async function updateWriterPostV2(
   if (packId && !pack) throw new Error('Source Pack không tồn tại');
   const generalPack = generalPackPath ? await getGeneralPack(generalPackPath, deps.dataDir) : null;
   if (generalPackPath && !generalPack) throw new Error(`General pack không tồn tại: ${generalPackPath}`);
-  const formula = formulaId ? await getFormula(formulaId, deps.dataDir) : null;
-  if (formulaId && !formula) throw new Error('Formula không tồn tại');
-  const normalized = formula ? normalizeFormula(formula) : null;
   const editorial = await getEditorialNotebook(channelId, deps.dataDir);
   if (!editorial) throw new Error('Không đọc được sổ tay biên tập của kênh');
   const procedure = channel.defaultProcedure
@@ -1140,12 +1173,14 @@ export async function updateWriterPostV2(
   post.generalPackPath = generalPack?.path ?? '';
   post.generalPackHash = generalPack?.hash ?? '';
   post.generalPackVersion = generalPack?.version ?? null;
-  post.formulaId = normalized?.id ?? '';
-  post.formulaVersion = normalized?.version ?? 0;
-  post.formulaHash = formula ? pinFormulaHash(formula) : '';
+  // SDD 006 §2/§7: Formula is no longer a Writer v2 input — never resolved,
+  // always written blank so READY does not depend on it.
+  post.formulaId = '';
+  post.formulaVersion = 0;
+  post.formulaHash = '';
   post.agentId = input.agentId;
   post.editorAgentId = input.editorAgentId;
-  post.phase = requestedTitle && brief && pack && generalPack && formula && editorial ? 'READY' : 'CONFIGURING';
+  post.phase = requestedTitle && brief && pack && generalPack && editorial ? 'READY' : 'CONFIGURING';
   // Title is the input the hook loop was generated against. Changing it
   // silently keeping an old selection would open the wrong video.
   if (previousTitle !== (requestedTitle ?? '')) {
@@ -1178,7 +1213,6 @@ export async function createWriterRoomV2(
       ...(input.targetWords !== undefined ? { targetWords: input.targetWords } : {}),
       packId: input.packId,
       generalPack: input.generalPack,
-      formulaId: input.formulaId,
       agentId,
       editorAgentId,
     });
@@ -1201,7 +1235,7 @@ export async function runWriterRoomV2(deps: WriterV2Deps, runId: string): Promis
   }
   const pack = await getWriterPack(run.packId, deps.dataDir);
   if (!pack) throw new Error('Source Pack của room không còn tồn tại');
-  if (!run.requestedTitle?.trim() || !run.brief.trim() || !run.packId || !run.generalPackPath || !run.formulaId) {
+  if (!run.requestedTitle?.trim() || !run.brief.trim() || !run.packId || !run.generalPackPath) {
     throw new Error('Writer v2 post chưa đủ cấu hình để Run');
   }
   if (!run.channelId) throw new Error('Chưa chọn Hồ sơ kênh cho bài viết');
@@ -1233,17 +1267,12 @@ export async function runWriterRoomV2(deps: WriterV2Deps, runId: string): Promis
   if (!generalPack || generalPack.hash !== run.generalPackHash) {
     throw new Error('General Pack đã thay đổi sau khi Save; hãy Update configuration để pin lại');
   }
-  const formula = await getFormula(run.formulaId, deps.dataDir);
-  if (!formula) throw new Error('Formula của room không còn tồn tại');
-  if (pinFormulaHash(formula) !== run.formulaHash) {
-    throw new Error('Formula đã thay đổi sau khi Save; hãy Update configuration để pin lại');
-  }
 
   run.status = 'RUNNING';
   run.phase = 'STUDY';
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
-  await dispatchStudy(deps, run, pack, formula);
+  await dispatchStudy(deps, run, pack);
   return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
 }
 
@@ -1255,7 +1284,6 @@ async function dispatchStudy(
   deps: WriterV2Deps,
   run: WriterRunV2,
   pack: WriterPack,
-  formula: FormulaArtifact,
   options: { attempt?: number; freshContext?: boolean } = {},
 ): Promise<void> {
   const dispatch = await dispatchLegacyStudy({
@@ -1270,7 +1298,6 @@ async function dispatchStudy(
     packTitle: run.packTitle,
     ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     pack,
-    formula: formulaContractView(formula),
     ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
     ...(options.freshContext !== undefined ? { freshContext: options.freshContext } : {}),
   });
@@ -1332,7 +1359,6 @@ async function dispatchWrite(
     );
     return;
   }
-  const formula = await getFormula(run.formulaId, deps.dataDir);
   const editorial = run.channelId ? await getEditorialNotebook(run.channelId, deps.dataDir) : null;
   const procedure = run.procedureId ? await getReusableProcedure(run.procedureId, deps.dataDir) : null;
   // Optional and independent of the required packs above: absent is a normal,
@@ -1351,8 +1377,38 @@ async function dispatchWrite(
     );
     return;
   }
-  if (!pack || !generalPack || !formula) {
-    await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack, general pack or formula disappeared before WRITE');
+  // Unlike the persona pack, the mode pack is REQUIRED (SDD 006 §5): WRITE
+  // cannot perform a beat's `mode`/`turn` without it, so a missing or
+  // structurally incomplete file fails the run rather than writing without it.
+  let modePack: Awaited<ReturnType<typeof getModePack>>;
+  try {
+    modePack = await getModePack(deps.dataDir);
+  } catch (err) {
+    await failRun(
+      deps,
+      run,
+      'MODE_PACK_UNREADABLE',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+  if (!modePack) {
+    await failRun(
+      deps, run, 'WRITER_V2_INPUT_MISSING',
+      'mode pack thiếu hoặc rỗng (writer-room-data/writer/mode-pack.md) — không thể WRITE',
+    );
+    return;
+  }
+  const modePackCheck = validateModePack(modePack.markdown);
+  if (!modePackCheck.ok) {
+    await failRun(
+      deps, run, 'WRITER_V2_INPUT_MISSING',
+      `mode pack thiếu heading: ${modePackCheck.missing.join(', ')}`,
+    );
+    return;
+  }
+  if (!pack || !generalPack) {
+    await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack or general pack disappeared before WRITE');
     return;
   }
   if (generalPack.hash !== run.generalPackHash) {
@@ -1387,6 +1443,7 @@ async function dispatchWrite(
   // Pinned like generalPackHash, but nothing fails if it changes mid-run — a
   // persona pack is optional identity material, not a required contract.
   run.personaPackHash = personaPack?.hash;
+  run.modePackHash = modePack.hash;
   await saveWriterRunV2(run, deps.dataDir);
 
   const forbiddenNames = forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title });
@@ -1397,7 +1454,6 @@ async function dispatchWrite(
     contract: {
       role: 'Writer v2 — WRITE stage',
       audience,
-      formula: formulaContractView(formula),
       forbiddenHostNames: forbiddenNames,
       wordRange,
     },
@@ -1413,6 +1469,12 @@ async function dispatchWrite(
       hash: generalPack.hash,
       role: 'HOW this channel makes moves. Never a source of facts, cases or numbers.',
       contentFile: 'input/general-pack.md',
+    },
+    modePack: {
+      path: modePack.path,
+      hash: modePack.hash,
+      role: 'Real quotes and craft instructions for each beat mode and lateral turn.',
+      contentFile: 'input/mode-pack.md',
     },
     ...(editorial
       ? {
@@ -1475,11 +1537,13 @@ async function dispatchWrite(
       title: run.requestedTitle ?? run.brief,
       brief: run.brief,
       audience,
+      outline: study.outline,
       beatCount: study.outline.progression.length,
       ledgerCount: study.factsLedger.length,
       wordRange,
       forbiddenNames,
       generalPackPath: generalPack.path,
+      modePackPath: modePack.path,
       ...(editorial ? { editorialPath: editorial.path } : {}),
       ...(procedure ? { procedurePath: procedure.path } : {}),
       ...(personaPack ? { personaPackPath: personaPack.path } : {}),
@@ -1490,6 +1554,7 @@ async function dispatchWrite(
     envelope,
     inputFiles: [
       { path: 'general-pack.md', content: generalPack.markdown },
+      { path: 'mode-pack.md', content: modePack.markdown },
       ...(editorial ? [{ path: 'editorial.md', content: editorial.markdown }] : []),
       ...(procedure ? [{ path: 'procedure.md', content: procedure.instructions }] : []),
       ...(personaPack ? [{ path: 'persona-pack.md', content: personaPack.markdown }] : []),
@@ -1498,6 +1563,7 @@ async function dispatchWrite(
     inputHashes: [
       envelopeHash(envelope),
       contentHash(generalPack.markdown),
+      contentHash(modePack.markdown),
       ...(editorial ? [editorial.hash] : []),
       ...(procedure ? [procedure.hash] : []),
       ...(personaPack ? [contentHash(personaPack.markdown)] : []),
@@ -1583,10 +1649,6 @@ export async function continueWriterRunV2(
       throw new Error('Source Pack không còn khớp pin của run; từ chối recovery STUDY');
     }
     if (!hasStudyArtifact) {
-      const formula = await getFormula(run.formulaId, deps.dataDir);
-      if (!formula || !run.formulaHash || pinFormulaHash(formula) !== run.formulaHash) {
-        throw new Error('Formula không còn khớp pin của run; từ chối retry STUDY');
-      }
       run.status = 'RUNNING';
       run.phase = 'STUDY';
       delete run.errorCode;
@@ -1595,7 +1657,7 @@ export async function continueWriterRunV2(
       await saveWriterRunV2(run, deps.dataDir);
       // A daemon restart rotates the Team MCP URL/token. Replace the old pane
       // instead of resuming a CLI process that still holds stale MCP config.
-      await dispatchStudy(deps, run, pack, formula, { attempt: 2, freshContext: true });
+      await dispatchStudy(deps, run, pack, { attempt: 2, freshContext: true });
       return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
     }
     const validated = validateStudyArtifact(parsed, {
@@ -1793,6 +1855,22 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack disappeared before REPAIR');
     return;
   }
+  const modePack = await getModePack(deps.dataDir);
+  if (!modePack) {
+    await failRun(
+      deps, run, 'WRITER_V2_INPUT_MISSING',
+      'mode pack thiếu hoặc rỗng (writer-room-data/writer/mode-pack.md) — không thể REPAIR',
+    );
+    return;
+  }
+  const modePackCheck = validateModePack(modePack.markdown);
+  if (!modePackCheck.ok) {
+    await failRun(
+      deps, run, 'WRITER_V2_INPUT_MISSING',
+      `mode pack thiếu heading: ${modePackCheck.missing.join(', ')}`,
+    );
+    return;
+  }
   const violations = run.gateResults.at(-1)?.violations ?? [];
   const defects = run.editorDefects ?? [];
   const forbiddenNames = forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title });
@@ -1806,6 +1884,7 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     defects,
     wordRange,
     forbiddenHostNames: forbiddenNames,
+    modePack: { path: modePack.path, hash: modePack.hash },
   };
 
   run.repairAttempted = true;
@@ -1829,7 +1908,8 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
       hasPersona: run.personaPackHash !== undefined,
     }),
     envelope,
-    inputHashes: [envelopeHash(envelope)],
+    inputFiles: [{ path: 'mode-pack.md', content: modePack.markdown }],
+    inputHashes: [envelopeHash(envelope), contentHash(modePack.markdown)],
     promptVersion: REPAIR_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,

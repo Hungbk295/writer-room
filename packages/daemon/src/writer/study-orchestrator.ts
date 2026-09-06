@@ -26,7 +26,7 @@ import {
 } from './video-plan.ts';
 
 export const STUDY_STAGE = 'study-v2';
-export const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-beat-grammar-v1';
+export const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-beat-grammar-v2-no-formula';
 export const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
 
 /** A ledger this short is a writer that did not really read the pack. */
@@ -47,17 +47,12 @@ export interface StudyArtifact {
   factsLedger: LedgerEntry[];
 }
 
-export interface StudyFormulaContract {
-  id: string;
-  version: number;
-  label: string;
-  rules: Array<{ id: string; statement: string; role?: string }>;
-}
-
 /**
  * An explicit allowlist at the lifecycle/orchestrator seam. Passing individual
  * fields instead of WriterRunV2 prevents a future STUDY stage from gaining new
  * inputs merely because the persisted run model grew another property.
+ *
+ * No `formula` field (SDD 006 §2/§7): Formula is no longer an input of STUDY.
  */
 export interface LegacyStudyDispatchInput {
   scheduler: LaneScheduler;
@@ -71,7 +66,6 @@ export interface LegacyStudyDispatchInput {
   packTitle: string;
   selectedHook?: SelectedHook;
   pack: WriterPack;
-  formula: StudyFormulaContract;
   attempt?: number;
   freshContext?: boolean;
 }
@@ -201,7 +195,6 @@ function buildStudyPrompt(opts: {
   title: string;
   brief: string;
   audience: string;
-  formulaLabel: string;
   videoIds: string[];
   selectedHook?: SelectedHook;
 }): string {
@@ -218,7 +211,6 @@ function buildStudyPrompt(opts: {
     'the complete pack and is deliberately prepared for the filesystem Read tool.',
     '',
     `## Audience: ${opts.audience}`,
-    `## Style formula: ${opts.formulaLabel}`,
     '',
     '## Title',
     opts.title,
@@ -390,7 +382,6 @@ export async function dispatchLegacyStudy(
     contract: {
       role: 'Writer v2 — STUDY stage',
       audience: input.audience,
-      formula: input.formula,
       packRole: 'the only source of facts',
       generalPackRole: 'not visible in this stage — craft comes later',
     },
@@ -425,7 +416,6 @@ export async function dispatchLegacyStudy(
       title: input.title,
       brief: input.brief,
       audience: input.audience,
-      formulaLabel: input.formula.label || input.packTitle,
       videoIds,
       ...(input.selectedHook ? { selectedHook: input.selectedHook } : {}),
     }),

@@ -5,7 +5,6 @@ import {
   type ChannelStyleSummary,
   type EditorialNotebook,
   type EditorialSuggestion,
-  type FormulaSummary,
   type GeneralPackSummary,
   type LessonKind,
   type ReusableProcedure,
@@ -72,7 +71,6 @@ export function ChannelsPage({ id }: { id?: string }) {
   const [editorial, setEditorial] = useState('');
   const [suggestions, setSuggestions] = useState<EditorialSuggestion[]>([]);
   const [generalPacks, setGeneralPacks] = useState<GeneralPackSummary[]>([]);
-  const [formulas, setFormulas] = useState<FormulaSummary[]>([]);
   const [styles, setStyles] = useState<ChannelStyleSummary[]>([]);
   const [procedures, setProcedures] = useState<ReusableProcedure[]>([]);
   const [procedureId, setProcedureId] = useState('');
@@ -86,13 +84,12 @@ export function ChannelsPage({ id }: { id?: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const loadCatalogs = async () => {
-    const [channelData, generalData, formulaData, styleData, procedureData] = await Promise.all([
-      api.listChannelProfiles(), api.listGeneralPacks(), api.listFormulas(),
+    const [channelData, generalData, styleData, procedureData] = await Promise.all([
+      api.listChannelProfiles(), api.listGeneralPacks(),
       api.listChannelStyles(), api.listReusableProcedures(),
     ]);
     setChannels(channelData.channels);
     setGeneralPacks(generalData.packs);
-    setFormulas(formulaData.formulas);
     setStyles(styleData.styles);
     setProcedures(procedureData.procedures);
     if (!id && !selectedId && channelData.channels[0]) setSelectedId(channelData.channels[0].id);
@@ -266,7 +263,6 @@ export function ChannelsPage({ id }: { id?: string }) {
               <label class="field"><span>YouTube channel ID của mình (mỗi dòng một ID, chỉ là alias)</span><textarea value={draft.youtubeIds} onInput={(e) => setDraft({ ...draft, youtubeIds: (e.target as HTMLTextAreaElement).value })} /></label>
               <div class="form-grid-2">
                 <label class="field"><span>General Pack mặc định</span><select value={draft.defaultGeneralPack} onChange={(e) => setDraft({ ...draft, defaultGeneralPack: (e.target as HTMLSelectElement).value })}><option value="">Không đặt</option>{generalPacks.map((item) => <option value={item.path}>{item.title}</option>)}</select></label>
-                <label class="field"><span>Formula mặc định</span><select value={draft.defaultFormulaId} onChange={(e) => setDraft({ ...draft, defaultFormulaId: (e.target as HTMLSelectElement).value })}><option value="">Không đặt</option>{formulas.map((item) => <option value={item.id}>{item.label}</option>)}</select></label>
                 <label class="field"><span>Style mặc định (chỉ dùng khi restyle)</span><select value={draft.defaultStyle} onChange={(e) => setDraft({ ...draft, defaultStyle: (e.target as HTMLSelectElement).value })}><option value="">Không đặt</option>{styles.map((item) => <option value={item.path}>{item.title}</option>)}</select></label>
                 <label class="field"><span>Quy trình dùng lại mặc định</span><select value={draft.defaultProcedure} onChange={(e) => setDraft({ ...draft, defaultProcedure: (e.target as HTMLSelectElement).value })}><option value="">Không đặt</option>{procedures.map((item) => <option value={item.id}>{item.id}</option>)}</select></label>
               </div>

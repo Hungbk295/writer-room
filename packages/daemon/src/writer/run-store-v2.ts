@@ -31,8 +31,12 @@ export interface WriterRunV2Summary {
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
+  /** @deprecated SDD 006: Formula is no longer a Writer v2 input. Kept only so
+   * runs persisted before this change still summarize/read back unchanged. */
   formulaId: string;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaVersion: number;
+  /** @deprecated SDD 006 — see `formulaId`. */
   formulaHash: string;
   agentId: string;
   editorAgentId: string;

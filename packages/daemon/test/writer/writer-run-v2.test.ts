@@ -10,15 +10,14 @@
  * invented character with invented numbers) must never reach `DONE`.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { FormulaArtifact } from '@writer-room/training-core';
 import { createAgentHarness, type AgentHarness } from '../../src/harness.ts';
 import type { DispatchItemParams, ItemSettledResult, LaneScheduler } from '../../src/pipeline/lane-scheduler.ts';
 import type { PipelineLedgerRow } from '../../src/pipeline/ledger.ts';
 import { listJobNotifications } from '../../src/notifications.ts';
-import { saveFormula } from '../../src/training/storage.ts';
 import { createWriterPack } from '../../src/writer-packs.ts';
 import {
   HOOK_CLARIFY_STAGE,
@@ -30,6 +29,7 @@ import {
   startHookSuggest,
 } from '../../src/writer/hook-board.ts';
 import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from '../../src/writer/run-store-v2.ts';
+import { WRITER_BEAT_MODES, WRITER_BEAT_TURNS } from '../../src/writer/video-plan.ts';
 import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
 import { createChannelProfile, listEditorialSuggestions, updateChannelProfile } from '../../src/writer/channel-profile.ts';
 import { createReusableProcedure } from '../../src/writer/reusable-procedure.ts';
@@ -92,6 +92,17 @@ const PACK_MARKDOWN = [
   `${PACK_QUOTE}. ${PACK_QUOTE_2}. ${PACK_QUOTE_3}.`,
 ].join('\n');
 
+/** Minimal fixture with all 12 SDD 006 §5 headings — content is not real craft,
+ * only enough to satisfy `validateModePack`'s fail-closed structural check so
+ * WRITE/REPAIR can dispatch in tests that are not about the mode pack itself. */
+const MODE_PACK_MARKDOWN = [
+  '# Mode pack (test fixture)',
+  '<!-- version: 1 -->',
+  '',
+  ...WRITER_BEAT_MODES.map((mode) => `## Mode: ${mode} — Tên\n**Phải có:** x. **Cấm:** y.\n`),
+  ...WRITER_BEAT_TURNS.map((turn) => `## Phép lật: ${turn} — Tên\nGhi chú.\n`),
+].join('\n');
+
 const STYLE_ID = 'nhan-vat-xuyen-suot.md';
 const CHANNEL_STYLE = [
   '# Nhân vật xuyên suốt',
@@ -146,6 +157,8 @@ beforeEach(async () => {
     displayName: 'Kênh Tài chính',
     topic: 'Tài chính cá nhân',
   }, dir);
+  mkdirSync(join(dir, 'writer'), { recursive: true });
+  writeFileSync(join(dir, 'writer', 'mode-pack.md'), MODE_PACK_MARKDOWN, 'utf8');
   mkdirSync(join(dir, 'general-packs'), { recursive: true });
   writeFileSync(
     join(dir, 'general-packs', 'hieu-tv.md'),
@@ -227,25 +240,6 @@ async function completeStage(
   return settled;
 }
 
-function makeFormula(): FormulaArtifact {
-  return {
-    id: 'formula-v2-test',
-    status: 'TRIAL',
-    origin: 'ANALYZED',
-    version: 3,
-    channelTitle: 'Hieu Nguyen',
-    videoSnapshotId: 'snap-1',
-    rules: [
-      { id: 'rule-1', statement: 'Mở bằng một con số có nguồn.', evidence: [] },
-      { id: 'rule-2', role: 'payoff', statement: 'Kết bằng đúng con số đã mở.', evidence: [] },
-    ],
-    includedArtifacts: [],
-    lineage: {},
-    warnings: [],
-    createdAt: '2026-08-14T00:00:00.000Z',
-  } as FormulaArtifact;
-}
-
 const OUTLINE = {
   coreInsight: 'Chi phí cố định quyết định quyền lựa chọn, không phải mức lương',
   memoryAnchor: { kind: 'contrast' as const, value: 'lương tăng vs quyền chọn giảm' },
@@ -309,7 +303,6 @@ async function startRun(): Promise<string> {
     { title: 'Hieu pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Hieu Nguyen' },
     dir,
   );
-  await saveFormula(makeFormula(), dir);
   const run = await startWriterRunV2(
     { scheduler: harness.pipeline.scheduler, dataDir: dir },
     {
@@ -318,7 +311,6 @@ async function startRun(): Promise<string> {
       title: 'Lương tăng, quyền chọn giảm',
       packId: pack.id,
       generalPack: 'hieu-tv.md',
-      formulaId: 'formula-v2-test',
       agentId: 'codex',
     },
   );
@@ -338,7 +330,6 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     const pack = await createWriterPack(
       { title: 'Room pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' }, dir,
     );
-    await saveFormula(makeFormula(), dir);
     return { packId: pack.id };
   }
 
@@ -365,11 +356,12 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
         channelId: 'finance',
         brief: 'Kiểm tra post trước khi chạy', title: 'Một title đã chuẩn bị',
         audience: 'Người đi làm', targetWords: 1_234,
-        packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
+        packId, generalPack: 'hieu-tv.md',
         agentId: 'codex', editorAgentId: 'claude',
       },
     );
     expect(saved.status).toBe('DRAFT');
+    // READY does not require a Formula (SDD 006 §2/§7) — none was configured here.
     expect(saved.phase).toBe('READY');
     expect(saved.requestedTitle).toBe('Một title đã chuẩn bị');
     expect(saved.audience).toBe('Người đi làm');
@@ -379,17 +371,37 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
     expect(saved.generalPackPath).toBe('hieu-tv.md');
     expect(saved.generalPackHash).toHaveLength(64);
     expect(saved.generalPackVersion).toBe(1);
-    expect(saved.formulaId).toBe('formula-v2-test');
-    expect(saved.formulaVersion).toBe(3);
-    expect(saved.formulaHash).toHaveLength(64);
+    expect(saved.formulaId).toBe('');
+    expect(saved.formulaVersion).toBe(0);
+    expect(saved.formulaHash).toBe('');
     expect((await getWriterRunV2(post.id, dir))).toEqual(saved);
     const listed = (await listWriterRunsV2(dir)).find((item) => item.id === post.id);
     expect(listed?.audience).toBe('Người đi làm');
     expect(listed?.packHash).toBe(saved.packHash);
     expect(listed?.generalPackHash).toBe(saved.generalPackHash);
-    expect(listed?.formulaHash).toBe(saved.formulaHash);
+    expect(listed?.formulaHash).toBe('');
     expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
     expect(harness.workflow.status().totalTurns).toBe(0);
+  });
+
+  test('a Formula posted by an old client is accepted and silently ignored', async () => {
+    const { packId } = await fixtures();
+    const post = await createWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir },
+    );
+    const saved = await updateWriterPostV2(
+      { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
+      {
+        channelId: 'finance',
+        brief: 'Client cũ vẫn gửi formulaId', title: 'Một title đã chuẩn bị',
+        packId, generalPack: 'hieu-tv.md', formulaId: 'some-old-formula-id',
+        agentId: 'codex', editorAgentId: 'claude',
+      },
+    );
+    expect(saved.phase).toBe('READY');
+    expect(saved.formulaId).toBe('');
+    expect(saved.formulaVersion).toBe(0);
+    expect(saved.formulaHash).toBe('');
   });
 
   test('rejects Run for incomplete config without dispatching', async () => {
@@ -400,7 +412,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
       { scheduler: harness.pipeline.scheduler, dataDir: dir }, post.id,
       {
         channelId: 'finance',
-        brief: 'Có brief nhưng thiếu pack', packId: '', generalPack: '', formulaId: '',
+        brief: 'Có brief nhưng thiếu pack', packId: '', generalPack: '',
         agentId: 'codex', editorAgentId: 'claude',
       },
     );
@@ -421,7 +433,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
       {
         channelId: 'finance',
         brief: 'Kiểm tra room trước khi chạy', title: 'Một title đã chuẩn bị',
-        packId, generalPack: 'hieu-tv.md', formulaId: 'formula-v2-test',
+        packId, generalPack: 'hieu-tv.md',
         agentId: 'codex', editorAgentId: 'claude',
       },
     );
@@ -457,7 +469,7 @@ describe('Writer v2 post — create, configure, review, then explicit run', () =
       {
         channelId: 'finance',
         brief: 'Legacy external caller', packId, generalPack: 'hieu-tv.md',
-        formulaId: 'formula-v2-test', agentId: 'codex',
+        agentId: 'codex',
       },
     );
     expect(room.status).toBe('DRAFT');
@@ -821,6 +833,89 @@ describe('Writer v2 — end to end', () => {
     // the WRITE envelope deliberately withholds.
     expect(study[0]!.freshContext).not.toBe(false);
     expect(write[0]!.freshContext).toBe(true);
+  });
+
+  test('SDD 006: neither STUDY nor WRITE envelope carries a formula key', async () => {
+    const runId = await startRun();
+    const studyEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'envelope.json')).text(),
+    ) as { contract: Record<string, unknown> };
+    expect(studyEnvelope.contract['formula']).toBeUndefined();
+    expect(await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'prompt.md')).text())
+      .not.toContain('Style formula');
+
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { contract: Record<string, unknown>; formula?: unknown };
+    expect(writeEnvelope.contract['formula']).toBeUndefined();
+    expect(writeEnvelope.formula).toBeUndefined();
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .not.toContain('style formula');
+  });
+
+  test('SDD 006: a post reaches READY (and STUDY dispatches) without any Formula configured', async () => {
+    const runId = await startRun();
+    const run = (await getWriterRunV2(runId, dir))!;
+    expect(run.formulaId).toBe('');
+    expect(run.formulaVersion).toBe(0);
+    expect(run.formulaHash).toBe('');
+    expect(run.status).toBe('RUNNING');
+    expect(run.phase).toBe('STUDY');
+  });
+
+  test('SDD 006: WRITE stages input/mode-pack.md and hashes it into inputHashes', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'mode-pack.md')).text())
+      .toBe(MODE_PACK_MARKDOWN);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { modePack: { path: string; hash: string; contentFile: string } };
+    expect(writeEnvelope.modePack.path).toBe('mode-pack.md');
+    expect(writeEnvelope.modePack.contentFile).toBe('input/mode-pack.md');
+    expect(writeEnvelope.modePack.hash).toHaveLength(64);
+
+    const write = dispatches.filter((d) => d.stage === WRITE_STAGE);
+    expect(write).toHaveLength(1);
+    const modePackHash = createHash('sha256').update(MODE_PACK_MARKDOWN).digest('hex');
+    expect(write[0]!.inputHashes).toContain(modePackHash);
+
+    const done = (await getWriterRunV2(runId, dir))!;
+    expect(done.modePackHash).toBe(modePackHash);
+  });
+
+  test('SDD 006: WRITE fails WRITER_V2_INPUT_MISSING when the mode pack is missing entirely', async () => {
+    rmSync(join(dir, 'writer', 'mode-pack.md'), { force: true });
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    const failed = await waitUntil(
+      () => getWriterRunV2(runId, dir),
+      (r) => r != null && r.status !== 'RUNNING',
+    );
+    expect(failed!.status).toBe('FAILED');
+    expect(failed!.errorCode).toBe('WRITER_V2_INPUT_MISSING');
+    expect(failed!.errorReason).toContain('mode pack');
+  });
+
+  test('SDD 006: WRITE fails WRITER_V2_INPUT_MISSING when the mode pack is missing a heading', async () => {
+    writeFileSync(
+      join(dir, 'writer', 'mode-pack.md'),
+      MODE_PACK_MARKDOWN.replace('## Mode: doi-y — Tên\n**Phải có:** x. **Cấm:** y.\n', ''),
+      'utf8',
+    );
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    const failed = await waitUntil(
+      () => getWriterRunV2(runId, dir),
+      (r) => r != null && r.status !== 'RUNNING',
+    );
+    expect(failed!.status).toBe('FAILED');
+    expect(failed!.errorCode).toBe('WRITER_V2_INPUT_MISSING');
+    expect(failed!.errorReason).toContain('Mode: doi-y');
   });
 
   test('WRITE runs exactly as before when no persona pack file exists (backward compatible)', async () => {
@@ -1536,8 +1631,6 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
       await createChannelProfile({ id: 'finance', displayName: 'Kênh Tài chính', topic: 'Tài chính' }, tmp);
       mkdirSync(join(tmp, 'general-packs'), { recursive: true });
       writeFileSync(join(tmp, 'general-packs', 'hieu-tv.md'), '# gp\n<!-- version: 1 -->\n', 'utf8');
-      const formula = makeFormula();
-      await saveFormula(formula, tmp);
       const pack = await createWriterPack({
         title: 'Pack',
         channelTitle: 'Ch',
@@ -1552,7 +1645,6 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
           title: 'title',
           packId: pack.id,
           generalPack: 'hieu-tv.md',
-          formulaId: formula.id,
           agentId: 'codex',
           editorAgentId: 'claude',
         },
@@ -1601,8 +1693,8 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
         ].join('\n'),
         'utf8',
       );
-      const formula = makeFormula();
-      await saveFormula(formula, tmp);
+      mkdirSync(join(tmp, 'writer'), { recursive: true });
+      writeFileSync(join(tmp, 'writer', 'mode-pack.md'), MODE_PACK_MARKDOWN, 'utf8');
       const pack = await createWriterPack({
         title: 'Pack',
         channelTitle: 'Ch',
@@ -1617,7 +1709,6 @@ describe('Writer v2 — weighted progress + main-loop boot recovery', () => {
           title: 'title',
           packId: pack.id,
           generalPack: 'hieu-tv.md',
-          formulaId: formula.id,
           agentId: 'codex',
           editorAgentId: 'claude',
         },
@@ -1665,7 +1756,6 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
       { title: 'Room pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' },
       dir,
     );
-    await saveFormula(makeFormula(), dir);
     const post = await createWriterPostV2(deps());
     await updateWriterPostV2(deps(), post.id, {
       channelId: 'finance',
@@ -1673,7 +1763,6 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
       title: 'Lương tăng, quyền chọn giảm',
       packId: pack.id,
       generalPack: 'hieu-tv.md',
-      formulaId: 'formula-v2-test',
       agentId: 'codex',
       editorAgentId: 'claude',
     });
