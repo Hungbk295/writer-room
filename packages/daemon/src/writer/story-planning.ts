@@ -221,17 +221,27 @@ const DELTA_KEYS = new Set(['field', 'before', 'after', 'reason', 'claimIds']);
 const HOOK_VERDICT_KEYS = new Set(['status', 'rationale', 'claimIds', 'replacementHook']);
 const SELECTED_HOOK_KEYS = new Set(['id', 'type', 'typeLabel', 'text']);
 const BEAT_EVIDENCE_KEYS = new Set(['beatIndex', 'claimIds', 'evidenceIds']);
-const PLAN_KEYS = new Set(['coreInsight', 'memoryAnchor', 'progression', 'endingPayoff', 'cutList']);
+const PLAN_KEYS = new Set(['coreInsight', 'memoryAnchor', 'frame', 'progression', 'endingPayoff', 'cutList']);
 const MEMORY_ANCHOR_KEYS = new Set(['kind', 'value']);
+const FRAME_KEYS = new Set(['kind', 'value']);
 const PLAN_BEAT_KEYS = new Set([
   'kind',
   'beat',
   'newInformation',
   'characterOrArgumentChange',
   'visualAnchor',
+  'mode',
+  'turn',
+  'familiarObject',
+  'whyNotEarlier',
   'personaEntryId',
 ]);
-const ENDING_PAYOFF_KEYS = new Set(['resolvesOpening', 'audienceCanDo']);
+const ENDING_PAYOFF_KEYS = new Set([
+  'resolvesOpening',
+  'audienceCanDo',
+  'directAnswer',
+  'reframedQuestion',
+]);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 
 const SOURCE_MARKER_RE = /\b(?:video\s*id|facts\s*ledger|research\s*map|source\s*pack|topic\s*pack|transcript\s*quote)\b/iu;
@@ -671,6 +681,12 @@ function validateStrictPlanShape(raw: unknown, path: string): StoryPlanningValid
   const anchorExtra = unknownKey(memoryAnchor, MEMORY_ANCHOR_KEYS);
   if (anchorExtra) {
     return fail('STORY_PLAN', `unknown memoryAnchor key "${anchorExtra}"`, `${path}.memoryAnchor.${anchorExtra}`);
+  }
+  const frame = raw['frame'];
+  if (!isRecord(frame)) return fail('STORY_PLAN', `${path}.frame must be an object`, `${path}.frame`);
+  const frameExtra = unknownKey(frame, FRAME_KEYS);
+  if (frameExtra) {
+    return fail('STORY_PLAN', `unknown frame key "${frameExtra}"`, `${path}.frame.${frameExtra}`);
   }
   if (!Array.isArray(raw['progression'])) {
     return fail('STORY_PLAN', `${path}.progression must be an array`, `${path}.progression`);
@@ -1517,6 +1533,10 @@ const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
       kind: 'equation',
       value: 'quyền lựa chọn = khả năng chờ - áp lực cố định',
     },
+    frame: {
+      kind: 'con-so',
+      value: 'khoản áp lực cố định hằng tháng',
+    },
     progression: [
       {
         kind: 'FACTUAL',
@@ -1524,6 +1544,10 @@ const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
         newInformation: 'Khoảng đệm bảo vệ quyền đổi hướng.',
         characterOrArgumentChange: 'Từ nhìn tài sản sang nhìn lựa chọn còn lại.',
         visualAnchor: 'Một cánh cửa còn mở.',
+        mode: 'canh',
+        turn: 'doi-thoi-diem',
+        familiarObject: 'cánh cửa thoát hiểm của căn hộ',
+        whyNotEarlier: 'chưa có gì để so sánh nếu mở bằng cảnh này trước hook',
       },
       {
         kind: 'NARRATIVE',
@@ -1531,6 +1555,10 @@ const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
         newInformation: 'Đổi nhịp bằng một câu hỏi dẫn sang cơ chế.',
         characterOrArgumentChange: 'Người xem chuyển từ kết quả sang nguyên nhân.',
         visualAnchor: 'Một chiếc đồng hồ bắt đầu chạy.',
+        mode: 'zoom-chu',
+        turn: 'doi-cau-hoi',
+        familiarObject: 'chữ "lối thoát" vừa dùng ở beat trước',
+        whyNotEarlier: 'phải có chữ đó xuất hiện trước mới soi lại được',
       },
       {
         kind: 'FACTUAL',
@@ -1538,6 +1566,10 @@ const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
         newInformation: 'Cam kết cố định làm thời gian quyết định ngắn lại.',
         characterOrArgumentChange: 'Áp lực được nhìn như một giới hạn thời gian.',
         visualAnchor: 'Lịch đếm ngược.',
+        mode: 'mo-so',
+        turn: 'doi-thang',
+        familiarObject: 'khoản trả góp hằng tháng',
+        whyNotEarlier: 'câu hỏi dẫn phải đứng trước để con số có mục tiêu',
       },
       {
         kind: 'FACTUAL',
@@ -1545,11 +1577,17 @@ const CONFRONT_PROMPT_EXAMPLE: ConfrontArtifact = {
         newInformation: 'Khả năng chờ cho phép từ chối một lựa chọn kém.',
         characterOrArgumentChange: 'Thời gian trở thành sức mạnh thương lượng.',
         visualAnchor: 'Hai lời đề nghị trên bàn.',
+        mode: 'phan-bac',
+        turn: 'doi-chu-the',
+        familiarObject: 'lời đề nghị công việc đang chờ trả lời',
+        whyNotEarlier: 'con số áp lực phải lộ ra trước mới có gì để cãi',
       },
     ],
     endingPayoff: {
       resolvesOpening: 'Vẻ an toàn không đủ nếu quyền rời đi đã biến mất.',
       audienceCanDo: 'Kiểm tra khả năng chờ và áp lực cố định trước một cam kết mới.',
+      directAnswer: 'có, mức lương này vẫn an toàn',
+      reframedQuestion: 'quyền rời đi của bạn còn lại bao nhiêu sau áp lực cố định?',
     },
     cutList: ['Không biến kế hoạch thành danh sách công thức rời rạc.'],
   },
@@ -1611,11 +1649,15 @@ export function buildConfrontPrompt(): string {
     '## Final plan và typed beats',
     '',
     '- Với hook KEEP/REWRITE, chọn một hypothesis đã KEEP/REBUILD rồi trả `selectedHypothesisId`, `finalPlan`, `beatEvidence`.',
-    '- `finalPlan` chỉ có `coreInsight`, `memoryAnchor`, `progression`, `endingPayoff`, `cutList`.',
+    '- `finalPlan` chỉ có `coreInsight`, `memoryAnchor`, `frame`, `progression`, `endingPayoff`, `cutList`.',
     '- `memoryAnchor` chỉ có `kind` (`name|equation|contrast|image`) và `value`.',
+    '- `frame` chỉ có `kind` (`nhan-vat|an-du|con-so`) và `value` — một sợi dây cho cả bài (SDD 006 §3).',
     '- `progression` có 2–8 beat tiến triển. Mỗi beat chỉ có `kind`, `beat`, `newInformation`,',
-    '  `characterOrArgumentChange`, `visualAnchor`, và chỉ PERSONA mới được thêm `personaEntryId`.',
-    '- `endingPayoff` chỉ có `resolvesOpening`, `audienceCanDo`; `cutList` là tối đa 8 chuỗi không rỗng.',
+    '  `characterOrArgumentChange`, `visualAnchor`, `mode`, `turn`, `familiarObject`, `whyNotEarlier`,',
+    '  và chỉ PERSONA mới được thêm `personaEntryId`. `mode`/`turn` không được trùng ở hai beat liền kề;',
+    '  một `mode` tối đa 2 lần, `doi-y` tối đa 1 lần và không ở beat cuối (SDD 006 §3-4).',
+    '- `endingPayoff` chỉ có `resolvesOpening`, `audienceCanDo`, `directAnswer`, `reframedQuestion`;',
+    '  `directAnswer` không được trùng nghĩa với `resolvesOpening`. `cutList` là tối đa 8 chuỗi không rỗng.',
     '- FACTUAL: cần đúng một beatEvidence ở đúng `beatIndex`, với claimIds không REJECTED và evidenceIds',
     '  SUPPORTS/QUALIFIES đúng các claim đó. Mỗi claim của beat phải có evidence dương tương ứng.',
     '- NARRATIVE: không có beatEvidence và không có personaEntryId; chỉ dùng cho chuyển nhịp/câu hỏi dẫn.',

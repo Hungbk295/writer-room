@@ -220,6 +220,7 @@ function validConfront(): ConfrontArtifact {
     finalPlan: {
       coreInsight: 'Quyền từ chối phụ thuộc cả chi phí cứng lẫn thời gian dự phòng.',
       memoryAnchor: { kind: 'equation', value: 'quyền lựa chọn = khoảng chờ - áp lực cố định' },
+      frame: { kind: 'con-so', value: 'khoảng chờ trước một cam kết mới' },
       progression: [
         {
           kind: 'FACTUAL',
@@ -227,6 +228,10 @@ function validConfront(): ConfrontArtifact {
           newInformation: 'Khoảng đệm bảo vệ quyền đổi hướng.',
           characterOrArgumentChange: 'Từ nhìn số dư sang nhìn lựa chọn.',
           visualAnchor: 'Một cánh cửa còn mở.',
+          mode: 'canh',
+          turn: 'doi-thoi-diem',
+          familiarObject: 'cánh cửa thoát hiểm của căn hộ',
+          whyNotEarlier: 'chưa có gì để so sánh nếu mở bằng cảnh này',
         },
         {
           kind: 'FACTUAL',
@@ -234,6 +239,10 @@ function validConfront(): ConfrontArtifact {
           newInformation: 'Chi phí cố định làm thời gian lựa chọn ngắn lại.',
           characterOrArgumentChange: 'Áp lực được nhìn như một chiếc đồng hồ.',
           visualAnchor: 'Lịch đếm ngược.',
+          mode: 'mo-so',
+          turn: 'doi-thang',
+          familiarObject: 'khoản trả góp hằng tháng',
+          whyNotEarlier: 'cảnh lối thoát phải đứng trước để con số có bối cảnh',
         },
         {
           kind: 'FACTUAL',
@@ -241,11 +250,17 @@ function validConfront(): ConfrontArtifact {
           newInformation: 'Khoảng chờ cho phép từ chối một thỏa thuận kém.',
           characterOrArgumentChange: 'Thời gian trở thành sức mạnh thương lượng.',
           visualAnchor: 'Hai lời đề nghị trên bàn.',
+          mode: 'phan-bac',
+          turn: 'doi-chu-the',
+          familiarObject: 'lời đề nghị công việc đang chờ trả lời',
+          whyNotEarlier: 'con số áp lực phải lộ ra trước mới có gì để cãi',
         },
       ],
       endingPayoff: {
         resolvesOpening: 'Lương cao không đủ nếu người nhận không còn quyền rời đi.',
         audienceCanDo: 'Đo khoảng chờ và áp lực cố định trước một cam kết mới.',
+        directAnswer: 'có, mức lương này vẫn đủ an toàn',
+        reframedQuestion: 'quyền rời đi của bạn còn lại bao nhiêu sau áp lực cố định?',
       },
       cutList: ['Không biến video thành danh sách tỷ lệ ngân sách.'],
     },

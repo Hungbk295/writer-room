@@ -249,16 +249,32 @@ function makeFormula(): FormulaArtifact {
 const OUTLINE = {
   coreInsight: 'Chi phí cố định quyết định quyền lựa chọn, không phải mức lương',
   memoryAnchor: { kind: 'contrast' as const, value: 'lương tăng vs quyền chọn giảm' },
+  frame: { kind: 'con-so' as const, value: 'khoản chi phí cố định hằng tháng' },
   progression: [
-    { beat: 'mở', newInformation: 'đặt câu hỏi ngân sách', characterOrArgumentChange: 'a', visualAnchor: 'b' },
-    { beat: 'giữa', newInformation: 'cố định phình', characterOrArgumentChange: 'c', visualAnchor: 'd' },
+    {
+      beat: 'mở', newInformation: 'đặt câu hỏi ngân sách', characterOrArgumentChange: 'a', visualAnchor: 'b',
+      mode: 'canh' as const, turn: 'doi-thoi-diem' as const,
+      familiarObject: 'bảng sao kê ngân hàng cuối tháng', whyNotEarlier: 'chưa có con số để neo câu hỏi',
+    },
+    {
+      beat: 'giữa', newInformation: 'cố định phình', characterOrArgumentChange: 'c', visualAnchor: 'd',
+      mode: 'mo-so' as const, turn: 'doi-thang' as const,
+      familiarObject: 'khoản trả góp hằng tháng', whyNotEarlier: 'cần cảnh mở trước để con số có bối cảnh',
+    },
   ],
-  endingPayoff: { resolvesOpening: 'quay lại câu hỏi mở', audienceCanDo: 'trừ nghĩa vụ khỏi thu nhập' },
+  endingPayoff: {
+    resolvesOpening: 'quay lại câu hỏi mở', audienceCanDo: 'trừ nghĩa vụ khỏi thu nhập',
+    directAnswer: 'có, lương tăng vẫn đủ sống',
+    reframedQuestion: 'quyền lựa chọn của bạn còn lại bao nhiêu sau các khoản cố định?',
+  },
   cutList: ['mẹo đầu tư'],
 };
 
 const STUDY_RESULT = {
-  coverageMap: [{ videoId: VIDEO_ID, mainClaim: 'các nguyên tắc chi tiêu', angle: 'nguyên tắc' }],
+  coverageMap: [{
+    videoId: VIDEO_ID, mainClaim: 'các nguyên tắc chi tiêu', angle: 'nguyên tắc',
+    sequence: ['canh', 'mo-so', 'phan-bac'] as const,
+  }],
   gap: 'chưa video nào nói về việc mất quyền lựa chọn khi chi phí cố định phình',
   outline: OUTLINE,
   factsLedger: [

@@ -26,17 +26,30 @@ const FIXTURES = join(import.meta.dir, 'fixtures');
 const auditScript = readFileSync(join(FIXTURES, 'run-7d626c50-script.txt'), 'utf8');
 const auditPack = readFileSync(join(FIXTURES, 'pack-1c24954b.md'), 'utf8');
 
+const BEAT_MODE_CYCLE = ['canh', 'mo-so', 'phan-bac', 'cuc-tri', 'zoom-chu'] as const;
+const BEAT_TURN_CYCLE = ['doi-thoi-diem', 'doi-thang', 'doi-ten', 'doi-cau-hoi', 'doi-chu-the'] as const;
+
 function outline(beats: string[]): WriterVideoPlan {
   return {
     coreInsight: 'Lương cao không đồng nghĩa còn quyền quyết định',
     memoryAnchor: { kind: 'contrast', value: 'thu nhập tăng vs quyền chọn giảm' },
-    progression: beats.map((beat) => ({
+    frame: { kind: 'con-so', value: 'khoản chi phí cố định hằng tháng' },
+    progression: beats.map((beat, index) => ({
       beat,
       newInformation: 'x',
       characterOrArgumentChange: 'y',
       visualAnchor: 'z',
+      mode: BEAT_MODE_CYCLE[index % BEAT_MODE_CYCLE.length]!,
+      turn: BEAT_TURN_CYCLE[index % BEAT_TURN_CYCLE.length]!,
+      familiarObject: 'khoản chi cố định hằng tháng',
+      whyNotEarlier: 'beat trước chưa đủ dữ kiện để mở beat này',
     })),
-    endingPayoff: { resolvesOpening: 'a', audienceCanDo: 'b' },
+    endingPayoff: {
+      resolvesOpening: 'a',
+      audienceCanDo: 'b',
+      directAnswer: 'câu trả lời thẳng bị từ chối làm kết',
+      reframedQuestion: 'câu hỏi đã được sửa lại ở kết',
+    },
     cutList: [],
   };
 }

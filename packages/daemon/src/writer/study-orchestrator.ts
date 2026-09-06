@@ -19,12 +19,14 @@ import type { WriterPack } from '../writer-packs.ts';
 import type { LedgerEntry } from './deterministic-gate.ts';
 import type { SelectedHook } from './hook-doi-thu.ts';
 import {
+  parseCoverageSequence,
   validateWriterVideoPlan,
+  type WriterBeatSequenceToken,
   type WriterVideoPlan,
 } from './video-plan.ts';
 
 export const STUDY_STAGE = 'study-v2';
-export const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-v1';
+export const STUDY_PROMPT_VERSION = 'writer-v2-study-v2-sidecar-source-parts-hook-beat-grammar-v1';
 export const STUDY_SOURCE_PART_MAX_BYTES = 16_000;
 
 /** A ledger this short is a writer that did not really read the pack. */
@@ -34,6 +36,8 @@ export interface StudyCoverageEntry {
   videoId: string;
   mainClaim: string;
   angle: string;
+  /** The mode sequence of this source video, in order (SDD 006 §4); may be empty. */
+  sequence: WriterBeatSequenceToken[];
 }
 
 export interface StudyArtifact {
@@ -96,11 +100,6 @@ export function validateStudyArtifact(
     return { ok: false, errorCode: 'AGENT_SCHEMA', reason: 'study output is not an object' };
   }
 
-  const plan = validateWriterVideoPlan(candidate.outline);
-  if (!plan.ok) {
-    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: `outline: ${plan.reason}` };
-  }
-
   const gap = typeof candidate.gap === 'string' ? candidate.gap.trim() : '';
   if (!gap) {
     return {
@@ -126,8 +125,20 @@ export function validateStudyArtifact(
         reason: `coverageMap[${index}] needs non-empty videoId, mainClaim and angle`,
       };
     }
-    coverageMap.push({ videoId, mainClaim, angle });
+    const sequenceResult = parseCoverageSequence(entry?.sequence, index);
+    if (!sequenceResult.ok) {
+      return { ok: false, errorCode: 'AGENT_SCHEMA', reason: sequenceResult.reason };
+    }
+    coverageMap.push({ videoId, mainClaim, angle, sequence: sequenceResult.sequence });
   }
+
+  const plan = validateWriterVideoPlan(candidate.outline, {
+    sourceSequences: coverageMap.map((entry) => entry.sequence),
+  });
+  if (!plan.ok) {
+    return { ok: false, errorCode: 'AGENT_SCHEMA', reason: `outline: ${plan.reason}` };
+  }
+
   const covered = new Set(coverageMap.map((entry) => entry.videoId));
   const missing = opts.videoIds.filter((id) => !covered.has(id));
   if (missing.length > 0) {
@@ -226,19 +237,67 @@ function buildStudyPrompt(opts: {
           '',
         ]
       : []),
-    '## What to produce',
+    '## Beat grammar — Mode (how a beat is played)',
     '',
-    '1. `coverageMap` — one entry per source video in the pack, saying what it actually',
-    `   claims and from which angle. All ${opts.videoIds.length} pack video(s) must appear:`,
-    `   ${opts.videoIds.join(', ') || '(see the pack)'}.`,
+    'Every beat commits to exactly one `mode`. Short reference (the writing stage sees the',
+    'full mode pack with real quotes; you only need to pick, not perform, the mode):',
+    '',
+    '| mode | must have | forbidden |',
+    '|---|---|---|',
+    '| `canh` | a time or place, one object, one action | a conclusion inside the scene |',
+    '| `mo-so` | a number from the ledger and the arithmetic exposed | storytelling |',
+    '| `phan-bac` | the strongest counter-argument, stated before the answer | answering before it is built |',
+    '| `cuc-tri` | a stated formula/threshold pushed to an absurd input or assumption | a new variable not in the piece |',
+    '| `zoom-chu` | one word from a sentence that already appeared | inventing a slogan to dissect |',
+    '| `doi-y` | visibly changing your mind, admitting a misread, or changing plan | using it at the last beat or more than once |',
+    '',
+    '## Beat grammar — Phép lật (lateral turn)',
+    '',
+    'Every beat also commits to one `turn`, applied to that beat\'s `familiarObject`:',
+    '',
+    '| turn | what it does |',
+    '|---|---|',
+    '| `doi-don-vi` | measure in a different unit (money measures value, not effort) |',
+    '| `doi-chu-the` | swap who the real subject is (you do not own the car; the bank rents you a job) |',
+    '| `doi-thang` | change scale (a dead cow means raising 20; a billion a month breaks the formula) |',
+    '| `doi-ten` | rename the thing (a level-3 savings rate is really a 2%-a-year loss) |',
+    '| `doi-thoi-diem` | move the vantage point in time (from 10 years later, or from signing day) |',
+    '| `doi-cau-hoi` | change the question itself (earning money for what → living for what) |',
+    '',
+    '## Beat grammar — Khuôn (the one thread of the whole piece)',
+    '',
+    'Pick exactly one `frame.kind` for the whole piece:',
+    '',
+    '| frame | rule |',
+    '|---|---|',
+    '| `nhan-vat` | a character: name, age, job, then stop; a foil at the open and the close; the character never speaks a ledger quote |',
+    '| `an-du` | a metaphor that keeps working under pressure and returns at the payoff |',
+    '| `con-so` | one ledger number that runs through every beat and closes at the payoff |',
+    '',
+    '## What to produce, in this order',
+    '',
+    '1. `coverageMap` — one entry per source video in the pack: what it actually claims,',
+    `   from which angle, and its \`sequence\` — the order of \`mode\`s that video itself`,
+    '   plays, from the list above (use `khac` for a beat that is not one of the six).',
+    `   All ${opts.videoIds.length} pack video(s) must appear: ${opts.videoIds.join(', ') || '(see the pack)'}.`,
     '2. `gap` — one thing none of those videos did, that this audience would want. This is',
     '   the reason for the piece to exist. Not a new topic; a missing angle.',
-    '3. `outline` — the compression contract for the piece: `coreInsight`, one',
-    '   `memoryAnchor`, 2-8 `progression` beats (each with `newInformation`,',
-    '   `characterOrArgumentChange`, `visualAnchor`), `endingPayoff`, `cutList`.',
-    '   Every beat must add something new; a beat that restates an earlier beat under a',
-    '   new heading is a rejected outline.',
-    '4. `factsLedger` — every fact the piece is allowed to use, each with a quote copied',
+    '3. `outline.endingPayoff` — write this BEFORE the beats. First `directAnswer`: the',
+    '   straight, literal answer to the hook\'s question. The piece must refuse to end on',
+    '   this. Then `reframedQuestion`: the hook\'s question, changed into the question the',
+    '   piece actually answers. Then `resolvesOpening`, stated against `reframedQuestion`,',
+    '   not against `directAnswer`.',
+    '4. `outline.frame` — the one thread (`nhan-vat`/`an-du`/`con-so`) that runs through',
+    '   every beat and closes at the payoff.',
+    '5. `outline.progression` — 2-8 beats. Work BACKWARD from the ending to the hook. Each',
+    '   beat states `familiarObject` (the ordinary thing the turn is applied to), `turn`,',
+    '   `mode`, and `whyNotEarlier` (why this beat could not have stood earlier), plus the',
+    '   existing `newInformation`, `characterOrArgumentChange`, `visualAnchor`. No two',
+    '   adjacent beats may share a `mode` or a `turn`. A `mode` may repeat at most twice in',
+    '   the whole outline; `doi-y` at most once, and never as the last beat. Do not let the',
+    '   outline\'s own `mode` sequence copy 3 beats in a row from any `coverageMap[].sequence`',
+    '   — you are compressing what the source videos taught, not replaying how they told it.',
+    '6. `factsLedger` — every fact the piece is allowed to use, each with a quote copied',
     '   VERBATIM from the pack (an exact substring — do not tidy punctuation or spacing)',
     `   and the \`videoId\` it came from. At least ${MIN_LEDGER_FACTS} entries.`,
     '',
@@ -247,19 +306,30 @@ function buildStudyPrompt(opts: {
     'used later, so put in what you will actually need.',
     '',
     'The quotes are checked programmatically against the pack; a paraphrase is rejected.',
+    'The beat-grammar rules above are also checked programmatically: adjacent-mode/turn',
+    'reuse, mode overuse, a missing `frame`, and an ending that answers the hook directly',
+    'are all rejected outlines.',
     '',
     'Write JSON to `out/result.json`:',
     '',
     '```json',
     '{',
-    '  "coverageMap": [ { "videoId": "...", "mainClaim": "...", "angle": "..." } ],',
+    '  "coverageMap": [',
+    '    { "videoId": "...", "mainClaim": "...", "angle": "...",',
+    '      "sequence": ["canh", "mo-so", "khac"] }',
+    '  ],',
     '  "gap": "...",',
     '  "outline": {',
     '    "coreInsight": "...",',
     '    "memoryAnchor": { "kind": "name|equation|contrast|image", "value": "..." },',
+    '    "frame": { "kind": "nhan-vat|an-du|con-so", "value": "..." },',
     '    "progression": [ { "beat": "...", "newInformation": "...",',
-    '      "characterOrArgumentChange": "...", "visualAnchor": "..." } ],',
-    '    "endingPayoff": { "resolvesOpening": "...", "audienceCanDo": "..." },',
+    '      "characterOrArgumentChange": "...", "visualAnchor": "...",',
+    '      "mode": "canh|mo-so|phan-bac|cuc-tri|zoom-chu|doi-y",',
+    '      "turn": "doi-don-vi|doi-chu-the|doi-thang|doi-ten|doi-thoi-diem|doi-cau-hoi",',
+    '      "familiarObject": "...", "whyNotEarlier": "..." } ],',
+    '    "endingPayoff": { "directAnswer": "...", "reframedQuestion": "...",',
+    '      "resolvesOpening": "...", "audienceCanDo": "..." },',
     '    "cutList": ["..."]',
     '  },',
     '  "factsLedger": [ { "fact": "...", "videoId": "...", "quote": "<verbatim pack substring>" } ]',
