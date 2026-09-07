@@ -88,3 +88,14 @@ markdown, không sửa code:
 | 2026-09-06 17:10Z | E | `2a32b5a` | mode pack v2: 900 dòng, 74 quote 74/74 lead tự verify, trích 52.9%, mọi mode ≥3 lối, mọi phép lật ≥2 quote, 3 khuôn có 5-beat; parser 10 pass | fork của teammate tự viết vào file (quy trình lệch) nhưng nội dung kiểm sạch |
 | 2026-09-06 17:10Z | F | `2a32b5a` | `hieu-tv.md` v3: 122 dòng, 29 quote 29/29 pass, trích 59.8%, loader version 3; v2 lưu `_archive/hieu-tv-v2.md` | không thêm điều 8 (không đủ 3 video); 18 quote mồ côi đã chuyển Lane E |
 | 2026-09-06 | G | — | Lane G soạn, chờ duyệt | docs only, chưa commit |
+
+## Lane H và I — Human pack (SDD 007, 2026-09-07)
+
+Spec: `docs/specs/007-writer-human-pack/solution-design.md`.
+
+| Lane | Việc | File | Bằng chứng xong |
+|---|---|---|---|
+| H | Soạn `writer/human-pack.md` v1: 8 cử chỉ, quote thật, khi không dùng, cần lập trường gì | `writer-room-data/writer/human-pack.md` (mới) | 8 heading đúng id; quote grep pass; trích ≥50% |
+| I | Loader + staging WRITE/REPAIR (không fail khi thiếu) + prompt WRITE/REPAIR/EDIT mục 16 + test | `human-pack.ts` (mới), `writer-run-v2.ts`, test | test xanh, typecheck sạch |
+
+H và I song song; I dùng fixture heading tối thiểu, không chờ H.
