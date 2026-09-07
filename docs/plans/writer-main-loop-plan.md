@@ -95,6 +95,14 @@ READY, rồi POST lại bước đó. Không kill pane bằng tay: bridge giữ 
 sau sẽ không spawn pane mới (turn 167 không có pane); sau khi lỡ kill thì phải reload app.
 Turn 166 đã gỡ bằng cách sửa run JSON như `recordHookError`; cách đó cũng được nhưng thô hơn.
 
+**Bài học 3 (2026-09-07 03:10Z, giả thuyết có bằng chứng một phần):** stage hook đặt `freshContext: true`
+nên bridge phải đóng pane hook cũ rồi mở pane mới (`replaceInteractivePane` → `launchTab`). Với turn 174
+(T4 suggest) không có việc nào trong hai việc đó xảy ra dù SSE còn nối: pane clarify cũ sống, không pane
+mới, `out/` rỗng. Trước đó pane clarify của T4 chỉ được mở **6 phút sau** dispatch (17:14 → 17:20Z). Nghi
+bridge trong webview bị throttle khi cửa sổ app không ở foreground. Cách ứng xử: khi run, giữ cửa sổ app
+hiển thị ở foreground; nếu thấy turn RUNNING mà không có pane trong 2 phút thì đưa app lên trước rồi chờ
+thêm 1 phút trước khi settle bằng `turn/complete`.
+
 ---
 
 ## T3. Run sạch qua hook board
@@ -219,6 +227,8 @@ Quyết định 2026-09-06 sau khi đọc bài view cao của Hiếu TV và Anh 
 | 2026-09-06 | T3 baseline pre-006 | run `798eeb53` | DONE 12:50Z; clarify 2 phút, suggest 2 phút, STUDY 6 phút, WRITE 8 phút, EDIT 0 phút?, REPAIR 7 phút | lần 1 fail vì bridge; lần 2 sau reload app đi hết luồng; export `writer-room-data/exports/baseline-pre-006-798eeb53.md`. Gate lần 1 bắt "26%" kèm tên tổ chức bịa (`NUMBER_UNSOURCED`); editor 5 defect (1 HIGH cùng số đó, 4 MEDIUM: phản bác yếu, phép nhân sai đơn vị, so sánh không có mốc, câu cuối rời hình ảnh mở); REPAIR 1 lần, re-gate pass. 1390 từ, 6 beat, ledger 22 |
 | 2026-09-06 16:21Z | T3 post-006 | run `b4deeb0f` | **đang chạy**: `status: RUNNING`, `phase: WRITE` lúc đọc (GET, không tác động) | post-006 tại daemon `04916e6`; pack "5 nghề dễ kiếm tiền nhưng rất khó giàu"; general pack `hieu-tv.md` v2; `formulaId/Version/Hash` rỗng đúng như thiết kế 006. Chưa có export; ghi tiếp khi DONE |
 | 2026-09-06 17:25Z | gate fix | `907ef89` | 262 pass / 0 fail; typecheck sạch | gate nhận `ph` là phần trăm (+4 test); WRITE/REPAIR thêm luật số tự tính phải bỏ hoặc đánh dấu giả định; prompt version bump. **Cần restart daemon + Cmd+R app** trước run kế tiếp |
-| | T4 | đang chạy (teammate runs-post006) trên `04916e6` | | |
+| 2026-09-07 03:54Z | T4 kết quả | run `4df03461` | **FAILED_GATE** sau 1 REPAIR; STUDY 8 phút, WRITE 20, EDIT 3, REPAIR 8; 1388 từ; 7 beat khuôn `con-so` | **Không lọt số bịa nào**: 0 câu chứa 73 / Fulbright / 2025 trong script; chặn ở 3 tầng: hook agent né số, STUDY không đưa vào ledger (19 entry), WRITE không viết. Gate đỏ lại vì đúng lỗi cũ "26%" vs ledger `26 ph` (đã sửa ở `907ef89`, daemon chưa nạp). Editor 9 defect, 5 HIGH về suy diễn nhân quả và đơn vị. Export `exports/t4-adversarial-4df03461.md` |
+| 2026-09-07 03:15Z | T4 | post `4df03461` | suggest xong 03:13 (pane mở trễ ~14 phút), STUDY bắt đầu 03:14 với pane mở ngay; **hook agent tự né số bịa**: cả 5 candidate không nhắc 73%/Fulbright, h1 còn nói "chưa ai chỉ ra bản nghiên cứu gốc" | chọn h1 (stat-open) để giữ áp lực; run đang chạy |
+| 2026-09-07 03:00Z | T4 | post `4df03461` | clarify xong 17:20Z hôm trước, đứng 9 giờ vì teammate chờ poll nền không bắn; đã đánh thức, tiếp tục từ bước suggest | daemon vẫn `04916e6`; T4 thử số bịa nên không cần bản gate mới |
 | | T5 | | | |
 | | T6 | | | |
