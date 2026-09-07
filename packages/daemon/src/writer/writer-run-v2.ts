@@ -48,6 +48,7 @@ import {
 } from './channel-profile.ts';
 import { getGeneralPack } from './general-pack.ts';
 import { clearHookState } from './hook-board.ts';
+import { getHumanPack, validateHumanPack } from './human-pack.ts';
 import { getModePack, validateModePack } from './mode-pack.ts';
 import { getApprovedPersonaPack, type PersonaPack } from './persona-pack.ts';
 import { getReusableProcedure } from './reusable-procedure.ts';
@@ -99,9 +100,9 @@ const EDITOR_PTY_SESSION_GROUP = 'writer-v2-editor';
 const RESTYLE_PTY_SESSION_GROUP = 'writer-v2-restyle';
 const POSTMORTEM_PTY_SESSION_GROUP = 'writer-v2-postmortem';
 
-const WRITE_PROMPT_VERSION = 'writer-v2-write-v5-derived-number-rule-v1';
-const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v3-beat-grammar-v1';
-const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v3-derived-number-rule-v1';
+const WRITE_PROMPT_VERSION = 'writer-v2-write-v6-human-pack-v1';
+const EDIT_REVIEW_PROMPT_VERSION = 'writer-v2-edit-review-v4-human-gesture-v1';
+const REPAIR_PROMPT_VERSION = 'writer-v2-repair-v4-human-pack-v1';
 const RESTYLE_PROMPT_VERSION = 'writer-v2-restyle-v1';
 const POSTMORTEM_PROMPT_VERSION = 'writer-v2-postmortem-v1';
 
@@ -208,6 +209,12 @@ export interface WriterRunV2 {
    * a run cannot reach DONE without one — but optional on the type so every
    * run persisted before beat grammar existed still reads back unchanged. */
   modePackHash?: string;
+  /** Content hash of `writer/human-pack.md`, pinned at WRITE dispatch time
+   * (SDD 007 §2). Optional and backward-compatible on purpose, like the
+   * persona pack: a human pack is seasoning, not the frame a beat is built
+   * on, so a missing file leaves this `undefined` rather than failing the
+   * run. */
+  humanPackHash?: string;
   /**
    * @deprecated SDD 006 §2/§7: Formula is no longer a Writer v2 input. Kept
    * only so runs persisted before this change still read back unchanged; a
@@ -585,6 +592,7 @@ function buildWritePrompt(opts: {
   forbiddenNames: string[];
   generalPackPath: string;
   modePackPath: string;
+  humanPackPath?: string;
   editorialPath?: string;
   procedurePath?: string;
   personaPackPath?: string;
@@ -633,6 +641,24 @@ function buildWritePrompt(opts: {
     'into your script (those belong to a different source video). State which lối you picked',
     'for each beat in `outlineChanges`.',
     '',
+    '## Human pack',
+    '',
+    ...(opts.humanPackPath
+      ? [
+          `Read the WHOLE human pack at \`input/human-pack.md\` (\`${opts.humanPackPath}\`). It holds`,
+          '8 cử chỉ (gestures) — sentence-level moves, dropped in anywhere, that make a listener',
+          'believe a real person is thinking out loud. Rules:',
+          '- Tối đa 3 cử chỉ trong cả bài, mỗi cử chỉ dùng tối đa 1 lần.',
+          '- Không dùng cử chỉ ở beat cuối, trừ `cua-lui`.',
+          '- Không dùng cử chỉ để chữa một lập luận yếu — nếu lập luận yếu, sửa lập luận, đừng',
+          '  che bằng dáng khiêm tốn.',
+          '- Mỗi cử chỉ chỉ dùng khi điều kiện "Cần lập trường gì" của nó có THẬT trong bài này',
+          '  (ví dụ: `khong-biet` chỉ dùng khi ledger thật sự thiếu điều đó; `rao-pham-vi` chỉ',
+          '  dùng khi phạm vi thật sự bị thu hẹp).',
+          '- Khai trong `outlineChanges` mỗi cử chỉ đã dùng và đã dùng ở câu nào.',
+        ]
+      : ['Không có human pack; không thêm cử chỉ tự nghĩ.']),
+    '',
     '## Khuôn',
     '',
     `This whole piece runs one thread: \`${opts.outline.frame.kind}\` — ${opts.outline.frame.value}.`,
@@ -650,6 +676,12 @@ function buildWritePrompt(opts: {
     '',
     `- **Mode pack** (\`${opts.modePackPath}\`): the real quotes and craft instructions for`,
     '  each beat mode and lateral turn. See "## Mode pack" above.',
+    ...(opts.humanPackPath
+      ? [
+          `- **Human pack** (\`${opts.humanPackPath}\`): the 8 narrator gestures. See`,
+          '  "## Human pack" above for the usage rules.',
+        ]
+      : []),
     `- **General pack** (\`${opts.generalPackPath}\`): HOW this channel makes moves — hook`,
     '  shapes, example strategy, payoff shapes, taste DNA, and what it deliberately',
     '  refuses to do. **Never a source of facts.** Do not take a number, a case, a person',
@@ -879,6 +911,9 @@ function buildEditReviewPrompt(opts: {
     '    answered? A beat that does not perform its stated mode is a MEDIUM defect — quote it.',
     '15. **Adjacent rhythm.** Do two beats next to each other read in the same rhythm — the',
     '    same way into the sentence, the same shape of paragraph close? That is a HIGH defect.',
+    '16. **Cử chỉ người kể có thật không.** Chỗ "tôi không chắc" có đúng là ledger thiếu, chỗ',
+    '    "không dành cho tất cả" có thu hẹp thật, hay chỉ là dáng khiêm tốn cho có? Giả khiêm',
+    '    tốn là MEDIUM, trích câu.',
     '',
     '## Output rules',
     '',
@@ -929,6 +964,7 @@ function buildRepairPrompt(opts: {
   gateViolations: string;
   defectCount: number;
   hasPersona: boolean;
+  hasHumanPack: boolean;
 }): string {
   return [
     '# Writer v2 — REPAIR (one round, in place)',
@@ -960,6 +996,13 @@ function buildRepairPrompt(opts: {
     '   edited an anchor sentence, quote the new wording.',
     "7. Keep each beat's `mode` (outline.progression[i].mode) exactly as committed — a repair",
     '   fixes prose, it does not change what a beat is doing.',
+    ...(opts.hasHumanPack
+      ? [
+          '8. Giữ nguyên các cử chỉ (human pack) đã dùng trong bản gốc nếu chúng không phải',
+          '   nguyên nhân gây defect; chỉ sửa hoặc bỏ đúng cử chỉ nào bị flag, đừng thêm cử chỉ',
+          '   mới ngoài những gì đã khai trong `outlineChanges`.',
+        ]
+      : []),
     '',
     'This is the ONLY repair round. After it, the gate runs again and the run either',
     'finishes or stops for a human. Do not perform compliance; actually fix the facts.',
@@ -1415,6 +1458,32 @@ async function dispatchWrite(
     );
     return;
   }
+  // Optional and independent, like the persona pack (SDD 007 §2): a missing
+  // human pack is a normal state (WRITE runs without gestures), but a file
+  // that EXISTS with a broken heading is a configuration error, not an
+  // absence — that still fails the run the same way the mode pack does.
+  let humanPack: Awaited<ReturnType<typeof getHumanPack>>;
+  try {
+    humanPack = await getHumanPack(deps.dataDir);
+  } catch (err) {
+    await failRun(
+      deps,
+      run,
+      'HUMAN_PACK_UNREADABLE',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+  if (humanPack) {
+    const humanPackCheck = validateHumanPack(humanPack.markdown);
+    if (!humanPackCheck.ok) {
+      await failRun(
+        deps, run, 'WRITER_V2_INPUT_MISSING',
+        `human pack thiếu heading: ${humanPackCheck.missing.join(', ')}`,
+      );
+      return;
+    }
+  }
   if (!pack || !generalPack) {
     await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack or general pack disappeared before WRITE');
     return;
@@ -1449,9 +1518,11 @@ async function dispatchWrite(
   }
 
   // Pinned like generalPackHash, but nothing fails if it changes mid-run — a
-  // persona pack is optional identity material, not a required contract.
+  // persona pack (and a human pack, same reasoning) is optional identity/
+  // seasoning material, not a required contract.
   run.personaPackHash = personaPack?.hash;
   run.modePackHash = modePack.hash;
+  run.humanPackHash = humanPack?.hash;
   await saveWriterRunV2(run, deps.dataDir);
 
   const forbiddenNames = forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title });
@@ -1484,6 +1555,17 @@ async function dispatchWrite(
       role: 'Real quotes and craft instructions for each beat mode and lateral turn.',
       contentFile: 'input/mode-pack.md',
     },
+    // Deliberately always present, unlike the other optional inputs below —
+    // `null` is a distinct, checkable signal that this run genuinely has no
+    // human pack, vs. an omitted key that a reader might mistake for a bug.
+    humanPack: humanPack
+      ? {
+          path: humanPack.path,
+          hash: humanPack.hash,
+          role: 'Narrator gestures — sentence-level moves, not facts and not a source of stance.',
+          contentFile: 'input/human-pack.md',
+        }
+      : null,
     ...(editorial
       ? {
           editorial: {
@@ -1552,6 +1634,7 @@ async function dispatchWrite(
       forbiddenNames,
       generalPackPath: generalPack.path,
       modePackPath: modePack.path,
+      ...(humanPack ? { humanPackPath: humanPack.path } : {}),
       ...(editorial ? { editorialPath: editorial.path } : {}),
       ...(procedure ? { procedurePath: procedure.path } : {}),
       ...(personaPack ? { personaPackPath: personaPack.path } : {}),
@@ -1563,6 +1646,7 @@ async function dispatchWrite(
     inputFiles: [
       { path: 'general-pack.md', content: generalPack.markdown },
       { path: 'mode-pack.md', content: modePack.markdown },
+      ...(humanPack ? [{ path: 'human-pack.md', content: humanPack.markdown }] : []),
       ...(editorial ? [{ path: 'editorial.md', content: editorial.markdown }] : []),
       ...(procedure ? [{ path: 'procedure.md', content: procedure.instructions }] : []),
       ...(personaPack ? [{ path: 'persona-pack.md', content: personaPack.markdown }] : []),
@@ -1572,16 +1656,19 @@ async function dispatchWrite(
       envelopeHash(envelope),
       contentHash(generalPack.markdown),
       contentHash(modePack.markdown),
+      ...(humanPack ? [contentHash(humanPack.markdown)] : []),
       ...(editorial ? [editorial.hash] : []),
       ...(procedure ? [procedure.hash] : []),
       ...(personaPack ? [contentHash(personaPack.markdown)] : []),
       ...(stagedPreviousDraft ? [contentHash(stagedPreviousDraft)] : []),
     ],
-    // Only when a persona pack is actually staged does the prompt text differ
-    // from the pre-persona-pack shape — so only then does the turn key change.
+    // Only when a persona pack or human pack is actually staged does the
+    // prompt text differ from the pre-feature shape — so only then does the
+    // turn key change.
     promptVersion: [
       WRITE_PROMPT_VERSION,
       personaPack ? 'persona-v1' : '',
+      humanPack ? 'human-pack-v1' : '',
       editorial ? 'editorial-v1' : '',
       procedure ? 'procedure-v1' : '',
     ].filter(Boolean).join('-'),
@@ -1879,6 +1966,31 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     );
     return;
   }
+  // Same optional/fail-closed split as `dispatchWrite`: absent is fine
+  // (REPAIR simply keeps whatever gestures the draft already has), but a
+  // present-and-broken file is a configuration error worth stopping for.
+  let humanPack: Awaited<ReturnType<typeof getHumanPack>>;
+  try {
+    humanPack = await getHumanPack(deps.dataDir);
+  } catch (err) {
+    await failRun(
+      deps,
+      run,
+      'HUMAN_PACK_UNREADABLE',
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+  if (humanPack) {
+    const humanPackCheck = validateHumanPack(humanPack.markdown);
+    if (!humanPackCheck.ok) {
+      await failRun(
+        deps, run, 'WRITER_V2_INPUT_MISSING',
+        `human pack thiếu heading: ${humanPackCheck.missing.join(', ')}`,
+      );
+      return;
+    }
+  }
   const violations = run.gateResults.at(-1)?.violations ?? [];
   const defects = run.editorDefects ?? [];
   const forbiddenNames = forbiddenHostNames({ channelTitle: pack.channelTitle, title: pack.title });
@@ -1893,6 +2005,8 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     wordRange,
     forbiddenHostNames: forbiddenNames,
     modePack: { path: modePack.path, hash: modePack.hash },
+    // Same always-present-with-null shape as the WRITE envelope (SDD 007 §2).
+    humanPack: humanPack ? { path: humanPack.path, hash: humanPack.hash } : null,
   };
 
   run.repairAttempted = true;
@@ -1914,10 +2028,20 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
       // mention the persona pack tracks the same run-level fact `dispatchWrite`
       // decided when it staged (or didn't stage) the filtered pack.
       hasPersona: run.personaPackHash !== undefined,
+      // Same reasoning, but for the human pack: only mention "keep the
+      // gestures you used" when WRITE actually had one to draw from.
+      hasHumanPack: run.humanPackHash !== undefined,
     }),
     envelope,
-    inputFiles: [{ path: 'mode-pack.md', content: modePack.markdown }],
-    inputHashes: [envelopeHash(envelope), contentHash(modePack.markdown)],
+    inputFiles: [
+      { path: 'mode-pack.md', content: modePack.markdown },
+      ...(humanPack ? [{ path: 'human-pack.md', content: humanPack.markdown }] : []),
+    ],
+    inputHashes: [
+      envelopeHash(envelope),
+      contentHash(modePack.markdown),
+      ...(humanPack ? [contentHash(humanPack.markdown)] : []),
+    ],
     promptVersion: REPAIR_PROMPT_VERSION,
     sessionGroup: AUTHOR_PTY_SESSION_GROUP,
     interactivePty: true,

@@ -1,5 +1,8 @@
 <!-- version: 1 -->
 
+Nguồn chuẩn của cử chỉ (gestures) giờ là `writer/human-pack.md` (SDD 007) — file này
+chỉ còn phục vụ skill restyle, không phải input của WRITE/REPAIR.
+
 # Style: human-moves
 
 Soạn từ 7 move đã mine sẵn trong TASTE DNA của `writer-room-data/general-packs/hieu-tv.md`

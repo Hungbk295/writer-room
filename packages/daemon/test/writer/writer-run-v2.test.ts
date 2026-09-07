@@ -34,6 +34,7 @@ import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-bounda
 import { createChannelProfile, listEditorialSuggestions, updateChannelProfile } from '../../src/writer/channel-profile.ts';
 import { createReusableProcedure } from '../../src/writer/reusable-procedure.ts';
 import { hashPersonaPack } from '../../src/writer/persona-pack.ts';
+import { HUMAN_PACK_GESTURE_IDS, hashHumanPack } from '../../src/writer/human-pack.ts';
 import {
   computeWriterV2Progress,
   createWriterPostV2,
@@ -101,6 +102,15 @@ const MODE_PACK_MARKDOWN = [
   '',
   ...WRITER_BEAT_MODES.map((mode) => `## Mode: ${mode} — Tên\n**Phải có:** x. **Cấm:** y.\n`),
   ...WRITER_BEAT_TURNS.map((turn) => `## Phép lật: ${turn} — Tên\nGhi chú.\n`),
+].join('\n');
+
+/** Minimal fixture with all 8 SDD 007 §2 gesture headings — content is not
+ * real craft, only enough to satisfy `validateHumanPack`'s structural check. */
+const HUMAN_PACK_MARKDOWN = [
+  '# Human pack (test fixture)',
+  '<!-- version: 1 -->',
+  '',
+  ...HUMAN_PACK_GESTURE_IDS.map((id) => `## Cử chỉ: ${id} — Tên\nGhi chú.\n`),
 ].join('\n');
 
 const STYLE_ID = 'nhan-vat-xuyen-suot.md';
@@ -916,6 +926,84 @@ describe('Writer v2 — end to end', () => {
     expect(failed!.status).toBe('FAILED');
     expect(failed!.errorCode).toBe('WRITER_V2_INPUT_MISSING');
     expect(failed!.errorReason).toContain('Mode: doi-y');
+  });
+
+  test('WRITE runs with humanPack: null when no human pack file exists (optional, not fail-closed)', async () => {
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).exists())
+      .toBe(false);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { humanPack: unknown };
+    expect(writeEnvelope.humanPack).toBeNull();
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .toContain('Không có human pack; không thêm cử chỉ tự nghĩ.');
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.humanPackHash).toBeUndefined();
+  });
+
+  test('SDD 007: WRITE stages input/human-pack.md and hashes it into inputHashes', async () => {
+    mkdirSync(join(dir, 'writer'), { recursive: true });
+    writeFileSync(join(dir, 'writer', 'human-pack.md'), HUMAN_PACK_MARKDOWN, 'utf8');
+
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).text())
+      .toBe(HUMAN_PACK_MARKDOWN);
+    const writeEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
+    ) as { humanPack: { path: string; hash: string; contentFile: string } };
+    expect(writeEnvelope.humanPack.path).toBe('human-pack.md');
+    expect(writeEnvelope.humanPack.contentFile).toBe('input/human-pack.md');
+    expect(writeEnvelope.humanPack.hash).toHaveLength(64);
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .toContain('## Human pack');
+
+    const write = dispatches.filter((d) => d.stage === WRITE_STAGE);
+    expect(write).toHaveLength(1);
+    const humanPackHash = hashHumanPack(HUMAN_PACK_MARKDOWN);
+    expect(write[0]!.inputHashes).toContain(humanPackHash);
+
+    await completeStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    });
+    await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.humanPackHash).toBe(humanPackHash);
+  });
+
+  test('SDD 007: WRITE fails WRITER_V2_INPUT_MISSING when a present human pack is missing a heading', async () => {
+    mkdirSync(join(dir, 'writer'), { recursive: true });
+    writeFileSync(
+      join(dir, 'writer', 'human-pack.md'),
+      HUMAN_PACK_MARKDOWN.replace('## Cử chỉ: khong-biet — Tên\nGhi chú.\n', ''),
+      'utf8',
+    );
+    const runId = await startRun();
+    await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
+    const failed = await waitUntil(
+      () => getWriterRunV2(runId, dir),
+      (r) => r != null && r.status !== 'RUNNING',
+    );
+    expect(failed!.status).toBe('FAILED');
+    expect(failed!.errorCode).toBe('WRITER_V2_INPUT_MISSING');
+    expect(failed!.errorReason).toContain('Cử chỉ: khong-biet');
   });
 
   test('WRITE runs exactly as before when no persona pack file exists (backward compatible)', async () => {
