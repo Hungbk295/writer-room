@@ -247,6 +247,20 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       },
     }),
     wrap({
+      name: 'spy_video_download_audio',
+      description: 'Tải tệp âm thanh (.mp3/.m4a/.opus) của video YouTube về máy cục bộ. Chỉ tải theo yêu cầu chỉ định (on-demand), không tải tự động trong luồng harvest.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 16_384,
+      handler: async (args) => spy.downloadAudio({
+        url: typeof args['url'] === 'string' ? args['url'] : undefined,
+        videoId: typeof args['video_id'] === 'string' ? args['video_id'] : undefined,
+        videoSnapshotId: typeof args['video_snapshot_id'] === 'string' ? args['video_snapshot_id'] : undefined,
+        format: args['format'] === 'm4a' || args['format'] === 'opus' ? args['format'] : 'mp3',
+        quality: typeof args['quality'] === 'string' || typeof args['quality'] === 'number' ? args['quality'] : undefined,
+        force: args['force'] === true,
+      }),
+    }),
+    wrap({
       name: 'spy_channels_list',
       description: 'Liệt kê kênh đã spy.',
       requiredScopes: ['spy.read'],

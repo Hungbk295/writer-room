@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AppError } from './errors.ts';
@@ -523,6 +524,98 @@ export class SpyService {
       language: record?.language ?? null,
       normalized: false,
       wordCount: text.split(/\s+/).filter(Boolean).length,
+    };
+  }
+
+  async downloadAudio(input: {
+    url?: string;
+    videoId?: string;
+    videoSnapshotId?: string;
+    format?: 'mp3' | 'm4a' | 'opus';
+    quality?: string | number;
+    force?: boolean;
+  }): Promise<{
+    sourceVideoId: string;
+    canonicalUrl: string;
+    title?: string;
+    channelTitle?: string;
+    filePath: string;
+    format: string;
+    fileSizeBytes: number;
+    cached: boolean;
+  }> {
+    let sourceVideoId = '';
+    let canonicalUrl = '';
+    let title: string | undefined;
+    let channelTitle: string | undefined;
+
+    if (input.videoSnapshotId) {
+      const snapshot = this.store.getVideoSnapshot(input.videoSnapshotId);
+      if (!snapshot) throw new AppError('not_found', 'Video snapshot không tồn tại');
+      sourceVideoId = snapshot.sourceVideoId;
+      canonicalUrl = snapshot.canonicalUrl;
+      title = snapshot.title;
+      channelTitle = snapshot.channelTitle;
+    } else if (input.videoId) {
+      const snapshot = this.store.getVideoSnapshot(input.videoId);
+      if (snapshot) {
+        sourceVideoId = snapshot.sourceVideoId;
+        canonicalUrl = snapshot.canonicalUrl;
+        title = snapshot.title;
+        channelTitle = snapshot.channelTitle;
+      } else {
+        sourceVideoId = input.videoId;
+        canonicalUrl = `https://www.youtube.com/watch?v=${sourceVideoId}`;
+      }
+    } else if (input.url) {
+      canonicalUrl = input.url;
+      const match = canonicalUrl.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/);
+      sourceVideoId = match?.[1] ?? '';
+    }
+
+    if (!canonicalUrl) {
+      throw new AppError('invalid_input', 'Cần cung cấp url, video_id hoặc video_snapshot_id');
+    }
+
+    const audioDir = join(this.dataRoot, 'audio');
+    await mkdir(audioDir, { recursive: true });
+    const format = input.format ?? 'mp3';
+    const targetFile = join(audioDir, `${sourceVideoId || 'audio'}.${format}`);
+
+    if (!input.force && existsSync(targetFile)) {
+      const stat = statSync(targetFile);
+      if (stat.size > 0) {
+        return {
+          sourceVideoId,
+          canonicalUrl,
+          title,
+          channelTitle,
+          filePath: targetFile,
+          format,
+          fileSizeBytes: stat.size,
+          cached: true,
+        };
+      }
+    }
+
+    if (!this.youtube.downloadAudio) {
+      throw new AppError('capability_missing', 'YouTube adapter không hỗ trợ download audio');
+    }
+
+    const res = await this.youtube.downloadAudio(canonicalUrl, audioDir, {
+      format,
+      quality: input.quality,
+    });
+
+    return {
+      sourceVideoId,
+      canonicalUrl,
+      title,
+      channelTitle,
+      filePath: res.filePath,
+      format: res.format,
+      fileSizeBytes: res.fileSizeBytes,
+      cached: false,
     };
   }
 
@@ -1408,9 +1501,6 @@ export class SpyService {
     limit?: number;
     orderBy?: 'velocity' | 'views' | 'published_at';
     preferNormalized?: boolean;
-    /** Default 0.5 — half of each video transcript. */
-    transcriptFraction?: number;
-    maxCharsPerVideo?: number;
   }) {
     return buildSourcePack(this.store, options);
   }

@@ -55,21 +55,22 @@ Feature gate: `WRITER_ROOM_SPY_ENABLED=0` tắt cả Spy MCP và General Pack MC
 **Transport:** HTTP loopback POST-only + Bearer (không SSE, không query token)  
 **Scopes cứng trên server:** `spy.start`, `spy.read`
 
-### Tools đang expose (23)
+### Tools đang expose (24)
 
 #### Acquisition / wait / evidence
 
 | Tool | Required | Optional / notes |
 |---|---|---|
-| `spy_channel_start` | `url` | `selection_mode`, `top_n` (1–20), `scan_limit` (1–500), `rank_by`, `depth` |
-| `spy_video_start` | `url` | `depth` |
-| `spy_get_status` | `operation_id` | handler cũng nhận alias `run_id` (không có trong schema) |
-| `spy_wait` | `operation_id` | `max_wait_seconds` 1–600 (default handler 30) |
+| `spy_channel_start` | `url` | `selection_mode`, `top_n` (1–20), `scan_limit` (1–500), `rank_by`, `min_duration_sec`, `max_duration_sec`, `published_after`, `published_before`, `depth`, `idempotency_key` |
+| `spy_video_start` | `url` | `depth`, `idempotency_key` |
+| `spy_get_status` | `operation_id` **or** `run_id` | hai alias đều có trong schema |
+| `spy_wait` | `operation_id` **or** `run_id` | `max_wait_seconds` 1–600 (default handler 30) |
 | `spy_run_manifest` | `spy_run_id` | catalogue video + snapshot id, không trả transcript body |
 | `spy_find_videos` | `spy_run_id`, `titles` | `match`: `exact\|contains` |
 | `spy_global_video_search` | `query` | `limit` 1–50 default 20; `language`/`region` default **`vi`/`VN`** |
 | `spy_read_transcript` | `video_snapshot_ids` (1–5) | `cursors`, `limit_per_video` 1–50 |
 | `spy_read_video_material` | `video_snapshot_ids`, `include_thumbnail` | giống transcript + optional image content |
+| `spy_video_download_audio` | `url` **or** `video_id` **or** `video_snapshot_id` | `format` (`mp3`\|`m4a`\|`opus`, default `mp3`), `quality`, `force` (default `false`). Tải audio on-demand bằng yt-dlp, lưu tại local cache |
 
 #### Intelligence (read-only allowlist)
 
@@ -112,17 +113,7 @@ Cố ý theo comment trong `spy-mcp.ts` (mutations / discovery write / loop writ
 1. **`inputSchema` tách khỏi handler**  
    Descriptions lấy từ `spyTools()`, nhưng `inputSchema` hardcode trong `spy-mcp.ts`. Dễ lệch khi thêm param ở catalog.
 
-2. **`spy_channel_start` — schema thiếu param handler đã hỗ trợ**  
-   Handler nhận thêm: `min_duration_sec`, `max_duration_sec`, `published_after`, `published_before`, `idempotency_key`.  
-   Schema MCP **không list** các field này → agent/`tools/list` không biết dùng được.
-
-3. **`spy_video_start` — schema thiếu `idempotency_key`** (handler có).
-
-4. **Alias không document trong schema**  
-   - `spy_get_status` / `spy_wait`: handler nhận `run_id` như alias `operation_id`.  
-   Schema chỉ có `operation_id`.
-
-5. **Default cứng trong handler (không config file)**  
+2. **Default cứng trong handler (không config file)**
    | Param | Default cứng |
    |---|---|
    | `top_n` | 5 |
@@ -136,10 +127,10 @@ Cố ý theo comment trong `spy-mcp.ts` (mutations / discovery write / loop writ
    | `spy_wait` max | 600s; default 30s |
    | output truncate | per-tool `outputLimitBytes` trong catalog |
 
-6. **Scopes cố định**  
+3. **Scopes cố định**
    Mọi client cầm Spy bearer đều có `spy.start` + `spy.read`. Không có read-only token / per-agent scope.
 
-7. **Không validate JSON Schema phía server trước khi call**  
+4. **Không validate JSON Schema phía server trước khi call**
    Schema chủ yếu cho client discovery; handler tự parse/`AppError`. Agent có thể gửi field “lạ” và bị ignore hoặc default-coerce.
 
 ---
@@ -167,11 +158,19 @@ Cố ý theo comment trong `spy-mcp.ts` (mutations / discovery write / loop writ
 | `pack_commit` | commit | `channel`, `reviewerNote` | `includeTasteDna`, `videoIds`, `force` |
 | `pack_health` | read | `channel` | quote-ratio; mô tả ngưỡng khỏe ~60% (informational) |
 
+### Resources
+
+| URI | Nội dung |
+|---|---|
+| `general-pack://schema/example-tags` | JSON của 11 tag chuẩn |
+| `general-pack://channels/<channel>` | Markdown của pack đã commit; một resource cho mỗi pack |
+
 ### Rigid / missing config
 
-1. **`pack_list_candidate_videos(source=channel_url)` hardcode Spy input**  
-   Luôn: `selectionMode: 'popular'`, `scanLimit: 60`, `rankBy: 'views'`, `minDurationSec: 60`, `depth: 'transcript'`.  
-   Caller có thể truyền `rank_by` / `top_n` nhưng **không** ảnh hưởng lần Spy start — chỉ ảnh hưởng khi `source=spy_run`.
+1. **`pack_list_candidate_videos(source=channel_url)` hardcode Spy input**
+   Luôn: `selectionMode: 'popular'`, `scanLimit: 60`, `minDurationSec: 60`, `depth: 'transcript'`.
+   `top_n` và `rank_by=views|velocity` được pass sang lần Spy start. `rank_by=recency`
+   vẫn bị đổi ngầm thành `views`; các Spy filter khác chưa được expose ở surface này.
 
 2. **Example tags cố định 11 giá trị** (`GENERAL_PACK_EXAMPLE_TAGS`) — đúng by design (grounding), nhưng không config được per-channel.
 
@@ -230,11 +229,11 @@ External / Hermes proxy: `hermes-workspace/src/writer-room-proxy.ts` discover qu
 
 ### P0 — schema/config lệch làm agent dùng sai hoặc bỏ sót capability
 
-| ID | Finding | Impact | Gợi ý |
+| ID | Finding | Impact | Trạng thái (2026-09-06) |
 |---|---|---|---|
-| P0-1 | `spy_channel_start` schema thiếu `min_duration_sec`, `max_duration_sec`, `published_*`, `idempotency_key` | Agent không thấy filter đã hỗ trợ | Sync schema từ handler (single source of truth) |
-| P0-2 | Dual source: allowlist + `inputSchemas` map vs `spyTools()` | Drift khi thêm tool/param | Generate schema cạnh tool def, hoặc export schema từ catalog |
-| P0-3 | `pack_list_candidate_videos(channel_url)` ignore `rank_by` / không expose Spy knobs | Agent tưởng đã rank theo param | Pass-through params hoặc bỏ param khỏi schema khi không dùng |
+| P0-1 | `spy_channel_start` schema thiếu `min_duration_sec`, `max_duration_sec`, `published_*`, `idempotency_key` | Agent không thấy filter đã hỗ trợ | **RESOLVED** (Đã đồng bộ vào schema) |
+| P0-2 | Dual source: allowlist + `inputSchemas` map vs `spyTools()` | Drift khi thêm tool/param | **OPEN** — lần này đã đồng bộ field, nhưng vẫn còn hai nguồn định nghĩa |
+| P0-3 | `pack_list_candidate_videos(channel_url)` chỉ pass `views|velocity`; `recency` bị đổi thành `views`, các Spy knob khác chưa expose | Agent có thể nhận tập video sai chiến lược đã yêu cầu | **PARTIAL** — cần contract riêng theo `source` hoặc từ chối `recency` khi start từ URL |
 
 ### P1 — thiết kế cứng / thiếu config vận hành
 
@@ -290,3 +289,46 @@ curl -s -X POST "$URL" \
 ---
 
 *Generated from codebase review. Khi đổi allowlist/schema, cập nhật file này cùng PR.*
+
+---
+
+## 10. Writer MCP — `writer` (plan `writer-external-orchestrator-plan.md` §3)
+
+Mount name `writer`, server `writer-room-writer`, file `packages/daemon/src/writer-mcp.ts`. Không nằm trong `appMcpProvision`: agent mở từ app không thấy server này; chỉ orchestrator bên ngoài (skill `writer-orchestrate` trên 1DevTool) mount nó.
+
+| Mục | Giá trị |
+|---|---|
+| Discovery | `GET /api/writer/mcp` → `{ url, token }` (404 khi tắt); `/api/health` có `writerMcp: { url }` |
+| Transport | JSON-RPC over POST, `Authorization: Bearer <token>`, 127.0.0.1 cổng ngẫu nhiên, token đổi mỗi lần daemon start |
+| Config cho orchestrator | `<dataDir>/agents/mcp-orchestrator.json` — ghi đè mỗi lần start; `mcpServers.writer` (server này) + `mcpServers.writer_room` (Spy MCP, chỉ khi Spy bật); cùng format `writeMcpConfig` trong `agents/index.ts` |
+| Lỗi domain | `isError: true`, text `{ errorCode, reason }`. `errorCode` ∈ `RUN_NOT_FOUND` \| `TURN_NOT_OPEN` \| `SUBSTRATE_NOT_EXTERNAL` (từ `writer/external-turn.ts`) \| `NOT_FOUND` (pack/style/general pack không tồn tại) \| `INVALID_INPUT` (thiếu/sai kiểu tham số) \| `INVALID_STATE` (mọi lỗi nghiệp vụ khác, vd chưa chọn hook, run chưa DONE) |
+| Test | `packages/daemon/test/writer-mcp.test.ts` (12 test, real harness) |
+
+Mọi tool gọi đúng hàm mà route HTTP tương ứng gọi, cùng deps `{ scheduler, workflow, dataDir }`, nên hành vi trùng HTTP. Daemon vẫn là settle machine duy nhất: không tool nào đọc hay validate `out/result.json`.
+
+| Tool | Input | Gọi | Output |
+|---|---|---|---|
+| `writer_health` | — | hàm health tiêm từ `http.ts` | `{ ok, agents, spyMcp: bool }` |
+| `writer_packs_list` | — | `listWriterPacks` | `{ packs: summary[] }` |
+| `writer_post_create` | `channelId, brief, packId, generalPack, title?, audience?, targetWords?, agentId?='claude', editorAgentId?='codex', substrate?='external'` | `createWriterPostV2` rồi `updateWriterPostV2` | run projection |
+| `writer_post_configure` | `postId` + các field như PUT `/posts/:id` (field bỏ qua giữ giá trị hiện tại) | `updateWriterPostV2` | run projection |
+| `writer_hook_clarify` | `postId` | `startHookClarify` | `{ generatingHook }` |
+| `writer_hook_answer` | `postId, answers: string[]` | `startHookSuggest` | `{ generatingHook }` |
+| `writer_hook_candidates` | `postId` | `getWriterRunV2` | `{ hookClarify, hookCandidates, selectedHook, generatingHook, hookError }` |
+| `writer_hook_select` | `postId, selectedId` | `selectHook` | `{ selectedHook }` |
+| `writer_run_start` | `postId` | `runWriterRoomV2` | run projection |
+| `writer_status` | `runId` | `getWriterRunV2` + `withWriterV2Progress(run, listOpenTurns)` | projection gồm `currentTurn`, `progressPercent`, `timeline` 10 entry cuối |
+| `writer_wait` | `runId, until: 'turn' \| 'phase' \| 'terminal', timeoutSec? (mặc định 120, tối đa 600), fromPhase?` | poll store + `listOpenTurns` mỗi 2 giây | snapshot như `writer_status` + `{ timedOut }` |
+| `writer_continue` | `runId` | `continueWriterRunV2` | run projection |
+| `writer_stage_next` | `runId` | `getOpenWriterTurn` | `{ turn: { turnId, stage, attempt, agentId, itemRunDir, promptPath, resultPath, assignmentText, startedAt, deadlineAt } \| null, phase, status }` |
+| `writer_stage_progress` | `runId, turnId?, text, external?` | `noteWriterTurnProgress` | `{ ok }` |
+| `writer_stage_complete` | `runId, turnId, exitCode, external?` | `completeWriterTurn` | `{ ok, turnId }` |
+| `writer_restyle` | `runId, styleId` | `startRestyle` | `{ restyling }` |
+| `writer_get_script` | `runId, version?: 'final' \| number` | `getWriterRunV2` / `readStyledVersion` | `{ title, script, words }` (bản styled có thêm `styleId`) |
+
+`writer_wait` dừng sớm khi run đã DONE/FAILED/FAILED_GATE bất kể `until`; với `until: 'phase'`, đổi `status` (vd DRAFT → RUNNING) cũng tính là đổi. Tool không giữ lock, không tạo turn.
+
+```bash
+curl -s http://127.0.0.1:4187/api/writer/mcp
+cat "$WRITER_ROOM_DATA/agents/mcp-orchestrator.json"
+```

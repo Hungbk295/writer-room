@@ -87,7 +87,7 @@ describe('Spy MCP server', () => {
       'spy_find_videos', 'spy_get_status', 'spy_global_video_search', 'spy_loop_inbox', 'spy_loop_report',
       'spy_loop_status', 'spy_read_transcript', 'spy_read_video_material',
       'spy_run_manifest', 'spy_title_patterns', 'spy_topics_list', 'spy_video_comments',
-      'spy_video_metrics', 'spy_video_start', 'spy_wait',
+      'spy_video_download_audio', 'spy_video_metrics', 'spy_video_start', 'spy_wait',
     ]);
     // Mutation tools must never appear in the allowlist.
     expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
@@ -97,6 +97,16 @@ describe('Spy MCP server', () => {
       // spy.loop.write tools — intentionally excluded from allowlist
       'spy_loop_decide', 'spy_loop_tick',
     ]));
+
+    const downloadAudio = tools.find((tool) => tool.name === 'spy_video_download_audio')!.inputSchema;
+    expect(downloadAudio).toMatchObject({
+      anyOf: [{ required: ['url'] }, { required: ['video_id'] }, { required: ['video_snapshot_id'] }],
+      properties: {
+        format: { enum: ['mp3', 'm4a', 'opus'] },
+        quality: { type: 'string' },
+        force: { type: 'boolean' },
+      },
+    });
 
     const channelVideos = tools.find((tool) => tool.name === 'spy_channel_videos')!.inputSchema;
     expect(channelVideos).toMatchObject({
@@ -121,6 +131,32 @@ describe('Spy MCP server', () => {
         language: { default: 'vi' },
         region: { default: 'VN' },
       },
+    });
+    const channelStart = tools.find((tool) => tool.name === 'spy_channel_start')!.inputSchema;
+    expect(channelStart).toMatchObject({
+      required: ['url'],
+      properties: {
+        min_duration_sec: { type: 'integer', default: 60 },
+        max_duration_sec: { type: 'integer' },
+        published_after: { type: 'string' },
+        published_before: { type: 'string' },
+        idempotency_key: { type: 'string' },
+      },
+    });
+    const videoStart = tools.find((tool) => tool.name === 'spy_video_start')!.inputSchema;
+    expect(videoStart).toMatchObject({
+      required: ['url'],
+      properties: {
+        idempotency_key: { type: 'string' },
+      },
+    });
+    const getStatus = tools.find((tool) => tool.name === 'spy_get_status')!.inputSchema;
+    expect(getStatus).toMatchObject({
+      anyOf: [{ required: ['operation_id'] }, { required: ['run_id'] }],
+    });
+    const spyWait = tools.find((tool) => tool.name === 'spy_wait')!.inputSchema;
+    expect(spyWait).toMatchObject({
+      anyOf: [{ required: ['operation_id'] }, { required: ['run_id'] }],
     });
   });
 

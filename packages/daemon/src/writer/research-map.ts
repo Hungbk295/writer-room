@@ -839,10 +839,24 @@ const RESEARCH_PROMPT_EXAMPLE: ResearchMapAgentOutput = {
 };
 
 /** Stable RESEARCH instructions; title/brief/audience and source files are staged separately. */
-export function buildResearchPrompt(): string {
+export function buildResearchPrompt(options: {
+  /** A fan-out worker sees exactly one source. Kept optional for the full-pack contract tests. */
+  singleSourceVideoId?: string;
+  /** Coordinator-owned output budget for this worker. */
+  maxBytes?: number;
+} = {}): string {
+  const maxBytes = options.maxBytes ?? MAX_RESEARCH_MAP_BYTES;
   return [
     '# Writer v2 — RESEARCH (lập bản đồ evidence, không đề xuất câu chuyện)',
     '',
+    ...(options.singleSourceVideoId
+      ? [
+          `Đây là worker độc lập cho DUY NHẤT videoId \`${options.singleSourceVideoId}\`.`,
+          'Không tìm, đọc hoặc suy đoán transcript khác. sourceAudit phải có đúng một entry cho video này.',
+          'Dùng ATTESTED/REJECTED theo evidence của nguồn này; không dùng MULTI_SOURCE_ATTESTED.',
+          '',
+        ]
+      : []),
     'Đọc `input/envelope.json`, rồi đọc MỌI file trong `topicPack.contentFiles` theo đúng thứ tự.',
     'Envelope chỉ cung cấp title, brief, audience và source manifest. Bạn KHÔNG được xem selectedHook,',
     'DIVERGE hypotheses, General Pack, Formula hay Persona Pack; không hỏi xin hoặc cố đoán chúng.',
@@ -902,7 +916,7 @@ export function buildResearchPrompt(): string {
     '',
     '## Strict JSON contract',
     '',
-    `Output phải JSON-serializable và không quá ${MAX_RESEARCH_MAP_BYTES} bytes. Chỉ ghi JSON vào \`out/result.json\`; không Markdown ngoài file.`,
+    `Output phải JSON-serializable và không quá ${maxBytes} bytes. Chỉ ghi JSON vào \`out/result.json\`; không Markdown ngoài file.`,
     `Top-level chỉ được có: ${promptKeyList(TOP_LEVEL_KEYS)}.`,
     `\`schemaVersion\` = \`${RESEARCH_MAP_SCHEMA_VERSION}\`. Không thêm key ngoài allowlist ở bất kỳ object lồng nào.`,
     `SourceAudit keys: ${promptKeyList(SOURCE_AUDIT_KEYS)}.`,

@@ -246,10 +246,21 @@ export class McpGeneralPackServer {
       case 'initialize':
         return {
           protocolVersion: typeof params['protocolVersion'] === 'string' ? params['protocolVersion'] : PROTOCOL_VERSION,
-          capabilities: { tools: { listChanged: false } },
+          capabilities: {
+            tools: { listChanged: false },
+            resources: { listChanged: false },
+          },
           serverInfo: { name: 'writer-room-general-pack', version: '0.1.0' },
         };
       case 'ping': return {};
+      case 'resources/list':
+        return {
+          resources: await this.listResources(),
+        };
+      case 'resources/read':
+        return {
+          contents: [await this.readResource(requireString(params, 'uri'))],
+        };
       case 'tools/list':
         return {
           tools: [...this.tools.values()].map((tool) => ({
@@ -261,6 +272,52 @@ export class McpGeneralPackServer {
       case 'tools/call': return this.callTool(String(params['name'] ?? ''), (params['arguments'] ?? {}) as Record<string, unknown>);
       default: throw rpcError(-32601, `method not found: ${method}`);
     }
+  }
+
+  private async listResources(): Promise<Array<{ uri: string; name: string; description?: string; mimeType?: string }>> {
+    const packs = await listGeneralPacks(this.dataDir);
+    const resources: Array<{ uri: string; name: string; description?: string; mimeType?: string }> = [
+      {
+        uri: 'general-pack://schema/example-tags',
+        name: 'General Pack Example Tags',
+        description: '11 tags quy chuẩn bắt buộc cho entry kịch bản (Hook/Beats/Example/Payoff/Boundary)',
+        mimeType: 'application/json',
+      },
+    ];
+    for (const pack of packs) {
+      const channel = pack.path.slice(0, -3);
+      resources.push({
+        uri: `general-pack://channels/${encodeURIComponent(channel)}`,
+        name: `General Pack: ${channel}`,
+        description: `Tệp CÁCH LÀM kênh ${channel} v${pack.version ?? 1} (${pack.wordCount} từ, hash ${pack.hash.slice(0, 8)})`,
+        mimeType: 'text/markdown',
+      });
+    }
+    return resources;
+  }
+
+  private async readResource(uri: string): Promise<{ uri: string; mimeType: string; text: string }> {
+    if (uri === 'general-pack://schema/example-tags') {
+      return {
+        uri,
+        mimeType: 'application/json',
+        text: JSON.stringify({
+          tags: GENERAL_PACK_EXAMPLE_TAGS,
+          description: 'Mọi example trong entry kịch bản phải gán đúng 1 trong 11 tag này và trích dẫn verbatim từ transcript.',
+        }, null, 2),
+      };
+    }
+    if (uri.startsWith('general-pack://channels/')) {
+      const channel = decodeURIComponent(uri.slice('general-pack://channels/'.length));
+      const pack = await getGeneralPack(`${channel}.md`, this.dataDir);
+      if (!pack) throw rpcError(-32002, `Không tìm thấy general pack cho kênh: ${channel}`);
+      return {
+        uri,
+        mimeType: 'text/markdown',
+        text: pack.markdown,
+      };
+    }
+    throw rpcError(-32002, `URI tài nguyên không hợp lệ hoặc không tồn tại: ${uri}`);
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -328,8 +385,9 @@ export class McpGeneralPackServer {
           if (source === 'channel_url') {
             const url = requireString(args, 'channel_url');
             const topN = typeof args['top_n'] === 'number' ? args['top_n'] : 10;
+            const rankBy = args['rank_by'] === 'velocity' ? 'velocity' : 'views';
             const input: ChannelSpyInput = {
-              url, topN, selectionMode: 'popular', scanLimit: 60, rankBy: 'views', minDurationSec: 60, depth: 'transcript',
+              url, topN, selectionMode: 'popular', scanLimit: 60, rankBy, minDurationSec: 60, depth: 'transcript',
               idempotencyKey: `general-pack-mcp-${randomUUID()}`,
             };
             const op = spy.channelSpy(input);

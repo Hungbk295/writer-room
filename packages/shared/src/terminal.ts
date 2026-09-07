@@ -201,6 +201,9 @@ export type TeamEvent =
       interactiveRequired?: boolean;
       restartInteractive?: boolean;
     }
+  /** Turn chạy ở substrate ngoài (orchestrator trên 1DevTool): daemon không
+   * spawn gì, client KHÔNG mở pane; chỉ để biết có turn đang mở ở `cwd`. */
+  | { kind: 'externalTurn'; turnId: number; agentId: string; cwd: string; injectText: string }
   | { kind: 'turnSettled'; turnId: number; agentId: string; status: 'done' | 'failed'; exitCode: number | null }
   | { kind: 'turnTimeout'; turnId: number; agentId: string }
   | { kind: 'interrupt'; agentId: string; turnIds: number[] }

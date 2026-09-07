@@ -541,6 +541,73 @@ export interface StyledVersion {
   createdAt: string;
 }
 
+/**
+ * Where a run's agent turns execute. `terminal` = the app's turn bridge opens a
+ * read-only pane per turn (today's behaviour). `external` = an orchestrator on
+ * 1DevTool runs each stage itself through the Writer MCP; the daemon emits no
+ * `spawnTurn`, so the app only watches progress. Set on the post while DRAFT.
+ */
+export type WriterSubstrate = 'terminal' | 'external';
+
+/** Handles the external orchestrator reports for a turn (all optional). */
+export interface WriterExternalRef {
+  runId?: string;
+  teamId?: string;
+  memberId?: string;
+  terminalId?: string;
+}
+
+/** One progress note on a run; daemon keeps at most the last 50. */
+export interface WriterTimelineEntry {
+  at: string;
+  turnId?: number;
+  stage?: string;
+  kind: 'note' | 'external' | 'system';
+  text: string;
+  external?: WriterExternalRef;
+}
+
+export interface WriterResearchSourceCheckpoint {
+  videoId: string;
+  itemId: string;
+  sourceHash: string;
+  status: 'PENDING' | 'RUNNING' | 'COMMITTED' | 'FAILED' | 'INTERRUPTED';
+  attempt: number;
+  turnIds: number[];
+  activeTurnId?: number;
+  artifactHash?: string;
+  artifactPath?: string;
+  errorCode?: string;
+  errorReason?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface WriterTopicPackCheckpoint {
+  path: string;
+  hash: string;
+  researchMapPath: string;
+  researchMapHash: string;
+  sourcePackHash: string;
+  videoIds: string[];
+  createdAt: string;
+}
+
+/** The turn currently open on a run; only present on single-run GET responses. */
+export interface WriterCurrentTurn {
+  turnId: number;
+  stage: string;
+  attempt: number;
+  /** Clone id the daemon booked the turn on. */
+  agentId: string;
+  /** Template id (`claude`, `codex`); absent on older daemons. */
+  templateId?: string;
+  itemRunDir: string;
+  startedAt: string;
+  deadlineAt: string;
+  external?: WriterExternalRef;
+}
+
 export interface WriterRunV2 {
   id: string;
   status: 'DRAFT' | 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
@@ -557,6 +624,8 @@ export interface WriterRunV2 {
   packId: string;
   packTitle: string;
   packHash?: string;
+  researchSources?: WriterResearchSourceCheckpoint[];
+  topicPack?: WriterTopicPackCheckpoint;
   generalPackPath: string;
   generalPackHash: string;
   generalPackVersion: number | null;
@@ -606,6 +675,11 @@ export interface WriterRunV2 {
   /** Weighted Director-board progress (0–100). Computed by daemon on read. */
   progressPercent?: number;
   activeRole?: WriterV2ActiveRole;
+  /** Missing on runs written before substrates existed — treat as `terminal`. */
+  substrate?: WriterSubstrate;
+  timeline?: WriterTimelineEntry[];
+  /** Computed by daemon on single-run GET; `null` when no turn is open. */
+  currentTurn?: WriterCurrentTurn | null;
 }
 
 export interface WriterRunV2Summary {
@@ -631,6 +705,7 @@ export interface WriterRunV2Summary {
   formulaHash: string;
   agentId: string;
   editorAgentId: string;
+  substrate?: WriterSubstrate;
   createdAt: string;
   updatedAt: string;
   hasScript: boolean;
@@ -1582,9 +1657,6 @@ export const api = {
     opts: {
       limit?: number;
       videoIds?: string[];
-      /** Fraction of each video transcript (default 0.5). */
-      transcriptFraction?: number;
-      maxCharsPerVideo?: number;
     } = {},
   ) =>
     request<{
@@ -1759,13 +1831,14 @@ export const api = {
     formulaId?: string;
     agentId?: string;
     editorAgentId?: string;
+    substrate?: WriterSubstrate;
   }) =>
     request<WriterRunV2>('/api/writer/v2/runs', { method: 'POST', body: JSON.stringify(body) }),
   listWriterPostsV2: () => request<{ posts: WriterRunV2Summary[] }>('/api/writer/v2/posts'),
   getWriterPostV2: (id: string) =>
     request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}`),
-  createWriterPostV2: () =>
-    request<WriterRunV2>('/api/writer/v2/posts', { method: 'POST', body: JSON.stringify({}) }),
+  createWriterPostV2: (body: { substrate?: WriterSubstrate } = {}) =>
+    request<WriterRunV2>('/api/writer/v2/posts', { method: 'POST', body: JSON.stringify(body) }),
   updateWriterPostV2: (id: string, body: {
     channelId: string;
     brief: string;
@@ -1778,6 +1851,8 @@ export const api = {
     formulaId?: string;
     agentId: string;
     editorAgentId: string;
+    /** Server accepts it only while the post is DRAFT. */
+    substrate?: WriterSubstrate;
   }) => request<WriterRunV2>(`/api/writer/v2/posts/${encodeURIComponent(id)}`, {
     method: 'PUT', body: JSON.stringify(body),
   }),
@@ -1809,6 +1884,7 @@ export const api = {
     formulaId?: string;
     agentId?: string;
     editorAgentId?: string;
+    substrate?: WriterSubstrate;
   }) =>
     request<WriterRunV2>('/api/writer/v2/rooms', { method: 'POST', body: JSON.stringify(body) }),
   runWriterRoomV2: (id: string) =>

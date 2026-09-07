@@ -1,5 +1,9 @@
 # Writer editorial pipeline — bài học tích lũy
 
+> **Tài liệu lịch sử — 2026-09-06:** dùng để tham khảo bài học biên tập, không làm
+> chuẩn trạng thái hoặc quyền phát biểu. Goal, persona, gate và nghiệm thu hiện hành
+> nằm trong [Writer v2 — bản chuẩn](./writer-v2-status.md).
+
 > Cập nhật gần nhất: 2026-08-13  
 > Mục đích: tài liệu ngữ cảnh cho các turn sau và cho người sửa Writer pipeline.  
 > Đây **không phải** một bộ rule được nạp trực tiếp vào agent. Không sao chép toàn bộ tài liệu này vào prompt.

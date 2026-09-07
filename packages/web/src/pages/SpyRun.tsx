@@ -177,10 +177,9 @@ export function SpyRunPage({ id }: { id: string }) {
     setError(null);
     setNotice(null);
     try {
-      // 50% transcript per video (daemon default); explicit for clarity at the call site.
       const opts = selectedReadyIds.length > 0
-        ? { videoIds: selectedReadyIds, transcriptFraction: 0.5 }
-        : { limit: 5, transcriptFraction: 0.5 };
+        ? { videoIds: selectedReadyIds }
+        : { limit: 5 };
       const result = await api.exportSourcePack(id, opts);
       setPackPreview(result.markdown);
       setMeta({ wordCount: result.wordCount, warnings: result.warnings });

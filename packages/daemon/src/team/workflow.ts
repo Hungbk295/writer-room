@@ -14,6 +14,11 @@ export type TeamEvent =
   /** injectText: dòng 1-line để client GÕ vào pane interactive của agent nếu
    * đang mở (idiom agentchattr) — chỉ fallback spawn `spec` khi không có pane. */
   | { kind: 'spawnTurn'; turnId: number; agentId: string; spec: AgentLaunchSpec; injectText: string; forceHeadless: boolean; interactiveRequired?: boolean; restartInteractive?: boolean }
+  /** Turn chạy ở substrate ngoài (orchestrator trên 1DevTool): daemon KHÔNG
+   * spawn gì cả, chỉ thông báo để client biết có turn đang mở. Client không
+   * được mở pane cho event này; caller ngoài tự chạy agent trong `cwd` rồi báo
+   * xong qua `turnComplete`. */
+  | { kind: 'externalTurn'; turnId: number; agentId: string; cwd: string; injectText: string }
   | { kind: 'turnSettled'; turnId: number; agentId: string; status: 'done' | 'failed'; exitCode: number | null }
   | { kind: 'turnTimeout'; turnId: number; agentId: string }
   /** Dừng có chủ đích 1 agent: client kill pane headless của các turnIds và
@@ -51,6 +56,9 @@ export interface TurnJob {
   exclusive?: boolean;
   /** Replace the persistent interactive pane before injecting this assignment. */
   restartInteractive?: boolean;
+  /** Không emit `spawnTurn`; emit `externalTurn` để báo. Watchdog hard cap vẫn
+   * chạy, settle vẫn qua `turnComplete` như mọi turn khác. */
+  external?: boolean;
   timeoutMs?: number;
   /** Stall detection window. When set, the turn is killed after this long with
    * NO new terminal ring-buffer output instead of after a fixed wall-clock
@@ -302,6 +310,32 @@ export class TeamWorkflow {
       this.deps.store.audit('turn_failed', agentId, `turn ${next.id} interactive orchestrated turn thiếu taskNote — không emit spawnTurn`);
       this.deps.emit({ kind: 'agentPaused', agentId, reason: `turn ${next.id} thiếu taskNote cho interactive orchestrated turn` });
       this.publishSettled({ turnId: next.id, agentId, status: 'failed', exitCode: -1 });
+      return;
+    }
+    // Substrate ngoài: không có pane nào để spawn, không build spec (build spec
+    // ghi MCP config vào cwd — việc của bridge, không phải của caller ngoài).
+    // Hard cap vẫn arm; stall detection bỏ vì không có ring buffer để nghe.
+    if (job?.external) {
+      const timeoutMs = Math.max(60_000, job.timeoutMs ?? TURN_TIMEOUT_MS);
+      this.armTurnWatchdog(next.id, agentId, timeoutMs);
+      const injectText = buildInjectLine(
+        this.deps.agents.get(agentId),
+        next.reason,
+        next.messageCursor,
+        Boolean(taskNote?.trim()),
+        job.orchestrated === true,
+        persistentInteractive ? next.id : undefined,
+        taskNote,
+      );
+      this.deps.emit({
+        kind: 'externalTurn',
+        turnId: next.id,
+        agentId,
+        // Scheduler dispatches always set overrideCwd (= itemRunDir); '' only for a
+        // hand-built job with no cwd, and then there is nothing to point at anyway.
+        cwd: job.overrideCwd ?? '',
+        injectText,
+      });
       return;
     }
     // A Board turn is delivered to a pane that was already launched by the

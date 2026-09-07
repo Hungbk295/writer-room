@@ -49,6 +49,7 @@ import {
 import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { McpSpyServer } from './spy-mcp.ts';
 import { McpGeneralPackServer } from './general-pack-mcp.ts';
+import { McpWriterServer, writeOrchestratorMcpConfig } from './writer-mcp.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
 import { createJobDoneNotification, listJobNotifications, markJobNotificationRead } from './notifications.ts';
 import { handleGetSpyLoopConfig, handlePutSpyLoopConfig, loadSpyLoopConfig } from './spy/loop-config.ts';
@@ -113,6 +114,8 @@ import {
   startWriterRunV2,
   updateWriterPostV2,
   withWriterV2Progress,
+  type ExternalRef,
+  type WriterSubstrate,
 } from './writer/writer-run-v2.ts';
 import {
   recoverInterruptedHooks,
@@ -122,6 +125,12 @@ import {
   startHookSuggest,
 } from './writer/hook-board.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2 } from './writer/run-store-v2.ts';
+import {
+  ExternalTurnError,
+  completeWriterTurn,
+  getOpenWriterTurns,
+  noteWriterTurnProgress,
+} from './writer/external-turn.ts';
 import { getGeneralPack, listGeneralPacks } from './writer/general-pack.ts';
 import { getChannelStyle, listChannelStyles } from './writer/channel-style.ts';
 import {
@@ -173,6 +182,30 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
   } catch {
     return {};
   }
+}
+
+function isWriterSubstrate(v: unknown): v is WriterSubstrate {
+  return v === 'terminal' || v === 'external';
+}
+
+/** `{ runId?, teamId?, memberId?, terminalId? }` — string fields only, anything else dropped. */
+function readExternalRef(v: unknown): ExternalRef | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const raw = v as Record<string, unknown>;
+  const ref: ExternalRef = {};
+  for (const key of ['runId', 'teamId', 'memberId', 'terminalId'] as const) {
+    if (typeof raw[key] === 'string' && raw[key].trim()) ref[key] = raw[key].trim();
+  }
+  return Object.keys(ref).length > 0 ? ref : undefined;
+}
+
+/** Error codes of `writer/external-turn.ts` → HTTP status; the code rides along for MCP/skill callers. */
+function externalTurnError(err: unknown): Response {
+  if (err instanceof ExternalTurnError) {
+    const status = err.code === 'RUN_NOT_FOUND' ? 404 : err.code === 'TURN_NOT_OPEN' ? 409 : 400;
+    return json({ error: err.message, code: err.code }, status);
+  }
+  return error(err instanceof Error ? err.message : 'Lỗi turn ngoài', 400);
 }
 
 /** P0 accepts only metadata/URLs. Never let a browser page/receipt be posted here. */
@@ -496,6 +529,8 @@ export interface HttpApp {
   spy: SpyService;
   spyMcp: McpSpyServer | null;
   generalPackMcp: McpGeneralPackServer | null;
+  /** Writer MCP for the external orchestrator (plan writer-external-orchestrator §3); optional for isolated route tests. */
+  writerMcp?: McpWriterServer | null;
   harness: AgentHarness;
   startedAt: number;
   webRoot: string;
@@ -532,6 +567,23 @@ export async function createHttpApp(): Promise<HttpApp> {
       ...(spyMcp?.info() ? { writer_room: spyMcp.info()! } : {}),
       ...(generalPackMcp?.info() ? { general_pack: generalPackMcp.info()! } : {}),
     }),
+  });
+
+  // Writer MCP (plan writer-external-orchestrator §3 A3): the external
+  // orchestrator's door into Writer v2. Needs the harness (scheduler + workflow),
+  // so it starts after it, and is deliberately NOT added to `appMcpProvision`:
+  // agents spawned from the app keep exactly the servers they have today.
+  const writerMcp = new McpWriterServer({
+    scheduler: harness.pipeline.scheduler,
+    workflow: harness.workflow,
+    dataDir: root,
+    health: () => ({ ok: true, agents: harness.listAgents().length, spyMcp: Boolean(spyMcp?.info()) }),
+  });
+  const writerMcpInfo = await writerMcp.start();
+  // Rewritten on every start because the bearer token is per-process.
+  writeOrchestratorMcpConfig(root, {
+    writer: writerMcpInfo,
+    ...(spyMcp?.info() ? { writer_room: spyMcp.info()! } : {}),
   });
 
   // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
@@ -625,11 +677,15 @@ export async function createHttpApp(): Promise<HttpApp> {
   // keeps the existing workspace location.  Never place mutable user data here:
   // application resources are read-only on macOS and often protected on Windows.
   const webRoot = resolve(process.env.WRITER_ROOM_WEB_ROOT || join(APP_ROOT, 'packages/web/dist'));
-  return { spy, spyMcp, generalPackMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, channelWatchScheduler, p0RetentionTimer };
+  return { spy, spyMcp, generalPackMcp, writerMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, channelWatchScheduler, p0RetentionTimer };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
   const { spy, spyMcp, generalPackMcp, harness, startedAt, webRoot, loop, loopScheduler } = app;
+  const writerMcp = app.writerMcp ?? null;
+  const externalTurnDeps = () => ({
+    scheduler: harness.pipeline.scheduler, workflow: harness.workflow, dataDir: dataRoot(),
+  });
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -644,6 +700,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           spy: SPY_FEATURE.enabled,
           spyMcp: spyMcp ? { url: spyMcp.info()?.url ?? null } : null,
           generalPackMcp: generalPackMcp ? { url: generalPackMcp.info()?.url ?? null } : null,
+          writerMcp: writerMcp ? { url: writerMcp.info()?.url ?? null } : null,
           agents: harness.listAgents().length,
           teamMcp: mcp ? { url: mcp.url } : null,
           uptimeMs: Date.now() - startedAt,
@@ -655,6 +712,14 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && pathname === '/api/spy/mcp') {
         const info = spyMcp?.info();
         if (!info) return error('Spy MCP đang tắt', 404);
+        return json(info);
+      }
+
+      // Same purpose as /api/spy/mcp, for the Writer MCP the external
+      // orchestrator mounts (plan writer-external-orchestrator §3 A3).
+      if (method === 'GET' && pathname === '/api/writer/mcp') {
+        const info = writerMcp?.info();
+        if (!info) return error('Writer MCP đang tắt', 404);
         return json(info);
       }
 
@@ -1579,9 +1644,6 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
               const exported = spy.exportSourcePack({
                 spyRunId: started.spyRunId,
                 videoIds: [pick.videoId],
-                // The only purpose of this flow is factual source material: keep
-                // the complete transcript instead of a research-preview excerpt.
-                transcriptFraction: 1,
               });
               const videoSection = videoSectionsFromMarkdown(exported.markdown)
                 .find((section) => section.videoId === pick.videoId);
@@ -2044,7 +2106,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && writerV2PostMatch) {
         const post = await getWriterRunV2(decodeURIComponent(writerV2PostMatch[1]!), dataRoot());
         if (!post) return error('Writer v2 post không tồn tại', 404);
-        return json(withWriterV2Progress(post));
+        return json(withWriterV2Progress(post, harness.pipeline.scheduler.listOpenTurns(post.id)));
       }
       if (method === 'PUT' && writerV2PostMatch) {
         const postId = decodeURIComponent(writerV2PostMatch[1]!);
@@ -2065,6 +2127,9 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
           targetWords = n;
         }
+        if (body['substrate'] !== undefined && !isWriterSubstrate(body['substrate'])) {
+          return error('substrate không hợp lệ — phải là terminal hoặc external');
+        }
         try {
           const post = await updateWriterPostV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
@@ -2080,6 +2145,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
               formulaId: String(body['formulaId'] ?? ''),
               agentId,
               editorAgentId,
+              ...(isWriterSubstrate(body['substrate']) ? { substrate: body['substrate'] } : {}),
             },
           );
           return json(withWriterV2Progress(post));
@@ -2117,6 +2183,9 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
           targetWords = n;
         }
+        if (body['substrate'] !== undefined && !isWriterSubstrate(body['substrate'])) {
+          return error('substrate không hợp lệ — phải là terminal hoặc external');
+        }
         try {
           const run = await startWriterRunV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
@@ -2125,6 +2194,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
               brief,
               packId,
               generalPack,
+              ...(isWriterSubstrate(body['substrate']) ? { substrate: body['substrate'] } : {}),
               ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
               ...(typeof body['audience'] === 'string' && body['audience'].trim()
                 ? { audience: body['audience'].trim() }
@@ -2164,11 +2234,15 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           if (!Number.isFinite(n)) return error('targetWords phải là số (số từ)');
           targetWords = n;
         }
+        if (body['substrate'] !== undefined && !isWriterSubstrate(body['substrate'])) {
+          return error('substrate không hợp lệ — phải là terminal hoặc external');
+        }
         try {
           const room = await createWriterRoomV2(
             { scheduler: harness.pipeline.scheduler, dataDir: dataRoot() },
             {
               channelId, brief, packId, generalPack,
+              ...(isWriterSubstrate(body['substrate']) ? { substrate: body['substrate'] } : {}),
               ...(typeof body['title'] === 'string' && body['title'].trim() ? { title: body['title'].trim() } : {}),
               ...(typeof body['audience'] === 'string' && body['audience'].trim()
                 ? { audience: body['audience'].trim() } : {}),
@@ -2207,6 +2281,44 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           const msg = err instanceof Error ? err.message : 'Không tiếp tục được Writer v2 run';
           const status = /không tồn tại/i.test(msg) ? 404 : 400;
           return error(msg, status);
+        }
+      }
+      // External substrate (plan writer-external-orchestrator §2 B3): the caller
+      // that runs the agent outside the app reads the open turn, notes progress,
+      // and reports the exit code. Settle stays on the daemon's existing path.
+      const writerV2TurnMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/turn$/.exec(pathname);
+      if (method === 'GET' && writerV2TurnMatch) {
+        const runId = decodeURIComponent(writerV2TurnMatch[1]!);
+        try {
+          const turns = await getOpenWriterTurns(externalTurnDeps(), runId);
+          const run = (await getWriterRunV2(runId, dataRoot()))!;
+          return json({ turn: turns[0] ?? null, turns, phase: run.phase, status: run.status });
+        } catch (err) {
+          return externalTurnError(err);
+        }
+      }
+      const writerV2TurnActionMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/turn\/(\d+)\/(progress|complete)$/.exec(pathname);
+      if (method === 'POST' && writerV2TurnActionMatch) {
+        const runId = decodeURIComponent(writerV2TurnActionMatch[1]!);
+        const turnId = Number(writerV2TurnActionMatch[2]!);
+        const body = await readBody(req);
+        const external = readExternalRef(body['external']);
+        try {
+          if (writerV2TurnActionMatch[3] === 'progress') {
+            const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
+            if (!text) return error('text bắt buộc');
+            const run = await noteWriterTurnProgress(externalTurnDeps(), runId, {
+              turnId, text, ...(external ? { external } : {}),
+            });
+            return json(withWriterV2Progress(run, harness.pipeline.scheduler.listOpenTurns(run.id)));
+          }
+          const exitCode = Number(body['exitCode']);
+          if (!Number.isInteger(exitCode)) return error('exitCode phải là số nguyên');
+          return json(await completeWriterTurn(externalTurnDeps(), runId, {
+            turnId, exitCode, ...(external ? { external } : {}),
+          }));
+        } catch (err) {
+          return externalTurnError(err);
         }
       }
       const writerV2RestyleMatch = /^\/api\/writer\/v2\/runs\/([^/]+)\/restyle$/.exec(pathname);
@@ -2254,7 +2366,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && writerV2RunMatch) {
         const run = await getWriterRunV2(decodeURIComponent(writerV2RunMatch[1]!), dataRoot());
         if (!run) return error('Writer v2 run không tồn tại', 404);
-        return json(withWriterV2Progress(run));
+        return json(withWriterV2Progress(run, harness.pipeline.scheduler.listOpenTurns(run.id)));
       }
       if (method === 'DELETE' && writerV2RunMatch) {
         const ok = await deleteWriterRunV2(decodeURIComponent(writerV2RunMatch[1]!), dataRoot());
@@ -2702,11 +2814,6 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
           videoIds: Array.isArray(body['videoIds'])
             ? body['videoIds'].map(String)
             : undefined,
-          // Default 50% of each video transcript (see source-pack.ts).
-          transcriptFraction:
-            typeof body['transcriptFraction'] === 'number' ? body['transcriptFraction'] : 0.5,
-          maxCharsPerVideo:
-            typeof body['maxCharsPerVideo'] === 'number' ? body['maxCharsPerVideo'] : undefined,
         });
         return json(pack);
       }
@@ -2878,6 +2985,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   console.log(`team-mcp: ${mcp?.url ?? 'off'}`);
   console.log(`spy-mcp: ${spyMcp?.url ?? 'off'}`);
   console.log(`general-pack-mcp: ${generalPackMcp?.url ?? 'off'}`);
+  console.log(`writer-mcp: ${app.writerMcp?.info()?.url ?? 'off'}`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
@@ -2886,6 +2994,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
     app.channelWatchScheduler?.dispose();
     app.spyMcp?.stop();
     app.generalPackMcp?.stop();
+    app.writerMcp?.stop();
     app.harness.dispose();
     await releaseLock();
     process.exit(0);

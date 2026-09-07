@@ -66,8 +66,12 @@ export interface LegacyStudyDispatchInput {
   packTitle: string;
   selectedHook?: SelectedHook;
   pack: WriterPack;
+  /** Forwarded verbatim to `dispatchItem` — see `DispatchItemParams.substrate`. */
+  substrate?: 'terminal' | 'external';
   attempt?: number;
   freshContext?: boolean;
+  /** When STUDY reads a generated Topic Pack, only these transcript-derived spans may enter factsLedger. */
+  allowedFactQuotes?: readonly string[];
 }
 
 function envelopeHash(envelope: unknown): string {
@@ -87,7 +91,7 @@ export function packVideoIds(pack: WriterPack): string[] {
 
 export function validateStudyArtifact(
   parsed: unknown,
-  opts: { packMarkdown: string; videoIds: string[] },
+  opts: { packMarkdown: string; videoIds: string[]; allowedFactQuotes?: readonly string[] },
 ): { ok: true; study: StudyArtifact } | { ok: false; errorCode: string; reason: string } {
   const candidate = parsed as Partial<StudyArtifact> | null;
   if (!candidate || typeof candidate !== 'object') {
@@ -177,6 +181,18 @@ export function validateStudyArtifact(
           + 'Copy the characters verbatim — do not clean up punctuation, casing or spacing.',
       };
     }
+    if (
+      opts.allowedFactQuotes
+      && !opts.allowedFactQuotes.some((authorized) => authorized.normalize('NFC').includes(quote))
+    ) {
+      return {
+        ok: false,
+        errorCode: 'STUDY_LEDGER',
+        reason:
+          `factsLedger[${index}].quote is not inside an authorized positive ResearchMap evidence span; `
+          + 'Topic Pack labels, rejected claims and contradiction-only quotes are not factual sources',
+      };
+    }
     const videoId = typeof entry?.videoId === 'string' ? entry.videoId.trim() : '';
     if (videoId && opts.videoIds.length > 0 && !opts.videoIds.includes(videoId)) {
       return {
@@ -185,7 +201,10 @@ export function validateStudyArtifact(
         reason: `factsLedger[${index}] cites videoId "${videoId}", which is not in this pack`,
       };
     }
-    factsLedger.push({ fact, quote, ...(videoId ? { videoId } : {}) });
+    // A generated Topic Pack contains model-authored labels alongside exact evidence.
+    // Do not let another model turn those labels into factual capability: code makes
+    // the authorized quote itself the fact passed to WRITE.
+    factsLedger.push({ fact: opts.allowedFactQuotes ? quote : fact, quote, ...(videoId ? { videoId } : {}) });
   }
 
   return { ok: true, study: { coverageMap, gap, outline: plan.videoPlan, factsLedger } };
@@ -403,6 +422,9 @@ export async function dispatchLegacyStudy(
       gap: 'one thing none of them did, that this audience wants',
       outline: 'the compression contract (WriterVideoPlan shape)',
       factsLedger: `at least ${MIN_LEDGER_FACTS} facts, each with a verbatim pack quote`,
+      ...(input.allowedFactQuotes
+        ? { factsBoundary: 'factsLedger quotes may come only from <quote> evidence spans marked SUPPORTS/QUALIFIES' }
+        : {}),
     },
   };
 
@@ -412,6 +434,7 @@ export async function dispatchLegacyStudy(
     stage: STUDY_STAGE,
     attempt: input.attempt ?? 1,
     templateId: input.templateId,
+    ...(input.substrate !== undefined ? { substrate: input.substrate } : {}),
     promptMarkdown: buildStudyPrompt({
       title: input.title,
       brief: input.brief,
@@ -423,13 +446,10 @@ export async function dispatchLegacyStudy(
     inputFiles: sourceFiles,
     inputHashes: [envelopeHash(envelope), contentHash(input.pack.markdown)],
     promptVersion: STUDY_PROMPT_VERSION,
-    // The run has a hard ceiling of 6 model calls after hook selection, and the
-    // coordinator counts *dispatches*. The scheduler's default content-retry is
-    // invisible to that counter, so one dispatch could quietly become three model
-    // calls. Retrying is not given up — it moves up a level: the coordinator owns
-    // the retry budget (STUDY attempt 2 via `continueWriterRunV2`), where it is
-    // counted. Do not restore the default here without also teaching the
-    // coordinator to read `retriesUsed`.
+    // The coordinator counts explicit dispatches (including per-source research).
+    // A scheduler content-retry would be invisible to that lifecycle, so one
+    // dispatch could quietly become three model calls. Retrying stays explicit:
+    // STUDY attempt 2 is owned by `continueWriterRunV2`.
     maxContentRetries: 0,
     sessionGroup: input.sessionGroup,
     interactivePty: true,
@@ -438,6 +458,7 @@ export async function dispatchLegacyStudy(
       const validation = validateStudyArtifact(parsed, {
         packMarkdown: input.pack.markdown,
         videoIds,
+        ...(input.allowedFactQuotes ? { allowedFactQuotes: input.allowedFactQuotes } : {}),
       });
       return validation.ok
         ? { ok: true as const }

@@ -430,3 +430,73 @@ describe('LaneScheduler — idempotent dispatch (turn_key dedup, §6.6 step 2)',
     await settled;
   });
 });
+
+describe('LaneScheduler — substrate external (plan writer-external-orchestrator §2 B2/B4)', () => {
+  test('an external job emits externalTurn, never spawnTurn; listOpenTurns tracks it until turnComplete', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    const events: TeamEvent[] = [];
+    const unsub = harness.subscribe((e) => events.push(e));
+    const settledPromise = waitForSettled(scheduler, 'item-ext');
+    const before = Date.now();
+
+    const dispatch = await scheduler.dispatchItem(baseParams({ itemId: 'item-ext', substrate: 'external' }));
+    expect(dispatch.status).toBe('RUNNING');
+    expect(dispatch.turnId).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(events.some((e) => e.kind === 'spawnTurn')).toBe(false);
+    const external = events.find((e) => e.kind === 'externalTurn' && e.turnId === dispatch.turnId);
+    if (!external || external.kind !== 'externalTurn') throw new Error('no externalTurn event observed');
+    expect(external.cwd).toBe(dispatch.itemRunDir);
+    expect(external.injectText.length).toBeGreaterThan(0);
+
+    // The stage contract is staged exactly as for a terminal turn.
+    expect(await exists(join(dispatch.itemRunDir, 'prompt.md'))).toBe(true);
+    expect(await exists(join(dispatch.itemRunDir, 'input', 'envelope.json'))).toBe(true);
+
+    const open = scheduler.listOpenTurns(BATCH);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      turnId: dispatch.turnId,
+      batchId: BATCH,
+      itemId: 'item-ext',
+      stage: STAGE,
+      attempt: 1,
+      templateId: 'claude',
+      agentId: external.agentId,
+      itemRunDir: dispatch.itemRunDir,
+      external: true,
+    });
+    expect(open[0]!.assignmentText).toContain(join(dispatch.itemRunDir, 'prompt.md'));
+    expect(Date.parse(open[0]!.startedAt)).toBeGreaterThanOrEqual(before);
+    // 45-minute hard cap, same as an interactive pane (plan §0 decision 3).
+    expect(Date.parse(open[0]!.deadlineAt) - Date.parse(open[0]!.startedAt)).toBe(45 * 60_000);
+    expect(scheduler.listOpenTurns('other-batch')).toEqual([]);
+
+    // The outside caller writes out/result.json and reports the exit code; the
+    // commit rule is the same production path.
+    const stub = await runStubAgent(dispatch.itemRunDir, 'ok');
+    harness.workflow.turnComplete(dispatch.turnId!, { exitCode: stub.exitCode });
+    const settled = await settledPromise;
+    unsub();
+    expect(settled.outcome).toBe('COMMITTED');
+    expect(scheduler.listOpenTurns(BATCH)).toEqual([]);
+  });
+
+  test('a terminal job (default) still emits spawnTurn and is listed as external: false', async () => {
+    const scheduler = harness.pipeline.scheduler;
+    const events: TeamEvent[] = [];
+    const unsub = harness.subscribe((e) => events.push(e));
+    const dispatch = await scheduler.dispatchItem(baseParams({ itemId: 'item-term' }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events.some((e) => e.kind === 'externalTurn')).toBe(false);
+    expect(events.some((e) => e.kind === 'spawnTurn' && e.turnId === dispatch.turnId)).toBe(true);
+    expect(scheduler.listOpenTurns(BATCH).map((t) => t.external)).toEqual([false]);
+
+    const settled = waitForSettled(scheduler, 'item-term');
+    const stub = await runStubAgent(dispatch.itemRunDir, 'ok');
+    harness.workflow.turnComplete(dispatch.turnId!, { exitCode: stub.exitCode });
+    await settled;
+    unsub();
+  });
+});

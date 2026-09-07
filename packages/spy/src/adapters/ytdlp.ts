@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AppError } from '../errors.ts';
@@ -52,6 +52,12 @@ export interface YoutubePort {
   searchVideos?(query: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
   fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
   streamUrl(canonicalUrl: string, signal?: AbortSignal): Promise<string>;
+  downloadAudio?(
+    canonicalUrl: string,
+    outputDirectory: string,
+    options?: { format?: 'mp3' | 'm4a' | 'opus'; quality?: string | number },
+    signal?: AbortSignal,
+  ): Promise<{ filePath: string; format: string; fileSizeBytes: number }>;
   thumbnail(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }>;
   /**
    * C3 public-watch capability.  Optional so existing Spy fixtures keep the
@@ -187,6 +193,7 @@ export class YtDlpAdapter implements YoutubePort {
     return [
       '--no-warnings',
       '--no-progress',
+      '--no-update',
       ...(this.cookieFile ? ['--cookies', this.cookieFile] : []),
     ];
   }
@@ -367,6 +374,54 @@ export class YtDlpAdapter implements YoutubePort {
     const url = result.stdout.toString('utf8').split(/\r?\n/).find(Boolean)?.trim();
     if (!url) throw new AppError('provider_error', 'yt-dlp không trả stream URL', { retryable: true });
     return url;
+  }
+
+  async downloadAudio(
+    canonicalUrl: string,
+    outputDirectory: string,
+    options?: { format?: 'mp3' | 'm4a' | 'opus'; quality?: string | number },
+    signal?: AbortSignal,
+  ): Promise<{ filePath: string; format: string; fileSizeBytes: number }> {
+    const format = options?.format ?? 'mp3';
+    const quality = String(options?.quality ?? '0');
+    await mkdir(outputDirectory, { recursive: true });
+    const outputTemplate = join(outputDirectory, `%(id)s.${format}`);
+
+    const result = await requireSuccessfulProcess(
+      this.binary,
+      [
+        ...this.baseArgs(),
+        '--extractor-args',
+        'youtube:player_client=mweb,web',
+        '--extract-audio',
+        '--audio-format',
+        format,
+        '--audio-quality',
+        quality,
+        '--output',
+        outputTemplate,
+        canonicalUrl,
+      ],
+      { signal, timeoutMs: 300_000, maximumStdoutBytes: 8 * 1024 * 1024 },
+    );
+
+    const files = await readdir(outputDirectory);
+    const matchId = canonicalUrl.match(/(?:v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{11})/)?.[1];
+    let matchingFile = matchId ? files.find((f) => f.startsWith(matchId) && f.endsWith(`.${format}`)) : null;
+    if (!matchingFile) {
+      matchingFile = files.filter((f) => f.endsWith(`.${format}`)).pop();
+    }
+    if (!matchingFile) {
+      throw new AppError('provider_error', `Không tìm thấy file audio sau khi tải: ${result.stdout.toString('utf8').slice(0, 500)}`);
+    }
+
+    const fullPath = join(outputDirectory, matchingFile);
+    const stats = await stat(fullPath);
+    return {
+      filePath: fullPath,
+      format,
+      fileSizeBytes: stats.size,
+    };
   }
 
   async thumbnail(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }> {

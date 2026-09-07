@@ -22,6 +22,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_global_video_search',
   'spy_read_transcript',
   'spy_read_video_material',
+  'spy_video_download_audio',
   // M0: existing intelligence, deliberately read-only. Keep discovery,
   // watchlist updates, and all other mutations off this local MCP surface.
   'spy_channel_videos',
@@ -53,27 +54,45 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
   spy_channel_start: {
     type: 'object',
     properties: {
-      url: { type: 'string' },
-      selection_mode: { type: 'string', enum: ['popular', 'latest'] },
-      top_n: { type: 'integer', minimum: 1, maximum: 20 },
-      scan_limit: { type: 'integer', minimum: 1, maximum: 500 },
-      rank_by: { type: 'string', enum: ['velocity', 'views'] },
-      depth: { type: 'string', enum: ['metadata', 'transcript'] },
+      url: { type: 'string', description: 'URL kênh hoặc playlist YouTube' },
+      selection_mode: { type: 'string', enum: ['popular', 'latest'], default: 'popular' },
+      top_n: { type: 'integer', minimum: 1, maximum: 20, default: 5 },
+      scan_limit: { type: 'integer', minimum: 1, maximum: 500, default: 60 },
+      rank_by: { type: 'string', enum: ['velocity', 'views'], default: 'velocity' },
+      min_duration_sec: { type: 'integer', minimum: 0, maximum: 7200, default: 60, description: 'Thời lượng video tối thiểu tính bằng giây' },
+      max_duration_sec: { type: 'integer', minimum: 0, maximum: 72000, description: 'Thời lượng video tối đa tính bằng giây' },
+      published_after: { type: 'string', description: 'Chỉ lấy video đăng sau mốc ISO 8601 / YYYY-MM-DD' },
+      published_before: { type: 'string', description: 'Chỉ lấy video đăng trước mốc ISO 8601 / YYYY-MM-DD' },
+      depth: { type: 'string', enum: ['metadata', 'transcript'], default: 'transcript' },
+      idempotency_key: { type: 'string', description: 'Khóa idempotency chống gọi lặp' },
     },
     required: ['url'],
   },
   spy_video_start: {
     type: 'object',
-    properties: { url: { type: 'string' }, depth: { type: 'string', enum: ['metadata', 'transcript'] } },
+    properties: {
+      url: { type: 'string', description: 'URL video YouTube (watch/shorts/youtu.be)' },
+      depth: { type: 'string', enum: ['metadata', 'transcript'], default: 'transcript' },
+      idempotency_key: { type: 'string', description: 'Khóa idempotency chống gọi lặp' },
+    },
     required: ['url'],
   },
   spy_get_status: {
-    type: 'object', properties: { operation_id: { type: 'string' } }, required: ['operation_id'],
+    type: 'object',
+    properties: {
+      operation_id: { type: 'string', description: 'ID tác vụ async do spy_*_start trả về' },
+      run_id: { type: 'string', description: 'Alias của operation_id' },
+    },
+    anyOf: [{ required: ['operation_id'] }, { required: ['run_id'] }],
   },
   spy_wait: {
     type: 'object',
-    properties: { operation_id: { type: 'string' }, max_wait_seconds: { type: 'integer', minimum: 1, maximum: 600 } },
-    required: ['operation_id'],
+    properties: {
+      operation_id: { type: 'string', description: 'ID tác vụ async do spy_*_start trả về' },
+      run_id: { type: 'string', description: 'Alias của operation_id' },
+      max_wait_seconds: { type: 'integer', minimum: 1, maximum: 600, default: 30, description: 'Thời gian chờ tối đa (giây)' },
+    },
+    anyOf: [{ required: ['operation_id'] }, { required: ['run_id'] }],
   },
   spy_run_manifest: {
     type: 'object', properties: { spy_run_id: { type: 'string' } }, required: ['spy_run_id'],
@@ -116,6 +135,18 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       include_thumbnail: { type: 'boolean', description: 'true: return thumbnail image content for visual analysis; false: transcript only' },
     },
     required: ['video_snapshot_ids', 'include_thumbnail'],
+  },
+  spy_video_download_audio: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'URL của video YouTube cần tải audio' },
+      video_id: { type: 'string', description: 'YouTube video ID (11 ký tự)' },
+      video_snapshot_id: { type: 'string', description: 'ID snapshot của video đã spy trong DB' },
+      format: { type: 'string', enum: ['mp3', 'm4a', 'opus'], default: 'mp3', description: 'Định dạng audio' },
+      quality: { type: 'string', description: 'Chất lượng audio (mặc định 0 - cao nhất)' },
+      force: { type: 'boolean', default: false, description: 'Bắt buộc tải lại nếu file đã tồn tại trên đĩa' },
+    },
+    anyOf: [{ required: ['url'] }, { required: ['video_id'] }, { required: ['video_snapshot_id'] }],
   },
   spy_channel_videos: {
     type: 'object',

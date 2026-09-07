@@ -1,5 +1,9 @@
 # Writer Domain Architecture v2: Formula Training + Writer Runtime
 
+> **Tài liệu lịch sử — 2026-09-06:** phần Writer runtime đã được thay thế bởi
+> [Writer v2 — bản chuẩn](./writer-v2-status.md). Không dùng file này để xác định
+> trạng thái hoặc kiến trúc Writer hiện tại; giữ lại ngữ cảnh training và quyết định cũ.
+
 > **Ngày:** 2026-08-09  
 > **Trạng thái:** Draft — chờ xác nhận ADR ở mục 17  
 > **Phạm vi:** Chỉ mô tả domain Writer Room, gồm Formula Training, Topic Evidence KB và Writer Runtime  

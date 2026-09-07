@@ -23,4 +23,5 @@ binaries/
 
 # Runtime agent MCP tokens (written on prepareLaunch)
 .agents/mcp_config.json
+.agents/skills/
 .grok/config.toml

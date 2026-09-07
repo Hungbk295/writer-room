@@ -16,6 +16,7 @@ import {
   type WriterPackSummary,
   type WriterRunV2,
   type WriterRunV2Summary,
+  type WriterSubstrate,
 } from '../api.ts';
 import { href } from '../router.ts';
 import { EntityId } from '../components/ui/EntityId.tsx';
@@ -23,6 +24,27 @@ import { SourcePackExplorer } from '../components/SourcePackExplorer.tsx';
 import { WriterProgressBar } from '../components/WriterProgressBar.tsx';
 
 const AGENTS = ['codex', 'claude', 'grok', 'agy'] as const;
+
+const SUBSTRATE_LABEL: Record<WriterSubstrate, string> = {
+  terminal: 'Trong app (pane)',
+  external: 'Agent ngoài (1DevTool)',
+};
+
+/** Runs saved before substrates existed have no field; the daemon treats them as terminal. */
+function substrateOf(run: { substrate?: WriterSubstrate }): WriterSubstrate {
+  return run.substrate ?? 'terminal';
+}
+
+function timeOf(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+}
+
+function minutesSince(iso: string): number {
+  const started = new Date(iso).getTime();
+  if (Number.isNaN(started)) return 0;
+  return Math.max(0, Math.floor((Date.now() - started) / 60_000));
+}
 
 const PHASE_LABEL: Record<string, string> = {
   CONFIGURING: 'Đang cấu hình',
@@ -123,6 +145,11 @@ export function WriterV2Page() {
                     <span class={statusClass(run.status)}>{run.status}</span>
                     <span>{PHASE_LABEL[run.phase] ?? run.phase}</span>
                     {run.channelId && <span class="chip">Kênh: {run.channelId}</span>}
+                    {substrateOf(run) === 'external' && (
+                      <span class="chip warn" style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem' }}>
+                        Agent ngoài
+                      </span>
+                    )}
                     <span class="chip" style={{ fontSize: '0.72rem', padding: '0.1rem 0.45rem' }}>
                       {run.phase === 'DONE' ? '100%' : run.phase === 'EDIT_REVIEW' ? '85%' : run.phase === 'GATE' ? '75%' : run.phase === 'WRITE' ? '52%' : run.phase === 'STUDY' ? '22%' : run.phase === 'READY' ? '10%' : '5%'}
                     </span>
@@ -359,6 +386,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
   const [generalPack, setGeneralPack] = useState('');
   const [agentId, setAgentId] = useState<string>('codex');
   const [editorAgentId, setEditorAgentId] = useState<string>('claude');
+  const [substrate, setSubstrate] = useState<WriterSubstrate>('terminal');
   const [saving, setSaving] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [exploringSourcePack, setExploringSourcePack] = useState(false);
@@ -457,6 +485,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
     setGeneralPack(run.generalPackPath);
     setAgentId(run.agentId);
     setEditorAgentId(run.editorAgentId);
+    setSubstrate(substrateOf(run));
     const profile = channels.find((channel) => channel.id === run.channelId);
     if (profile?.defaultStyle) setStyleId(profile.defaultStyle);
   }, [run?.id, channels]);
@@ -483,6 +512,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
     || generalPack !== run.generalPackPath
     || agentId !== run.agentId
     || editorAgentId !== run.editorAgentId
+    || substrate !== substrateOf(run)
   );
   const canRunRoom = run.status === 'DRAFT'
     && run.phase === 'READY'
@@ -537,6 +567,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
         generalPack: run.generalPackPath,
         agentId: run.agentId,
         editorAgentId: run.editorAgentId,
+        substrate: substrateOf(run),
       });
       location.hash = href({ name: 'writer-v2-run', id: next.id });
     } catch (err) {
@@ -592,6 +623,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
         generalPack,
         agentId,
         editorAgentId,
+        substrate,
       });
       setRun(next);
     } catch (err) {
@@ -619,6 +651,7 @@ export function WriterV2RunPage({ id }: { id: string }) {
         generalPack: run.generalPackPath,
         agentId: run.agentId,
         editorAgentId: run.editorAgentId,
+        substrate: substrateOf(run),
       });
       location.hash = href({ name: 'writer-v2-run', id: copy.id });
     } catch (err) {
@@ -737,10 +770,37 @@ export function WriterV2RunPage({ id }: { id: string }) {
             <span class={statusClass(run.status)}>{run.status}</span>
             <EntityId id={run.id} label="ID run" />
           </div>
-          <p class="page-lead" style={{ marginBottom: 0 }}>
-            {PHASE_LABEL[run.phase] ?? run.phase} · writer: {run.agentId} · editor: {run.editorAgentId}
+          <p class="page-lead" style={{ marginBottom: 0, display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>{PHASE_LABEL[run.phase] ?? run.phase} · writer: {run.agentId} · editor: {run.editorAgentId}</span>
+            <span class={substrateOf(run) === 'external' ? 'chip warn' : 'chip'} title="Nơi chạy agent">
+              {SUBSTRATE_LABEL[substrateOf(run)]}
+            </span>
           </p>
           <WriterProgressBar run={run} />
+          {run.currentTurn && (
+            <p class="meta" style={{ marginTop: '0.35rem' }}>
+              <span>
+                <strong>Đang chạy:</strong> {run.currentTurn.stage}
+                {run.currentTurn.attempt > 1 ? ` (lần ${run.currentTurn.attempt})` : ''}
+                {' · '}{run.currentTurn.templateId ?? run.currentTurn.agentId}
+                {' · '}{SUBSTRATE_LABEL[substrateOf(run)]}
+                {' · '}{minutesSince(run.currentTurn.startedAt)} phút
+                {' · hạn '}{timeOf(run.currentTurn.deadlineAt)}
+                {run.currentTurn.external?.terminalId ? ` · terminal ${run.currentTurn.external.terminalId}` : ''}
+              </span>
+            </p>
+          )}
+          {(run.timeline?.length ?? 0) > 0 && (
+            <ul class="meta" style={{ listStyle: 'none', padding: 0, margin: '0.35rem 0 0', flexDirection: 'column', gap: '0.15rem' }}>
+              {(run.timeline ?? []).slice(-10).map((entry, index) => (
+                <li key={`${entry.at}-${index}`}>
+                  <span style={{ fontFamily: '"SF Mono", Menlo, monospace' }}>{timeOf(entry.at)}</span>
+                  {entry.stage ? ` · ${entry.stage}` : ''}
+                  {' · '}{entry.text}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div class="row" style={{ gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
           {run.status === 'DRAFT' && (
@@ -980,6 +1040,19 @@ export function WriterV2RunPage({ id }: { id: string }) {
                   disabled={run.status !== 'DRAFT'}
                   onInput={(e) => setTargetWords((e.target as HTMLInputElement).value)}
                 />
+              </label>
+              <label class="field">
+                <span>Chạy agent</span>
+                <select
+                  value={substrate}
+                  disabled={run.status !== 'DRAFT'}
+                  title="Trong app: bridge mở pane cho từng lượt. Agent ngoài: orchestrator trên 1DevTool tự chạy từng stage, app chỉ xem tiến độ."
+                  onChange={(e) => setSubstrate((e.target as HTMLSelectElement).value as WriterSubstrate)}
+                >
+                  {(Object.keys(SUBSTRATE_LABEL) as WriterSubstrate[]).map((value) => (
+                    <option key={value} value={value}>{SUBSTRATE_LABEL[value]}</option>
+                  ))}
+                </select>
               </label>
             </div>
             {run.status === 'DRAFT' && agentId === editorAgentId && (

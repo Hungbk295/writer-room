@@ -40,6 +40,7 @@ export interface WriterRunV2Summary {
   formulaHash: string;
   agentId: string;
   editorAgentId: string;
+  substrate: WriterRunV2['substrate'];
   createdAt: string;
   updatedAt: string;
   hasScript: boolean;
@@ -91,6 +92,8 @@ export async function getWriterRunV2(id: string, dataDir?: string): Promise<Writ
     const run = JSON.parse(raw) as WriterRunV2;
     return {
       ...run,
+      // Runs persisted before `substrate` existed are terminal runs (plan §2 B1).
+      substrate: run.substrate === 'external' ? 'external' : 'terminal',
       gateResults: Array.isArray(run.gateResults) ? run.gateResults : [],
       styled: Array.isArray(run.styled) ? run.styled : [],
       study: run.study ?? null,
@@ -126,6 +129,7 @@ function summarize(run: WriterRunV2): WriterRunV2Summary {
     formulaHash: run.formulaHash,
     agentId: run.agentId,
     editorAgentId: run.editorAgentId,
+    substrate: run.substrate ?? 'terminal',
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     hasScript: Boolean(run.finalScript ?? run.draft?.script),

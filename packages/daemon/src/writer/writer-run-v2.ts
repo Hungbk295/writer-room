@@ -1,9 +1,12 @@
 /**
  * Write Loop v2 — the writer flow (plan Phase 3 + Phase 4).
  *
- * Two model calls, then three layers of checking:
+ * Per-source research fan-out, then the reviewed writing loop:
  *
- *   1) STUDY  (`study-v2`)       — read the WHOLE topic pack, map what each source
+ *   0) RESEARCH (`research-source-v1`, 2–5 one-shot turns) — each turn reads one
+ *                                  complete transcript and emits a grounded map;
+ *                                  code compiles the maps into a compact Topic Pack.
+ *   1) STUDY  (`study-v2`)       — read the compact topic pack, map what each source
  *                                  video already covers, name the gap, commit to an
  *                                  outline and a facts ledger of verbatim pack quotes.
  *   2) WRITE  (`write-v2`)       — write the piece in one pass from outline + ledger +
@@ -32,7 +35,7 @@ import { join } from 'node:path';
 import { DEFAULT_AGENT_IDS, type DefaultAgentId } from '../agents/defaults.ts';
 import { createJobDoneNotification } from '../notifications.ts';
 import { writerRoot } from '../paths.ts';
-import type { DispatchItemResult, ItemSettledResult, LaneScheduler } from '../pipeline/lane-scheduler.ts';
+import type { DispatchItemResult, ItemSettledResult, LaneScheduler, OpenTurn } from '../pipeline/lane-scheduler.ts';
 import { getWriterPack, type WriterPack } from '../writer-packs.ts';
 import {
   formatGateViolations,
@@ -52,6 +55,20 @@ import { getHumanPack, validateHumanPack } from './human-pack.ts';
 import { getModePack, validateModePack } from './mode-pack.ts';
 import { getApprovedPersonaPack, type PersonaPack } from './persona-pack.ts';
 import { getReusableProcedure } from './reusable-procedure.ts';
+import {
+  combineResearchMaps,
+  createResearchCheckpoints,
+  dispatchResearchSource,
+  persistTopicPack,
+  readAuthorizedTopicQuotes,
+  readTopicPack,
+  RESEARCH_SOURCE_STAGE,
+  researchSourceBudget,
+  sourceMarkdownForCheckpoint,
+  type ResearchSourceCheckpoint,
+  type TopicPackCheckpoint,
+} from './research-orchestrator.ts';
+import { validateResearchMap, type ResearchMap } from './research-map.ts';
 import type { HookCandidate, HookClarify, SelectedHook } from './hook-doi-thu.ts';
 import { deleteWriterRunV2, getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from './run-store-v2.ts';
 import { countScriptWords, findIdentityLeak, forbiddenHostNames, targetWordRange } from './script-checks.ts';
@@ -90,8 +107,9 @@ export const RESTYLE_STAGE = 'restyle-v1';
 export const POSTMORTEM_STAGE = 'writer-postmortem-v1';
 
 /**
- * Writer v2 is deliberately a live, human-observable PTY workflow. The author
- * keeps one writable pane from STUDY through WRITE/REPAIR; the editor receives
+ * The reviewed writing loop is a live, human-observable PTY workflow; the
+ * transcript research fan-out is deliberately one-shot so workers terminate on
+ * settle. The author keeps one writable pane from STUDY through WRITE/REPAIR; the editor receives
  * a distinct pane so a review is never accidentally delivered to the writer's
  * session, even when the operator selected the same base agent for both roles.
  */
@@ -172,11 +190,45 @@ export type WriterV2Phase =
   | 'DONE'
   | 'FAILED';
 
+/**
+ * Where a run's stage agents execute (plan writer-external-orchestrator §0).
+ * `terminal`: today's path — the daemon emits `spawnTurn` and the app bridge
+ * opens a pane. `external`: the daemon still stages `prompt.md` + `input/` and
+ * still settles the turn, but emits `externalTurn` only; an outside caller
+ * (orchestrator on 1DevTool) runs the agent and reports back through
+ * `external-turn.ts`. Fixed on the post while DRAFT — never half and half.
+ */
+export type WriterSubstrate = 'terminal' | 'external';
+
+/** Where the external caller says it is running a turn — free-form ids, kept for display. */
+export interface ExternalRef {
+  runId?: string;
+  teamId?: string;
+  memberId?: string;
+  terminalId?: string;
+}
+
+export interface WriterTimelineEntry {
+  at: string;
+  turnId?: number;
+  stage?: string;
+  kind: 'note' | 'external' | 'system';
+  text: string;
+  external?: ExternalRef;
+}
+
+/** Timeline keeps only the newest entries; older ones are dropped from the head. */
+export const WRITER_TIMELINE_MAX = 50;
+
 export interface WriterRunV2 {
   id: string;
   /** DRAFT means the human has prepared and pinned a room, but no agent/lane was used. */
   status: 'DRAFT' | 'RUNNING' | 'DONE' | 'FAILED' | 'FAILED_GATE';
   phase: WriterV2Phase;
+  /** Read of a run persisted before this field existed yields `terminal` (see `getWriterRunV2`). */
+  substrate: WriterSubstrate;
+  /** Progress notes from an external caller and system markers. Optional so old run JSON reads back unchanged. */
+  timeline?: WriterTimelineEntry[];
   brief: string;
   requestedTitle?: string;
   targetWords?: number;
@@ -195,6 +247,10 @@ export interface WriterRunV2 {
   packTitle: string;
   /** Pinned topic-pack content hash. Blank only for legacy/configuring drafts. */
   packHash?: string;
+  /** Per-transcript research checkpoints. Absent for legacy and one-video runs. */
+  researchSources?: ResearchSourceCheckpoint[];
+  /** Compact, verified artifact consumed by STUDY instead of the Source Pack. */
+  topicPack?: TopicPackCheckpoint;
   /** e.g. `hieu-tv.md`, relative to the general-packs root. Required. */
   generalPackPath: string;
   generalPackHash: string;
@@ -399,11 +455,53 @@ export function computeWriterV2Progress(
   return { progressPercent, activeRole };
 }
 
-/** Attach progress fields for API responses without persisting them. */
+/** The turn currently open for this run, read from the scheduler — not persisted. */
+export interface WriterV2CurrentTurn {
+  turnId: number;
+  stage: string;
+  attempt: number;
+  /** The clone id the turn was booked on (`claude-96478d-…`). */
+  agentId: string;
+  /** The template id (`claude`, `codex`) — what a human or `--to=` wants to see. */
+  templateId: string;
+  itemRunDir: string;
+  startedAt: string;
+  deadlineAt: string;
+  external?: ExternalRef;
+}
+
+/** Attach progress fields for API responses without persisting them.
+ * `openTurns` (from `LaneScheduler.listOpenTurns(run.id)`) yields `currentTurn`;
+ * callers without a scheduler at hand get `currentTurn: null`. */
 export function withWriterV2Progress<T extends WriterRunV2>(
   run: T,
-): T & WriterV2ProgressView {
-  return { ...run, ...computeWriterV2Progress(run) };
+  openTurns?: OpenTurn[],
+): T & WriterV2ProgressView & { currentTurn: WriterV2CurrentTurn | null } {
+  const open = openTurns?.find((turn) => turn.batchId === run.id);
+  let currentTurn: WriterV2CurrentTurn | null = null;
+  if (open) {
+    const external = [...(run.timeline ?? [])]
+      .reverse()
+      .find((entry) => entry.kind === 'external' && entry.turnId === open.turnId && entry.external)?.external;
+    currentTurn = {
+      turnId: open.turnId,
+      stage: open.stage,
+      attempt: open.attempt,
+      agentId: open.agentId,
+      templateId: open.templateId,
+      itemRunDir: open.itemRunDir,
+      startedAt: open.startedAt,
+      deadlineAt: open.deadlineAt,
+      ...(external ? { external } : {}),
+    };
+  }
+  return { ...run, ...computeWriterV2Progress(run), currentTurn };
+}
+
+/** Append a timeline entry, keeping only the newest `WRITER_TIMELINE_MAX`. Does not save. */
+export function appendWriterTimeline(run: WriterRunV2, entry: WriterTimelineEntry): void {
+  const timeline = [...(run.timeline ?? []), entry];
+  run.timeline = timeline.length > WRITER_TIMELINE_MAX ? timeline.slice(-WRITER_TIMELINE_MAX) : timeline;
 }
 
 function envelopeHash(envelope: unknown): string {
@@ -1109,6 +1207,7 @@ export async function createWriterPostV2(deps: WriterV2Deps): Promise<WriterRunV
     formulaHash: '',
     agentId: 'codex',
     editorAgentId: 'claude',
+    substrate: 'terminal',
     study: null,
     draft: null,
     gateResults: [],
@@ -1135,6 +1234,7 @@ export interface WriterV2RoomInput {
     formulaId?: string;
     agentId?: DefaultAgentId;
     editorAgentId?: DefaultAgentId;
+    substrate?: WriterSubstrate;
 }
 
 export interface WriterV2PostConfigInput {
@@ -1149,6 +1249,8 @@ export interface WriterV2PostConfigInput {
   formulaId?: string;
   agentId: DefaultAgentId;
   editorAgentId: DefaultAgentId;
+  /** Omitted keeps the post's current value (`terminal` for a fresh post). */
+  substrate?: WriterSubstrate;
 }
 
 export function pinWriterPackHash(pack: WriterPack): string {
@@ -1231,6 +1333,8 @@ export async function updateWriterPostV2(
   post.formulaHash = '';
   post.agentId = input.agentId;
   post.editorAgentId = input.editorAgentId;
+  // Only while DRAFT (guarded above): a run never switches substrate mid-flight.
+  if (input.substrate !== undefined) post.substrate = input.substrate;
   post.phase = requestedTitle && brief && pack && generalPack && editorial ? 'READY' : 'CONFIGURING';
   // Title is the input the hook loop was generated against. Changing it
   // silently keeping an old selection would open the wrong video.
@@ -1266,6 +1370,7 @@ export async function createWriterRoomV2(
       generalPack: input.generalPack,
       agentId,
       editorAgentId,
+      ...(input.substrate !== undefined ? { substrate: input.substrate } : {}),
     });
   } catch (err) {
     // This shell was created inside this helper and has never been returned to a
@@ -1321,9 +1426,21 @@ export async function runWriterRoomV2(deps: WriterV2Deps, runId: string): Promis
 
   run.status = 'RUNNING';
   run.phase = 'STUDY';
+  const researchSources = createResearchCheckpoints(pack);
+  if (researchSources.length > 0) {
+    const availableLanes = deps.scheduler.getMaxParallel() - deps.scheduler.getLiveCloneCount();
+    if (availableLanes < researchSources.length) {
+      throw new Error(
+        `Research cần ${researchSources.length} lane độc lập nhưng hiện chỉ còn ${availableLanes}; hãy Run lại khi lane trống`,
+      );
+    }
+    run.researchSources = researchSources;
+    delete run.topicPack;
+  }
   run.updatedAt = new Date().toISOString();
   await saveWriterRunV2(run, deps.dataDir);
-  await dispatchStudy(deps, run, pack);
+  if (researchSources.length > 0) await dispatchResearchBatch(deps, run, pack);
+  else await dispatchStudy(deps, run, pack);
   return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
 }
 
@@ -1331,12 +1448,126 @@ const DEFAULT_AUDIENCE =
   'người đi làm ở Việt Nam, thu nhập trung bình trở lên, muốn hiểu tiền và lựa chọn sống — '
   + 'không tìm mẹo làm giàu';
 
+function artifactRelativePath(event: ItemSettledResult): string {
+  return join(
+    'workspaces', 'pipeline', event.batchId, event.itemId, 'attempts', String(event.attempt), event.stage,
+    'artifacts', `${event.stage}-v${event.attempt}.json`,
+  );
+}
+
+async function dispatchResearchBatch(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  pack: WriterPack,
+): Promise<void> {
+  const checkpoints = run.researchSources ?? [];
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.status !== 'PENDING') continue;
+    const dispatch = await dispatchResearchSource({
+      scheduler: deps.scheduler,
+      runId: run.id,
+      templateId: run.agentId,
+      substrate: run.substrate ?? 'terminal',
+      title: run.requestedTitle ?? run.brief,
+      brief: run.brief,
+      audience: run.audience ?? DEFAULT_AUDIENCE,
+      pack,
+      checkpoint,
+      sourceCount: checkpoints.length,
+    });
+    if (dispatch.status !== 'RUNNING' || dispatch.turnId === undefined) {
+      checkpoint.status = 'FAILED';
+      checkpoint.errorCode = dispatch.reason ?? 'RESEARCH_DISPATCH_FAILED';
+      checkpoint.errorReason = dispatch.reason;
+      run.updatedAt = new Date().toISOString();
+      await saveWriterRunV2(run, deps.dataDir);
+      await failRun(deps, run, checkpoint.errorCode, checkpoint.errorReason);
+      return;
+    }
+    checkpoint.status = 'RUNNING';
+    checkpoint.activeTurnId = dispatch.turnId;
+    checkpoint.turnIds.push(dispatch.turnId);
+    checkpoint.startedAt = new Date().toISOString();
+    delete checkpoint.errorCode;
+    delete checkpoint.errorReason;
+    run.updatedAt = new Date().toISOString();
+    // Persist each turn id immediately. This is the resume checkpoint, not UI-only state.
+    await saveWriterRunV2(run, deps.dataDir);
+  }
+}
+
+async function studyPackForRun(
+  deps: Pick<WriterV2Deps, 'dataDir'>,
+  run: WriterRunV2,
+  sourcePack: WriterPack,
+): Promise<WriterPack> {
+  if (!run.topicPack) return sourcePack;
+  if (!run.packHash || run.topicPack.sourcePackHash !== run.packHash) {
+    throw new Error('Topic Pack không còn khớp Source Pack pin của run');
+  }
+  const markdown = await readTopicPack(deps.dataDir, run.topicPack);
+  return {
+    ...sourcePack,
+    id: `${sourcePack.id}:topic:${run.id}`,
+    title: `Topic Pack — ${sourcePack.title}`,
+    markdown,
+    videoIds: [...run.topicPack.videoIds],
+    wordCount: markdown.split(/\s+/).filter(Boolean).length,
+    warnings: [...sourcePack.warnings, 'STUDY reads verified research output; raw transcripts withheld.'],
+  };
+}
+
+async function compileResearchAndDispatchStudy(
+  deps: WriterV2Deps,
+  run: WriterRunV2,
+  sourcePack: WriterPack,
+): Promise<void> {
+  const checkpoints = run.researchSources ?? [];
+  if (checkpoints.length === 0 || checkpoints.some((item) => item.status !== 'COMMITTED')) return;
+  const maps: ResearchMap[] = [];
+  for (const checkpoint of checkpoints) {
+    if (!checkpoint.artifactPath || !checkpoint.artifactHash) {
+      throw new Error(`Research checkpoint thiếu artifact: ${checkpoint.videoId}`);
+    }
+    const raw = await readFile(join(deps.dataDir, checkpoint.artifactPath), 'utf8');
+    const actualHash = createHash('sha256').update(raw).digest('hex');
+    if (actualHash !== checkpoint.artifactHash) {
+      throw new Error(`Research artifact ${checkpoint.videoId} không khớp hash đã pin`);
+    }
+    const sourceMarkdown = sourceMarkdownForCheckpoint(sourcePack, checkpoint);
+    const validated = validateResearchMap(JSON.parse(raw) as unknown, {
+      packMarkdown: sourceMarkdown,
+      videoIds: [checkpoint.videoId],
+      maxBytes: researchSourceBudget(checkpoints.length),
+    });
+    if (!validated.ok) {
+      throw new Error(`Research artifact ${checkpoint.videoId} lỗi (${validated.errorCode}): ${validated.reason}`);
+    }
+    maps.push(validated.researchMap);
+  }
+  const compiled = combineResearchMaps(maps, sourcePack);
+  run.topicPack = await persistTopicPack({
+    dataDir: deps.dataDir,
+    runId: run.id,
+    sourcePackHash: run.packHash!,
+    videoIds: checkpoints.map((checkpoint) => checkpoint.videoId),
+    researchMap: compiled.researchMap,
+    markdown: compiled.markdown,
+  });
+  run.updatedAt = new Date().toISOString();
+  await saveWriterRunV2(run, deps.dataDir);
+  await dispatchStudy(deps, run, await studyPackForRun(deps, run, sourcePack));
+}
+
 async function dispatchStudy(
   deps: WriterV2Deps,
   run: WriterRunV2,
   pack: WriterPack,
   options: { attempt?: number; freshContext?: boolean } = {},
 ): Promise<void> {
+  const allowedFactQuotes = run.topicPack
+    ? await readAuthorizedTopicQuotes(deps.dataDir, run.topicPack)
+    : undefined;
   const dispatch = await dispatchLegacyStudy({
     scheduler: deps.scheduler,
     batchId: run.id,
@@ -1349,6 +1580,8 @@ async function dispatchStudy(
     packTitle: run.packTitle,
     ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
     pack,
+    ...(allowedFactQuotes ? { allowedFactQuotes } : {}),
+    substrate: run.substrate ?? 'terminal',
     ...(options.attempt !== undefined ? { attempt: options.attempt } : {}),
     ...(options.freshContext !== undefined ? { freshContext: options.freshContext } : {}),
   });
@@ -1623,6 +1856,7 @@ async function dispatchWrite(
     stage: WRITE_STAGE,
     attempt: options.attempt ?? 1,
     templateId: run.agentId,
+    substrate: run.substrate ?? 'terminal',
     promptMarkdown: `${buildWritePrompt({
       title: run.requestedTitle ?? run.brief,
       brief: run.brief,
@@ -1712,6 +1946,53 @@ export async function continueWriterRunV2(
 ): Promise<WriterRunV2> {
   const run = await getWriterRunV2(runId, deps.dataDir);
   if (!run) throw new Error('Writer v2 run không tồn tại');
+  const recoveringResearch = Boolean(run.researchSources?.length)
+    && !run.topicPack
+    && !run.study
+    && (run.status === 'FAILED' || (run.status === 'RUNNING' && run.phase === 'STUDY'));
+  if (recoveringResearch) {
+    if (deps.scheduler.listOpenTurns(run.id).length > 0) {
+      throw new Error('Research vẫn còn turn đang chạy; chờ tất cả settle trước khi Continue');
+    }
+    const pack = await getWriterPack(run.packId, deps.dataDir);
+    if (!pack || !run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+      throw new Error('Source Pack không còn khớp pin của run; từ chối resume research');
+    }
+    const checkpoints = run.researchSources!;
+    const unfinished = checkpoints.filter((item) => item.status !== 'COMMITTED');
+    if (unfinished.length === 0) {
+      run.status = 'RUNNING';
+      run.phase = 'STUDY';
+      delete run.errorCode;
+      delete run.errorReason;
+      await saveWriterRunV2(run, deps.dataDir);
+      try {
+        await compileResearchAndDispatchStudy(deps, run, pack);
+      } catch (err) {
+        await failRun(deps, run, 'TOPIC_PACK_COMPILE_FAILED', (err as Error).message);
+      }
+      return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+    }
+    const availableLanes = deps.scheduler.getMaxParallel() - deps.scheduler.getLiveCloneCount();
+    if (availableLanes < unfinished.length) {
+      throw new Error(`Resume research cần ${unfinished.length} lane nhưng hiện chỉ còn ${availableLanes}`);
+    }
+    for (const checkpoint of unfinished) {
+      checkpoint.attempt += 1;
+      checkpoint.status = 'PENDING';
+      delete checkpoint.activeTurnId;
+      delete checkpoint.errorCode;
+      delete checkpoint.errorReason;
+    }
+    run.status = 'RUNNING';
+    run.phase = 'STUDY';
+    delete run.errorCode;
+    delete run.errorReason;
+    run.updatedAt = new Date().toISOString();
+    await saveWriterRunV2(run, deps.dataDir);
+    await dispatchResearchBatch(deps, run, pack);
+    return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
+  }
   const canRecoverStudyArtifact = !run.study && (
     (run.status === 'RUNNING' && run.phase === 'STUDY')
     || (run.status === 'FAILED' && run.phase === 'FAILED')
@@ -1752,12 +2033,19 @@ export async function continueWriterRunV2(
       await saveWriterRunV2(run, deps.dataDir);
       // A daemon restart rotates the Team MCP URL/token. Replace the old pane
       // instead of resuming a CLI process that still holds stale MCP config.
-      await dispatchStudy(deps, run, pack, { attempt: 2, freshContext: true });
+      await dispatchStudy(deps, run, await studyPackForRun(deps, run, pack), {
+        attempt: 2,
+        freshContext: true,
+      });
       return (await getWriterRunV2(run.id, deps.dataDir)) ?? run;
     }
+    const studyPack = await studyPackForRun(deps, run, pack);
     const validated = validateStudyArtifact(parsed, {
-      packMarkdown: pack.markdown,
-      videoIds: packVideoIds(pack),
+      packMarkdown: studyPack.markdown,
+      videoIds: packVideoIds(studyPack),
+      ...(run.topicPack
+        ? { allowedFactQuotes: await readAuthorizedTopicQuotes(deps.dataDir, run.topicPack) }
+        : {}),
     });
     if (!validated.ok) {
       throw new Error(`Artifact STUDY không hợp lệ (${validated.errorCode}): ${validated.reason}`);
@@ -1918,6 +2206,7 @@ async function dispatchEditReview(deps: WriterV2Deps, run: WriterRunV2): Promise
     stage: EDIT_REVIEW_STAGE,
     attempt: 1,
     templateId: run.editorAgentId,
+    substrate: run.substrate ?? 'terminal',
     promptMarkdown: buildEditReviewPrompt({
       hasGateViolations: violations.length > 0,
       ...(run.selectedHook ? { selectedHook: run.selectedHook } : {}),
@@ -2018,6 +2307,7 @@ async function dispatchRepair(deps: WriterV2Deps, run: WriterRunV2): Promise<voi
     stage: REPAIR_STAGE,
     attempt: 1,
     templateId: run.agentId,
+    substrate: run.substrate ?? 'terminal',
     promptMarkdown: buildRepairPrompt({
       beatCount: study.outline.progression.length,
       wordRange,
@@ -2079,20 +2369,89 @@ export function registerWriterV2SettleListener(
   const fullDeps: WriterV2Deps = { scheduler, dataDir: deps.dataDir };
   return scheduler.onItemSettled((event) => {
     if (
-      event.stage !== STUDY_STAGE
+      event.stage !== RESEARCH_SOURCE_STAGE
+      && event.stage !== STUDY_STAGE
       && event.stage !== WRITE_STAGE
       && event.stage !== EDIT_REVIEW_STAGE
       && event.stage !== REPAIR_STAGE
     ) return;
-    void handleWriterV2Settle(fullDeps, event).catch((err) => {
+    const settlement = event.stage === RESEARCH_SOURCE_STAGE
+      ? enqueueWriterSettle(event.batchId, () => handleWriterV2Settle(fullDeps, event))
+      : handleWriterV2Settle(fullDeps, event);
+    void settlement.catch((err) => {
       console.error('[writer-v2] settle failed:', (err as Error).message);
     });
   });
 }
 
+/** Research workers may settle at the same instant; serialize record mutations per run. */
+const writerSettleQueues = new Map<string, Promise<void>>();
+
+function enqueueWriterSettle(runId: string, task: () => Promise<void>): Promise<void> {
+  const previous = writerSettleQueues.get(runId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  writerSettleQueues.set(runId, next);
+  void next.then(() => {
+    if (writerSettleQueues.get(runId) === next) writerSettleQueues.delete(runId);
+  }, () => {
+    if (writerSettleQueues.get(runId) === next) writerSettleQueues.delete(runId);
+  });
+  return next;
+}
+
 async function handleWriterV2Settle(deps: WriterV2Deps, event: ItemSettledResult): Promise<void> {
   const run = await getWriterRunV2(event.batchId, deps.dataDir);
   if (!run) return;
+
+  if (event.stage === RESEARCH_SOURCE_STAGE) {
+    const checkpoint = run.researchSources?.find((item) => item.itemId === event.itemId);
+    if (!checkpoint || checkpoint.attempt !== event.attempt) return;
+    delete checkpoint.activeTurnId;
+    checkpoint.finishedAt = new Date().toISOString();
+    if (event.outcome !== 'COMMITTED' || !event.artifactHash) {
+      checkpoint.status = 'FAILED';
+      checkpoint.errorCode = event.errorCode ?? 'RESEARCH_SOURCE_FAILED';
+      checkpoint.errorReason = event.errorReason;
+      await failRun(deps, run, checkpoint.errorCode, checkpoint.errorReason);
+      return;
+    }
+    const pack = await getWriterPack(run.packId, deps.dataDir);
+    if (!pack || !run.packHash || pinWriterPackHash(pack) !== run.packHash) {
+      checkpoint.status = 'FAILED';
+      await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'Source Pack changed or disappeared after RESEARCH');
+      return;
+    }
+    const parsed = await readCommittedArtifact<unknown>(deps.dataDir, event);
+    const sourceMarkdown = sourceMarkdownForCheckpoint(pack, checkpoint);
+    const validated = validateResearchMap(parsed, {
+      packMarkdown: sourceMarkdown,
+      videoIds: [checkpoint.videoId],
+      maxBytes: researchSourceBudget(run.researchSources!.length),
+    });
+    if (!validated.ok) {
+      checkpoint.status = 'FAILED';
+      checkpoint.errorCode = validated.errorCode;
+      checkpoint.errorReason = validated.reason;
+      await failRun(deps, run, validated.errorCode, validated.reason);
+      return;
+    }
+    checkpoint.status = 'COMMITTED';
+    checkpoint.artifactHash = event.artifactHash;
+    checkpoint.artifactPath = artifactRelativePath(event);
+    delete checkpoint.errorCode;
+    delete checkpoint.errorReason;
+    run.updatedAt = new Date().toISOString();
+    await saveWriterRunV2(run, deps.dataDir);
+    if (run.status === 'RUNNING' && run.researchSources!.every((item) => item.status === 'COMMITTED')) {
+      try {
+        await compileResearchAndDispatchStudy(deps, run, pack);
+      } catch (err) {
+        await failRun(deps, run, 'TOPIC_PACK_COMPILE_FAILED', (err as Error).message);
+      }
+    }
+    return;
+  }
+
   if (run.status !== 'RUNNING') return;
 
   if (event.outcome !== 'COMMITTED' || !event.artifactHash) {
@@ -2107,15 +2466,25 @@ async function handleWriterV2Settle(deps: WriterV2Deps, event: ItemSettledResult
 
   switch (event.stage) {
     case STUDY_STAGE: {
-      const pack = await getWriterPack(run.packId, deps.dataDir);
-      if (!pack) {
+      const sourcePack = await getWriterPack(run.packId, deps.dataDir);
+      if (!sourcePack) {
         await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', 'pack disappeared after STUDY');
+        return;
+      }
+      let pack: WriterPack;
+      try {
+        pack = await studyPackForRun(deps, run, sourcePack);
+      } catch (err) {
+        await failRun(deps, run, 'WRITER_V2_INPUT_MISSING', (err as Error).message);
         return;
       }
       const parsed = await readCommittedArtifact<unknown>(deps.dataDir, event);
       const validated = validateStudyArtifact(parsed, {
         packMarkdown: pack.markdown,
         videoIds: packVideoIds(pack),
+        ...(run.topicPack
+          ? { allowedFactQuotes: await readAuthorizedTopicQuotes(deps.dataDir, run.topicPack) }
+          : {}),
       });
       if (!validated.ok) {
         await failRun(deps, run, validated.errorCode, validated.reason);
@@ -2496,6 +2865,7 @@ async function dispatchRestyle(
     // version 2 can never re-attach to version 1's turn.
     attempt: version,
     templateId: run.agentId,
+    substrate: run.substrate ?? 'terminal',
     promptMarkdown: buildRestylePrompt({
       styleTitle: style.title,
       wordRange,
@@ -2650,6 +3020,7 @@ async function dispatchPostmortem(deps: WriterV2Deps, run: WriterRunV2): Promise
     stage: POSTMORTEM_STAGE,
     attempt,
     templateId: run.editorAgentId,
+    substrate: run.substrate ?? 'terminal',
     promptMarkdown: buildPostmortemPrompt(),
     envelope,
     inputFiles: [
@@ -2978,6 +3349,23 @@ export async function recoverInterruptedWriterRuns(
 
       switch (run.phase) {
         case 'STUDY': {
+          if (run.researchSources?.length && !run.topicPack) {
+            for (const checkpoint of run.researchSources) {
+              if (checkpoint.status === 'RUNNING') {
+                checkpoint.status = 'INTERRUPTED';
+                delete checkpoint.activeTurnId;
+                checkpoint.errorCode = 'RESEARCH_INTERRUPTED';
+                checkpoint.errorReason = 'daemon restarted before this transcript research settled';
+              }
+            }
+            await markWriterInterrupted(
+              dataDir,
+              run,
+              'RESEARCH_INTERRUPTED',
+              'Research theo transcript bị ngắt; các artifact đã COMMITTED được giữ, bấm Continue để chạy lại phần còn thiếu.',
+            );
+            break;
+          }
           const found = await latestStageResult(dataDir, run.id, STUDY_STAGE);
           if (!found) {
             await markWriterInterrupted(
@@ -2998,9 +3386,19 @@ export async function recoverInterruptedWriterRuns(
             );
             break;
           }
+          let studyPack: WriterPack;
+          try {
+            studyPack = await studyPackForRun({ dataDir }, run, pack);
+          } catch (err) {
+            await markWriterInterrupted(dataDir, run, 'STUDY_INTERRUPTED', (err as Error).message);
+            break;
+          }
           const validated = validateStudyArtifact(found.parsed, {
-            packMarkdown: pack.markdown,
-            videoIds: packVideoIds(pack),
+            packMarkdown: studyPack.markdown,
+            videoIds: packVideoIds(studyPack),
+            ...(run.topicPack
+              ? { allowedFactQuotes: await readAuthorizedTopicQuotes(dataDir, run.topicPack) }
+              : {}),
           });
           if (!validated.ok) {
             await markWriterInterrupted(

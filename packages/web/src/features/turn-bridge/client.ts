@@ -394,6 +394,13 @@ export function startTurnBridge(): () => void {
   }
 
   function handleEvent(event: TeamEvent): void {
+    // `externalTurn` (Writer v2 `substrate: external`): the daemon announces
+    // that a turn is RUNNING but an orchestrator on 1DevTool runs the agent
+    // itself and settles it through the Writer MCP. There is no pane to open
+    // in the app and nothing to heartbeat, so the bridge must not touch it —
+    // otherwise it would open a second, competing agent for the same turn.
+    // Compared by string because the shared `TeamEvent` union may not list it.
+    if ((event as { kind: string }).kind === 'externalTurn') return;
     switch (event.kind) {
       case 'spawnTurn':
         void handleSpawnTurn(event);

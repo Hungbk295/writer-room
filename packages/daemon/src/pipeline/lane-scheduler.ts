@@ -107,6 +107,35 @@ export interface DispatchItemParams {
    * process-level failures, not "content the agent can revise," so retrying them
    * blindly would just mask a different class of bug. */
   maxContentRetries?: number;
+  /**
+   * Where the agent for this turn runs (plan writer-external-orchestrator §2 B2).
+   * `terminal` (default) keeps today's `spawnTurn` path. `external` stages the
+   * same `prompt.md` + `input/` and records the same ledger row, but the
+   * workflow emits `externalTurn` instead of `spawnTurn`: nothing in the app
+   * opens a pane; an outside caller runs the agent in `itemRunDir` and settles
+   * the turn through `workflow.turnComplete` (see `writer/external-turn.ts`).
+   * The commit rule, validators and sandbox check are identical either way.
+   */
+  substrate?: 'terminal' | 'external';
+}
+
+/** A dispatched turn that has not settled yet — read from `turnRegistry`. */
+export interface OpenTurn {
+  turnId: number;
+  batchId: string;
+  itemId: string;
+  stage: string;
+  attempt: number;
+  templateId: string;
+  /** The clone id the turn was requested for (`spawnTurn`/`externalTurn.agentId`). */
+  agentId: string;
+  itemRunDir: string;
+  startedAt: string;
+  /** `startedAt + timeoutMs` — the workflow's hard cap for this turn. */
+  deadlineAt: string;
+  /** The taskNote as built for the turn: where to read, where to write. */
+  assignmentText: string;
+  external: boolean;
 }
 
 export interface DispatchItemResult {
@@ -147,6 +176,11 @@ interface TurnRegistryEntry {
   params: DispatchItemParams;
   maxContentRetries: number;
   retriesUsed: number;
+  templateId: string;
+  startedAt: string;
+  deadlineAt: string;
+  assignmentText: string;
+  external: boolean;
 }
 
 /** Placeholder scoped-budget defaults (SDD §5.4 — these are explicitly "placeholder
@@ -307,6 +341,31 @@ export class LaneScheduler {
     return () => this.settledListeners.delete(listener);
   }
 
+  /** Turns of `batchId` dispatched by this process and not yet settled. A registry
+   * entry is deleted the moment its turn settles, so presence here IS "still
+   * RUNNING"; nothing survives a daemon restart (same scope as the registry). */
+  listOpenTurns(batchId: string): OpenTurn[] {
+    const open: OpenTurn[] = [];
+    for (const [turnId, entry] of this.turnRegistry) {
+      if (entry.batchId !== batchId) continue;
+      open.push({
+        turnId,
+        batchId: entry.batchId,
+        itemId: entry.itemId,
+        stage: entry.stage,
+        attempt: entry.attempt,
+        templateId: entry.templateId,
+        agentId: entry.cloneId,
+        itemRunDir: entry.itemRunDir,
+        startedAt: entry.startedAt,
+        deadlineAt: entry.deadlineAt,
+        assignmentText: entry.assignmentText,
+        external: entry.external,
+      });
+    }
+    return open.sort((a, b) => a.turnId - b.turnId);
+  }
+
   /**
    * Minimal boot-time reconciliation (NOT full M3 orphan-pid recovery — see
    * HANDOFF §4 M3 and SDD §5.6). Any ledger row still `non-terminal` at the moment
@@ -392,8 +451,14 @@ export class LaneScheduler {
     const cloneId = clone.id;
 
     // Step 6: dispatch — exclusive + scoped budget, never mcp__team.
+    const external = params.substrate === 'external';
+    const assignmentText = assignmentTaskNote(itemRunDir, inputFiles);
+    // An external turn has no pane to hear a stall on; keep only the same hard
+    // cap an interactive pane gets (plan §0 decision 3).
+    const stallMs = params.interactivePty || external ? undefined : STALL_MS;
+    const timeoutMs = params.interactivePty || external ? INTERACTIVE_PTY_TIMEOUT_MS : TIMEOUT_MS;
     const r = this.deps.workflow.requestTurn(cloneId, 'assignment', undefined, {
-      taskNote: assignmentTaskNote(itemRunDir, inputFiles),
+      taskNote: assignmentText,
       overrideCwd: itemRunDir,
       skipWorktree: true,
       // `mcp__team` is not optional: an interactive turn ends when the agent calls
@@ -410,8 +475,9 @@ export class LaneScheduler {
       restartInteractive: params.interactivePty === true && params.freshContext === true,
       exclusive: true,
       freshContext: params.freshContext,
-      stallMs: params.interactivePty ? undefined : STALL_MS,
-      timeoutMs: params.interactivePty ? INTERACTIVE_PTY_TIMEOUT_MS : TIMEOUT_MS,
+      external,
+      stallMs,
+      timeoutMs,
       budget: {
         scope: params.budgetScope ?? batchId,
         maxTurns: params.maxTurns ?? this.defaultMaxTurns,
@@ -429,6 +495,8 @@ export class LaneScheduler {
     }
 
     // Step 8: record turn_key -> turnId, status RUNNING; track for settlement.
+    const startedAtMs = Date.now();
+    const startedAt = new Date(startedAtMs).toISOString();
     this.deps.ledger.append({
       turnKey: tk,
       itemId,
@@ -436,7 +504,7 @@ export class LaneScheduler {
       attempt,
       status: 'non-terminal',
       turnId: String(r.turnId),
-      recordedAt: new Date().toISOString(),
+      recordedAt: startedAt,
       batchId,
       outcome: 'RUNNING',
     });
@@ -447,6 +515,11 @@ export class LaneScheduler {
       params,
       maxContentRetries: params.maxContentRetries ?? DEFAULT_MAX_CONTENT_RETRIES,
       retriesUsed,
+      templateId,
+      startedAt,
+      deadlineAt: new Date(startedAtMs + timeoutMs).toISOString(),
+      assignmentText,
+      external,
     });
 
     return { turnId: r.turnId, itemRunDir, status: 'RUNNING' };

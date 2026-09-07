@@ -8,6 +8,11 @@ owners: [Product Owner, Writer Room Engineering]
 
 # Solution Design Document
 
+> **Historical Writer design — 2026-09-06:** the Writer v2 runtime target and current
+> status are maintained in the [canonical Writer document](../../plans/writer-v2-status.md).
+> The superseded Writer sections below are historical context, not current runtime
+> certification. This notice does not redefine the training scope of this older spec.
+
 ## Validation Checklist
 
 ### CRITICAL GATES (Must Pass)

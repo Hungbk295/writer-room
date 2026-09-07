@@ -29,6 +29,13 @@ import {
   startHookSuggest,
 } from '../../src/writer/hook-board.ts';
 import { getWriterRunV2, listWriterRunsV2, saveWriterRunV2 } from '../../src/writer/run-store-v2.ts';
+import {
+  ExternalTurnError,
+  completeWriterTurn,
+  getOpenWriterTurn,
+  noteWriterTurnProgress,
+} from '../../src/writer/external-turn.ts';
+import type { TeamEvent } from '../../src/team/workflow.ts';
 import { WRITER_BEAT_MODES, WRITER_BEAT_TURNS } from '../../src/writer/video-plan.ts';
 import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
 import { createChannelProfile, listEditorialSuggestions, updateChannelProfile } from '../../src/writer/channel-profile.ts';
@@ -63,7 +70,9 @@ import {
   validateWriterV2Draft,
   validatePostmortem,
   updateWriterPostV2,
+  withWriterV2Progress,
   WRITE_STAGE,
+  WRITER_TIMELINE_MAX,
   WRITER_V2_ITEM_ID,
 } from '../../src/writer/writer-run-v2.ts';
 
@@ -597,6 +606,34 @@ describe('Writer v2 — STUDY validation', () => {
   test('the real shape passes', () => {
     const result = validateStudyArtifact(STUDY_RESULT, { packMarkdown: PACK_MARKDOWN, videoIds: [VIDEO_ID] });
     expect(result.ok).toBe(true);
+  });
+
+  test('a generated Topic Pack authorizes facts only from positive exact-evidence spans', () => {
+    const label = 'Nhãn diễn giải do research agent viết';
+    const rejected = validateStudyArtifact(
+      {
+        ...STUDY_RESULT,
+        factsLedger: [
+          { fact: label, videoId: VIDEO_ID, quote: label },
+          ...STUDY_RESULT.factsLedger.slice(1),
+        ],
+      },
+      {
+        packMarkdown: `${PACK_MARKDOWN}\n${label}`,
+        videoIds: [VIDEO_ID],
+        allowedFactQuotes: [PACK_QUOTE, PACK_QUOTE_2, PACK_QUOTE_3],
+      },
+    );
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.errorCode).toBe('STUDY_LEDGER');
+
+    const accepted = validateStudyArtifact(STUDY_RESULT, {
+      packMarkdown: PACK_MARKDOWN,
+      videoIds: [VIDEO_ID],
+      allowedFactQuotes: [PACK_QUOTE, PACK_QUOTE_2, PACK_QUOTE_3],
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) expect(accepted.study.factsLedger[0]!.fact).toBe(PACK_QUOTE);
   });
 });
 
@@ -1991,5 +2028,281 @@ describe('Writer v2 hook loop (clarify → suggest → select)', () => {
     const settled = waitForSettled(harness.pipeline.scheduler, HOOK_CLARIFY_STAGE, 1);
     harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
     await settled;
+  });
+});
+
+describe('Writer v2 — substrate external (plan writer-external-orchestrator §2 B4)', () => {
+  /** Every `externalTurn` the workflow emitted this test, by turnId. */
+  let externalTurns: Map<number, { agentId: string; cwd?: string }>;
+  let unsubExternal: () => void;
+
+  beforeEach(() => {
+    externalTurns = new Map();
+    unsubExternal = harness.subscribe((event: TeamEvent) => {
+      if (event.kind === 'externalTurn') externalTurns.set(event.turnId, { agentId: event.agentId, cwd: event.cwd });
+    });
+  });
+
+  afterEach(() => {
+    unsubExternal();
+  });
+
+  function deps() {
+    return { scheduler: harness.pipeline.scheduler, dataDir: dir };
+  }
+
+  function externalDeps() {
+    return { scheduler: harness.pipeline.scheduler, workflow: harness.workflow, dataDir: dir };
+  }
+
+  async function startExternalRun(): Promise<string> {
+    const pack = await createWriterPack(
+      { title: 'Hieu pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Hieu Nguyen' },
+      dir,
+    );
+    const run = await startWriterRunV2(deps(), {
+      channelId: 'finance',
+      brief: 'Vì sao lương tăng mà vẫn hết tiền',
+      title: 'Lương tăng, quyền chọn giảm',
+      packId: pack.id,
+      generalPack: 'hieu-tv.md',
+      agentId: 'codex',
+      substrate: 'external',
+    });
+    expect(run.status).toBe('RUNNING');
+    expect(run.phase).toBe('STUDY');
+    expect(run.substrate).toBe('external');
+    return run.id;
+  }
+
+  /** The outside caller's half of the stage contract: wait for the turn, write
+   * `out/result.json`, report the exit code through `completeWriterTurn`. The
+   * daemon's settle path (validators, gate, sandbox) is untouched. */
+  async function completeExternalStage(
+    runId: string,
+    stage: string,
+    result: unknown,
+    attempt = 1,
+  ): Promise<ItemSettledResult> {
+    const row = await waitForLedgerRow(runId, stage, attempt);
+    const turnId = Number(row.turnId);
+    const external = await waitUntil(() => externalTurns.get(turnId), (value) => value !== undefined);
+    expect(external!.cwd).toBe(itemRunDir(runId, stage, attempt));
+    expect(turnLaunches.has(turnId)).toBe(false);
+    const open = await getOpenWriterTurn(externalDeps(), runId);
+    expect(open).toMatchObject({ turnId, stage, attempt, external: true, itemRunDir: itemRunDir(runId, stage, attempt) });
+    expect(open!.promptPath).toBe(join(itemRunDir(runId, stage, attempt), 'prompt.md'));
+    expect(open!.resultPath).toBe(join(itemRunDir(runId, stage, attempt), 'out', 'result.json'));
+    await Bun.write(open!.resultPath, JSON.stringify(result));
+    const settled = waitForSettled(harness.pipeline.scheduler, stage, attempt);
+    expect(await completeWriterTurn(externalDeps(), runId, {
+      turnId, exitCode: 0, external: { terminalId: `term-${stage}` },
+    })).toEqual({ ok: true, turnId });
+    return settled;
+  }
+
+  test('STUDY → WRITE → GATE → EDIT_REVIEW → DONE with no spawnTurn at all', async () => {
+    const runId = await startExternalRun();
+
+    // Same staged contract as a terminal run: prompt + input on disk.
+    expect(await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'prompt.md')).exists()).toBe(true);
+    const studyEnvelope = JSON.parse(
+      await Bun.file(join(itemRunDir(runId, STUDY_STAGE), 'input', 'envelope.json')).text(),
+    ) as { topicPack: { contentFiles: string[] } };
+    expect(studyEnvelope.topicPack.contentFiles).toHaveLength(1);
+
+    // The app's view while a turn is open: currentTurn comes from the scheduler.
+    const running = (await getWriterRunV2(runId, dir))!;
+    const view = withWriterV2Progress(running, harness.pipeline.scheduler.listOpenTurns(runId));
+    expect(view.currentTurn).toMatchObject({ stage: STUDY_STAGE, attempt: 1 });
+    expect(view.currentTurn!.external).toBeUndefined();
+    expect(withWriterV2Progress(running).currentTurn).toBeNull();
+
+    expect((await completeExternalStage(runId, STUDY_STAGE, STUDY_RESULT)).outcome).toBe('COMMITTED');
+    await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
+    expect((await completeExternalStage(runId, WRITE_STAGE, {
+      title: 'Lương tăng, quyền chọn giảm',
+      script: cleanScript(),
+      outlineChanges: ['giữ nguyên outline', 'hook học từ entry mở bằng câu hỏi ngân sách'],
+      beatAnchors: [ANCHOR_1, ANCHOR_2],
+    })).outcome).toBe('COMMITTED');
+    const afterWrite = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'EDIT_REVIEW');
+    expect(afterWrite!.gateResults[0]!.passed).toBe(true);
+    expect((await completeExternalStage(runId, EDIT_REVIEW_STAGE, { defects: [] })).outcome).toBe('COMMITTED');
+
+    const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
+    expect(done!.phase).toBe('DONE');
+    expect(done!.substrate).toBe('external');
+    expect(done!.finalScript).toContain(ANCHOR_1);
+    expect(turnLaunches.size).toBe(0);
+    expect(externalTurns.size).toBe(3);
+    expect(harness.pipeline.scheduler.listOpenTurns(runId)).toEqual([]);
+    expect(await getOpenWriterTurn(externalDeps(), runId)).toBeNull();
+    // Every complete carried an external ref, so the timeline has one entry per stage.
+    expect(done!.timeline!.map((entry) => [entry.kind, entry.stage, entry.external?.terminalId])).toEqual([
+      ['external', STUDY_STAGE, `term-${STUDY_STAGE}`],
+      ['external', WRITE_STAGE, `term-${WRITE_STAGE}`],
+      ['external', EDIT_REVIEW_STAGE, `term-${EDIT_REVIEW_STAGE}`],
+    ]);
+    expect((await listWriterRunsV2(dir))[0]!.substrate).toBe('external');
+  });
+
+  test('completeWriterTurn: unknown turn → TURN_NOT_OPEN; unknown run → RUN_NOT_FOUND', async () => {
+    const runId = await startExternalRun();
+    const row = await waitForLedgerRow(runId, STUDY_STAGE);
+    const turnId = Number(row.turnId);
+
+    await expect(completeWriterTurn(externalDeps(), runId, { turnId: turnId + 1000, exitCode: 0 }))
+      .rejects.toMatchObject({ code: 'TURN_NOT_OPEN' });
+    await expect(completeWriterTurn(externalDeps(), 'no-such-run', { turnId, exitCode: 0 }))
+      .rejects.toMatchObject({ code: 'RUN_NOT_FOUND' });
+    await expect(getOpenWriterTurn(externalDeps(), 'no-such-run')).rejects.toBeInstanceOf(ExternalTurnError);
+    // The real turn is still open — the wrong ids did not settle anything.
+    expect(harness.pipeline.scheduler.listOpenTurns(runId).map((t) => t.turnId)).toEqual([turnId]);
+    expect((await getWriterRunV2(runId, dir))!.status).toBe('RUNNING');
+
+    // A non-zero exit from the outside fails the run on the existing path.
+    const settled = waitForSettled(harness.pipeline.scheduler, STUDY_STAGE);
+    await completeWriterTurn(externalDeps(), runId, { turnId, exitCode: -1 });
+    expect((await settled).errorCode).toBe('AGENT_EXIT');
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'FAILED');
+    expect(failed!.errorCode).toBe('AGENT_EXIT');
+    await expect(completeWriterTurn(externalDeps(), runId, { turnId, exitCode: 0 }))
+      .rejects.toMatchObject({ code: 'TURN_NOT_OPEN' });
+  });
+
+  test('completeWriterTurn on a terminal run → SUBSTRATE_NOT_EXTERNAL, and its pane turn stays open', async () => {
+    const runId = await startRun();
+    const row = await waitForLedgerRow(runId, STUDY_STAGE);
+    const turnId = Number(row.turnId);
+    await waitUntil(() => turnLaunches.get(turnId), (value) => value !== undefined);
+    expect(externalTurns.size).toBe(0);
+    expect((await getWriterRunV2(runId, dir))!.substrate).toBe('terminal');
+
+    await expect(completeWriterTurn(externalDeps(), runId, { turnId, exitCode: 0 }))
+      .rejects.toMatchObject({ code: 'SUBSTRATE_NOT_EXTERNAL' });
+    expect(harness.pipeline.scheduler.listOpenTurns(runId)).toHaveLength(1);
+    // Reading the open turn is allowed for any substrate (the app shows it too).
+    expect((await getOpenWriterTurn(externalDeps(), runId))!.external).toBe(false);
+
+    const settled = waitForSettled(harness.pipeline.scheduler, STUDY_STAGE);
+    harness.workflow.turnComplete(turnId, { exitCode: -1 });
+    await settled;
+  });
+
+  test('an artifact written outside the stage directory still fails the run with AGENT_SANDBOX_VIOLATION', async () => {
+    const runId = await startExternalRun();
+    const row = await waitForLedgerRow(runId, STUDY_STAGE);
+    const turnId = Number(row.turnId);
+    const stageDir = itemRunDir(runId, STUDY_STAGE);
+    await Bun.write(join(stageDir, 'out', 'result.json'), JSON.stringify(STUDY_RESULT));
+    await Bun.write(join(stageDir, '..', 'escaped.txt'), 'không được ghi ở đây');
+
+    const settled = waitForSettled(harness.pipeline.scheduler, STUDY_STAGE);
+    await completeWriterTurn(externalDeps(), runId, { turnId, exitCode: 0 });
+    expect((await settled).errorCode).toBe('AGENT_SANDBOX_VIOLATION');
+    const failed = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'FAILED');
+    expect(failed!.errorCode).toBe('AGENT_SANDBOX_VIOLATION');
+    expect(failed!.study).toBeNull();
+  });
+
+  test('noteWriterTurnProgress appends to timeline, binds to the open turn, and caps the list', async () => {
+    const runId = await startExternalRun();
+    const row = await waitForLedgerRow(runId, STUDY_STAGE);
+    const turnId = Number(row.turnId);
+
+    await noteWriterTurnProgress(externalDeps(), runId, { text: 'orchestrator bắt đầu' });
+    const noted = await noteWriterTurnProgress(externalDeps(), runId, {
+      turnId, text: 'đã mở agent STUDY', external: { teamId: 'team-1', memberId: 'writer', terminalId: 'tab-7' },
+    });
+    expect(noted.timeline).toHaveLength(2);
+    expect(noted.timeline![0]).toMatchObject({ kind: 'note', text: 'orchestrator bắt đầu' });
+    expect(noted.timeline![0]!.turnId).toBeUndefined();
+    expect(noted.timeline![1]).toMatchObject({
+      kind: 'external', turnId, stage: STUDY_STAGE, text: 'đã mở agent STUDY',
+      external: { teamId: 'team-1', memberId: 'writer', terminalId: 'tab-7' },
+    });
+    expect(Date.parse(noted.timeline![1]!.at)).not.toBeNaN();
+    // Persisted, and surfaced as currentTurn.external for the app.
+    const reread = (await getWriterRunV2(runId, dir))!;
+    expect(reread.timeline).toHaveLength(2);
+    const view = withWriterV2Progress(reread, harness.pipeline.scheduler.listOpenTurns(runId));
+    expect(view.currentTurn).toMatchObject({ turnId, stage: STUDY_STAGE, external: { terminalId: 'tab-7' } });
+
+    await expect(noteWriterTurnProgress(externalDeps(), runId, { turnId: turnId + 1000, text: 'x' }))
+      .rejects.toMatchObject({ code: 'TURN_NOT_OPEN' });
+    await expect(noteWriterTurnProgress(externalDeps(), 'no-such-run', { text: 'x' }))
+      .rejects.toMatchObject({ code: 'RUN_NOT_FOUND' });
+
+    for (let i = 0; i < WRITER_TIMELINE_MAX + 5; i += 1) {
+      await noteWriterTurnProgress(externalDeps(), runId, { text: `note ${i}` });
+    }
+    const capped = (await getWriterRunV2(runId, dir))!;
+    expect(capped.timeline).toHaveLength(WRITER_TIMELINE_MAX);
+    expect(capped.timeline!.at(-1)!.text).toBe(`note ${WRITER_TIMELINE_MAX + 4}`);
+    // 2 earlier entries + 55 notes = 57; the oldest 7 (2 entries + note 0–4) fall off the head.
+    expect(capped.timeline![0]!.text).toBe('note 5');
+
+    const settled = waitForSettled(harness.pipeline.scheduler, STUDY_STAGE);
+    await completeWriterTurn(externalDeps(), runId, { turnId, exitCode: -1 });
+    await settled;
+  });
+
+  test('a run JSON persisted without substrate reads back as terminal and dispatches a pane', async () => {
+    const pack = await createWriterPack(
+      { title: 'Old pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' }, dir,
+    );
+    const post = await createWriterPostV2(deps());
+    expect(post.substrate).toBe('terminal');
+    await updateWriterPostV2(deps(), post.id, {
+      channelId: 'finance', brief: 'Bài cũ', title: 'Một title cũ',
+      packId: pack.id, generalPack: 'hieu-tv.md', agentId: 'codex', editorAgentId: 'claude',
+    });
+    const path = join(dir, 'writer', 'runs-v2', `${post.id}.json`);
+    const raw = JSON.parse(await Bun.file(path).text()) as Record<string, unknown>;
+    delete raw.substrate;
+    raw.selectedHook = { id: 'h1', type: 'direct-question', typeLabel: 'Câu hỏi trực diện', text: 'Hỏi?' };
+    await Bun.write(path, JSON.stringify(raw));
+
+    const reread = (await getWriterRunV2(post.id, dir))!;
+    expect(reread.substrate).toBe('terminal');
+    expect((await listWriterRunsV2(dir))[0]!.substrate).toBe('terminal');
+    expect(withWriterV2Progress(reread).currentTurn).toBeNull();
+
+    const started = await runWriterRoomV2(deps(), post.id);
+    expect(started.phase).toBe('STUDY');
+    const row = await waitForLedgerRow(post.id, STUDY_STAGE);
+    const launch = await waitUntil(() => turnLaunches.get(Number(row.turnId)), (value) => value !== undefined);
+    expect(launch).toEqual({ mode: 'interactive', interactiveRequired: true, forceHeadless: false });
+    expect(externalTurns.size).toBe(0);
+    expect(dispatches.at(-1)!.substrate).toBe('terminal');
+
+    const settled = waitForSettled(harness.pipeline.scheduler, STUDY_STAGE);
+    harness.workflow.turnComplete(Number(row.turnId), { exitCode: -1 });
+    await settled;
+  });
+
+  test('substrate is set on the DRAFT post, and Save without it keeps the value', async () => {
+    const pack = await createWriterPack(
+      { title: 'Room pack', markdown: PACK_MARKDOWN, videoIds: [VIDEO_ID], channelTitle: 'Evidence' }, dir,
+    );
+    const post = await createWriterPostV2(deps());
+    const config = {
+      channelId: 'finance', brief: 'Bài ngoài', title: 'Chạy qua 1DevTool',
+      packId: pack.id, generalPack: 'hieu-tv.md', agentId: 'codex' as const, editorAgentId: 'claude' as const,
+    };
+    const external = await updateWriterPostV2(deps(), post.id, { ...config, substrate: 'external' });
+    expect(external.substrate).toBe('external');
+    expect(external.phase).toBe('READY');
+    const kept = await updateWriterPostV2(deps(), post.id, config);
+    expect(kept.substrate).toBe('external');
+    expect((await getWriterRunV2(post.id, dir))!.substrate).toBe('external');
+    expect(harness.pipeline.scheduler.getLiveCloneCount()).toBe(0);
+
+    // A room created through the legacy helper defaults to terminal.
+    const room = await createWriterRoomV2(deps(), {
+      channelId: 'finance', brief: 'Bài trong app', title: 'Chạy trong app', packId: pack.id, generalPack: 'hieu-tv.md',
+    });
+    expect(room.substrate).toBe('terminal');
   });
 });
