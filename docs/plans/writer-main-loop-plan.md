@@ -205,6 +205,14 @@ Chưa duyệt experience A1–A8: cần xác nhận quyền kể, làm sau.
 
 ---
 
+## T9. Việc chờ restart — trạng thái 2026-09-07 04:15Z
+
+Daemon đang chạy `04916e6`. Đã commit nhưng chưa nạp: gate nhận `ph` + luật số tự tính
+(`907ef89`), mode pack v2 (`dfcc945`), general pack v3 (`2a32b5a`), human pack v1 + loader
+(`f85459e`, `b0de17b`). Chủ kênh restart daemon (`bun run daemon`) và Cmd+R app, rồi lead cho
+chạy lại post-006 và so với baseline. Sau đó mới xét SDD 008 (persona cắt mục 3, channel style
+mỏng, general pack về hưu).
+
 ## T8. Ngữ pháp beat và bỏ Formula — SDD 006
 
 Quyết định 2026-09-06 sau khi đọc bài view cao của Hiếu TV và Anh Ba. Spec:

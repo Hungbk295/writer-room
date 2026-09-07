@@ -99,3 +99,5 @@ Spec: `docs/specs/007-writer-human-pack/solution-design.md`.
 | I | Loader + staging WRITE/REPAIR (không fail khi thiếu) + prompt WRITE/REPAIR/EDIT mục 16 + test | `human-pack.ts` (mới), `writer-run-v2.ts`, test | test xanh, typecheck sạch |
 
 H và I song song; I dùng fixture heading tối thiểu, không chờ H.
+| 2026-09-07 04:10Z | H | `f85459e` | human-pack.md v1: 273 dòng, 8 cử chỉ, 20 quote 20/20 lead tự verify từ 12 video | trích 26% tính cả khung (spec ≥50% không hợp cho file cử chỉ ngắn, chấp nhận); `guong-soi` chỉ 2 video |
+| 2026-09-07 04:15Z | I | `b0de17b` | loader/validator human pack, staging optional vào WRITE/REPAIR, prompt WRITE mục Human pack, REPAIR rule 8, EDIT mục 16; 274 pass / 0 fail; typecheck sạch; file thật của H qua validator | **cần restart daemon + Cmd+R app** để nạp cùng gate fix `907ef89` |
