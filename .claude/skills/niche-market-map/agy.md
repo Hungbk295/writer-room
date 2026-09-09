@@ -2,6 +2,8 @@
 
 Đọc cùng SKILL.md và contracts.md trước khi spawn. Nhánh này chỉ điều phối thu thập,
 đọc nguồn và phân loại; không giao worker suy luận chiến lược/nhân quả hoặc cập nhật pack.
+Trong mô hình group, coordinator ở file này là GSL của group; quy tắc giữ nguyên,
+budget và scope thu hẹp về group mình.
 
 ## 1. Kiểm runtime trước khi giao batch
 

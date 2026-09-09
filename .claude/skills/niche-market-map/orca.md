@@ -34,6 +34,20 @@ Chỉ mở task đọc khi artifact đầu vào của batch đã được coordi
 thêm nguồn, tạo yêu cầu collect riêng; worker đang đọc không tự đi download.
 Các worker ghi file riêng theo task/attempt, lưu từng record trước khi báo done.
 
+## GSL qua orca
+
+GSL là worker được phép dispatch tiếp (nesting). Kiểm capability nesting thực trước
+khi đặt GSL lên orca và ghi kết quả vào run.json. Runtime không cho nesting thì
+fallback, ghi lựa chọn thật vào groups.json:
+
+1. GSL là teammate Claude `sonnet` do leader mở; GSL tự gọi agy bằng CLI theo agy.md.
+2. GSL-as-planner: GSL chỉ soạn manifest agy và kiểm artifact; leader thực thi
+   dispatch hộ. Artifact vẫn ghi về groups/<groupId>/.
+
+Mỗi round của group là task/dispatch mới với input hashes; giữ terminal GSL qua round
+chỉ khi còn kế hoạch dùng. GSL release agy của mình ngay khi thu và kiểm xong artifact
+từng batch; leader release GSL sau khi group được chấp nhận hoặc đóng PARTIAL.
+
 ## Dispatch và chờ
 
 Theo guide runtime, luồng gồm run-create, task-create, worker-start, chờ event,

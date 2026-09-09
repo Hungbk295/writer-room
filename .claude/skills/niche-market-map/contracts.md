@@ -76,12 +76,53 @@ Legacy `writer/human-pack.md` có Phần A cử chỉ, B lập trường và C t
 áp dụng liên quan; ghi source section/hash. Không cấp B/C làm chuẩn chung cho worker.
 Không đưa tên host, tiểu sử hay số tài sản tự khai vào rule mới.
 
-## 2. Thư mục một run
+## 2. report-spec, groups và gap
+
+### report-spec.md — Phase 0
+
+Mỗi tiêu chí một mục:
+
+- criterionId, câu hỏi báo cáo phải trả lời, đối tượng đọc nếu có.
+- Điều kiện dữ liệu kiểm được: loại record, ngưỡng coverage, nguồn chấp nhận.
+- Trạng thái do leader cập nhật: pending | covered | partial | not_covered, kèm
+  record IDs dẫn chứng hoặc mô tả phần thiếu.
+
+Tiêu chí không chứa yêu cầu suy luận bị cấm (nhân quả, hiệu quả, cầu thị trường).
+Người dùng đưa yêu cầu như vậy thì ghi vào mục ngoài-phạm-vi kèm dạng mô tả thay
+thế đã thoả thuận, không lặng lẽ bỏ.
+
+### groups.json — Phase 2
+
+- Phép chia thật: K, S đo được, công thức áp dụng, G và wave plan nếu có.
+- Mỗi group: groupId, clusterIds, keywordIds, budget (query/video/transcript),
+  criterionIds được giao, gslRuntime (kind: teammate | orca, model, run/team/
+  terminal/dispatch IDs thực), rounds[] { round, gapRequestPath, reportPath, status }.
+
+### Thư mục group
+
+```text
+groups/<groupId>/
+  gsl-assignment.md
+  tasks/<taskId>/...            # task agy của group, cấu trúc như tasks/ ở mục 3
+  round-<n>/group-report.md
+  round-<n>/gap-request.md      # từ round 2
+  rejected-records.jsonl        # GSL sở hữu; leader hợp nhất lên cấp run
+```
+
+group-report bắt buộc: trạng thái từng criterionId được giao, đường dẫn record đã
+kiểm, coverage và readCoverage, budget đã dùng/còn lại, phần không tìm được kèm
+query đã thử. Gap request gồm gapId, criterionId, record/coverage thiếu cụ thể,
+budget bổ sung và deadline; không chứa giả thuyết nhân quả hay "kết luận mong muốn".
+
+## 3. Thư mục một run
 
 ```text
 run.json
+report-spec.md                # tiêu chí báo cáo, Phase 0
+groups.json                   # phép chia group, Phase 2
 inputs/packs/                 # snapshot pack thực có
-tasks/<taskId>/assignment.md
+groups/<groupId>/             # thư mục group, xem mục 2
+tasks/<taskId>/assignment.md  # task do leader mở trực tiếp (Phase 1, spot-check)
 tasks/<taskId>/result.json    # trạng thái, coverage, output paths, lỗi
 tasks/<taskId>/observations.jsonl
 tasks/<taskId>/craft-flags.jsonl
@@ -105,7 +146,7 @@ run.json ghi taskId, phase, dependencies, input hashes, agent/runtime/model th�
 external run/team/terminal/dispatch IDs nếu có, budget, deadline và status của từng task.
 Không ghi token/credential vào manifest hoặc prompt lưu trữ.
 
-## 3. Query, source và keyword
+## 4. Query, source và keyword
 
 Query record:
 
@@ -139,7 +180,7 @@ Keyword record:
 Không đổi no_in_scope_result thành "chưa ai làm"; không đổi view thấp thành "không
 có cầu". Không gọi số video/kênh trong mẫu là search volume.
 
-## 4. Craft flag
+## 5. Craft flag
 
 Mỗi flag là một ứng viên, không phải một rule được duyệt. Field bắt buộc:
 
@@ -185,7 +226,12 @@ View chỉ là metadata độc lập. Khi cần bổ sung mẫu, lấy nhiều �
 khác nhau trong budget; không dùng view như nhãn chất lượng craft. Không chỉ đọc đoạn
 mở nếu nhiệm vụ cần quan sát thân/kết; ghi readCoverage và phần chưa đọc.
 
-## 5. Kiểm và bàn giao
+## 6. Kiểm và bàn giao
+
+Kiểm hai tầng: GSL áp dụng toàn bộ mục này cho record trong group mình trước khi nộp
+group-report; leader spot-check k = max(3, 10% số record) mỗi group, kiểm schema/scope/
+pack refs toàn cục và đối chiếu report-spec. Spot-check trượt thì trả nguyên group cho
+GSL kiểm lại trong attempt mới; leader không sửa record hộ.
 
 Coordinator kiểm source path/hash, quote khớp locator, scope và pack refs. Record lỗi
 đưa vào rejected-records với lý do, giữ output thô của worker. Hai phân loại khác nhau
@@ -214,7 +260,7 @@ IDs và lý do thay đổi quan sát được. Một flag chuyển tag sau khi p
 mapping cũ theo version; cập nhật view không tự tạo một craft flag mới. Không có ứng
 viên mới thì ghi rõ, không ép tạo thêm move/rule mỗi ngày.
 
-## 6. Ranh giới tích hợp Writer hiện tại
+## 7. Ranh giới tích hợp Writer hiện tại
 
 Writer hiện dùng loader cố định `writer/human-pack.md` và `writer/mode-pack.md`; mode/
 turn IDs nằm trong `packages/daemon/src/writer/video-plan.ts`. Chỉ tạo thư mục pack
