@@ -114,6 +114,18 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
       language: { type: 'string', pattern: '^[A-Za-z]{2}$', default: 'vi' },
       region: { type: 'string', pattern: '^[A-Za-z]{2}$', default: 'VN' },
+      refresh: {
+        type: 'string',
+        enum: ['never', 'if_stale', 'always'],
+        default: 'if_stale',
+        description: 'never: dùng cache bất kể tuổi (chỉ gọi API khi chưa từng search). if_stale: mặc định, làm tươi khi quá max_age_hours. always: bỏ qua cache.',
+      },
+      max_age_hours: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        default: 24,
+        description: 'Áp dụng khi refresh=if_stale — tuổi tối đa (giờ) của kết quả cache trước khi gọi lại API.',
+      },
     },
     required: ['query'],
   },
@@ -296,19 +308,92 @@ async function readJson(req: IncomingMessage): Promise<JsonRpcRequest> {
 }
 
 export class McpSpyServer {
-  readonly token = randomBytes(24).toString('hex');
+  readonly token: string;
   private server: Server | null = null;
   private url = '';
   private readonly tools: Map<string, SpyToolDef>;
   private readonly spy: SpyService;
 
-  constructor(spy: SpyService) {
+  constructor(spy: SpyService, options?: { token?: string }) {
+    this.token = options?.token ?? randomBytes(24).toString('hex');
     this.spy = spy;
     this.tools = new Map(
       spyTools(spy)
         .filter((tool) => EXPOSED_TOOL_NAMES.has(tool.name))
         .map((tool) => [tool.name, tool]),
     );
+  }
+
+  public async handleFetch(req: Request): Promise<Response> {
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        },
+      });
+    }
+    if (req.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), {
+        status: 405,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    const auth = req.headers.get('authorization');
+    if (auth !== `Bearer ${this.token}`) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    let rpc: JsonRpcRequest;
+    try {
+      rpc = (await req.json()) as JsonRpcRequest;
+    } catch {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }), {
+        status: 400,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    try {
+      const result = await this.dispatch(rpc.method ?? '', rpc.params ?? {});
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id ?? null, result }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    } catch (err) {
+      const rpcCode = (err as { rpcCode?: number }).rpcCode ?? -32603;
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: rpc.id ?? null,
+        error: { code: rpcCode, message: err instanceof Error ? err.message : String(err) },
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
   }
 
   info(): McpServerInfo | null {

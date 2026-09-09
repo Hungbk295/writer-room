@@ -482,7 +482,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_global_video_search',
-      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp và luôn trả providerUsed/fallbackReason.',
+      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp, cache theo query+video (mặc định làm tươi sau 24h) và luôn trả providerUsed/fallbackReason/cache.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.globalVideoSearch({
@@ -490,6 +490,10 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         limit: integer(args['limit'], 20, 1, 50),
         language: args['language'] === undefined ? undefined : text(args['language'], 'language'),
         region: args['region'] === undefined ? undefined : text(args['region'], 'region'),
+        refresh: args['refresh'] === undefined
+          ? undefined
+          : (text(args['refresh'], 'refresh') as 'never' | 'if_stale' | 'always'),
+        maxAgeHours: args['max_age_hours'] === undefined ? undefined : (args['max_age_hours'] as number),
       }),
     }),
     wrap({

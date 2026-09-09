@@ -51,6 +51,17 @@ export interface YoutubePort {
   /** Zero-config keyword search used by Writer Room's Source Pack explorer. */
   searchVideos?(query: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
   fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
+  /**
+   * Lean fallback for `fetchTranscript`. Skips the metadata dump and the
+   * preferred-track lookup entirely — it asks yt-dlp for one auto-caption
+   * language at a time (`--write-auto-subs --sub-langs <lang>`, never a
+   * combined "en-orig,en" list: that has been observed to trip YouTube's
+   * 429 on real corpus channels). Only ever reads YouTube's own
+   * auto-generated captions; never downloads audio, never calls Whisper.
+   * Optional so existing YoutubePort test doubles are unaffected — callers
+   * must use `?.()` and treat a missing implementation as "no fallback".
+   */
+  fetchAutoSubsFallback?(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
   streamUrl(canonicalUrl: string, signal?: AbortSignal): Promise<string>;
   downloadAudio?(
     canonicalUrl: string,
@@ -352,6 +363,63 @@ export class YtDlpAdapter implements YoutubePort {
     } catch (error) {
       // Cancellation must propagate — swallowing it here as a normal per-video error
       // let the channel-spy loop march through every remaining video after an abort.
+      if (error instanceof AppError && error.code === 'cancelled') throw error;
+      return {
+        status: 'error',
+        language: null,
+        source: 'unknown',
+        segments: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * See the interface doc on `fetchAutoSubsFallback`. One yt-dlp invocation
+   * per candidate language (never combined), single `vtt` format, in the
+   * same `${lang}-orig` before `${lang}` order as `preferredTrack` above.
+   * `--sleep-requests 1` throttles the sequential attempts.
+   */
+  async fetchAutoSubsFallback(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript> {
+    const directory = await mkdtemp(join(tmpdir(), 'writer-room-subs-fallback-'));
+    try {
+      for (const base of SUBTITLE_LANGUAGE_PREFERENCE) {
+        for (const lang of [`${base}-orig`, base]) {
+          await requireSuccessfulProcess(
+            this.binary,
+            [
+              ...this.baseArgs(),
+              '--skip-download',
+              '--write-auto-subs',
+              '--sub-langs',
+              lang,
+              '--sub-format',
+              'vtt',
+              '--sleep-requests',
+              '1',
+              '--output',
+              join(directory, '%(id)s.%(ext)s'),
+              canonicalUrl,
+            ],
+            { signal, timeoutMs: 60_000, maximumStdoutBytes: 2 * 1024 * 1024 },
+          ).catch((error: unknown) => {
+            if (error instanceof AppError && error.code === 'cancelled') throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            if (/subtitle|subtitles|requested format/i.test(message)) return null;
+            throw error;
+          });
+          const files = (await readdir(directory)).filter((file) => file.endsWith('.vtt'));
+          const found = files[0];
+          if (found) {
+            const contents = await readFile(join(directory, found), 'utf8');
+            return { status: 'ok', language: lang, source: 'auto', segments: parseVtt(contents) };
+          }
+        }
+      }
+      return { status: 'missing', language: null, source: 'unknown', segments: [] };
+    } catch (error) {
       if (error instanceof AppError && error.code === 'cancelled') throw error;
       return {
         status: 'error',

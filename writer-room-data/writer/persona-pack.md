@@ -1,3 +1,5 @@
+> **VỀ HƯU 2026-09-08.** Toàn bộ nội dung file này đã chuyển sang `writer/human-pack.md` (Phần B — Lập trường kênh, Phần C — Trải nghiệm phóng tác). Pipeline KHÔNG còn đọc file này nữa; sửa ở đây không có tác dụng gì. Giữ lại chỉ để đối chiếu bản gốc.
+
 # Persona Pack — Danh tính narrator kênh
 <!-- version: 1 | generated: 2026-08-31 | nguồn: general-packs/hieu-tv.md (07,08,09,103,137) + transcripts thô (10,113,141) -->
 

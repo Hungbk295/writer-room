@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SpyService } from '../src/index.ts';
-import { SpyStore } from '../src/store.ts';
+import { SCHEMA_VERSION, SpyStore } from '../src/store.ts';
 
 const UC = `UC${'a'.repeat(22)}`;
 
@@ -62,7 +62,7 @@ describe('Spy C1 channel roles', () => {
 
     store = new SpyStore(path);
     const readonly = new Database(path, { readonly: true });
-    expect(Number((readonly.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(8);
+    expect(Number((readonly.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(SCHEMA_VERSION);
     const channelColumns = (readonly.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>).map((row) => row.name);
     const competitorColumns = (readonly.prepare('PRAGMA table_info(competitors)').all() as Array<{ name: string }>).map((row) => row.name);
     expect(channelColumns).toEqual(expect.arrayContaining(['channel_id', 'youtube_uc_id', 'handle']));

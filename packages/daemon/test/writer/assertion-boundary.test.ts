@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildClaimBoundaryReviewIndex,
-  filterApprovedPersonaMarkdown,
+  filterApprovedNarratorMarkdown,
   parsePersonaRegistry,
   validateAssertionBoundary,
   type AssertionAnchor,
@@ -105,8 +105,8 @@ describe('parsePersonaRegistry', () => {
     // Coordinator note 3 (eng review 2026-09-02): after gate decision 1A the
     // filtered markdown is a grounding source, so an UNAPPROVED "50 triệu"
     // living in a vocabulary example quote must never survive the filter.
-    const filtered = filterApprovedPersonaMarkdown([
-      'Preamble chung của persona pack.',
+    const filtered = filterApprovedNarratorMarkdown([
+      'Preamble chung của narrator pack.',
       '> ví dụ preamble có 999 triệu không được lọt',
       '',
       '### 1.1 Quỹ dự phòng — `[ĐÃ DUYỆT]`',
@@ -116,7 +116,7 @@ describe('parsePersonaRegistry', () => {
       '## Từ vựng cá nhân',
       'Cách dán nhãn số khi lấy ví dụ:',
       '> tôi lấy cái con số 50 triệu để mà cho nó tròn số cho dễ tính (103)',
-    ].join('\n'))!;
+    ].join('\n'));
     expect(filtered.approvedCount).toBe(1);
     expect(filtered.markdown).not.toContain('999 triệu');
     expect(filtered.markdown).not.toContain('50 triệu');

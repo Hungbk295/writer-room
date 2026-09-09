@@ -35,6 +35,8 @@ function mockYoutube(opts: {
   transcript?: YoutubeTranscript;
   inspectCalls?: { n: number };
   transcriptCalls?: { n: number };
+  fallback?: YoutubeTranscript;
+  fallbackCalls?: { n: number };
 }): YoutubePort {
   return {
     inspectVideo: async () => {
@@ -56,6 +58,14 @@ function mockYoutube(opts: {
         ],
       };
     },
+    ...(opts.fallback || opts.fallbackCalls
+      ? {
+        fetchAutoSubsFallback: async (): Promise<YoutubeTranscript> => {
+          if (opts.fallbackCalls) opts.fallbackCalls.n += 1;
+          return opts.fallback ?? { status: 'missing', language: null, source: 'unknown', segments: [] };
+        },
+      }
+      : {}),
   };
 }
 
@@ -222,6 +232,96 @@ describe('videoSpy', () => {
     expect(a.operationId).toBe(b.operationId);
     expect(a.spyRunId).toBe(b.spyRunId);
     await waitDone(spy, a.operationId);
+  });
+
+  test('falls back to yt-dlp auto-subs when fetchTranscript reports missing', async () => {
+    const transcriptCalls = { n: 0 };
+    const fallbackCalls = { n: 0 };
+    const spy = await newSpy({
+      youtube: mockYoutube({
+        transcriptCalls,
+        transcript: { status: 'missing', language: null, source: 'unknown', segments: [] },
+        fallbackCalls,
+        fallback: {
+          status: 'ok',
+          language: 'en-orig',
+          source: 'auto',
+          segments: [
+            { startSec: 0, endSec: 2.19, text: "It's 11:40 on a Tuesday" },
+            { startSec: 2.2, endSec: 4.55, text: 'morning in late March' },
+          ],
+        },
+      }),
+    });
+
+    const started = spy.videoSpy({
+      url: VIDEO_URL,
+      depth: 'transcript',
+      idempotencyKey: 'video-spy-fallback-ok',
+    });
+    const op = await waitDone(spy, started.operationId);
+    expect(op.status).toBe('completed');
+    expect(transcriptCalls.n).toBe(1);
+    expect(fallbackCalls.n).toBe(1);
+
+    const result = spy.getResult(started.spyRunId);
+    const video = result.videos[0]!;
+    expect(video.transcriptStatus).toBe('ok');
+    expect(video.transcriptSource).toBe('auto');
+    expect(video.transcriptCount).toBe(2);
+
+    const segments = spy.store.listTranscriptSegments(video.id, 0, 10);
+    expect(segments.map((s) => s.text)).toEqual([
+      "It's 11:40 on a Tuesday",
+      'morning in late March',
+    ]);
+    expect(segments[0]!.startSec).toBeCloseTo(0, 3);
+    expect(segments[0]!.endSec).toBeCloseTo(2.19, 3);
+    // Segment-level provenance is distinguishable from the primary yt-dlp path.
+    expect(segments.every((s) => s.source === 'ytdlp-auto')).toBe(true);
+  });
+
+  test('keeps the original failure status when the fallback also finds nothing, without retrying', async () => {
+    const transcriptCalls = { n: 0 };
+    const fallbackCalls = { n: 0 };
+    const spy = await newSpy({
+      youtube: mockYoutube({
+        transcriptCalls,
+        transcript: { status: 'missing', language: null, source: 'unknown', segments: [] },
+        fallbackCalls,
+        fallback: { status: 'missing', language: null, source: 'unknown', segments: [] },
+      }),
+    });
+
+    const started = spy.videoSpy({
+      url: VIDEO_URL,
+      depth: 'transcript',
+      idempotencyKey: 'video-spy-fallback-also-missing',
+    });
+    const op = await waitDone(spy, started.operationId);
+    expect(op.status).toBe('completed');
+    expect(transcriptCalls.n).toBe(1);
+    expect(fallbackCalls.n).toBe(1);
+
+    const result = spy.getResult(started.spyRunId);
+    const video = result.videos[0]!;
+    expect(video.transcriptStatus).toBe('missing');
+    expect(video.transcriptCount).toBe(0);
+  });
+
+  test('does not touch the fallback when the primary fetch already succeeds', async () => {
+    const fallbackCalls = { n: 0 };
+    const spy = await newSpy({
+      youtube: mockYoutube({ fallbackCalls }),
+    });
+    const started = spy.videoSpy({
+      url: VIDEO_URL,
+      depth: 'transcript',
+      idempotencyKey: 'video-spy-fallback-unused',
+    });
+    const op = await waitDone(spy, started.operationId);
+    expect(op.status).toBe('completed');
+    expect(fallbackCalls.n).toBe(0);
   });
 
   test('channelSpy auto-routes video URL to videoSpy', async () => {

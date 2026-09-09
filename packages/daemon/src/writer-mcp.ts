@@ -311,15 +311,88 @@ function sleep(ms: number): Promise<void> {
 }
 
 export class McpWriterServer {
-  readonly token = randomBytes(24).toString('hex');
+  readonly token: string;
   private server: Server | null = null;
   private url = '';
   private readonly tools: Map<string, WriterToolDef>;
   private readonly deps: McpWriterServerDeps;
 
-  constructor(deps: McpWriterServerDeps) {
+  constructor(deps: McpWriterServerDeps, options?: { token?: string }) {
+    this.token = options?.token ?? randomBytes(24).toString('hex');
     this.deps = deps;
     this.tools = new Map(this.buildTools().map((tool) => [tool.name, tool]));
+  }
+
+  public async handleFetch(req: Request): Promise<Response> {
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        },
+      });
+    }
+    if (req.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), {
+        status: 405,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    const auth = req.headers.get('authorization');
+    if (auth !== `Bearer ${this.token}`) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    let rpc: JsonRpcRequest;
+    try {
+      rpc = (await req.json()) as JsonRpcRequest;
+    } catch {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }), {
+        status: 400,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+    try {
+      const result = await this.dispatch(rpc.method ?? '', rpc.params ?? {});
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id ?? null, result }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    } catch (err) {
+      const rpcCode = (err as { rpcCode?: number }).rpcCode ?? -32603;
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: rpc.id ?? null,
+        error: { code: rpcCode, message: err instanceof Error ? err.message : String(err) },
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
   }
 
   info(): McpServerInfo | null {

@@ -51,3 +51,49 @@ chứa lập trường, không chứa tiểu sử, không cấp quyền fact.
 - `bun test packages/daemon/test/writer/` xanh, typecheck sạch.
 - File human pack: 8 heading, mọi quote grep đúng nguồn, tỷ lệ trích ≥ 50%.
 - Một run thật sau restart daemon: `outlineChanges` khai cử chỉ đã dùng; editor mục 16 không HIGH.
+
+---
+
+## 4. Bổ sung 2026-09-08 — gộp persona pack vào human pack
+
+Chủ kênh quyết: quy về một mối. Human pack v2 là file duy nhất về người kể, persona pack về hưu.
+
+**Vì sao.** Giữ hai file nghĩa là giữ hai cơ chế duyệt, hai loader, hai mục prompt cho cùng một
+thứ: người kể. Persona 16 mục mà 0 mục được duyệt, và mục 3 (từ vựng cá nhân) trùng đúng ba cử chỉ
+`rao-pham-vi`, `cua-lui`, `lech-chuan` của human pack.
+
+**Cấu trúc file `writer/human-pack.md` v2 — ba vùng.**
+
+| Vùng | Nội dung | Duyệt | Quyền cấp nguồn |
+|---|---|---|---|
+| Phần A — Cử chỉ | 8 cử chỉ, giữ nguyên văn v1 | Không cần | **Không**. Cử chỉ là động tác, không phải khẳng định |
+| Phần B — Lập trường kênh | 8 stance chuyển từ persona `### 1.1–1.8` | `[ĐÃ DUYỆT]` | Có, khi đã duyệt |
+| Phần C — Trải nghiệm phóng tác | 8 archetype chuyển từ persona `### A1–A8` | `[ĐÃ DUYỆT]` | Có, khi đã duyệt |
+
+Mục 3 của persona bị cắt. File `writer/persona-pack.md` giữ trên đĩa, có dòng đầu ghi đã về hưu.
+
+**Thay đổi code.**
+
+1. `assertion-boundary.ts`: `filterApprovedPersonaMarkdown` → `filterApprovedNarratorMarkdown`, trả
+   `FilteredNarratorPack` và **không bao giờ trả `null`**. Thêm khái niệm **craft region**: mọi thứ
+   trước `## Phần B` luôn được nạp nguyên văn vào `markdown`, không parse thành entry, không bao giờ
+   vào `citableText`. Đây là chỗ dễ hỏng nhất: để nguyên bộ lọc cũ thì 8 cử chỉ bị lọc mất vì không
+   có marker duyệt.
+2. `human-pack.ts`: thêm `getApprovedHumanPack` → `{path, hash, markdown, citableText,
+   approvedStanceCount}`. `hash` lấy của bản đã lọc. `null` vẫn chỉ có nghĩa "không có file hoặc file
+   rỗng" — **khác persona**, nơi 0 entry duyệt bị gộp vào nghĩa vắng mặt. Ở đây nửa craft là thật và
+   vô điều kiện, nên 0 stance duyệt vẫn là một pack hợp lệ, chỉ là không trích được gì.
+3. `writer-run-v2.ts`: xoá `persona-pack.ts`, bỏ `personaPackHash`, một mục prompt `## Human pack`
+   thay hai mục, `repairRuleOneLines(hasApprovedStance)` truy về Phần B/C.
+4. `deterministic-gate.ts`: `GateInput.personaCitableText` → `narratorCitableText`.
+5. Editor: mục 16 tách làm hai — cử chỉ có làm việc thật không, và lập trường có cam kết một lựa chọn
+   cụ thể không hay chỉ là câu rào hai mặt đội lốt lập trường. `EDIT_REVIEW_PROMPT_VERSION` lên v5.
+
+**Hai bảo đảm có test ở tầng gate** (`deterministic-gate.test.ts`), vì sau khi gộp thì chính file
+này vừa nuôi prompt vừa nuôi gate:
+
+- số chỉ xuất hiện trong một entry **chưa duyệt** vẫn là `NUMBER_UNSOURCED`;
+- số chỉ xuất hiện trong **quote ví dụ của một cử chỉ** vẫn là `NUMBER_UNSOURCED`.
+
+**Nghiệm thu:** `bun test packages/daemon` 475 pass / 0 fail, typecheck sạch, 2026-09-08.
+Còn nợ: chủ kênh duyệt vài stance ở Phần B thì nhóm cử chỉ cần lập trường mới mở khoá.

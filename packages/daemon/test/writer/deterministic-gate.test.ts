@@ -19,7 +19,7 @@ import {
   runDeterministicGate,
   type LedgerEntry,
 } from '../../src/writer/deterministic-gate.ts';
-import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
+import { filterApprovedNarratorMarkdown } from '../../src/writer/assertion-boundary.ts';
 import type { WriterVideoPlan } from '../../src/writer/video-plan.ts';
 
 const FIXTURES = join(import.meta.dir, 'fixtures');
@@ -335,7 +335,7 @@ describe('common-knowledge exemption', () => {
 
 /**
  * `personaCitableText` is the APPROVED entries' `allowedText` union, produced by
- * `filterApprovedPersonaMarkdown` — a third grounding source alongside
+ * `filterApprovedNarratorMarkdown` — a third grounding source alongside
  * factsLedger/pack for checks 1 and 2, same exact-match philosophy, no fuzziness.
  * Decision: eng review 2026-09-02; narrowed from the full filtered markdown to
  * `citableText` by CEO review 2026-09-03 (RC1).
@@ -375,25 +375,83 @@ describe('persona pack as a third grounding source', () => {
   });
 
   test('an amount inside the approved stance body passes', () => {
-    const filtered = filterApprovedPersonaMarkdown(
+    const filtered = filterApprovedNarratorMarkdown(
       approvedStance('giới chuyên gia khuyên 3-6 tháng.', 'Tôi từng tiết kiệm 45 triệu trong một năm.', 'trích dẫn gốc'),
-    )!;
+    );
     const result = runDeterministicGate({
       script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
       packMarkdown: pack,
-      personaCitableText: filtered.citableText,
+      narratorCitableText: filtered.citableText,
     });
     expect(result.violations).toEqual([]);
   });
 
-  test('an amount absent from both the pack and the persona pack still fails', () => {
-    const filtered = filterApprovedPersonaMarkdown(
-      approvedStance('giới chuyên gia khuyên 3-6 tháng.', 'Tôi ưu tiên quỹ dự phòng 12 tháng.', 'trích dẫn gốc'),
-    )!;
+  test('an amount that only appears in a PENDING stance is still unsourced', () => {
+    // The whole point of the approval marker: a stance sitting on disk grants
+    // nothing until the channel owner signs it off. Same file, same figure, no
+    // `[ĐÃ DUYỆT]` — the gate must not soften.
+    const pending = [
+      '# Human pack',
+      '',
+      '## Phần B — Lập trường kênh',
+      '',
+      '### B1 Quỹ dự phòng — `[CHỜ CHỦ KÊNH DUYỆT]`',
+      '',
+      '**Lập trường kênh**: Tôi từng tiết kiệm 45 triệu trong một năm.',
+    ].join('\n');
+    const filtered = filterApprovedNarratorMarkdown(pending);
+    expect(filtered.approvedCount).toBe(0);
+
     const result = runDeterministicGate({
       script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
       packMarkdown: pack,
-      personaCitableText: filtered.citableText,
+      narratorCitableText: filtered.citableText,
+    });
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('an amount that only appears in a gesture example is still unsourced (craft licenses nothing)', () => {
+    // After the persona/human merge the SAME file carries both halves, and the
+    // gesture half is full of transcript examples with real money in them. If the
+    // craft region ever leaked into `citableText`, every one of those figures
+    // would silently become quotable. It must not.
+    const withGesture = [
+      '# Human pack',
+      '',
+      '## Phần A — Cử chỉ',
+      '',
+      '## Cử chỉ: lech-chuan — Lập trường lệch chuẩn có chủ đích',
+      '',
+      'Ví dụ nhịp: "người ta bảo để 50 triệu là đủ, tôi thì không nghĩ vậy".',
+      '',
+      '## Phần B — Lập trường kênh',
+      '',
+      '### B1 Quỹ dự phòng — `[ĐÃ DUYỆT]`',
+      '',
+      '**Lập trường kênh**: Tôi chọn đủ 1 năm chi phí sinh hoạt.',
+    ].join('\n');
+    const filtered = filterApprovedNarratorMarkdown(withGesture);
+    expect(filtered.approvedCount).toBe(1);
+    // Readable, and deliberately not citable.
+    expect(filtered.markdown).toContain('Cử chỉ: lech-chuan');
+    expect(filtered.citableText).not.toContain('50 triệu');
+
+    const result = runDeterministicGate({
+      script: 'Anh ấy để dành 50 triệu rồi mới đầu tư.',
+      packMarkdown: pack,
+      narratorCitableText: filtered.citableText,
+    });
+    expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
+  });
+
+  test('an amount absent from both the pack and the persona pack still fails', () => {
+    const filtered = filterApprovedNarratorMarkdown(
+      approvedStance('giới chuyên gia khuyên 3-6 tháng.', 'Tôi ưu tiên quỹ dự phòng 12 tháng.', 'trích dẫn gốc'),
+    );
+    const result = runDeterministicGate({
+      script: 'Người đó tiết kiệm được 45 triệu trong năm nay.',
+      packMarkdown: pack,
+      narratorCitableText: filtered.citableText,
     });
     expect(result.violations.map((v) => v.code)).toEqual(['NUMBER_UNSOURCED']);
   });
@@ -409,7 +467,7 @@ describe('persona pack as a third grounding source', () => {
       'Tôi thấy con số đó quá cứng. Tôi chọn đủ 1 năm chi phí sinh hoạt rồi mới tính tiếp.',
       'tôi luôn khuyên các bạn là khoảng dự phòng này nên là 1 năm',
     );
-    const filtered = filterApprovedPersonaMarkdown(markdown)!;
+    const filtered = filterApprovedNarratorMarkdown(markdown);
 
     // The model may READ the contrast — that is what makes "thường thì X, nhưng
     // tôi Y" writable at all.
@@ -423,28 +481,28 @@ describe('persona pack as a third grounding source', () => {
     const borrowedNumber = runDeterministicGate({
       script: 'Giới chuyên gia khuyên để dành 50 triệu trước khi đầu tư.',
       packMarkdown: pack,
-      personaCitableText: filtered.citableText,
+      narratorCitableText: filtered.citableText,
     });
     expect(borrowedNumber.violations.map((v) => v.code)).toContain('NUMBER_UNSOURCED');
 
     const borrowedName = runDeterministicGate({
       script: 'Chuyên gia Nguyễn Văn Bảo khuyên nên tiết kiệm sớm.',
       packMarkdown: pack,
-      personaCitableText: filtered.citableText,
+      narratorCitableText: filtered.citableText,
     });
     expect(borrowedName.violations.map((v) => v.code)).toContain('PROPER_NOUN_UNSOURCED');
   });
 
   test('[RC1] the transcript blockquote inside an approved cell is readable but not citable', () => {
-    const filtered = filterApprovedPersonaMarkdown(
+    const filtered = filterApprovedNarratorMarkdown(
       approvedStance('chuẩn ngành là 3-6 tháng.', 'Tôi chọn 1 năm.', 'tôi lấy con số 50 triệu cho tròn'),
-    )!;
+    );
     expect(filtered.markdown).toContain('50 triệu');
     expect(filtered.citableText).not.toContain('50 triệu');
   });
 
   test('a proper noun present in an approved experience body passes', () => {
-    const filtered = filterApprovedPersonaMarkdown([
+    const filtered = filterApprovedNarratorMarkdown([
       '# Persona Pack',
       '',
       '## 2. Kho trải nghiệm phóng tác',
@@ -454,11 +512,11 @@ describe('persona pack as a third grounding source', () => {
       '**Phóng tác** (3-5 câu): Người bạn của tôi tên Lan từng vội mua nhà.',
       '',
       '**Ghi chú khi dùng**: không gắn tuổi và nơi chốn cùng lúc.',
-    ].join('\n'))!;
+    ].join('\n'));
     const result = runDeterministicGate({
       script: 'Người bạn của tôi tên Lan từng vội mua nhà.',
       packMarkdown: pack,
-      personaCitableText: filtered.citableText,
+      narratorCitableText: filtered.citableText,
     });
     expect(result.violations.map((v) => v.code)).not.toContain('PROPER_NOUN_UNSOURCED');
   });

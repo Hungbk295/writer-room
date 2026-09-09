@@ -189,15 +189,29 @@ function textBetween(section: string, start: RegExp, end?: RegExp): string {
 
 interface PersonaParsedEntry extends PersonaRegistryEntry {
   /** Exact span of this entry's own section in the normalized markdown —
-   * used only by `filterApprovedPersonaMarkdown` to re-slice verbatim text.
+   * used only by `filterApprovedNarratorMarkdown` to re-slice verbatim text.
    * Not part of the public `PersonaRegistry` shape. */
   start: number;
   end: number;
 }
 
 /**
- * Shared scan behind `parsePersonaRegistry` and `filterApprovedPersonaMarkdown`.
- * Parses only channel-owned material from Persona Pack. For stances, source
+ * Heading that closes the CRAFT region of a narrator pack (human pack v2, SDD
+ * 007). Everything BEFORE it is craft — cử chỉ, i.e. the shape of a sentence
+ * move — which needs no approval because it asserts nothing: it never becomes
+ * an entry, never carries a status, and never reaches `citableText`. Everything
+ * from this heading on is channel-owned material (lập trường, trải nghiệm) and
+ * lives or dies by its `[ĐÃ DUYỆT]` marker exactly as before.
+ *
+ * A file WITHOUT this heading (the old persona-pack shape, and every fixture
+ * written against it) has no craft region at all — `craftEnd` is 0 and the scan
+ * behaves byte-for-byte as it did before the two packs were merged.
+ */
+const CRAFT_REGION_END_RE = /^##\s+Phần B\b/mu;
+
+/**
+ * Shared scan behind `parsePersonaRegistry` and `filterApprovedNarratorMarkdown`.
+ * Parses only channel-owned material from the narrator pack. For stances, source
  * transcript quotes and “chuẩn chung” stay outside allowedText. For experience
  * archetypes, “Bản gốc” is excluded; only “Phóng tác” may authorize first-person
  * detail.
@@ -206,16 +220,16 @@ function parsePersonaSections(markdown: string): {
   normalized: string;
   entries: PersonaParsedEntry[];
   violations: PersonaRegistryViolation[];
-  /** Offset where the first entry heading starts — everything before it is
-   * the file's shared preamble (title, house rules, section intros). */
-  preambleEnd: number;
+  /** Offset where the craft region ends — 0 when the file has none. */
+  craftEnd: number;
 } {
   const normalized = markdown.normalize('NFC');
-  const headings = [...normalized.matchAll(/^###\s+(1\.\d+|A\d+)\.?\s+(.+)$/gmu)];
+  const craftEnd = CRAFT_REGION_END_RE.exec(normalized)?.index ?? 0;
+  const headings = [...normalized.matchAll(/^###\s+(1\.\d+|B\d+|A\d+)\.?\s+(.+)$/gmu)]
+    .filter((match) => (match.index ?? 0) >= craftEnd);
   const entries: PersonaParsedEntry[] = [];
   const violations: PersonaRegistryViolation[] = [];
   const seen = new Set<string>();
-  const preambleEnd = headings[0]?.index ?? normalized.length;
 
   for (const [index, match] of headings.entries()) {
     const code = match[1]!;
@@ -227,7 +241,9 @@ function parsePersonaSections(markdown: string): {
     const nextH2Index = nextH2?.index === undefined ? normalized.length : afterHeading + nextH2.index;
     const end = Math.min(nextEntry, nextH2Index);
     const section = normalized.slice(start, end);
-    const isStance = code.startsWith('1.');
+    // `1.x` is the old persona-pack numbering, `Bx` the human pack v2 one;
+    // both mean "a stance cell". `Ax` is an experience archetype either way.
+    const isStance = !code.startsWith('A');
     const id = isStance ? `stance-${code}` : `experience-${code}`;
     if (seen.has(id)) {
       const existing = entries.find((entry) => entry.id === id);
@@ -281,7 +297,7 @@ function parsePersonaSections(markdown: string): {
     });
   }
 
-  return { normalized, entries, violations, preambleEnd };
+  return { normalized, entries, violations, craftEnd };
 }
 
 export function parsePersonaRegistry(markdown: string): PersonaRegistry {
@@ -293,14 +309,15 @@ export function parsePersonaRegistry(markdown: string): PersonaRegistry {
   };
 }
 
-export interface FilteredPersonaPack {
+export interface FilteredNarratorPack {
   markdown: string;
   approvedCount: number;
   /**
    * The APPROVED entries' `allowedText` blocks only, joined — i.e. the channel's
    * own stance sentences and Phóng tác bodies, WITHOUT the `**Chuẩn chung**`
    * contrast block, without the transcript blockquotes, without the preamble and
-   * vocabulary tail.
+   * WITHOUT the craft region (a cử chỉ is a movement, not a claim — it licenses
+   * nothing, ever).
    *
    * `markdown` and this field answer two different questions, and conflating them
    * was a real permission bug (CEO review 2026-09-03, RC1). `markdown` is what the
@@ -314,37 +331,55 @@ export interface FilteredPersonaPack {
 }
 
 /**
- * Reduce a persona pack to the only material that may ever reach the model:
- * the file's shared preamble (everything before the first entry heading),
- * each entry whose status is APPROVED (verbatim, marker included), and
- * everything after the LAST entry section — the personal-vocabulary block,
- * which is phrasing, not a claim, and carries no approval status of its own.
- * PENDING and REJECTED entries are dropped entirely; a run must never see
- * them just because the file happens to still contain them.
+ * Reduce a narrator pack to the only material that may ever reach the model:
+ * the craft region verbatim (everything before `## Phần B`), the prose between
+ * entries — section headings and their intros — and each entry whose status is
+ * APPROVED, verbatim with its marker. PENDING and REJECTED entries are dropped
+ * entirely; a run must never see them just because the file happens to still
+ * contain them.
  *
- * The preamble and tail keep their prose but LOSE their `>` blockquote lines:
- * those are transcript example quotes, and after gate decision 1A anything in
- * this filtered markdown becomes a valid grounding source for numbers/proper
- * nouns — an unapproved "50 triệu" in a vocabulary example must not silently
- * license that figure in a script. Quotes inside an APPROVED entry stay:
- * approving the entry approved its evidence.
+ * Craft vs. the rest, in one line: a cử chỉ is a MOVEMENT (self-correcting,
+ * admitting a gap, narrowing a claim), so it asserts nothing and needs no
+ * approval — but for exactly that reason it never enters `citableText` either.
+ * A lập trường or a trải nghiệm DOES assert something in the channel's name, so
+ * it stays fail-closed behind `[ĐÃ DUYỆT]`.
  *
- * Returns `null` when zero entries are APPROVED. Every caller (WRITE staging,
- * the deterministic gate) must then behave exactly as if there were no
- * persona pack file at all — this is the fail-closed rule T2 exists for:
- * a file sitting on disk grants no permission by itself.
+ * Non-craft prose keeps its words but LOSES its `>` blockquote lines: those are
+ * transcript example quotes, and after gate decision 1A anything in this
+ * filtered markdown becomes a valid grounding source for numbers/proper nouns —
+ * an unapproved "50 triệu" in a vocabulary example must not silently license
+ * that figure in a script. Two kinds of quote are kept: inside an APPROVED entry
+ * (approving the entry approved its evidence) and inside the craft region (those
+ * quotes demonstrate the RHYTHM of a gesture, and since craft never reaches
+ * `citableText` they license nothing).
+ *
+ * Never returns `null` any more. Zero APPROVED entries is now an ordinary state
+ * — `approvedCount: 0`, `citableText: ''`, and the craft region still fully
+ * present — because losing every gesture just because no stance has been signed
+ * off yet would delete the pack's whole craft half. The fail-closed rule is
+ * unchanged where it matters: with nothing approved, nothing is citable.
  */
-export function filterApprovedPersonaMarkdown(markdown: string): FilteredPersonaPack | null {
-  const { normalized, entries, preambleEnd } = parsePersonaSections(markdown);
+export function filterApprovedNarratorMarkdown(markdown: string): FilteredNarratorPack {
+  const { normalized, entries, craftEnd } = parsePersonaSections(markdown);
   const approved = entries.filter((entry) => entry.status === 'APPROVED');
-  if (approved.length === 0) return null;
-  const preamble = stripBlockquotes(normalized.slice(0, preambleEnd)).trim();
-  const tailStart = entries.at(-1)!.end;
-  const tail = stripBlockquotes(normalized.slice(tailStart)).trim();
-  const body = approved.map((entry) => normalized.slice(entry.start, entry.end).trim()).join('\n\n');
+  const parts: string[] = [];
+  const craft = normalized.slice(0, craftEnd).trim();
+  if (craft) parts.push(craft);
+  // Walk the rest as alternating gap/entry so a section heading sitting BETWEEN
+  // two entries (`## Phần C` and its intro) survives instead of falling into
+  // neither the preamble nor the tail.
+  let cursor = craftEnd;
+  for (const entry of entries) {
+    const gap = stripBlockquotes(normalized.slice(cursor, entry.start)).trim();
+    if (gap) parts.push(gap);
+    if (entry.status === 'APPROVED') parts.push(normalized.slice(entry.start, entry.end).trim());
+    cursor = entry.end;
+  }
+  const tail = stripBlockquotes(normalized.slice(cursor)).trim();
+  if (tail) parts.push(tail);
   const citableText = approved.map((entry) => entry.allowedText.trim()).filter(Boolean).join('\n\n');
   return {
-    markdown: [preamble, body, tail].filter(Boolean).join('\n\n'),
+    markdown: parts.join('\n\n'),
     approvedCount: approved.length,
     citableText,
   };

@@ -1,5 +1,7 @@
 import { mkdir, access } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { join, resolve, dirname } from 'node:path';
 
 export const APP_ROOT = resolve(import.meta.dir, '../../..');
 
@@ -120,3 +122,35 @@ export async function pathExists(path: string): Promise<boolean> {
 export async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
 }
+
+export function mcpTokenPath(root = dataRoot()): string {
+  return join(configDir(root), 'mcp-token.txt');
+}
+
+/**
+ * Returns a stable Bearer token for local MCP clients (Claude Desktop, Codex, etc.).
+ * Uses env WRITER_ROOM_MCP_TOKEN if set, otherwise persists a generated token in <dataDir>/config/mcp-token.txt.
+ */
+export function getOrCreateMcpToken(root = dataRoot()): string {
+  if (process.env.WRITER_ROOM_MCP_TOKEN && process.env.WRITER_ROOM_MCP_TOKEN.trim()) {
+    return process.env.WRITER_ROOM_MCP_TOKEN.trim();
+  }
+  const tokenFile = mcpTokenPath(root);
+  if (existsSync(tokenFile)) {
+    try {
+      const saved = readFileSync(tokenFile, 'utf8').trim();
+      if (saved.length >= 16) return saved;
+    } catch {
+      // Fall through to generate fresh
+    }
+  }
+  const token = randomBytes(24).toString('hex');
+  try {
+    mkdirSync(dirname(tokenFile), { recursive: true });
+    writeFileSync(tokenFile, token, { encoding: 'utf8', mode: 0o600 });
+  } catch (err) {
+    console.error('[mcp] Không thể lưu mcp-token.txt:', (err as Error).message);
+  }
+  return token;
+}
+

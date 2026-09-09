@@ -24,6 +24,7 @@ import {
   APP_ROOT,
   dataRoot,
   ensureDir,
+  getOrCreateMcpToken,
   spyRoot,
   writerExportsRoot,
 } from './paths.ts';
@@ -551,21 +552,24 @@ export async function createHttpApp(): Promise<HttpApp> {
   const spy = new SpyService({ dataRoot: spyRoot(root) });
   await spy.init();
 
+  const mcpToken = getOrCreateMcpToken(root);
+  const daemonPort = Number(process.env.WRITER_ROOM_PORT || 4187);
+
   // Spy MCP owns a distinct least-privilege tool surface.  Start it before the
   // agent harness so newly prepared agent configs contain the live endpoint.
-  const spyMcp = SPY_FEATURE.enabled ? new McpSpyServer(spy) : null;
+  const spyMcp = SPY_FEATURE.enabled ? new McpSpyServer(spy, { token: mcpToken }) : null;
   if (spyMcp) await spyMcp.start();
   // General Pack MCP owns its own least-privilege surface too (Write Loop v2
   // Phase 2 tooling) — mounted alongside Spy MCP, not folded into it, same
   // "narrow surface per concern" reasoning as the comment on McpSpyServer.
-  const generalPackMcp = SPY_FEATURE.enabled ? new McpGeneralPackServer(spy, root) : null;
+  const generalPackMcp = SPY_FEATURE.enabled ? new McpGeneralPackServer(spy, root, { token: mcpToken }) : null;
   if (generalPackMcp) await generalPackMcp.start();
   const harness = await createAgentHarness({
     dataDir: root,
     defaultProjectRoot: APP_ROOT,
     appMcpProvision: () => ({
-      ...(spyMcp?.info() ? { writer_room: spyMcp.info()! } : {}),
-      ...(generalPackMcp?.info() ? { general_pack: generalPackMcp.info()! } : {}),
+      ...(spyMcp ? { writer_room: { url: `http://127.0.0.1:${daemonPort}/api/spy/mcp`, token: mcpToken } } : {}),
+      ...(generalPackMcp ? { general_pack: { url: `http://127.0.0.1:${daemonPort}/api/general-pack/mcp`, token: mcpToken } } : {}),
     }),
   });
 
@@ -578,12 +582,13 @@ export async function createHttpApp(): Promise<HttpApp> {
     workflow: harness.workflow,
     dataDir: root,
     health: () => ({ ok: true, agents: harness.listAgents().length, spyMcp: Boolean(spyMcp?.info()) }),
-  });
-  const writerMcpInfo = await writerMcp.start();
-  // Rewritten on every start because the bearer token is per-process.
+  }, { token: mcpToken });
+  await writerMcp.start();
+  // Rewritten on every start with stable 4187 endpoints and persistent token.
   writeOrchestratorMcpConfig(root, {
-    writer: writerMcpInfo,
-    ...(spyMcp?.info() ? { writer_room: spyMcp.info()! } : {}),
+    writer: { url: `http://127.0.0.1:${daemonPort}/api/writer/mcp`, token: mcpToken },
+    ...(spyMcp ? { writer_room: { url: `http://127.0.0.1:${daemonPort}/api/spy/mcp`, token: mcpToken } } : {}),
+    ...(generalPackMcp ? { general_pack: { url: `http://127.0.0.1:${daemonPort}/api/general-pack/mcp`, token: mcpToken } } : {}),
   });
 
   // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
@@ -707,20 +712,57 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         });
       }
 
-      // Local-only credential for manually connecting an external MCP client.
-      // It deliberately mirrors /api/team/mcp; do not put it in health output.
-      if (method === 'GET' && pathname === '/api/spy/mcp') {
-        const info = spyMcp?.info();
-        if (!info) return error('Spy MCP đang tắt', 404);
-        return json(info);
+      // ── Local & External MCP over fixed daemon port (Option B) ───────────
+      if (pathname === '/api/spy/mcp' || pathname === '/api/spy/mcp/') {
+        if (method === 'OPTIONS') {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            },
+          });
+        }
+        if (method === 'POST') {
+          if (!spyMcp) return error('Spy MCP đang tắt', 404);
+          return spyMcp.handleFetch(req);
+        }
+        if (method === 'GET') {
+          const info = spyMcp?.info();
+          if (!info) return error('Spy MCP đang tắt', 404);
+          return json({
+            url: `${url.origin}/api/spy/mcp`,
+            token: info.token,
+            ephemeralUrl: info.url,
+          });
+        }
       }
 
-      // Same purpose as /api/spy/mcp, for the Writer MCP the external
-      // orchestrator mounts (plan writer-external-orchestrator §3 A3).
-      if (method === 'GET' && pathname === '/api/writer/mcp') {
-        const info = writerMcp?.info();
-        if (!info) return error('Writer MCP đang tắt', 404);
-        return json(info);
+      if (pathname === '/api/writer/mcp' || pathname === '/api/writer/mcp/') {
+        if (method === 'OPTIONS') {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            },
+          });
+        }
+        if (method === 'POST') {
+          if (!writerMcp) return error('Writer MCP đang tắt', 404);
+          return writerMcp.handleFetch(req);
+        }
+        if (method === 'GET') {
+          const info = writerMcp?.info();
+          if (!info) return error('Writer MCP đang tắt', 404);
+          return json({
+            url: `${url.origin}/api/writer/mcp`,
+            token: info.token,
+            ephemeralUrl: info.url,
+          });
+        }
       }
 
       // C3 uses its own config; do not merge it into spy-loop.json or spy.json.
@@ -743,11 +785,30 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         return json(await saveChannelWatchConfig(dataRoot(), patch));
       }
 
-      // Same purpose as /api/spy/mcp, for the General Pack MCP.
-      if (method === 'GET' && pathname === '/api/general-pack/mcp') {
-        const info = generalPackMcp?.info();
-        if (!info) return error('General Pack MCP đang tắt', 404);
-        return json(info);
+      if (pathname === '/api/general-pack/mcp' || pathname === '/api/general-pack/mcp/') {
+        if (method === 'OPTIONS') {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            },
+          });
+        }
+        if (method === 'POST') {
+          if (!generalPackMcp) return error('General Pack MCP đang tắt', 404);
+          return generalPackMcp.handleFetch(req);
+        }
+        if (method === 'GET') {
+          const info = generalPackMcp?.info();
+          if (!info) return error('General Pack MCP đang tắt', 404);
+          return json({
+            url: `${url.origin}/api/general-pack/mcp`,
+            token: info.token,
+            ephemeralUrl: info.url,
+          });
+        }
       }
 
       // ── Spy C1 — saved research and local public watchlist ─────────────
@@ -2983,9 +3044,9 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   console.log(`spy: ${SPY_FEATURE.enabled ? 'on' : 'off'}`);
   console.log(`agents: ${app.harness.listAgents().map((a) => a.id).join(', ')}`);
   console.log(`team-mcp: ${mcp?.url ?? 'off'}`);
-  console.log(`spy-mcp: ${spyMcp?.url ?? 'off'}`);
-  console.log(`general-pack-mcp: ${generalPackMcp?.url ?? 'off'}`);
-  console.log(`writer-mcp: ${app.writerMcp?.info()?.url ?? 'off'}`);
+  console.log(`spy-mcp: http://127.0.0.1:${server.port}/api/spy/mcp`);
+  console.log(`writer-mcp: http://127.0.0.1:${server.port}/api/writer/mcp`);
+  console.log(`general-pack-mcp: http://127.0.0.1:${server.port}/api/general-pack/mcp`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {

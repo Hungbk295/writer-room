@@ -29,7 +29,11 @@ import type {
   SavedChannelRecord,
 } from './channel-intelligence/types.ts';
 
-export const SCHEMA_VERSION = 8;
+// v10 -> v11: video_comments is a wholly new table, created by SCHEMA_SQL's
+// own `IF NOT EXISTS` for both fresh and pre-existing databases — same as
+// the v2->v4 additions noted below, no ALTER/backfill required. Bumping the
+// version here is bookkeeping only.
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -89,6 +93,18 @@ CREATE TABLE IF NOT EXISTS channels (
   fetched_at TEXT NOT NULL
 );
 
+-- v10: channel_id is the real FK video_snapshots always lacked. Before it
+-- existed, corpusChannelStats()/searchCorpusVideos() had to guess a video's
+-- channel from "which spy_run produced its newest row" (ROW_NUMBER by
+-- created_at across ALL runs) — a lone spy_video_start run 94s after a
+-- channel scan would become that video's "newest" row and silently pull it
+-- out of its channel's cluster (real incident: Hidden Yield's channel
+-- average came back 3,668 instead of correctly including its 380,079-view
+-- video). NULL means "not attributed to a channel" — a channel scan or a
+-- video-level run with a resolved channel sets it; anything else (including
+-- an unresolved video-level run) leaves it NULL on purpose, and NULL rows
+-- are excluded from channel-cluster aggregation, never merged into one by
+-- guesswork.
 CREATE TABLE IF NOT EXISTS video_snapshots (
   id TEXT PRIMARY KEY,
   spy_run_id TEXT NOT NULL REFERENCES spy_runs(id),
@@ -96,6 +112,7 @@ CREATE TABLE IF NOT EXISTS video_snapshots (
   canonical_url TEXT NOT NULL,
   title TEXT NOT NULL,
   channel_title TEXT NOT NULL DEFAULT '',
+  channel_id TEXT REFERENCES channels(id),
   rank INTEGER NOT NULL,
   view_count INTEGER NOT NULL,
   like_count INTEGER,
@@ -145,6 +162,37 @@ CREATE TABLE IF NOT EXISTS transcript_segments (
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_segments_video
   ON transcript_segments(video_snapshot_id, segment_index);
+
+-- v11: spy_video_comments was wired up (mcp-tools.ts + spy-mcp.ts) but never
+-- had anywhere to write — the tool fetched commentThreads.list and threw the
+-- result away, leaving comment_count on video_snapshots as a bare number with
+-- no underlying text. This is the only source with the audience's own words;
+-- everything else in the corpus is the creator's script. id is the YouTube
+-- commentId itself (top-level thread comment or reply — both are globally
+-- unique), which is what makes a re-fetch of the same video idempotent via
+-- INSERT OR REPLACE rather than accumulating duplicates.
+-- channel_id is nullable and, like video_snapshots.channel_id, is set ONLY
+-- when the caller's scope already resolves to a known channels row — never
+-- guessed from title or spy_run — so an unattributed comment can be excluded
+-- from channel-level aggregation instead of silently joined into the wrong
+-- one (see the video_snapshots.channel_id comment above for the incident
+-- that rule exists to prevent).
+CREATE TABLE IF NOT EXISTS video_comments (
+  id TEXT PRIMARY KEY,
+  source_video_id TEXT NOT NULL,
+  channel_id TEXT REFERENCES channels(id),
+  parent_comment_id TEXT,
+  author_display_name TEXT,
+  text TEXT NOT NULL,
+  like_count INTEGER,
+  published_at TEXT,
+  updated_at TEXT,
+  fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_comments_video
+  ON video_comments(source_video_id, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_video_comments_channel
+  ON video_comments(channel_id);
 
 CREATE TABLE IF NOT EXISTS frame_samples (
   id TEXT PRIMARY KEY,
@@ -542,6 +590,54 @@ CREATE TABLE IF NOT EXISTS p0_artifact_tombstones (
   purged_at TEXT NOT NULL,
   reason TEXT NOT NULL
 );
+
+-- v9: spy_global_video_search cache. Deliberately separate from
+-- video_snapshots/spy_runs, never joined into corpus aggregation.
+--
+-- corpusChannelStats() / searchCorpusVideos() below cluster every video into a
+-- channel by "which spy_run produced its newest video_snapshots row"
+-- (ROW_NUMBER PARTITION BY source_video_id ORDER BY created_at DESC). A search
+-- hit that reused that table — even tagged with a search kind — would create
+-- a fresh spy_run per search call and become each touched video's "newest"
+-- row, silently pulling it out of its channel's cluster and corrupting that
+-- channel's avg/max view stats. (Real incident: a lone spy_video_start on an
+-- already-scanned video did exactly this — Hidden Yield's channel average
+-- came back 3,668 instead of correctly including its 380,079-view video, a
+-- 45x understatement.) These two tables exist so search can persist and be
+-- read back without ever touching that clustering.
+CREATE TABLE IF NOT EXISTS search_query_cache (
+  id TEXT PRIMARY KEY,
+  query_norm TEXT NOT NULL,
+  language TEXT NOT NULL,
+  region TEXT NOT NULL,
+  provider_used TEXT NOT NULL CHECK(provider_used IN ('youtube_data_api','ytdlp')),
+  limit_requested INTEGER NOT NULL,
+  locale_hints_applied INTEGER NOT NULL,
+  fallback_reason TEXT,
+  video_ids_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  UNIQUE(query_norm, language, region, provider_used)
+);
+
+-- One row per video ever seen through global search, independent of which
+-- query surfaced it. published_at_known distinguishes "provider told us
+-- there is no date" from "this provider (yt-dlp fallback) never tells us
+-- dates" — an unknown write must never clobber a previously known value.
+CREATE TABLE IF NOT EXISTS search_video_cache (
+  source_video_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  channel_title TEXT NOT NULL DEFAULT '',
+  canonical_url TEXT NOT NULL,
+  view_count INTEGER NOT NULL,
+  duration_sec REAL NOT NULL,
+  published_at TEXT,
+  published_at_known INTEGER NOT NULL DEFAULT 0 CHECK(published_at_known IN (0,1)),
+  provider_used TEXT NOT NULL CHECK(provider_used IN ('youtube_data_api','ytdlp')),
+  fetched_at TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_video_cache_fetched
+  ON search_video_cache(fetched_at);
 `;
 
 
@@ -763,6 +859,41 @@ export interface CorpusChannelRow {
 }
 
 // ---------------------------------------------------------------------------
+// v9 — spy_global_video_search cache. See the schema comment above
+// search_query_cache for why this is intentionally isolated from
+// video_snapshots/spy_runs/corpus aggregation.
+// ---------------------------------------------------------------------------
+
+export interface SearchQueryCacheRow {
+  queryNorm: string;
+  language: string;
+  region: string;
+  providerUsed: 'youtube_data_api' | 'ytdlp';
+  limitRequested: number;
+  localeHintsApplied: boolean;
+  fallbackReason: string | null;
+  videoIds: string[];
+  fetchedAt: string;
+}
+
+export interface SearchVideoCacheRow {
+  sourceVideoId: string;
+  title: string;
+  channelTitle: string;
+  canonicalUrl: string;
+  viewCount: number;
+  durationSec: number;
+  /** null when unknown — never a guessed date. */
+  publishedAt: string | null;
+  /** true only when a provider actually reported `publishedAt`. */
+  publishedAtKnown: boolean;
+  providerUsed: 'youtube_data_api' | 'ytdlp';
+  /** Last time this row's view/duration/title were refreshed. */
+  fetchedAt: string;
+  firstSeenAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // P0 Corpus Intelligence rows. They deliberately mirror only P0's managed
 // corpus/evidence plane; legacy Auto-Loop candidate and Inbox rows stay owned
 // by their existing workflow.
@@ -944,6 +1075,36 @@ function candidateFromRow(row: Row): CandidateChannel {
 
 function parseJson<T>(value: unknown): T {
   return JSON.parse(String(value)) as T;
+}
+
+function searchQueryCacheFromRow(row: Row): SearchQueryCacheRow {
+  return {
+    queryNorm: String(row['query_norm']),
+    language: String(row['language']),
+    region: String(row['region']),
+    providerUsed: String(row['provider_used']) as SearchQueryCacheRow['providerUsed'],
+    limitRequested: Number(row['limit_requested']),
+    localeHintsApplied: Number(row['locale_hints_applied']) === 1,
+    fallbackReason: nullableString(row['fallback_reason']),
+    videoIds: parseJson<string[]>(row['video_ids_json']),
+    fetchedAt: String(row['fetched_at']),
+  };
+}
+
+function searchVideoCacheFromRow(row: Row): SearchVideoCacheRow {
+  return {
+    sourceVideoId: String(row['source_video_id']),
+    title: String(row['title']),
+    channelTitle: String(row['channel_title'] ?? ''),
+    canonicalUrl: String(row['canonical_url']),
+    viewCount: Number(row['view_count']),
+    durationSec: Number(row['duration_sec']),
+    publishedAt: nullableString(row['published_at']),
+    publishedAtKnown: Number(row['published_at_known']) === 1,
+    providerUsed: String(row['provider_used']) as SearchVideoCacheRow['providerUsed'],
+    fetchedAt: String(row['fetched_at']),
+    firstSeenAt: String(row['first_seen_at']),
+  };
 }
 
 interface PublicPointCursor {
@@ -1250,6 +1411,40 @@ function videoTranscriptFromRow(row: Row): VideoTranscript {
   };
 }
 
+/**
+ * A saved YouTube comment or reply. `id` is the YouTube commentId itself —
+ * the natural idempotency key for `upsertVideoComments`. `channelId` is the
+ * internal `channels.id` FK (nullable — see the schema comment above
+ * `video_comments`), never a raw YouTube channel id.
+ */
+export interface VideoCommentRecord {
+  id: string;
+  sourceVideoId: string;
+  channelId: string | null;
+  parentCommentId: string | null;
+  authorDisplayName: string | null;
+  text: string;
+  likeCount: number | null;
+  publishedAt: string | null;
+  updatedAt: string | null;
+  fetchedAt: string;
+}
+
+function videoCommentFromRow(row: Row): VideoCommentRecord {
+  return {
+    id: String(row['id']),
+    sourceVideoId: String(row['source_video_id']),
+    channelId: nullableString(row['channel_id']),
+    parentCommentId: nullableString(row['parent_comment_id']),
+    authorDisplayName: nullableString(row['author_display_name']),
+    text: String(row['text']),
+    likeCount: row['like_count'] === null ? null : Number(row['like_count']),
+    publishedAt: nullableString(row['published_at']),
+    updatedAt: nullableString(row['updated_at']),
+    fetchedAt: String(row['fetched_at']),
+  };
+}
+
 export class SpyStore {
   readonly databasePath: string;
   private readonly database: Database;
@@ -1291,6 +1486,9 @@ export class SpyStore {
       if (version < 8) {
         this.migrate7To8();
       }
+      if (version < 10) {
+        this.migrate9To10();
+      }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
       }
@@ -1331,6 +1529,11 @@ export class SpyStore {
     this.database.exec(MIGRATION_6_TO_7.channelsAliasIndex);
     this.database.exec(MIGRATION_6_TO_7.savedChannelsIndex);
     this.database.exec(MIGRATION_7_TO_8);
+    // Fresh v10 databases already have video_snapshots.channel_id from
+    // SCHEMA_SQL; migrated pre-v10 databases have it after migrate9To10().
+    // Keep this index creation after both so it never references a column
+    // that does not exist yet.
+    this.database.exec('CREATE INDEX IF NOT EXISTS idx_video_snapshots_channel_id ON video_snapshots(channel_id)');
   }
 
   /** Apply the C1 additions to an already-created v6 database. */
@@ -1394,6 +1597,62 @@ export class SpyStore {
     try {
       this.database.exec(MIGRATION_7_TO_8);
       this.database.prepare('UPDATE schema_version SET version=?').run(8);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw error;
+    }
+  }
+
+  /**
+   * v9 → v10: add video_snapshots.channel_id and backfill it for existing
+   * rows. Real-data check against a production DB: every one of 48 distinct
+   * `channel_title` values in video_snapshots matched a `channels.title`
+   * after trimming both sides (handles a trailing-space title like
+   * "Finance With Ryan "). Two titles were ambiguous (two `channels` rows
+   * sharing a title — pre-existing duplicate-channel-row debt, not something
+   * this migration should try to merge or delete): the canonical row is the
+   * one with a resolved `youtube_uc_id`, since that is the one C1 roles and
+   * follow/star treat as the real channel identity.
+   */
+  private migrate9To10(): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      try {
+        this.database.exec('ALTER TABLE video_snapshots ADD COLUMN channel_id TEXT REFERENCES channels(id)');
+      } catch (error) {
+        if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+      }
+      this.database.exec('CREATE INDEX IF NOT EXISTS idx_video_snapshots_channel_id ON video_snapshots(channel_id)');
+
+      const channels = this.database.prepare('SELECT id, title, youtube_uc_id FROM channels').all() as Row[];
+      const byTrimmedTitle = new Map<string, Row[]>();
+      for (const channel of channels) {
+        const key = String(channel['title'] ?? '').trim();
+        if (!key) continue;
+        const bucket = byTrimmedTitle.get(key) ?? [];
+        bucket.push(channel);
+        byTrimmedTitle.set(key, bucket);
+      }
+      // Prefer the row with a resolved youtube_uc_id when a title is shared
+      // by more than one channels row (pre-existing dedupe debt — see above).
+      const canonicalFor = (bucket: Row[]): Row =>
+        bucket.find((row) => row['youtube_uc_id'] !== null) ?? bucket[0]!;
+
+      const distinctTitles = this.database.prepare(
+        `SELECT DISTINCT channel_title FROM video_snapshots WHERE channel_id IS NULL AND TRIM(channel_title) != ''`,
+      ).all() as Row[];
+      const updateByTitle = this.database.prepare(
+        'UPDATE video_snapshots SET channel_id=? WHERE channel_id IS NULL AND channel_title=?',
+      );
+      for (const row of distinctTitles) {
+        const rawTitle = String(row['channel_title']);
+        const bucket = byTrimmedTitle.get(rawTitle.trim());
+        if (!bucket) continue; // No matching channels row — left NULL, not guessed.
+        updateByTitle.run(String(canonicalFor(bucket)['id']), rawTitle);
+      }
+
+      this.database.prepare('UPDATE schema_version SET version=?').run(10);
       this.database.exec('COMMIT');
     } catch (error) {
       try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
@@ -1699,6 +1958,26 @@ export class SpyStore {
     );
   }
 
+  /**
+   * Attributes every video_snapshots row of a run to a channel (v10, C1-style
+   * clustering fix — see the schema comment above video_snapshots.channel_id).
+   * Deliberately a separate bulk UPDATE rather than a column on
+   * `insertVideoSnapshot`: a run's channel is only known AFTER metadata is
+   * captured and enrichChannel() has resolved/upserted the channels row, so
+   * callers set it once, after the fact, for the whole run.
+   */
+  setVideoSnapshotsChannelId(spyRunId: string, channelId: string): void {
+    this.database.prepare('UPDATE video_snapshots SET channel_id=? WHERE spy_run_id=?').run(channelId, spyRunId);
+  }
+
+  /** Test/debug helper — channel_id is intentionally not part of the VideoSnapshot read model. */
+  getVideoSnapshotsChannelIds(spyRunId: string): Array<string | null> {
+    const rows = this.database.prepare(
+      'SELECT channel_id FROM video_snapshots WHERE spy_run_id=? ORDER BY rank,id',
+    ).all(spyRunId) as Row[];
+    return rows.map((row) => nullableString(row['channel_id']));
+  }
+
   updateVideoSnapshot(
     id: string,
     patch: Partial<Pick<VideoSnapshot,
@@ -1854,6 +2133,52 @@ export class SpyStore {
     this.database.prepare(
       `UPDATE video_transcripts SET normalized_text=?, normalized_at=?, normalize_model=? WHERE id=?`,
     ).run(text, nowIso(), model, videoTranscriptId);
+  }
+
+  /**
+   * Idempotent on `id` (the YouTube commentId) — re-fetching the same video's
+   * comments refreshes like_count/text/etc. in place instead of duplicating rows.
+   */
+  upsertVideoComments(comments: readonly VideoCommentRecord[]): void {
+    if (comments.length === 0) return;
+    const statement = this.database.prepare(`
+      INSERT INTO video_comments
+        (id, source_video_id, channel_id, parent_comment_id, author_display_name,
+         text, like_count, published_at, updated_at, fetched_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        source_video_id=excluded.source_video_id,
+        channel_id=excluded.channel_id,
+        parent_comment_id=excluded.parent_comment_id,
+        author_display_name=excluded.author_display_name,
+        text=excluded.text,
+        like_count=excluded.like_count,
+        published_at=excluded.published_at,
+        updated_at=excluded.updated_at,
+        fetched_at=excluded.fetched_at`);
+    this.transaction(() => {
+      for (const comment of comments) {
+        statement.run(
+          comment.id,
+          comment.sourceVideoId,
+          comment.channelId,
+          comment.parentCommentId,
+          comment.authorDisplayName,
+          comment.text,
+          comment.likeCount,
+          comment.publishedAt,
+          comment.updatedAt,
+          comment.fetchedAt,
+        );
+      }
+    });
+  }
+
+  listVideoComments(sourceVideoId: string, limit = 500): VideoCommentRecord[] {
+    const rows = this.database.prepare(
+      'SELECT * FROM video_comments WHERE source_video_id=? ORDER BY published_at DESC LIMIT ?',
+    ).all(sourceVideoId, limit) as Row[];
+    return rows.map(videoCommentFromRow);
   }
 
   listTranscriptSegmentsBySourceVideoId(sourceVideoId: string): TranscriptSegment[] {
@@ -2245,10 +2570,11 @@ export class SpyStore {
     const params: Array<string | number> = [];
     if (filter.titleQuery) { where.push('LOWER(title) LIKE ?'); params.push(`%${filter.titleQuery.toLowerCase()}%`); }
     if (filter.channelIds?.length) {
-      // `spy_runs.source_identity` được canonical hoá thành dạng viết thường
-      // ('youtube:channel:/channel/ucxxx'), trong khi channel ID của YouTube
-      // phân biệt hoa thường ('UCxxx'). So khớp cả hai dạng, không thì filter
-      // theo channel_id thật sẽ luôn trả rỗng.
+      // channels.channel_id (joined via video_snapshots.channel_id, same as
+      // corpusChannelStats()) is canonicalised the same way spy_runs.source_identity
+      // used to be ('youtube:channel:/channel/ucxxx', lowercase), while a real
+      // YouTube channel ID is mixed-case ('UCxxx'). Match both forms, or a
+      // filter by the real channel_id would always come back empty.
       const clauses = filter.channelIds.map(() => '(channel_key = ? OR LOWER(channel_key) LIKE ?)');
       where.push(`(${clauses.join(' OR ')})`);
       for (const channelId of filter.channelIds) {
@@ -2283,14 +2609,22 @@ export class SpyStore {
           vs.id, vs.source_video_id, vs.title, vs.channel_title, vs.canonical_url,
           vs.view_count, vs.like_count, vs.comment_count, vs.duration_sec,
           vs.published_at, vs.transcript_status, vs.created_at,
-          sr.source_identity AS channel_key,
+          -- video_snapshots.channel_id (schema v10, see the comment above that
+          -- column) is the real FK; a channel scan or a video-level run that
+          -- resolved a channel sets it. NULL — an unattributed video-level run
+          -- — deliberately becomes '' here rather than falling back to
+          -- spy_runs.source_identity: that old rule is the exact bug this
+          -- fixes (see the video_snapshots.channel_id comment for the
+          -- Hidden Yield incident), so a video without a real channel
+          -- attribution must read as "unknown channel", never as a guess.
+          COALESCE(c.channel_id, '') AS channel_key,
           CAST(vs.view_count AS REAL) / MAX(1.0, julianday('now') - julianday(COALESCE(vs.published_at, vs.created_at))) AS velocity,
           CASE WHEN vs.view_count > 0
             THEN (COALESCE(vs.like_count, 0) + COALESCE(vs.comment_count, 0)) * 1.0 / vs.view_count
             ELSE 0 END AS engagement,
           ROW_NUMBER() OVER (PARTITION BY vs.source_video_id ORDER BY vs.created_at DESC, vs.rowid DESC) AS rn
         FROM video_snapshots vs
-        JOIN spy_runs sr ON sr.id = vs.spy_run_id
+        LEFT JOIN channels c ON c.id = vs.channel_id
       )
       WHERE ${where.join(' AND ')}
       ORDER BY ${orderColumn} ${direction}
@@ -2317,6 +2651,20 @@ export class SpyStore {
 
   /** Thống kê corpus theo kênh — đếm trên snapshot mới nhất của mỗi video. */
   corpusChannelStats(): CorpusChannelRow[] {
+    // Grouped by video_snapshots.channel_id (a real FK to channels.id), not by
+    // "which spy_run produced this video's newest row" — see the schema
+    // comment above video_snapshots.channel_id for why the old rule
+    // (ROW_NUMBER by created_at across ALL runs regardless of kind) silently
+    // stole videos out of their channel's cluster whenever a later run (a
+    // lone spy_video_start, or — before search got its own cache tables — a
+    // hypothetical search write) touched an already-scanned video.
+    //
+    // `WHERE vs.channel_id IS NOT NULL` in the inner query is load-bearing:
+    // it removes channel-unattributed snapshots from the ROW_NUMBER window
+    // entirely, so such a row can never win "latest" and mask a properly
+    // attributed one — a video that briefly loses its channel_id (or never
+    // had one) simply drops out of every channel's stats instead of
+    // corrupting one.
     const rows = this.database.prepare(`
       SELECT
         channel_key,
@@ -2330,10 +2678,11 @@ export class SpyStore {
         AVG(duration_sec) AS avg_duration_sec,
         SUM(CASE WHEN transcript_status = 'ok' THEN 1 ELSE 0 END) AS with_transcript
       FROM (
-        SELECT vs.*, sr.source_identity AS channel_key,
+        SELECT vs.*, c.channel_id AS channel_key,
           ROW_NUMBER() OVER (PARTITION BY vs.source_video_id ORDER BY vs.created_at DESC, vs.rowid DESC) AS rn
         FROM video_snapshots vs
-        JOIN spy_runs sr ON sr.id = vs.spy_run_id
+        JOIN channels c ON c.id = vs.channel_id
+        WHERE vs.channel_id IS NOT NULL
       )
       WHERE rn = 1
       GROUP BY channel_key
@@ -3754,5 +4103,102 @@ export class SpyStore {
 
   hasP0ArtifactTombstone(hash: string): boolean {
     return Boolean(this.database.prepare('SELECT 1 FROM p0_artifact_tombstones WHERE artifact_hash=?').get(hash));
+  }
+
+  // ---------------------------------------------------------------------------
+  // v9 — spy_global_video_search cache (search_query_cache / search_video_cache).
+  // Intentionally does not touch video_snapshots/spy_runs — see the schema
+  // comment above search_query_cache.
+  // ---------------------------------------------------------------------------
+
+  getSearchQueryCache(
+    queryNorm: string,
+    language: string,
+    region: string,
+    providerUsed: 'youtube_data_api' | 'ytdlp',
+  ): SearchQueryCacheRow | null {
+    const row = this.database.prepare(
+      `SELECT * FROM search_query_cache WHERE query_norm=? AND language=? AND region=? AND provider_used=?`,
+    ).get(queryNorm, language, region, providerUsed) as Row | undefined;
+    return row ? searchQueryCacheFromRow(row) : null;
+  }
+
+  upsertSearchQueryCache(row: SearchQueryCacheRow): void {
+    this.database.prepare(
+      `INSERT INTO search_query_cache
+       (id, query_norm, language, region, provider_used, limit_requested, locale_hints_applied,
+        fallback_reason, video_ids_json, fetched_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(query_norm, language, region, provider_used) DO UPDATE SET
+         limit_requested=excluded.limit_requested,
+         locale_hints_applied=excluded.locale_hints_applied,
+         fallback_reason=excluded.fallback_reason,
+         video_ids_json=excluded.video_ids_json,
+         fetched_at=excluded.fetched_at`,
+    ).run(
+      randomUUID(),
+      row.queryNorm,
+      row.language,
+      row.region,
+      row.providerUsed,
+      row.limitRequested,
+      row.localeHintsApplied ? 1 : 0,
+      row.fallbackReason,
+      JSON.stringify(row.videoIds),
+      row.fetchedAt,
+    );
+  }
+
+  /** Batched lookup. Missing ids are simply absent from the returned map. */
+  getSearchVideoCacheRows(sourceVideoIds: readonly string[]): Map<string, SearchVideoCacheRow> {
+    const result = new Map<string, SearchVideoCacheRow>();
+    if (sourceVideoIds.length === 0) return result;
+    const ids = [...new Set(sourceVideoIds)];
+    const rows = this.database.prepare(
+      `SELECT * FROM search_video_cache WHERE source_video_id IN (${ids.map(() => '?').join(',')})`,
+    ).all(...ids) as Row[];
+    for (const row of rows) {
+      const parsed = searchVideoCacheFromRow(row);
+      result.set(parsed.sourceVideoId, parsed);
+    }
+    return result;
+  }
+
+  /**
+   * Merge-upsert: a write with `publishedAtKnown: false` (yt-dlp fallback,
+   * which never reports a date) must never overwrite an already-known date
+   * from a prior Data API fetch. View/duration/title always take the newest
+   * value — those decay with time and a fresher read is always better;
+   * `first_seen_at` is preserved from the original insert.
+   */
+  upsertSearchVideoCache(row: SearchVideoCacheRow): void {
+    this.database.prepare(
+      `INSERT INTO search_video_cache
+       (source_video_id, title, channel_title, canonical_url, view_count, duration_sec,
+        published_at, published_at_known, provider_used, fetched_at, first_seen_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(source_video_id) DO UPDATE SET
+         title=excluded.title,
+         channel_title=excluded.channel_title,
+         canonical_url=excluded.canonical_url,
+         view_count=excluded.view_count,
+         duration_sec=excluded.duration_sec,
+         published_at=CASE WHEN excluded.published_at_known=1 THEN excluded.published_at ELSE search_video_cache.published_at END,
+         published_at_known=MAX(search_video_cache.published_at_known, excluded.published_at_known),
+         provider_used=excluded.provider_used,
+         fetched_at=excluded.fetched_at`,
+    ).run(
+      row.sourceVideoId,
+      row.title,
+      row.channelTitle,
+      row.canonicalUrl,
+      row.viewCount,
+      row.durationSec,
+      row.publishedAt,
+      row.publishedAtKnown ? 1 : 0,
+      row.providerUsed,
+      row.fetchedAt,
+      row.firstSeenAt,
+    );
   }
 }

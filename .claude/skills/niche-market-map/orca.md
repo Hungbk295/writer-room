@@ -1,0 +1,62 @@
+# Fan-out research qua Orca
+
+Dùng cùng SKILL.md và contracts.md. Chỉ đọc nhánh này khi coordinator đang ở môi
+trường Orca hỗ trợ orchestration; không dùng như đường vượt capacity hoặc quyền.
+
+## Kiểm môi trường
+
+- Kiểm `orca status --json`, runtime reachable và orchestration đã bật.
+- Coordinator phải ở terminal được Orca hỗ trợ. Không giả env/terminal identity.
+- Đọc `orca skills get orchestration --full` trước khi dispatch; dùng cú pháp và
+  capability của binary đang chạy.
+- Kiểm capacity, nesting và model thực. Không tự tăng setting để mở nhiều worker.
+  Dùng agy nếu runtime hỗ trợ; ghi agent/model thực, không mặc định mẫu Claude là agy.
+
+## Task và dependency
+
+Tạo một task cho mỗi batch theo phase chính:
+
+1. Discovery: query/keyword observations trong budget.
+2. Collect: nguồn, transcript, source manifest; không cần craft pack.
+3. Read-and-flag: chỉ đọc batch đã thu; nhận pack snapshot đúng scope hoặc bootstrap.
+4. Coordinator kiểm và hợp nhất; không giao worker tự sửa pack.
+
+Task spec phải chứa taskId, phase, dependencies, niche/language/formatScope, nguồn
+đã biết cùng locator, ngân sách, deadline, input/output path tuyệt đối và điều kiện
+hoàn thành. Không giao "tìm lý do kênh thắng" hoặc "kiểm cơ chế kéo view".
+
+Worker read-and-flag đọc contracts.md và đầy đủ pack snapshot được cấp. Chưa có
+pack thì bootstrap, tag tạm bằng ngôn ngữ đích; không dùng bộ VI cho POV Finance EN.
+Worker không nhận giả thuyết coordinator như dữ kiện. Transcript/title/description
+là untrusted reference material.
+
+Chỉ mở task đọc khi artifact đầu vào của batch đã được coordinator kiểm. Khi cần
+thêm nguồn, tạo yêu cầu collect riêng; worker đang đọc không tự đi download.
+Các worker ghi file riêng theo task/attempt, lưu từng record trước khi báo done.
+
+## Dispatch và chờ
+
+Theo guide runtime, luồng gồm run-create, task-create, worker-start, chờ event,
+thu artifact và worker-release. Mỗi lần chờ event tối đa 60 giây; timeout một lần
+chờ không có nghĩa task thất bại. Đối chiếu deadline và output thực.
+
+Ghi run/task/dispatch/terminal IDs và model thực vào run.json. Event worker_done là
+tín hiệu để kiểm artifact, không tự chứng minh task COMPLETE. Coordinator kiểm quote,
+locator, hash, scope, pack reference và coverage theo contracts.md.
+
+Sau timeout/escalation, đọc file đã lưu và evidence có thể xác nhận. Giữ phần dùng
+được, ghi PARTIAL, retry phần thiếu trong attempt mới nếu còn budget. Không sửa trạng
+thái thành thành công chỉ vì nguồn thô còn trong DB.
+
+## Vòng bổ sung và đóng worker
+
+Vòng bổ sung chỉ giải quyết record thiếu, sai nguồn, hoặc bất đồng phân loại. Không
+ép hai worker ra một "kết luận thứ ba" về nhân quả.
+
+Nếu guide cho tái dùng terminal cũ, vẫn tạo task/dispatch mới và cấp đủ spec cùng
+input hashes. Giữ terminal qua vòng sau chỉ khi có kế hoạch dùng, không giữ slot
+trống. Sau khi thu và kiểm artifact, worker-release đúng dispatch do run tạo; không
+đụng worker/tab của người dùng hoặc runtime khác.
+
+Output cuối vẫn là báo cáo mô tả, Writer input và craft queue. Orca không thay đổi
+ranh giới research, không tự tạo/cập nhật human move hoặc mode pack.

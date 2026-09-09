@@ -403,6 +403,22 @@ describe('Corpus search — 0 quota', () => {
     });
   }
 
+  // searchCorpusVideos() clusters by video_snapshots.channel_id (schema v10,
+  // same FK corpusChannelStats() uses) — a real channel scan always resolves
+  // and attaches this via enrichChannel()+setVideoSnapshotsChannelId(), so the
+  // fixture must too, or every video in these fixtures reads as channel-less.
+  function attachChannel(store: SpyStore, runId: string, sourceIdentity: string) {
+    const channel = store.upsertChannel({
+      channelId: sourceIdentity,
+      title: 'Kênh test',
+      subscriberCount: null,
+      videoCount: null,
+      totalViewCount: null,
+      fetchedAt: new Date().toISOString(),
+    });
+    store.setVideoSnapshotsChannelId(runId, channel.id);
+  }
+
   test('cùng một video quét hai lần chỉ trả bản mới nhất', async () => {
     const spy = await newSpy();
     const runOld = seedRun(spy.store, 'UC_corpus', 'run-old');
@@ -421,6 +437,8 @@ describe('Corpus search — 0 quota', () => {
     const runB = seedRun(spy.store, 'UC_bbb', 'run-b');
     seedVideo(spy.store, runA.id, 'VIDaaaaaaaa', { viewCount: 5_000, title: 'Hố đen là gì' });
     seedVideo(spy.store, runB.id, 'VIDbbbbbbbb', { viewCount: 50_000, title: 'Vũ trụ giãn nở' });
+    attachChannel(spy.store, runA.id, 'UC_aaa');
+    attachChannel(spy.store, runB.id, 'UC_bbb');
 
     const byViews = spy.corpusVideos({ orderBy: 'views' });
     expect(byViews.videos.map((v) => v.sourceVideoId)).toEqual(['VIDbbbbbbbb', 'VIDaaaaaaaa']);
@@ -437,6 +455,7 @@ describe('Corpus search — 0 quota', () => {
     // Đúng dạng canonical hoá thật của spy: 'youtube:channel:/channel/<lowercase id>'.
     const run = seedRun(spy.store, 'youtube:channel:/channel/ucaaaaaaaaaaaaaaaaaaaaaa', 'run-case');
     seedVideo(spy.store, run.id, 'VIDcase1111');
+    attachChannel(spy.store, run.id, 'youtube:channel:/channel/ucaaaaaaaaaaaaaaaaaaaaaa');
 
     expect(spy.corpusVideos({ channelIds: ['UCaaaaaaaaaaaaaaaaaaaaaa'] }).count).toBe(1);
     expect(spy.corpusVideos({ channelIds: ['UCzzzzzzzzzzzzzzzzzzzzzz'] }).count).toBe(0);
@@ -456,6 +475,14 @@ describe('Corpus search — 0 quota', () => {
     const run = seedRun(spy.store, 'UC_stats', 'run-stats');
     seedVideo(spy.store, run.id, 'VIDsss11111', { viewCount: 1_000 });
     seedVideo(spy.store, run.id, 'VIDsss22222', { viewCount: 3_000 });
+    // corpusChannelStats() groups by video_snapshots.channel_id (a real FK to
+    // channels.id) since v10 — a channel scan always resolves and attaches
+    // this, so the fixture must too.
+    const channel = spy.store.upsertChannel({
+      channelId: 'UC_stats', title: 'Kênh test', subscriberCount: null,
+      videoCount: null, totalViewCount: null, fetchedAt: new Date().toISOString(),
+    });
+    spy.store.setVideoSnapshotsChannelId(run.id, channel.id);
 
     const channels = spy.corpusChannels({});
     expect(channels.count).toBe(1);
@@ -514,6 +541,20 @@ describe('spy_channel_momentum', () => {
       frameStatus: 'skipped', thumbnail: null, createdAt: new Date().toISOString(),
     } as VideoSnapshot);
   }
+  // channelMomentum() reads through searchCorpusVideos(), which clusters by
+  // video_snapshots.channel_id since v10 — a real channel scan always resolves
+  // and attaches this, so the fixture must too.
+  function attachChannel(store: SpyStore, runId: string, sourceIdentity: string) {
+    const channel = store.upsertChannel({
+      channelId: sourceIdentity,
+      title: 'Kênh test',
+      subscriberCount: null,
+      videoCount: null,
+      totalViewCount: null,
+      fetchedAt: new Date().toISOString(),
+    });
+    store.setVideoSnapshotsChannelId(runId, channel.id);
+  }
 
   test('tách video trong cửa sổ và ngoài cửa sổ, tính momentum ratio', async () => {
     const spy = await newSpy();
@@ -522,6 +563,7 @@ describe('spy_channel_momentum', () => {
     seedVideo(spy.store, run.id, 'VIDnew22222', 60_000, 15);
     seedVideo(spy.store, run.id, 'VIDold11111', 10_000, 200);
     seedVideo(spy.store, run.id, 'VIDold22222', 10_000, 300);
+    attachChannel(spy.store, run.id, 'youtube:channel:/channel/ucmomentum00000000000');
 
     const result = spy.channelMomentum('UCmomentum00000000000', 30);
     expect(result.recent.videoCount).toBe(2);
@@ -536,6 +578,7 @@ describe('spy_channel_momentum', () => {
     const spy = await newSpy();
     const run = seedRun(spy.store, 'youtube:channel:/channel/ucdormant000000000000', 'run-dorm');
     seedVideo(spy.store, run.id, 'VIDdorm1111', 5_000, 120);
+    attachChannel(spy.store, run.id, 'youtube:channel:/channel/ucdormant000000000000');
     const result = spy.channelMomentum('UCdormant000000000000', 30);
     expect(result.dormant).toBe(true);
     expect(result.recent.videoCount).toBe(0);
@@ -573,6 +616,15 @@ describe('Corpus: view/sub và outlier', () => {
         thumbnail: null, createdAt: new Date().toISOString(),
       } as VideoSnapshot);
     }
+    // corpusVideos() joins channelKey through video_snapshots.channel_id
+    // (schema v10) now, same FK corpusChannelStats() already used — a real
+    // channel scan always resolves and attaches this.
+    const channel = spy.store.upsertChannel({
+      channelId: 'youtube:channel:/channel/ucjoin00000000000000000',
+      title: 'K', subscriberCount: null, videoCount: null, totalViewCount: null,
+      fetchedAt: new Date().toISOString(),
+    });
+    spy.store.setVideoSnapshotsChannelId(run.id, channel.id);
     spy.store.saveMetrics({
       scope: 'video', scopeId: 'VIDhigh1111', spyRunId: run.id,
       payload: { performance: { outlier: { outlierScore: { value: 4.2, method: 'deterministic' } } } },

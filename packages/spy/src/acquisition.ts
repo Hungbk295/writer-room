@@ -13,7 +13,7 @@ import {
 } from './metrics/index.ts';
 import type { ArtifactStore } from './artifacts.ts';
 import { youtubeThumbnailUrl, type YouTubeDataApiPort } from './adapters/data-api.ts';
-import type { YoutubePort, YoutubeVideoInfo } from './adapters/ytdlp.ts';
+import type { YoutubePort, YoutubeTranscript, YoutubeVideoInfo } from './adapters/ytdlp.ts';
 import type { OperationManager } from './operations.ts';
 import { isResolvedYoutubeUcId, type SpyStore } from './store.ts';
 import {
@@ -96,6 +96,17 @@ export class AcquisitionService {
 
           const channelScope = enriched.channelId || run.sourceIdentity;
           await this.enrichChannel(channelScope, [enriched]);
+          // Only attribute this snapshot to a channel when the video's own
+          // channel was actually resolved (enriched.channelId) — not when
+          // channelScope fell back to this run's own video identity. A
+          // fallback scope is not a real channel; attributing to it anyway
+          // is exactly the Hidden Yield failure mode this column exists to
+          // prevent, just moved one level down. Leaving channel_id NULL here
+          // is the safe, honest answer per the schema contract.
+          if (enriched.channelId) {
+            const channelRecord = this.store.getChannel(channelScope);
+            if (channelRecord) this.store.setVideoSnapshotsChannelId(run.id, channelRecord.id);
+          }
 
           if (input.depth === 'metadata') {
             await this.finishRun(run.id, channelScope);
@@ -186,6 +197,10 @@ export class AcquisitionService {
           }
           await this.enrichSnapshots(run.id, candidates.map((v) => v.sourceVideoId));
           await this.enrichChannel(run.sourceIdentity, candidates);
+          // A channel-level run's scope IS the channel being scanned, by
+          // construction — always safe to attribute every video in it.
+          const scannedChannel = this.store.getChannel(run.sourceIdentity);
+          if (scannedChannel) this.store.setVideoSnapshotsChannelId(run.id, scannedChannel.id);
 
           if (depth === 'metadata') {
             await this.finishRun(run.id, run.sourceIdentity);
@@ -423,44 +438,72 @@ export class AcquisitionService {
     }
     const transcript = await this.youtube.fetchTranscript(info.canonicalUrl, signal);
     if (transcript.status === 'ok') {
-      const hash = contentHash(transcript.segments.map((s) => s.text).join('\n'));
-      const recordId = existing?.id ?? randomUUID();
-      this.store.upsertVideoTranscript({
-        id: recordId,
-        sourceVideoId: info.sourceVideoId,
-        language: transcript.language ?? 'und',
-        source: transcript.source,
-        contentHash: hash,
-        fetchedAt: new Date().toISOString(),
-        normalizedText: null,
-        normalizedAt: null,
-        normalizeModel: null,
-      });
-      const segments: TranscriptSegment[] = transcript.segments.map((segment, index) => ({
-        id: randomUUID(),
-        videoSnapshotId: snapshot.id,
-        videoTranscriptId: recordId,
-        index,
-        startSec: segment.startSec,
-        endSec: segment.endSec,
-        text: segment.text,
-        source: transcript.source,
-        language: transcript.language,
-        contentHash: contentHash(segment.text),
-      }));
-      this.store.insertTranscriptSegments(segments);
-      this.store.updateVideoSnapshot(snapshot.id, {
-        transcriptStatus: 'ok',
-        transcriptSource: transcript.source,
-        frameStatus: 'skipped',
-      });
-    } else {
-      this.store.updateVideoSnapshot(snapshot.id, {
-        transcriptStatus: transcript.status,
-        transcriptSource: transcript.source === 'unknown' ? null : transcript.source,
-        frameStatus: 'skipped',
-      });
+      this.persistTranscript(snapshot, info, existing?.id, transcript);
+      return;
     }
+
+    // fetchTranscript's richer flow (metadata dump + preferred-track pick)
+    // came back without a transcript. Fall back to yt-dlp's own auto-caption
+    // download, one language per call — verified to succeed in well under a
+    // second on videos the richer flow reported 'missing' (POV Finance
+    // corpus, 2026-09). transcript_segments.source is tagged 'ytdlp-auto' so
+    // rows from this path stay distinguishable from the primary flow's;
+    // transcript_status/transcript_source stay 'ok'/'auto' like any other
+    // auto-caption, so existing manual>auto preference and the
+    // normalize-suggestion warning in source-pack.ts keep applying to them.
+    // Never Whisper, never audio download — see fetchAutoSubsFallback's doc.
+    const fallback = await this.youtube.fetchAutoSubsFallback?.(info.canonicalUrl, signal);
+    if (fallback?.status === 'ok') {
+      this.persistTranscript(snapshot, info, existing?.id, fallback, 'ytdlp-auto');
+      return;
+    }
+
+    this.store.updateVideoSnapshot(snapshot.id, {
+      transcriptStatus: transcript.status,
+      transcriptSource: transcript.source === 'unknown' ? null : transcript.source,
+      frameStatus: 'skipped',
+    });
+  }
+
+  /** Shared by the primary fetchTranscript path and the yt-dlp auto-subs fallback. */
+  private persistTranscript(
+    snapshot: VideoSnapshot,
+    info: YoutubeVideoInfo,
+    existingRecordId: string | undefined,
+    transcript: YoutubeTranscript,
+    segmentSourceOverride?: string,
+  ): void {
+    const hash = contentHash(transcript.segments.map((s) => s.text).join('\n'));
+    const recordId = existingRecordId ?? randomUUID();
+    this.store.upsertVideoTranscript({
+      id: recordId,
+      sourceVideoId: info.sourceVideoId,
+      language: transcript.language ?? 'und',
+      source: transcript.source,
+      contentHash: hash,
+      fetchedAt: new Date().toISOString(),
+      normalizedText: null,
+      normalizedAt: null,
+      normalizeModel: null,
+    });
+    const segments: TranscriptSegment[] = transcript.segments.map((segment, index) => ({
+      id: randomUUID(),
+      videoSnapshotId: snapshot.id,
+      videoTranscriptId: recordId,
+      index,
+      startSec: segment.startSec,
+      endSec: segment.endSec,
+      text: segment.text,
+      source: segmentSourceOverride ?? transcript.source,
+      language: transcript.language,
+      contentHash: contentHash(segment.text),
+    }));
+    this.store.insertTranscriptSegments(segments);
+    this.store.updateVideoSnapshot(snapshot.id, {
+      transcriptStatus: 'ok',
+      transcriptSource: transcript.source,
+      frameStatus: 'skipped',
+    });
   }
 
   private async enrichChannel(scopeId: string, videos: readonly YoutubeVideoInfo[]): Promise<void> {

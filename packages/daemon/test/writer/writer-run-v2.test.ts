@@ -37,10 +37,9 @@ import {
 } from '../../src/writer/external-turn.ts';
 import type { TeamEvent } from '../../src/team/workflow.ts';
 import { WRITER_BEAT_MODES, WRITER_BEAT_TURNS } from '../../src/writer/video-plan.ts';
-import { filterApprovedPersonaMarkdown } from '../../src/writer/assertion-boundary.ts';
+import { filterApprovedNarratorMarkdown } from '../../src/writer/assertion-boundary.ts';
 import { createChannelProfile, listEditorialSuggestions, updateChannelProfile } from '../../src/writer/channel-profile.ts';
 import { createReusableProcedure } from '../../src/writer/reusable-procedure.ts';
-import { hashPersonaPack } from '../../src/writer/persona-pack.ts';
 import { HUMAN_PACK_GESTURE_IDS, hashHumanPack } from '../../src/writer/human-pack.ts';
 import {
   computeWriterV2Progress,
@@ -113,14 +112,31 @@ const MODE_PACK_MARKDOWN = [
   ...WRITER_BEAT_TURNS.map((turn) => `## Phép lật: ${turn} — Tên\nGhi chú.\n`),
 ].join('\n');
 
-/** Minimal fixture with all 8 SDD 007 §2 gesture headings — content is not
- * real craft, only enough to satisfy `validateHumanPack`'s structural check. */
+/** Human pack v2 fixture: the craft region (all 8 SDD 007 §2 gesture headings,
+ * enough to satisfy `validateHumanPack`) plus a Phần B with one APPROVED and one
+ * PENDING stance, so staging, hashing and the gate can all be checked against a
+ * pack shaped like the real one. Content is not real craft. */
 const HUMAN_PACK_MARKDOWN = [
   '# Human pack (test fixture)',
-  '<!-- version: 1 -->',
+  '<!-- version: 2 -->',
+  '',
+  '## Phần A — Cử chỉ',
   '',
   ...HUMAN_PACK_GESTURE_IDS.map((id) => `## Cử chỉ: ${id} — Tên\nGhi chú.\n`),
+  '## Phần B — Lập trường kênh',
+  '',
+  '### B1 Quỹ dự phòng — `[ĐÃ DUYỆT]`',
+  '',
+  '**Lập trường kênh**: Với tôi, quỹ dự phòng nên là 1 năm chi phí sinh hoạt.',
+  '',
+  '### B2 Bất động sản — `[CHỜ CHỦ KÊNH DUYỆT]`',
+  '',
+  '**Lập trường kênh**: Tôi không tin bất động sản luôn an toàn hơn cổ phiếu.',
 ].join('\n');
+
+/** What `dispatchWrite` actually stages: the fixture with every unapproved Phần
+ * B/C entry filtered out, craft region untouched. */
+const HUMAN_PACK_STAGED = filterApprovedNarratorMarkdown(HUMAN_PACK_MARKDOWN);
 
 const STYLE_ID = 'nhan-vat-xuyen-suot.md';
 const CHANNEL_STYLE = [
@@ -977,7 +993,7 @@ describe('Writer v2 — end to end', () => {
     ) as { humanPack: unknown };
     expect(writeEnvelope.humanPack).toBeNull();
     expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
-      .toContain('Không có human pack; không thêm cử chỉ tự nghĩ.');
+      .toContain('Không có human pack; không thêm cử chỉ tự nghĩ');
 
     await completeStage(runId, WRITE_STAGE, {
       title: 'Lương tăng, quyền chọn giảm',
@@ -999,7 +1015,7 @@ describe('Writer v2 — end to end', () => {
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
 
     expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).text())
-      .toBe(HUMAN_PACK_MARKDOWN);
+      .toBe(HUMAN_PACK_STAGED.markdown);
     const writeEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
     ) as { humanPack: { path: string; hash: string; contentFile: string } };
@@ -1011,7 +1027,7 @@ describe('Writer v2 — end to end', () => {
 
     const write = dispatches.filter((d) => d.stage === WRITE_STAGE);
     expect(write).toHaveLength(1);
-    const humanPackHash = hashHumanPack(HUMAN_PACK_MARKDOWN);
+    const humanPackHash = hashHumanPack(HUMAN_PACK_STAGED.markdown);
     expect(write[0]!.inputHashes).toContain(humanPackHash);
 
     await completeStage(runId, WRITE_STAGE, {
@@ -1043,19 +1059,19 @@ describe('Writer v2 — end to end', () => {
     expect(failed!.errorReason).toContain('Cử chỉ: khong-biet');
   });
 
-  test('WRITE runs exactly as before when no persona pack file exists (backward compatible)', async () => {
+  test('WRITE runs exactly as before when no human pack file exists (backward compatible)', async () => {
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
 
-    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).exists())
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).exists())
       .toBe(false);
     const writeEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
-    ) as { personaPack?: unknown };
-    expect(writeEnvelope.personaPack).toBeUndefined();
-    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
-      .not.toContain('## Persona pack');
+    ) as { humanPack?: unknown };
+    // `null`, not absent: the envelope states the pack was looked for and not
+    // found, so a reader can tell "no gestures" from "field never existed".
+    expect(writeEnvelope.humanPack).toBeNull();
 
     await completeStage(runId, WRITE_STAGE, {
       title: 'Lương tăng, quyền chọn giảm',
@@ -1065,41 +1081,37 @@ describe('Writer v2 — end to end', () => {
     });
     await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
     const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
-    expect(done!.personaPackHash).toBeUndefined();
+    expect(done!.humanPackHash).toBeUndefined();
   });
 
-  test('WRITE stages persona-pack.md and adds a Persona pack prompt section when the file exists', async () => {
-    const personaMarkdown = [
-      '# Persona Pack — Danh tính narrator kênh',
-      '<!-- version: 1 -->',
-      '',
-      '## 1. Bộ quan điểm (stance registry)',
-      '### 1.1 Quỹ dự phòng bao lâu — `[ĐÃ DUYỆT]`',
-      '**Lập trường kênh**: 1 năm chi phí sinh hoạt.',
-    ].join('\n');
+  test('WRITE stages the human pack filtered to APPROVED Phần B entries, craft region intact', async () => {
     mkdirSync(join(dir, 'writer'), { recursive: true });
-    writeFileSync(join(dir, 'writer', 'persona-pack.md'), personaMarkdown, 'utf8');
-    // Only APPROVED entries survive staging (T1) — with the single stance
-    // above marked `[ĐÃ DUYỆT]`, the filtered pack keeps the shared preamble
-    // and that entry, re-serialized (not a byte-identical copy of the file).
-    const filtered = filterApprovedPersonaMarkdown(personaMarkdown)!;
-    expect(filtered.approvedCount).toBe(1);
+    writeFileSync(join(dir, 'writer', 'human-pack.md'), HUMAN_PACK_MARKDOWN, 'utf8');
+    // The fixture has B1 approved and B2 pending: exactly one stance survives,
+    // and all eight gestures survive unconditionally because they are craft.
+    expect(HUMAN_PACK_STAGED.approvedCount).toBe(1);
 
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
 
-    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).text())
-      .toBe(filtered.markdown);
+    const staged = await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).text();
+    expect(staged).toBe(HUMAN_PACK_STAGED.markdown);
+    for (const id of HUMAN_PACK_GESTURE_IDS) expect(staged).toContain(`## Cử chỉ: ${id} —`);
+    expect(staged).toContain('quỹ dự phòng nên là 1 năm');
+    expect(staged).not.toContain('bất động sản luôn an toàn');
+    // A gesture is a movement, never a claim: it must not license anything.
+    expect(HUMAN_PACK_STAGED.citableText).not.toContain('Cử chỉ');
+    expect(HUMAN_PACK_STAGED.citableText).toContain('quỹ dự phòng nên là 1 năm');
+
     const writeEnvelope = JSON.parse(
       await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
-    ) as { personaPack: { contentFile: string; path: string; hash: string } };
-    expect(writeEnvelope.personaPack.contentFile).toBe('input/persona-pack.md');
-    expect(writeEnvelope.personaPack.path).toBe('persona-pack.md');
-    expect(writeEnvelope.personaPack.hash).toBe(hashPersonaPack(filtered.markdown));
-    const prompt = await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text();
-    expect(prompt).toContain('## Persona pack');
-    expect(prompt).toContain('stance registry');
+    ) as { humanPack: { contentFile: string; path: string; hash: string } };
+    expect(writeEnvelope.humanPack.contentFile).toBe('input/human-pack.md');
+    expect(writeEnvelope.humanPack.path).toBe('human-pack.md');
+    expect(writeEnvelope.humanPack.hash).toBe(hashHumanPack(HUMAN_PACK_STAGED.markdown));
+    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
+      .toContain('## Human pack');
 
     await completeStage(runId, WRITE_STAGE, {
       title: 'Lương tăng, quyền chọn giảm',
@@ -1109,33 +1121,39 @@ describe('Writer v2 — end to end', () => {
     });
     await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
     const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
-    expect(done!.personaPackHash).toBe(writeEnvelope.personaPack.hash);
+    expect(done!.humanPackHash).toBe(writeEnvelope.humanPack.hash);
   });
 
-  test('a persona pack with zero APPROVED entries runs exactly like no persona pack at all', async () => {
-    // No `[ĐÃ DUYỆT]`/`[APPROVED]` marker anywhere — under T2 this stays
-    // PENDING (stance and experience alike), so nothing survives filtering.
-    const pendingOnlyMarkdown = [
-      '# Persona Pack — chưa có gì được duyệt',
-      '### 1.1 Một lập trường chưa duyệt',
+  test('zero approved stances still stages the gestures and cites nothing (differs from the retired persona pack)', async () => {
+    // No `[ĐÃ DUYỆT]`/`[APPROVED]` marker anywhere. Under the persona pack this
+    // collapsed into "no pack at all"; the human pack's craft half is
+    // unconditional, so the file is still staged — it just licenses nothing.
+    const pendingOnly = [
+      '# Human pack (test fixture)',
+      '<!-- version: 2 -->',
+      '',
+      '## Phần A — Cử chỉ',
+      '',
+      ...HUMAN_PACK_GESTURE_IDS.map((id) => `## Cử chỉ: ${id} — Tên\nGhi chú.\n`),
+      '## Phần B — Lập trường kênh',
+      '',
+      '### B1 Một lập trường chưa duyệt — `[CHỜ CHỦ KÊNH DUYỆT]`',
+      '',
       '**Lập trường kênh**: Với tôi, đây là một lựa chọn.',
     ].join('\n');
     mkdirSync(join(dir, 'writer'), { recursive: true });
-    writeFileSync(join(dir, 'writer', 'persona-pack.md'), pendingOnlyMarkdown, 'utf8');
-    expect(filterApprovedPersonaMarkdown(pendingOnlyMarkdown)).toBeNull();
+    writeFileSync(join(dir, 'writer', 'human-pack.md'), pendingOnly, 'utf8');
+    const filtered = filterApprovedNarratorMarkdown(pendingOnly);
+    expect(filtered.approvedCount).toBe(0);
+    expect(filtered.citableText).toBe('');
 
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);
     await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.phase === 'WRITE');
 
-    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'persona-pack.md')).exists())
-      .toBe(false);
-    const writeEnvelope = JSON.parse(
-      await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'envelope.json')).text(),
-    ) as { personaPack?: unknown };
-    expect(writeEnvelope.personaPack).toBeUndefined();
-    expect(await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'prompt.md')).text())
-      .not.toContain('## Persona pack');
+    const staged = await Bun.file(join(itemRunDir(runId, WRITE_STAGE), 'input', 'human-pack.md')).text();
+    for (const id of HUMAN_PACK_GESTURE_IDS) expect(staged).toContain(`## Cử chỉ: ${id} —`);
+    expect(staged).not.toContain('đây là một lựa chọn');
 
     await completeStage(runId, WRITE_STAGE, {
       title: 'Lương tăng, quyền chọn giảm',
@@ -1145,9 +1163,8 @@ describe('Writer v2 — end to end', () => {
     });
     await completeStage(runId, EDIT_REVIEW_STAGE, { defects: [] });
     const done = await waitUntil(() => getWriterRunV2(runId, dir), (r) => r?.status === 'DONE');
-    expect(done!.personaPackHash).toBeUndefined();
+    expect(done!.humanPackHash).toBe(hashHumanPack(filtered.markdown));
   });
-
   test('a fabricated case never reaches DONE — it ends FAILED_GATE', async () => {
     const runId = await startRun();
     await completeStage(runId, STUDY_STAGE, STUDY_RESULT);

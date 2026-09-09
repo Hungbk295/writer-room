@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AppError } from './errors.ts';
 import { ArtifactStore } from './artifacts.ts';
-import { SpyStore } from './store.ts';
+import { SpyStore, type SearchVideoCacheRow, type VideoCommentRecord } from './store.ts';
 import { OperationManager } from './operations.ts';
 import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
@@ -101,6 +101,17 @@ export interface GlobalVideoSearchInput {
   language?: string;
   /** YouTube ISO 3166-1 alpha-2 region hint. Defaults to Vietnam. */
   region?: string;
+  /**
+   * Cache freshness policy. `if_stale` (default) serves the cached result set
+   * when it is within `maxAgeHours`, otherwise calls the provider again.
+   * `never` serves any cached result regardless of age (only a true cache
+   * miss calls the provider) — use it when a keyword was already searched
+   * and stable channel/video discovery matters more than fresh view counts.
+   * `always` ignores cache and always calls the provider.
+   */
+  refresh?: 'never' | 'if_stale' | 'always';
+  /** Cache TTL in hours for `refresh: 'if_stale'`. Defaults to 24. */
+  maxAgeHours?: number;
 }
 
 export interface GlobalVideoSearchResult {
@@ -112,6 +123,18 @@ export interface GlobalVideoSearchResult {
   /** True only when Data API received relevanceLanguage/regionCode hints. */
   localeHintsApplied: boolean;
   fallbackReason: string | null;
+  /**
+   * Provenance of this response. `status` is `'hit'` when served entirely
+   * from `search_query_cache`/`search_video_cache` without calling any
+   * provider; any other value means the provider was called just now (and
+   * the result was persisted for next time). `ageSeconds` is the age of the
+   * cache row that was used (`hit`) or found-but-rejected (every other
+   * status), or null when there was no prior cache row at all (`miss`).
+   */
+  cache: {
+    status: 'hit' | 'stale' | 'insufficient_limit' | 'miss' | 'forced';
+    ageSeconds: number | null;
+  };
   videos: Array<{
     videoId: string;
     title: string;
@@ -121,6 +144,15 @@ export interface GlobalVideoSearchResult {
     durationSec: number;
     publishedAt: string | null;
   }>;
+}
+
+/** Cache key normalization: whitespace/case only — must stay provider-agnostic. */
+function normalizeSearchQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function cacheAgeSecondsOf(fetchedAtIso: string, nowMs: number): number {
+  return Math.max(0, Math.round((nowMs - Date.parse(fetchedAtIso)) / 1000));
 }
 
 function defaultConfigPath(dataRoot: string): string {
@@ -943,6 +975,15 @@ export class SpyService {
    * `searchVideosForSourcePack`: the Source Pack picker remains yt-dlp-only,
    * while this global search prefers the configured Data API and reports the
    * provider/fallback decision in every response.
+   *
+   * Every call that reaches a provider persists its result to
+   * `search_query_cache`/`search_video_cache` (see the schema comment in
+   * store.ts for why those are separate from video_snapshots/spy_runs), and
+   * every call first checks that cache so a repeated keyword does not spend
+   * `search.list` quota (100/day) again. Per-video stats are additionally
+   * deduplicated against `general` quota (`videos.list`) inside the Data API
+   * branch: a video already known and fresh is not re-fetched even when the
+   * keyword itself is new.
    */
   async globalVideoSearch(input: GlobalVideoSearchInput): Promise<GlobalVideoSearchResult> {
     const query = typeof input.query === 'string' ? input.query.trim() : '';
@@ -969,9 +1010,68 @@ export class SpyService {
     if (!/^[A-Z]{2}$/.test(region)) {
       throw new AppError('invalid_input', 'region phải là mã ISO 3166-1 alpha-2 gồm 2 chữ cái');
     }
+    const refresh = input.refresh ?? 'if_stale';
+    if (refresh !== 'never' && refresh !== 'if_stale' && refresh !== 'always') {
+      throw new AppError('invalid_input', "refresh phải là 'never' | 'if_stale' | 'always'");
+    }
+    const rawMaxAgeHours = input.maxAgeHours ?? 24;
+    if (typeof rawMaxAgeHours !== 'number' || !Number.isFinite(rawMaxAgeHours) || rawMaxAgeHours <= 0) {
+      throw new AppError('invalid_input', 'max_age_hours phải là số dương');
+    }
+    const maxAgeMs = rawMaxAgeHours * 3_600_000;
 
     const base = { query, limit, language, region };
+    const queryNorm = normalizeSearchQuery(query);
     const dataApiAvailable = this.dataApiAdapter === null || Boolean(this.config.youtubeDataApiKey?.trim());
+    const providerBranch: 'youtube_data_api' | 'ytdlp' = dataApiAvailable ? 'youtube_data_api' : 'ytdlp';
+
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const cached = this.store.getSearchQueryCache(queryNorm, language, region, providerBranch);
+    const cacheAgeMs = cached ? nowMs - Date.parse(cached.fetchedAt) : null;
+    const cacheAgeSeconds = cacheAgeMs === null ? null : Math.round(cacheAgeMs / 1000);
+
+    const servableFromCache = Boolean(
+      cached
+      && cached.limitRequested >= limit
+      && refresh !== 'always'
+      && (refresh === 'never' || (cacheAgeMs !== null && cacheAgeMs <= maxAgeMs)),
+    );
+
+    if (servableFromCache && cached) {
+      const ids = cached.videoIds.slice(0, limit);
+      const rows = this.store.getSearchVideoCacheRows(ids);
+      return {
+        ...base,
+        providerUsed: cached.providerUsed,
+        localeHintsApplied: cached.localeHintsApplied,
+        fallbackReason: cached.fallbackReason,
+        cache: { status: 'hit', ageSeconds: cacheAgeSeconds },
+        videos: ids
+          .map((id) => rows.get(id))
+          .filter((row): row is SearchVideoCacheRow => Boolean(row))
+          .map((row) => ({
+            videoId: row.sourceVideoId,
+            title: row.title,
+            channelTitle: row.channelTitle,
+            canonicalUrl: row.canonicalUrl,
+            viewCount: row.viewCount,
+            durationSec: row.durationSec,
+            publishedAt: row.publishedAt,
+          })),
+      };
+    }
+
+    const missStatus: GlobalVideoSearchResult['cache']['status'] = !cached
+      ? 'miss'
+      : cached.limitRequested < limit
+        ? 'insufficient_limit'
+        : refresh === 'always'
+          ? 'forced'
+          : 'stale';
+    const cache = { status: missStatus, ageSeconds: cacheAgeSeconds };
+
+    let live: GlobalVideoSearchResult;
     if (dataApiAvailable) {
       try {
         if (!this.countingApi.search) {
@@ -989,12 +1089,13 @@ export class SpyService {
           (hit): hit is typeof hit & { videoId: string } => hit.kind === 'video' && Boolean(hit.videoId),
         );
         const videoIds = [...new Set(hits.map((hit) => hit.videoId))];
-        const statistics = await this.countingApi.fetchVideoStatistics(videoIds);
-        return {
+        const statistics = await this.resolveVideoStatisticsWithCache(videoIds, refresh, maxAgeMs, nowMs);
+        live = {
           ...base,
           providerUsed: 'youtube_data_api',
           localeHintsApplied: true,
           fallbackReason: null,
+          cache,
           videos: hits.map((hit) => {
             const stats = statistics.get(hit.videoId);
             return {
@@ -1011,21 +1112,112 @@ export class SpyService {
       } catch (error) {
         // Input validation is caller-owned and must never silently change provider.
         if (error instanceof AppError && error.code === 'invalid_input') throw error;
-        return this.globalVideoSearchWithYtDlp(
+        live = await this.globalVideoSearchWithYtDlp(
           base,
           error instanceof AppError
             ? `youtube_data_api_${error.code}`
             : 'youtube_data_api_provider_failure',
+          cache,
         );
       }
+    } else {
+      live = await this.globalVideoSearchWithYtDlp(base, 'youtube_data_api_not_configured', cache);
     }
 
-    return this.globalVideoSearchWithYtDlp(base, 'youtube_data_api_not_configured');
+    this.store.upsertSearchQueryCache({
+      queryNorm,
+      language,
+      region,
+      providerUsed: live.providerUsed,
+      limitRequested: limit,
+      localeHintsApplied: live.localeHintsApplied,
+      fallbackReason: live.fallbackReason,
+      videoIds: live.videos.map((video) => video.videoId),
+      fetchedAt: nowIso,
+    });
+    for (const video of live.videos) {
+      this.store.upsertSearchVideoCache({
+        sourceVideoId: video.videoId,
+        title: video.title,
+        channelTitle: video.channelTitle,
+        canonicalUrl: video.canonicalUrl,
+        viewCount: video.viewCount,
+        durationSec: video.durationSec,
+        publishedAt: video.publishedAt,
+        publishedAtKnown: video.publishedAt !== null,
+        providerUsed: live.providerUsed,
+        fetchedAt: nowIso,
+        firstSeenAt: nowIso,
+      });
+    }
+    return live;
+  }
+
+  /**
+   * Skips `videos.list` (general quota) for video ids we already have a
+   * fresh Data-API-sourced cache row for. `refresh: 'always'` disables reuse
+   * entirely; `refresh: 'never'` reuses any cached row regardless of age.
+   * yt-dlp-sourced cache rows are never reused here — they lack the
+   * publishedAt precision this branch's callers expect.
+   */
+  private async resolveVideoStatisticsWithCache(
+    videoIds: string[],
+    refresh: 'never' | 'if_stale' | 'always',
+    maxAgeMs: number,
+    nowMs: number,
+  ): Promise<Map<string, {
+    title: string | null;
+    channelTitle: string | null;
+    viewCount: number | null;
+    durationSec: number | null;
+    publishedAt: string | null;
+  }>> {
+    const result = new Map<string, {
+      title: string | null;
+      channelTitle: string | null;
+      viewCount: number | null;
+      durationSec: number | null;
+      publishedAt: string | null;
+    }>();
+    let needFetch = videoIds;
+    if (refresh !== 'always' && videoIds.length > 0) {
+      const cachedRows = this.store.getSearchVideoCacheRows(videoIds);
+      const reusable = new Set<string>();
+      for (const id of videoIds) {
+        const row = cachedRows.get(id);
+        if (!row || row.providerUsed !== 'youtube_data_api') continue;
+        const fresh = refresh === 'never' || (nowMs - Date.parse(row.fetchedAt)) <= maxAgeMs;
+        if (!fresh) continue;
+        reusable.add(id);
+        result.set(id, {
+          title: row.title,
+          channelTitle: row.channelTitle,
+          viewCount: row.viewCount,
+          durationSec: row.durationSec,
+          publishedAt: row.publishedAt,
+        });
+      }
+      needFetch = videoIds.filter((id) => !reusable.has(id));
+    }
+    if (needFetch.length > 0) {
+      const fetched = await this.countingApi.fetchVideoStatistics(needFetch);
+      for (const [id, stats] of fetched) {
+        result.set(id, {
+          title: stats.title,
+          channelTitle: stats.channelTitle,
+          viewCount: stats.viewCount,
+          durationSec: stats.durationSec,
+          publishedAt: stats.publishedAt,
+        });
+      }
+    }
+    return result;
   }
 
   private async globalVideoSearchWithYtDlp(
     base: Pick<GlobalVideoSearchResult, 'query' | 'limit' | 'language' | 'region'>,
     fallbackReason: string,
+    cache: GlobalVideoSearchResult['cache'],
   ): Promise<GlobalVideoSearchResult> {
     if (!this.youtube.searchVideos) {
       throw new AppError('capability_missing', 'yt-dlp adapter không hỗ trợ tìm video');
@@ -1036,6 +1228,7 @@ export class SpyService {
       providerUsed: 'ytdlp',
       localeHintsApplied: false,
       fallbackReason,
+      cache,
       videos: videos.map((video) => ({
         videoId: video.sourceVideoId,
         title: video.title,
@@ -1060,6 +1253,53 @@ export class SpyService {
       throw new AppError('capability_missing', 'Data API adapter không hỗ trợ comment');
     }
     const threads = await this.countingApi.fetchVideoComments(input);
+
+    // Persist — this used to be fetch-and-discard: commentThreads.list ran,
+    // the response was handed back to the caller, and nothing landed in the
+    // DB. Comments are the only source of the audience's own words; everything
+    // else in the corpus is the creator's script.
+    //
+    // channelId is resolved ONLY when the caller's own scope already names a
+    // known channels row — never guessed from a video's title or its
+    // spy_run, so an unattributed comment can be excluded from channel-level
+    // stats instead of silently joined into the wrong channel (see the
+    // video_snapshots.channel_id schema comment for the incident that rule
+    // exists to prevent).
+    const resolvedChannelId = input.channelId ? (this.store.getChannel(input.channelId)?.id ?? null) : null;
+    const fetchedAt = new Date().toISOString();
+    const rows: VideoCommentRecord[] = [];
+    for (const thread of threads) {
+      const videoId = thread.videoId ?? input.videoId ?? null;
+      if (!videoId) continue; // no video to attach this comment to — do not fabricate one
+      rows.push({
+        id: thread.commentId,
+        sourceVideoId: videoId,
+        channelId: resolvedChannelId,
+        parentCommentId: null,
+        authorDisplayName: thread.authorDisplayName,
+        text: thread.text,
+        likeCount: thread.likeCount,
+        publishedAt: thread.publishedAt,
+        updatedAt: thread.updatedAt,
+        fetchedAt,
+      });
+      for (const reply of thread.replies) {
+        rows.push({
+          id: reply.commentId,
+          sourceVideoId: videoId,
+          channelId: resolvedChannelId,
+          parentCommentId: thread.commentId,
+          authorDisplayName: reply.authorDisplayName,
+          text: reply.text,
+          likeCount: reply.likeCount,
+          publishedAt: reply.publishedAt,
+          updatedAt: null,
+          fetchedAt,
+        });
+      }
+    }
+    if (rows.length > 0) this.store.upsertVideoComments(rows);
+
     return {
       scope: input.videoId ? { videoId: input.videoId } : { channelId: input.channelId },
       order: input.order ?? 'relevance',
@@ -1067,6 +1307,7 @@ export class SpyService {
       totalReplies: threads.reduce((sum, thread) => sum + thread.totalReplyCount, 0),
       threads,
       quotaUnitsApprox: 1,
+      saved: rows.length,
     };
   }
 
