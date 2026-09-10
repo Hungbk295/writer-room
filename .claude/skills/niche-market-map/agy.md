@@ -46,7 +46,10 @@ văn bản và số liệu riêng, không giải thích vì sao view khác.
 
 ## 3. Assignment read-and-flag
 
-Coordinator điền giá trị thật theo contracts.md, không để worker tự đoán đường dẫn:
+Coordinator điền giá trị thật theo contracts.md, không để worker tự đoán đường dẫn.
+craftMode lấy từ run.json đã chốt ở Phase 0 (SKILL.md, mục Hỏi và ghi nhận); giá trị
+`off` thì bỏ toàn bộ dòng Craft mode/Pack refs/mapping trong template dưới, chỉ giữ
+phần phân loại chủ đề. GSL không tự đổi craftMode khi soạn assignment:
 
 ```text
 taskId / phase / deadline / output directory

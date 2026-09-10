@@ -96,7 +96,10 @@ thế đã thoả thuận, không lặng lẽ bỏ.
 - Phép chia thật: K, S đo được, công thức áp dụng, G và wave plan nếu có.
 - Mỗi group: groupId, clusterIds, keywordIds, budget (query/video/transcript),
   criterionIds được giao, gslRuntime (kind: teammate | orca, model, run/team/
-  terminal/dispatch IDs thực), rounds[] { round, gapRequestPath, reportPath, status }.
+  terminal/dispatch IDs thực), rounds[] { round, gapRequestPath, reportPath, status },
+  status: open | accepted | partial. Leader chỉ ghi accepted/partial sau khi tự kiểm
+  điều kiện chấp nhận (xem SKILL.md, mục Leader và GSL); rounds[].status là trạng thái
+  của từng vòng, status ở đây là trạng thái cuối cùng của cả group.
 
 ### Thư mục group
 

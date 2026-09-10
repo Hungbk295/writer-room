@@ -51,6 +51,8 @@ Ghi vào `run.json` trước khi fan-out:
 - `craftMode: bootstrap | enhance | off`, input pack theo contracts.md.
   Nếu người dùng muốn gắn flag: chưa có đủ pack đúng phạm vi thì bootstrap,
   đã có đủ thì enhance; off chỉ khi không yêu cầu thu craft.
+  Giá trị này chốt qua cơ chế hỏi ở Phase 0 (mục Hỏi và ghi nhận) và quyết định
+  assignment Phase 3 có nhánh read-and-flag/craft flag hay không.
 - Đường dẫn output bền vững, task owner, dependency và ngân sách từng worker.
 - Tham chiếu report-spec.md đã chốt ở Phase 0 và groups.json sau Phase 2 theo
   contracts.md; sổ budget cấp run, cấp group và phần dự phòng cho vòng gap.
@@ -60,7 +62,8 @@ báo cáo tiếng Việt, nhưng quote giữ tiếng Anh và mô tả ứng viê
 
 Không suy niche chỉ từ ngôn ngữ: finance/vi và pov-finance/en là hai phạm vi khác nhau.
 Dùng scope đã được người dùng xác định; thiếu lựa chọn làm đổi phạm vi thì hỏi trước
-phần việc phụ thuộc, tiếp tục kiểm corpus và input sẵn có.
+phần việc phụ thuộc theo cơ chế ở Phase 0 (mục Hỏi và ghi nhận), tiếp tục kiểm corpus
+và input sẵn có.
 
 ## Phase và fan-out
 
@@ -95,6 +98,39 @@ này, không bằng cảm nhận "chưa đủ sâu".
 Tiêu chí phải kiểm được bằng record/coverage. Yêu cầu kiểu "giải thích vì sao kênh X
 thắng" nằm ngoài ranh giới skill: leader nói rõ, đề xuất dạng mô tả thay thế ("liệt
 kê biến thể keyword kênh X dùng, kèm nguồn") và ghi vào mục ngoài-phạm-vi của spec.
+
+### Hỏi và ghi nhận
+
+Hỏi từng câu một, không gộp nhiều quyết định vào một lượt. Dùng AskUserQuestion khi
+runtime hỗ trợ; runtime khác hỏi bằng một câu văn bản rõ ràng và chờ trả lời, ghi lại
+cách đã hỏi nếu không phải AskUserQuestion. Mỗi câu nêu sự kiện đã biết (từ corpus,
+run cũ, pack hiện có) và một đề xuất cụ thể nếu đã có đủ căn cứ để đề xuất; chưa đủ
+căn cứ thì hỏi mở, không đoán đại một đề xuất cho có. Hỏi xong một câu thì dừng tại
+đó — không tự suy đoán câu trả lời, không hỏi tiếp câu khác, không sang Phase 1 trước
+khi người dùng trả lời câu đang treo.
+
+Trả lời tới đâu, ghi ngay vào report-spec.md hoặc run.json tới đó, trước khi hỏi câu
+kế tiếp; không giữ trong hội thoại chờ chốt hết mọi câu mới ghi một lần. Câu kế tiếp
+chọn theo phần còn thiếu sau câu trả lời vừa ghi: người dùng tắt craft thì bỏ các câu
+về pack scope; ranh giới niche còn mơ hồ thì hỏi ranh giới trước khi hỏi ngưỡng
+coverage. Không hỏi lại điều đã có trong corpus, run cũ hoặc report-spec cũ.
+
+craftMode chốt ở đây quyết định phần việc Phase 3: `off` thì assignment vẫn giao
+collect và đọc/phân loại chủ đề, nhưng bỏ phần craft flag và pack input; `bootstrap`
+hoặc `enhance` thì giữ nhánh read-and-flag kèm pack input theo contracts.md. Từ Phase
+1 trở đi, coordinator đọc report-spec.md/run.json đã ghi; không hỏi lại hoặc tự đoán
+lại giá trị đã chốt.
+
+Yêu cầu ngoài report-spec.md phát sinh sau khi đã fan-out — kể cả câu hỏi nhân quả
+như "giải thích vì sao kênh X thắng", hay lựa chọn làm đổi phạm vi niche/ngôn ngữ ở
+mục Phạm vi một đợt — đi qua cùng cơ chế trên: một câu, dừng chờ trả lời, rồi ghi
+ngay vào mục ngoài-phạm-vi của report-spec.md kèm dạng mô tả thay thế đã thoả thuận.
+Không lặng lẽ đổi scope hay nhận thêm tiêu chí giữa chừng mà không quay lại
+report-spec.md.
+
+`runMode: daily` mặc định tái dùng report-spec.md và craftMode của run trước, không
+mở lại mục này. Muốn đổi scope, ngưỡng hoặc craftMode cho run daily vẫn phải qua đúng
+cơ chế trên trước khi áp dụng, không âm thầm kế thừa giá trị cũ khi đã có thay đổi.
 
 ### Chia group
 
@@ -139,6 +175,12 @@ Kiểm hai tầng: GSL kiểm quote/locator/hash/scope/coverage cho mọi record
 trước khi nộp; leader spot-check mỗi group k = max(3, 10% số record), kiểm schema/
 scope/pack refs toàn cục và đối chiếu tiêu chí. Spot-check trượt thì trả nguyên group
 cho GSL kiểm lại trong attempt mới; leader không sửa record hộ.
+
+Trước khi ghi một group là accepted, leader tự kiểm: mọi criterionId giao cho group
+có trạng thái covered/partial/not_covered kèm dẫn chứng, mọi gap-request đã có
+group-report round kế tiếp trả lời hoặc group đã đóng PARTIAL với danh sách tiêu chí
+chưa phủ, và spot-check gần nhất của group không còn trượt. Thiếu một điều kiện thì
+chưa ghi accepted; quay lại vòng gap hoặc đóng PARTIAL rõ ràng trong groups.json.
 
 ### Quy tắc giao việc
 
@@ -248,12 +290,20 @@ record được sửa hoặc không còn dùng được. Không bắt buộc m�
 spy-history.md chỉ bổ sung mục phạm vi/ngày/run và đường dẫn bằng chứng mới, không ghi
 kết luận chiến lược. Không tự stage/commit; dữ liệu ignored vẫn phải báo rõ đường dẫn.
 
-## Điều kiện hoàn thành
+## Điều kiện hoàn thành — tự kiểm trước khi chốt
+
+Trước khi Leader viết report.md ở Phase 5 và gán trạng thái COMPLETE/PARTIAL cho run,
+tự kiểm từng dòng dưới đây trên trạng thái thật của run — không suy diễn "chắc ổn".
+Thiếu một dòng thì quay lại xử lý phần thiếu hoặc ghi rõ vào phần thiếu của báo cáo;
+không viết report.md trước khi tự kiểm xong danh sách này:
 
 - Các task đã có trạng thái COMPLETE/PARTIAL/FAILED cùng số record đã kiểm và phần thiếu.
   Exit 0/file tồn tại không đủ để coi task hoàn thành.
 - Mỗi tiêu chí report-spec có trạng thái covered/partial/not_covered kèm record dẫn
   chứng hoặc phần thiếu; mỗi group có round log và trạng thái chấp nhận của leader.
+- report-spec.md không còn tiêu chí nào chưa được người dùng xác nhận qua mục Hỏi và
+  ghi nhận; mọi yêu cầu ngoài-phạm-vi phát sinh trong run đã ghi vào mục ngoài-phạm-vi,
+  không còn treo trong hội thoại chưa chuyển vào file.
 - Keyword/title nguồn đều lần về query/video; không lẫn title sáng tác.
 - Mọi craft flag khớp quote/locator, đúng scope và đúng pack snapshot (hoặc bootstrap).
 - Bàn giao chỉ có record đã kiểm; record thiếu bằng chứng nằm riêng trong danh sách lỗi.
