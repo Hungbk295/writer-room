@@ -8,16 +8,24 @@ Combines:
 """
 
 import json
+import os
 import subprocess
+import sys
 import time
 import urllib.parse
 from datetime import datetime
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from pathlib import Path
 
-SPREADSHEET_ID = "1E70vwo3h91iB_sxazuBd6B5SwhYanfWhq8z3SJaspWs"
-SERVICE_ACCOUNT_FILE = "service_account.json"
-VIDIQ_SERVER_SCRIPT = "scripts/vidiq-mcp-server.cjs"
+scripts_dir = str(Path(__file__).resolve().parent)
+repo_root = Path(__file__).resolve().parent.parent
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
+
+from google_auth import get_sheets_service
+
+SPREADSHEET_ID = os.environ.get("SPY_SHEET_ID", "1E70vwo3h91iB_sxazuBd6B5SwhYanfWhq8z3SJaspWs")
+VIDIQ_SERVER_SCRIPT = str(repo_root / "scripts" / "vidiq-mcp-server.cjs")
+
 
 def call_vidiq(tool_name: str, arguments: dict) -> dict:
     """Call vidIQ tool via local stdio MCP script"""
@@ -43,12 +51,6 @@ def call_vidiq(tool_name: str, arguments: dict) -> dict:
             return json.loads(stdout[idx:])
         raise ValueError(f"Could not parse JSON from vidIQ output: {stdout[:300]}")
 
-def get_sheets_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return build("sheets", "v4", credentials=creds)
 
 def read_channels_from_sheet(service) -> list:
     res = service.spreadsheets().values().get(

@@ -10,19 +10,18 @@ Writes to Google Sheet 'POV-Finance':
 import os
 import re
 import subprocess
+import sys
 import time
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from pathlib import Path
 
-SPREADSHEET_ID = "1E70vwo3h91iB_sxazuBd6B5SwhYanfWhq8z3SJaspWs"
-SERVICE_ACCOUNT_FILE = "service_account.json"
+scripts_dir = str(Path(__file__).resolve().parent)
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
 
-def get_sheets_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return build("sheets", "v4", credentials=creds)
+from google_auth import get_sheets_service
+
+SPREADSHEET_ID = os.environ.get("SPY_SHEET_ID", "1E70vwo3h91iB_sxazuBd6B5SwhYanfWhq8z3SJaspWs")
+
 
 def fetch_clean_hook_transcript(video_id: str, max_seconds: int = 50) -> dict:
     """Fetch subtitle using yt-dlp and extract clean 45-50s transcript"""

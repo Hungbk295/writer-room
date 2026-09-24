@@ -3,6 +3,10 @@ node_modules/
 dist/
 build/
 scratch/
+__pycache__/
+*.pyc
+*.pyo
+
 
 # Run data — evidence gốc, không commit
 writer-room-data/
@@ -28,6 +32,7 @@ binaries/
 
 # Secrets & Service Accounts
 *service_account*.json
+!service_account.json.example
 *.pem
 *.key
 .env*
