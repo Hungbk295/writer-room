@@ -9,7 +9,7 @@ import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
 import { HarvestService } from './harvest.ts';
 
-import { QuotaLedger } from './quota.ts';
+import { QuotaLedger, KeyPool, keyId } from './quota.ts';
 import { DiscoveryService } from './discovery.ts';
 import { nicheConfigSchema, NICHE_TEMPLATE, scoreChannelFit, type NicheConfig } from './niche.ts';
 import { buildSourcePack } from './source-pack.ts';
@@ -176,6 +176,26 @@ async function loadConfig(dataRoot: string, override?: SpyConfig): Promise<SpyCo
   });
 }
 
+/**
+ * Merge youtubeDataApiKey (single, backward compat) và youtubeDataApiKeys (array)
+ * thành một danh sách deduplicated. Single key được thêm vào đầu nếu chưa có.
+ */
+function resolveApiKeys(config: SpyConfig): string[] {
+  const keys: string[] = [];
+  // Array keys có ưu tiên
+  if (config.youtubeDataApiKeys?.length) {
+    keys.push(...config.youtubeDataApiKeys.filter((k) => k.trim().length > 0));
+  }
+  // Single key backward compat — thêm nếu chưa có
+  if (config.youtubeDataApiKey?.trim()) {
+    const single = config.youtubeDataApiKey.trim();
+    if (!keys.includes(single)) {
+      keys.unshift(single);
+    }
+  }
+  return keys;
+}
+
 interface OutlierRow {
   videoId: string;
   viewCount?: number | null;
@@ -274,9 +294,10 @@ export class SpyService {
    * Adapter đã bọc QuotaCountingDataApi. MỌI call Data API phải đi qua field này,
    * nếu không ledger sẽ tưởng còn quota rồi ăn 403 thật (§2.2).
    */
-  private readonly countingApi: YouTubeDataApiPort;
+  private readonly countingApi: QuotaCountingDataApi;
   private readonly dataApiAdapter: YouTubeDataApiAdapter | null;
   private readonly llm: LlmPort;
+  private keyPool: KeyPool;
 
   constructor(opts: SpyServiceOptions) {
     this.dataRoot = resolve(opts.dataRoot);
@@ -300,6 +321,11 @@ export class SpyService {
     this.llm = opts.llm ?? new DeterministicStubLlm();
     this.quota = new QuotaLedger(this.store);
 
+    // Build key pool from config — merge youtubeDataApiKeys + youtubeDataApiKey
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    // Wire pool vào ledger để aggregate remaining/canAfford/status dùng đúng limit tổng
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+
     // MỌI adapter đều được bọc — kể cả adapter inject từ test.
     //
     // Trước đây adapter inject được miễn bọc để tránh double-count, nhưng
@@ -312,7 +338,12 @@ export class SpyService {
     // fake do test truyền vào TỰ NÓ là capability nên hasKey luôn true.
     const countingApi = opts.dataApi
       ? new QuotaCountingDataApi(opts.dataApi, this.quota, () => true)
-      : new QuotaCountingDataApi(this.dataApi, this.quota, () => Boolean(this.config.youtubeDataApiKey?.trim()));
+      : new QuotaCountingDataApi(this.dataApi, this.quota, () => !this.keyPool.isEmpty || Boolean(this.config.youtubeDataApiKey?.trim()));
+    // Wire multi-key rotation
+    if (!opts.dataApi && this.dataApiAdapter && !this.keyPool.isEmpty) {
+      this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+      countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+    }
     this.countingApi = countingApi;
 
     this.acquisition = new AcquisitionService(
@@ -357,7 +388,17 @@ export class SpyService {
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
     await this.artifacts.initialize();
     this.config = await loadConfig(this.dataRoot, this.config);
-    this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    // Refresh key pool from config
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+    if (this.dataApiAdapter) {
+      if (!this.keyPool.isEmpty) {
+        this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+        this.countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+      } else {
+        this.dataApiAdapter.setApiKey(this.config.youtubeDataApiKey);
+      }
+    }
     this.harvest.setConcurrency(this.config.concurrency);
     this.operations.reconcile();
     await importTopicFiles(this.dataRoot, this.store);
@@ -653,10 +694,15 @@ export class SpyService {
 
   /** Public settings view — API key is masked. */
   getPublicConfig() {
+    const allKeys = resolveApiKeys(this.config);
     const key = this.config.youtubeDataApiKey?.trim() || '';
     return {
-      hasApiKey: key.length > 0,
+      hasApiKey: key.length > 0 || allKeys.length > 0,
       apiKeyLast4: key.length >= 4 ? key.slice(-4) : null,
+      /** Số key hiện tại trong pool. */
+      totalApiKeys: allKeys.length,
+      /** Last4 của mỗi key trong pool. */
+      apiKeyIds: allKeys.map((k) => keyId(k)),
       concurrency: this.config.concurrency ?? 1,
       sampling: samplingPolicySchema.parse(this.config.sampling ?? {}),
     };
@@ -664,6 +710,7 @@ export class SpyService {
 
   async updateConfig(patch: {
     youtubeDataApiKey?: string | null;
+    youtubeDataApiKeys?: string[];
     concurrency?: number;
     sampling?: Partial<SamplingPolicy>;
   }): Promise<SpyConfig> {
@@ -679,18 +726,35 @@ export class SpyService {
       const value = patch.youtubeDataApiKey?.trim() || '';
       next.youtubeDataApiKey = value || undefined;
     }
+    if (patch.youtubeDataApiKeys !== undefined) {
+      next.youtubeDataApiKeys = patch.youtubeDataApiKeys.filter((k) => k.trim().length > 0);
+    }
     this.config = spyConfigSchema.parse(next);
-    this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    // Rebuild key pool
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+    if (this.dataApiAdapter) {
+      if (!this.keyPool.isEmpty) {
+        this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+        this.countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+      } else {
+        this.dataApiAdapter.setApiKey(this.config.youtubeDataApiKey);
+      }
+    }
     this.harvest.setConcurrency(this.config.concurrency);
     this.acquisition.setDefaultSampling(this.config.sampling);
 
     const configPath = defaultConfigPath(this.dataRoot);
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
-    const toWrite = {
+    const toWrite: Record<string, unknown> = {
       youtubeDataApiKey: this.config.youtubeDataApiKey ?? '',
       concurrency: this.config.concurrency ?? 1,
       sampling: this.config.sampling ?? {},
     };
+    // Chỉ ghi youtubeDataApiKeys khi có nhiều hơn 1 key
+    if (this.config.youtubeDataApiKeys?.length) {
+      toWrite.youtubeDataApiKeys = this.config.youtubeDataApiKeys;
+    }
     await writeFile(configPath, `${JSON.stringify(toWrite, null, 2)}\n`, 'utf8');
     return this.config;
   }
@@ -903,6 +967,7 @@ export class SpyService {
   private assertDataApi(): void {
     // Adapter được inject từ ngoài (test, hoặc backend khác) tự lo credential.
     if (this.dataApiAdapter === null) return;
+    if (!this.keyPool.isEmpty) return; // multi-key pool có key
     if (!this.config.youtubeDataApiKey?.trim()) {
       throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey trong config/spy.json');
     }
@@ -1379,7 +1444,21 @@ export class SpyService {
   // ---------------------------------------------------------------------------
 
   quotaStatus() {
-    return { ...this.quota.status(), history: this.store.listQuotaUsage(14) };
+    const base = { ...this.quota.status(), history: this.store.listQuotaUsage(14) };
+    if (this.keyPool.size > 1) {
+      const perKey = this.quota.statusPerKey(this.keyPool.allKeys as string[]);
+      return {
+        ...base,
+        multiKey: {
+          totalKeys: this.keyPool.size,
+          currentKeyId: this.keyPool.currentKeyId ?? null,
+          keys: perKey.keys,
+          totalSearchRemaining: perKey.totalSearchRemaining,
+          totalGeneralRemaining: perKey.totalGeneralRemaining,
+        },
+      };
+    }
+    return base;
   }
 
   async discoverChannels(input: Parameters<DiscoveryService['discoverChannels']>[1]) {

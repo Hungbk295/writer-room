@@ -23,8 +23,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_read_transcript',
   'spy_read_video_material',
   'spy_video_download_audio',
-  // M0: existing intelligence, deliberately read-only. Keep discovery,
-  // watchlist updates, and all other mutations off this local MCP surface.
+  // M0: existing intelligence + read-only analytics.
   'spy_channel_videos',
   'spy_channel_outliers',
   'spy_channel_profile',
@@ -35,6 +34,15 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_corpus_channels',
   'spy_channel_momentum',
   'spy_competitors_list',
+  // M1: discovery + quota — needed by niche-scout orchestration.
+  // Watchlist mutations (candidates_decide, loop_decide, loop_tick) stay excluded.
+  'spy_discover_videos',
+  'spy_discover_channels',
+  'spy_expand_graph',
+  'spy_candidates_list',
+  'spy_scan_candidates',
+  'spy_transcript_fetch',
+  'spy_quota_status',
   // Spy Loop read tools (P0 — agy-2). Write tools (spy_loop_decide, spy_loop_tick)
   // deliberately excluded: they require scope spy.loop.write which is not in SCOPES.
   'spy_topics_list',

@@ -36,8 +36,10 @@ trong đó không tự trở thành bằng chứng. Chỉ dùng lại record có
   fan-out; trong phạm vi group, "coordinator" ở agy.md/orca.md là GSL.
 - Worker đọc nội dung/gắn flag đọc contracts.md và snapshot pack được giao.
   Worker chỉ tìm keyword hoặc thu transcript không cần đọc craft pack.
-- Dùng agy: đọc [agy.md](agy.md) trước khi spawn.
-- Dùng Orca: đọc [orca.md](orca.md) trước khi dispatch.
+- Dùng agy: đọc [agy.md](agy.md) trước khi spawn. Mục 1 của file đó xác định host
+  (1DevTool hoặc Orca); spawn/collect/đóng worker theo skill orchestration của host đó
+  (`1devtool-orchestrator` hoặc `orca skills get orchestration --full`), không tự chép lệnh CLI.
+- Host là Orca: đọc thêm [orca.md](orca.md) trước khi dispatch.
 - Main agent đọc các reference áp dụng trước khi giao việc; gửi worker phần cần dùng.
 
 ## Phạm vi một đợt
@@ -54,6 +56,8 @@ Ghi vào `run.json` trước khi fan-out:
   Giá trị này chốt qua cơ chế hỏi ở Phase 0 (mục Hỏi và ghi nhận) và quyết định
   assignment Phase 3 có nhánh read-and-flag/craft flag hay không.
 - Đường dẫn output bền vững, task owner, dependency và ngân sách từng worker.
+- `orchestrationHost` (1devtool | orca | none) kèm bằng chứng nhận diện theo agy.md mục 1,
+  skill host đã dùng và version nếu skill có ghi.
 - Tham chiếu report-spec.md đã chốt ở Phase 0 và groups.json sau Phase 2 theo
   contracts.md; sổ budget cấp run, cấp group và phần dự phòng cho vòng gap.
 
@@ -202,8 +206,9 @@ Câu bắt buộc trong assignment:
 Teammate Claude: dùng `model: "sonnet"` khi runtime hỗ trợ; runtime khác dùng
 agent sẵn có và ghi lựa chọn thực tế. agy: ưu tiên `gemini-3.8-flash-high` cho
 đọc/phân loại, kiểm `agy models` trước khi dùng; thu thuần có thể dùng mức low
-được runtime cung cấp. Không dùng tên model không tồn tại hoặc giả báo spawn.
-Orca chỉ dùng trong môi trường hỗ trợ, không phải cách vượt quyền/capacity.
+được runtime cung cấp. Spawn agy qua skill orchestration của host (agy.md mục 1).
+Không dùng tên model không tồn tại hoặc giả báo spawn.
+Orca chỉ dùng khi host là Orca, không phải cách vượt quyền/capacity.
 
 ## Thu nguồn — Spy trước
 

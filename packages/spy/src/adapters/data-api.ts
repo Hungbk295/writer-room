@@ -232,13 +232,31 @@ function asStringId(id: ApiItem['id']): string | null {
 
 export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
   private apiKey?: string;
+  private apiKeys: string[] = [];
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey;
+    if (apiKey?.trim()) this.apiKeys = [apiKey.trim()];
   }
 
+  /** Backward compat — set single key. */
   setApiKey(apiKey?: string): void {
     this.apiKey = apiKey;
+    // Don't overwrite apiKeys if they were set via setApiKeys
+    if (this.apiKeys.length <= 1) {
+      this.apiKeys = apiKey?.trim() ? [apiKey.trim()] : [];
+    }
+  }
+
+  /** Set multiple keys for rotation. Overrides single key. */
+  setApiKeys(keys: string[]): void {
+    this.apiKeys = keys.filter((k) => k.trim().length > 0);
+    this.apiKey = this.apiKeys[0];
+  }
+
+  /** Switch to a specific key (called by rotation logic). */
+  useKey(key: string): void {
+    this.apiKey = key;
   }
 
   private enabled(): boolean {

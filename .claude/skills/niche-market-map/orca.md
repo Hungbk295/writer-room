@@ -5,12 +5,20 @@ trường Orca hỗ trợ orchestration; không dùng như đường vượt cap
 
 ## Kiểm môi trường
 
-- Kiểm `orca status --json`, runtime reachable và orchestration đã bật.
-- Coordinator phải ở terminal được Orca hỗ trợ. Không giả env/terminal identity.
-- Đọc `orca skills get orchestration --full` trước khi dispatch; dùng cú pháp và
-  capability của binary đang chạy.
-- Kiểm capacity, nesting và model thực. Không tự tăng setting để mở nhiều worker.
-  Dùng agy nếu runtime hỗ trợ; ghi agent/model thực, không mặc định mẫu Claude là agy.
+Host được xác định theo agy.md mục 1; chỉ vào nhánh này khi host là Orca. Cú pháp và
+capability lấy từ skill của Orca, không từ file này:
+
+- `orca status --json` có `runtime.reachable: true`, orchestration đã bật (Settings >
+  Experimental), và `orca orchestration run-current --json` gọi được từ chính terminal
+  coordinator. Không giả env/terminal identity.
+- Đọc `orca skills get orchestration --full` trước lệnh đầu tiên (dùng `orca-cli` cho thao
+  tác terminal thường); guide đổi theo version binary. Theo guide đó, worker Orca phải được
+  tạo qua `task-create` + `worker-start` (hoặc `dispatch --inject`) — không thay bằng
+  subagent/tool spawn khác rồi gọi là orchestrated.
+- Kiểm capacity, nested worker depth (mặc định 1: worker không dispatch tiếp) và agent/model
+  thực. Chưa xác minh (2026-09-10, Orca không chạy trên máy lúc kiểm): `worker-start --agent`
+  có nhận agy không, và agy trong terminal Orca có thấy Spy MCP không — kiểm bằng smoke test
+  trước khi giao batch; không mặc định mẫu Claude/Codex trong guide là agy.
 
 ## Task và dependency
 

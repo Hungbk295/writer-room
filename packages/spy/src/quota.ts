@@ -1,5 +1,5 @@
 /**
- * Sổ quota YouTube Data API.
+ * Sổ quota YouTube Data API — hỗ trợ multi-key rotation.
  *
  * Từ 01/06/2026 Google tách quota thành các bucket độc lập:
  *   - `search`  : search.list có bucket riêng, mặc định 100 CALL/ngày (1 unit/call)
@@ -9,6 +9,9 @@
  * Đây là bộ đếm ƯỚC LƯỢNG phía client, không phải bộ đếm thật của Google.
  * Nếu API key còn được dùng bởi tiến trình khác thì số sẽ lệch — mọi output
  * đều nói rõ điều đó thay vì giả vờ chính xác.
+ *
+ * Multi-key rotation: khi có nhiều key, mỗi key có quota riêng.
+ * Hết quota key A → tự chuyển sang key B. Tổng quota = 100 × N search call/ngày.
  */
 import { AppError } from './errors.ts';
 import type { SpyStore } from './store.ts';
@@ -120,8 +123,32 @@ export interface BucketStatus {
   calls: number;
 }
 
+/** Trạng thái quota của một key cụ thể. */
+export interface KeyBucketStatus extends BucketStatus {
+  keyId: string;
+}
+
+/** Lấy 4 ký tự cuối của API key làm ID ẩn danh. */
+export function keyId(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  return trimmed.length >= 4 ? trimmed.slice(-4) : trimmed;
+}
+
 export class QuotaLedger {
+  private _keyPool: KeyPool | null = null;
+
   constructor(private readonly store: SpyStore) {}
+
+  /** Gắn key pool để aggregate methods dùng đúng limit tổng. */
+  setKeyPool(pool: KeyPool): void {
+    this._keyPool = pool;
+  }
+
+  /** Effective limit = perKeyLimit × numberOfKeys. Single key → đúng QUOTA_LIMITS. */
+  effectiveLimit(bucket: QuotaBucket): number {
+    const numKeys = this._keyPool && !this._keyPool.isEmpty ? this._keyPool.size : 1;
+    return QUOTA_LIMITS[bucket] * numKeys;
+  }
 
   status(now: Date = new Date()): {
     quotaDay: string;
@@ -132,11 +159,12 @@ export class QuotaLedger {
     const day = quotaDay(now);
     const buckets = (Object.keys(QUOTA_LIMITS) as QuotaBucket[]).map((bucket) => {
       const usage = this.store.getQuotaUsage(bucket, day);
+      const limit = this.effectiveLimit(bucket);
       return {
         bucket,
         used: usage.units,
-        limit: QUOTA_LIMITS[bucket],
-        remaining: Math.max(0, QUOTA_LIMITS[bucket] - usage.units),
+        limit,
+        remaining: Math.max(0, limit - usage.units),
         calls: usage.calls,
       };
     });
@@ -144,13 +172,15 @@ export class QuotaLedger {
       quotaDay: day,
       resetsAt: nextQuotaReset(now),
       buckets,
-      note: 'Ước lượng phía client. Bộ đếm thật nằm ở Google Cloud Console; nếu API key được dùng ở nơi khác thì số này thấp hơn thực tế.',
+      note: this._keyPool && this._keyPool.size > 1
+        ? `Multi-key rotation: ${this._keyPool.size} key, limit nhân ${this._keyPool.size}. Ước lượng phía client.`
+        : 'Ước lượng phía client. Bộ đếm thật nằm ở Google Cloud Console; nếu API key được dùng ở nơi khác thì số này thấp hơn thực tế.',
     };
   }
 
   remaining(bucket: QuotaBucket, now: Date = new Date()): number {
     const usage = this.store.getQuotaUsage(bucket, quotaDay(now));
-    return Math.max(0, QUOTA_LIMITS[bucket] - usage.units);
+    return Math.max(0, this.effectiveLimit(bucket) - usage.units);
   }
 
   /** Còn đủ chỗ cho `calls` lần gọi op này không? Dùng cho dry_run và lập kế hoạch. */
@@ -160,15 +190,16 @@ export class QuotaLedger {
   }
 
   /**
-   * Ghi nhận một lần gọi. Ném `quota_exceeded` TRƯỚC khi request được gửi đi,
-   * để không đốt quota thật rồi mới phát hiện hết.
+   * Ghi nhận một lần gọi (single-key mode).
+   * Ném `quota_exceeded` TRƯỚC khi request được gửi đi.
+   * Multi-key mode dùng consumeForKey() thay vì hàm này.
    */
   consume(op: QuotaOp, calls = 1, now: Date = new Date()): BucketStatus {
     const cost = QUOTA_COST[op];
     const day = quotaDay(now);
     const usage = this.store.getQuotaUsage(cost.bucket, day);
     const needed = cost.units * calls;
-    const limit = QUOTA_LIMITS[cost.bucket];
+    const limit = this.effectiveLimit(cost.bucket);
     if (usage.units + needed > limit) {
       throw new AppError(
         'quota_exceeded',
@@ -183,6 +214,163 @@ export class QuotaLedger {
       limit,
       remaining: Math.max(0, limit - next.units),
       calls: next.calls,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-key quota — dùng cho multi-key rotation
+  // ---------------------------------------------------------------------------
+
+  /** Quota còn lại của một key cụ thể cho một bucket. */
+  remainingForKey(kid: string, bucket: QuotaBucket, now: Date = new Date()): number {
+    const usage = this.store.getQuotaUsagePerKey(kid, bucket, quotaDay(now));
+    return Math.max(0, QUOTA_LIMITS[bucket] - usage.units);
+  }
+
+  /** Key này còn đủ quota cho op? */
+  canAffordForKey(kid: string, op: QuotaOp, calls = 1, now: Date = new Date()): boolean {
+    const cost = QUOTA_COST[op];
+    return this.remainingForKey(kid, cost.bucket, now) >= cost.units * calls;
+  }
+
+  /**
+   * Ghi nhận quota cho key cụ thể.
+   * Cũng cập nhật bảng aggregate (backward compat).
+   * Ném `quota_exceeded` nếu KEY ĐÓ hết quota.
+   */
+  consumeForKey(kid: string, op: QuotaOp, calls = 1, now: Date = new Date()): KeyBucketStatus {
+    const cost = QUOTA_COST[op];
+    const day = quotaDay(now);
+    const usage = this.store.getQuotaUsagePerKey(kid, cost.bucket, day);
+    const needed = cost.units * calls;
+    const limit = QUOTA_LIMITS[cost.bucket];
+    if (usage.units + needed > limit) {
+      throw new AppError(
+        'quota_exceeded',
+        `Key ...${kid} hết quota bucket "${cost.bucket}" cho ${op}: đã dùng ${usage.units}/${limit}, cần thêm ${needed}. Reset lúc ${nextQuotaReset(now)}.`,
+        { retryable: false, details: { keyId: kid, bucket: cost.bucket, used: usage.units, limit, needed } },
+      );
+    }
+    // addQuotaUsagePerKey tự cập nhật cả bảng aggregate
+    const next = this.store.addQuotaUsagePerKey(kid, cost.bucket, day, needed, calls);
+    return {
+      keyId: kid,
+      bucket: cost.bucket,
+      used: next.units,
+      limit,
+      remaining: Math.max(0, limit - next.units),
+      calls: next.calls,
+    };
+  }
+
+  /** Trạng thái quota chi tiết cho tất cả key đang có trong DB hôm nay. */
+  statusPerKey(apiKeys: string[], now: Date = new Date()): {
+    quotaDay: string;
+    resetsAt: string;
+    keys: Array<{ keyId: string; buckets: BucketStatus[] }>;
+    totalSearchRemaining: number;
+    totalGeneralRemaining: number;
+  } {
+    const day = quotaDay(now);
+    const keys = apiKeys.map((key) => {
+      const kid = keyId(key);
+      const buckets = (Object.keys(QUOTA_LIMITS) as QuotaBucket[]).map((bucket) => {
+        const usage = this.store.getQuotaUsagePerKey(kid, bucket, day);
+        return {
+          bucket,
+          used: usage.units,
+          limit: QUOTA_LIMITS[bucket],
+          remaining: Math.max(0, QUOTA_LIMITS[bucket] - usage.units),
+          calls: usage.calls,
+        };
+      });
+      return { keyId: kid, buckets };
+    });
+    return {
+      quotaDay: day,
+      resetsAt: nextQuotaReset(now),
+      keys,
+      totalSearchRemaining: keys.reduce((sum, k) => sum + (k.buckets.find((b) => b.bucket === 'search')?.remaining ?? 0), 0),
+      totalGeneralRemaining: keys.reduce((sum, k) => sum + (k.buckets.find((b) => b.bucket === 'general')?.remaining ?? 0), 0),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// KeyPool — quản lý nhiều API key với auto-rotation
+// ---------------------------------------------------------------------------
+
+export class KeyPool {
+  private readonly keys: string[];
+  private currentIndex = 0;
+
+  constructor(keys: string[]) {
+    this.keys = keys.filter((k) => k.trim().length > 0);
+  }
+
+  get size(): number {
+    return this.keys.length;
+  }
+
+  get isEmpty(): boolean {
+    return this.keys.length === 0;
+  }
+
+  /** Key hiện tại. */
+  get currentKey(): string | undefined {
+    return this.keys[this.currentIndex];
+  }
+
+  /** keyId (last4) của key hiện tại. */
+  get currentKeyId(): string | undefined {
+    const key = this.currentKey;
+    return key ? keyId(key) : undefined;
+  }
+
+  /** Tất cả key. */
+  get allKeys(): readonly string[] {
+    return this.keys;
+  }
+
+  /** Tất cả keyId (last4). */
+  get allKeyIds(): string[] {
+    return this.keys.map(keyId);
+  }
+
+  /**
+   * Tìm key còn quota cho op. Bắt đầu từ currentIndex, quay vòng.
+   * Trả key đầu tiên còn đủ quota, hoặc null nếu tất cả hết.
+   * Cập nhật currentIndex sang key tìm được.
+   */
+  pickAvailableKey(quota: QuotaLedger, op: QuotaOp, now: Date = new Date()): string | null {
+    if (this.keys.length === 0) return null;
+    for (let i = 0; i < this.keys.length; i++) {
+      const idx = (this.currentIndex + i) % this.keys.length;
+      const key = this.keys[idx]!;
+      if (quota.canAffordForKey(keyId(key), op, 1, now)) {
+        this.currentIndex = idx;
+        return key;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Chuyển sang key tiếp theo. Dùng khi key hiện tại gặp lỗi 429/403.
+   * Trả key mới hoặc null nếu chỉ có 1 key.
+   */
+  rotateToNext(): string | null {
+    if (this.keys.length <= 1) return null;
+    this.currentIndex = (this.currentIndex + 1) % this.keys.length;
+    return this.keys[this.currentIndex]!;
+  }
+
+  /** Thông tin tóm tắt. */
+  summary(): { totalKeys: number; currentKeyId: string | null; allKeyIds: string[] } {
+    return {
+      totalKeys: this.keys.length,
+      currentKeyId: this.currentKeyId ?? null,
+      allKeyIds: this.allKeyIds,
     };
   }
 }

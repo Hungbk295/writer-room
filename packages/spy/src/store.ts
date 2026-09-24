@@ -33,7 +33,9 @@ import type {
 // own `IF NOT EXISTS` for both fresh and pre-existing databases — same as
 // the v2->v4 additions noted below, no ALTER/backfill required. Bumping the
 // version here is bookkeeping only.
-export const SCHEMA_VERSION = 11;
+// v11 -> v12: api_quota_usage_per_key for multi-key rotation. New table,
+// IF NOT EXISTS — no ALTER required.
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -242,6 +244,20 @@ CREATE TABLE IF NOT EXISTS api_quota_usage (
   calls INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (bucket, quota_day)
+);
+
+-- v12: per-key quota tracking for multi-key rotation.
+-- key_id là last4 của API key (ẩn danh, đủ để phân biệt).
+-- Mỗi key có 100 search call/ngày và 10.000 general unit/ngày riêng.
+-- Bảng aggregate (api_quota_usage) vẫn giữ tổng cho backward compat.
+CREATE TABLE IF NOT EXISTS api_quota_usage_per_key (
+  key_id TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  quota_day TEXT NOT NULL,
+  units INTEGER NOT NULL DEFAULT 0,
+  calls INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (key_id, bucket, quota_day)
 );
 
 -- v4: kênh ứng viên phát hiện qua search hoặc mở rộng đồ thị, chưa quét sâu.
@@ -822,6 +838,8 @@ export interface CorpusVideoFilter {
   publishedAfter?: string;
   publishedBefore?: string;
   hasTranscript?: boolean;
+  /** Minimum velocity (views/day). Computed as view_count / days_since_published. */
+  minVelocity?: number;
   orderBy?: 'views' | 'velocity' | 'published_at' | 'duration' | 'engagement';
   direction?: 'asc' | 'desc';
   limit?: number;
@@ -2453,6 +2471,43 @@ export class SpyStore {
   }
 
   // ---------------------------------------------------------------------------
+  // v12 — Per-key quota tracking
+  // ---------------------------------------------------------------------------
+
+  getQuotaUsagePerKey(keyId: string, bucket: string, quotaDay: string): { units: number; calls: number } {
+    const row = this.database.prepare(
+      'SELECT units, calls FROM api_quota_usage_per_key WHERE key_id=? AND bucket=? AND quota_day=?',
+    ).get(keyId, bucket, quotaDay) as Row | undefined;
+    return row ? { units: Number(row['units']), calls: Number(row['calls']) } : { units: 0, calls: 0 };
+  }
+
+  addQuotaUsagePerKey(keyId: string, bucket: string, quotaDay: string, units: number, calls = 1): { units: number; calls: number } {
+    this.database.prepare(
+      `INSERT INTO api_quota_usage_per_key (key_id, bucket, quota_day, units, calls, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key_id, bucket, quota_day) DO UPDATE SET
+         units = units + excluded.units,
+         calls = calls + excluded.calls,
+         updated_at = excluded.updated_at`,
+    ).run(keyId, bucket, quotaDay, units, calls, nowIso());
+    // Also update aggregate table for backward compatibility
+    this.addQuotaUsage(bucket, quotaDay, units, calls);
+    return this.getQuotaUsagePerKey(keyId, bucket, quotaDay);
+  }
+
+  listQuotaUsagePerKey(quotaDay: string): Array<{ keyId: string; bucket: string; units: number; calls: number }> {
+    const rows = this.database.prepare(
+      'SELECT * FROM api_quota_usage_per_key WHERE quota_day=? ORDER BY key_id, bucket',
+    ).all(quotaDay) as Row[];
+    return rows.map((row) => ({
+      keyId: String(row['key_id']),
+      bucket: String(row['bucket']),
+      units: Number(row['units']),
+      calls: Number(row['calls']),
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
   // v4 — Candidate channels
   // ---------------------------------------------------------------------------
 
@@ -2593,6 +2648,7 @@ export class SpyStore {
     if (filter.publishedBefore) { where.push('published_at <= ?'); params.push(filter.publishedBefore); }
     if (filter.hasTranscript === true) { where.push("transcript_status = 'ok'"); }
     if (filter.hasTranscript === false) { where.push("transcript_status != 'ok'"); }
+    if (filter.minVelocity !== undefined) { where.push('velocity >= ?'); params.push(filter.minVelocity); }
 
     const orderColumn = {
       views: 'view_count',

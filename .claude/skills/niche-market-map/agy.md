@@ -5,25 +5,46 @@
 Trong mô hình group, coordinator ở file này là GSL của group; quy tắc giữ nguyên,
 budget và scope thu hẹp về group mình.
 
-## 1. Kiểm runtime trước khi giao batch
+## 1. Xác định host rồi dùng skill orchestration của host
 
-Shim từng dùng: `/Users/jc/.1devtool/bin/1devtool-agent-v9`. Kiểm CLI help, kết nối,
-model và capacity thực tế trước khi sử dụng. Thử một task nhỏ xác nhận worker đọc
-đúng file, ghi được output và thấy Spy MCP nếu nhiệm vụ cần thu nguồn.
+File này chỉ giữ hợp đồng task (mục 2, 3, 5). Cú pháp spawn/collect/stop KHÔNG chép ở đây:
+nó thuộc về host đang chạy coordinator và đổi theo version của host. Trước batch agy đầu
+tiên, coordinator (leader hoặc GSL) xác định host và ghi kết quả vào run.json
+(`orchestrationHost`) hoặc group-report:
 
-Agent Team từng cần terminal do 1DevTool mở; ngoài môi trường đó từng trả
-"No compatible 1DevTool instance owns the calling terminal". Không đặt env giả để
-vượt kiểm tra. Nếu standalone run được runtime cho phép thì có thể dùng các run
-độc lập; vẫn tôn trọng capacity, quyền và giới hạn tài nguyên. Không mặc định nó
-không bị giới hạn chỉ vì không dùng Team.
+| Host | Nhận diện (phải đạt cả hai) | Skill dùng để spawn/theo dõi/thu/đóng |
+|---|---|---|
+| 1DevTool | env `ONEDEVTOOL_TERMINAL_ID` có giá trị (thường kèm `TERM_PROGRAM=1DevTool`); shim trả `whoami` với `"ok": true` và terminalId trùng env | Claude skill `1devtool-orchestrator` |
+| Orca | `orca status --json` có `runtime.reachable: true`; `orca orchestration run-current --json` gọi được từ chính terminal này | `orca skills get orchestration --full` (+ `orca-cli` cho thao tác terminal) — xem orca.md |
 
-App từng provision Spy MCP cho agent, nhưng không giả định mọi CLI session có tool.
-Ghi tool access thực trong assignment. Spy thiếu thì báo coordinator; không tự đổi
-sang nguồn ngoài khi chưa có quyền fallback.
+- Gọi skill bằng Skill tool khi runtime có; không có thì đọc thẳng file skill
+  (`~/.claude/skills/1devtool-orchestrator/SKILL.md`, hoặc output của `orca skills get ...`)
+  và làm đúng theo đó. Lấy đường dẫn shim từ metadata của skill 1DevTool, không hardcode —
+  file đó do 1DevTool tự quản và bị ghi đè khi app boot.
+- Teammate Claude (subagent) chạy Bash trong process của coordinator nên thừa kế cùng host.
+- Cả hai cùng đạt: dùng host sở hữu terminal hiện tại (env/whoami của 1DevTool, run-current
+  của Orca); vẫn mơ hồ thì dừng fan-out agy và báo leader. Không host nào đạt: không spawn
+  agy; coordinator tự làm phần việc trong budget hoặc báo PARTIAL. Không đặt env giả để
+  lọt kiểm tra, không dùng Swarm/Team/tool khác để vòng qua host.
 
-Kiểm `agy models`; ưu tiên `gemini-3.8-flash-high` khi có cho đọc/phân loại.
-Không dùng tên model chưa kiểm. Ghi model thực trên task. Với wrapper/CLI có nhiều
-lớp timeout, kiểm cả timeout của shim lẫn print-timeout của agy.
+Sau khi chọn host, vẫn kiểm theo skill của host: agent có trong danh sách detected,
+`agy models` có model định dùng (ưu tiên `gemini-3.8-flash-high` cho đọc/phân loại — model
+do cấu hình skill này yêu cầu; host báo không có thì chạy lại một lần không `--model` và ghi
+model thực), capacity còn trống, và timeout của cả host lẫn agy. Không tự truyền cờ
+permission/`--dangerously-*` cho agy — host tự chèn.
+
+### Substrate và MCP
+
+Quan sát 2026-09-10 trên 1DevTool (run `2026-09-10T1127-kw02`, task SMOKE-agy): agy chạy
+headless đọc/ghi file được, ~180 giây cho một task tầm thường, và KHÔNG thấy Writer Room Spy
+MCP (`agy mcp list` chỉ có atlassian, playwright). Skill 1devtool-orchestrator ghi: việc cần
+MCP/plugin phải chạy substrate terminal (`--terminal --wait`), không được âm thầm hạ xuống
+headless. Vì vậy:
+
+- Task **collect** (cần Spy): chỉ giao agy nếu smoke test trên đúng substrate đó cho thấy tool
+  Spy xuất hiện. Chưa chứng minh được thì collect do coordinator Claude (có Spy) làm.
+- Task **read-and-flag / classify** (chỉ đọc/ghi file): headless là đủ.
+- Ghi substrate thực (headless | terminal) và danh sách tool thấy được vào task record.
 
 ## 2. Chia hai loại task
 
@@ -75,26 +96,23 @@ policy. Không cấp craft pack cho collect rồi yêu cầu vừa tải vừa k
 
 ## 4. Spawn, theo dõi và thu
 
-Dùng prompt stdin để tránh lỗi wrapper chỉ chấp nhận prompt-file trong cwd/TMPDIR.
-Ví dụ cú pháp run, sau khi đã kiểm model và runtime:
+Theo đúng skill của host đã chọn ở mục 1 — pattern, substrate, cách truyền prompt
+(luôn qua stdin, không nội suy prompt vào shell), collect, xử lý run treo và đóng tài
+nguyên. File này chỉ thêm các ràng buộc riêng của research:
 
-```bash
-/Users/jc/.1devtool/bin/1devtool-agent-v9 run --to=agy \
-  --model=gemini-3.8-flash-high --prompt-stdin --timeout=600
-```
-
-Cấp nội dung assignment qua stdin của công cụ gọi; không nội suy prompt vào shell.
-Nếu dùng Agent Team, manifest members có role/taskId, target agy, model đã chọn,
-prompt tự chứa và substrate phù hợp. Dùng structured JSON để dựng manifest.
-Không dùng Swarm nếu capability của runtime không hỗ trợ agy.
-
-Sau spawn lưu runId/teamId/terminalId thực trong task record. Khi Team khả dụng,
-dùng team status/collect theo help của CLI. Capacity từng là tám slot dùng chung;
-lấy số còn trống thực tế và chia batch. Không đóng terminal ngoài đợt này.
-
-Trạng thái submit-needed: chỉ confirm đúng run do mình vừa tạo và thật sự đang chờ
-submit. Không coi tab hiện Working hoặc process exit 0 là output hoàn chỉnh.
-Poll theo deadline, mỗi lần chờ không quá 60 giây để còn báo tiến độ.
+- Mỗi batch là một run riêng với assignment tự chứa ở `tasks/<taskId>/assignment.md`;
+  prompt đưa vào là nội dung file đó. Không gộp nhiều batch vào một prompt.
+- Chọn pattern có hỗ trợ agy trên host. Ví dụ trên 1DevTool, Swarm headless từ chối agy —
+  dùng `run --to=agy` từng batch hoặc Agent Team theo skill host.
+- Sau spawn, lưu ID thực host trả về (runId/teamId/memberId/terminalId hoặc Run/Task/
+  Dispatch của Orca) vào task record. Substrate không trả ID (quan sát 2026-09-10: headless
+  `run --to=agy` trên 1DevTool không trả runId kể cả với `--json`) thì ghi `runId: null` kèm
+  lý do, lệnh thực, exit code, thời lượng và đường dẫn artifact — không bịa ID.
+- Poll theo deadline, mỗi lần chờ không quá 60 giây. Trạng thái host "done"/exit 0 chỉ là
+  tín hiệu để kiểm artifact, không phải bằng chứng COMPLETE.
+- Chỉ confirm/resolve đúng run do mình tạo và thực sự đang chờ; không đóng terminal,
+  team hay dispatch ngoài đợt này. Không bảo người dùng nhấp tab.
+- Capacity là tài nguyên chung của máy: đếm theo số còn trống thực tế trước mỗi batch.
 
 ## 5. Hoàn thành và retry
 

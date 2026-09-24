@@ -524,12 +524,45 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       }),
     }),
     // ---------------------------------------------------------------------
+    // Config — xem và cập nhật API key + settings
+    // ---------------------------------------------------------------------
+    wrap({
+      name: 'spy_config_get',
+      description: 'Xem config hiện tại (API key masked, số key trong pool, concurrency, sampling). 0 chi phí.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 16_384,
+      handler: () => spy.getPublicConfig(),
+    }),
+    wrap({
+      name: 'spy_config_set',
+      description: 'Cập nhật config: thêm/đổi API key, thêm nhiều key cho rotation (youtubeDataApiKeys: string[]), concurrency, sampling. Key được lưu vào config/spy.json.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 16_384,
+      handler: async (args) => {
+        const patch: Record<string, unknown> = {};
+        if (args['youtube_data_api_key'] !== undefined) {
+          patch.youtubeDataApiKey = args['youtube_data_api_key'] as string;
+        }
+        if (args['youtube_data_api_keys'] !== undefined) {
+          patch.youtubeDataApiKeys = args['youtube_data_api_keys'] as string[];
+        }
+        if (args['concurrency'] !== undefined) {
+          patch.concurrency = args['concurrency'] as number;
+        }
+        if (args['sampling'] !== undefined) {
+          patch.sampling = args['sampling'] as Record<string, unknown>;
+        }
+        await spy.updateConfig(patch as Parameters<typeof spy.updateConfig>[0]);
+        return spy.getPublicConfig();
+      },
+    }),
+    // ---------------------------------------------------------------------
     // Discovery — xem plan/claude/spy-discovery-design.md
     // Bucket search: 100 call/ngày. Bucket general: 10.000 unit/ngày.
     // ---------------------------------------------------------------------
     wrap({
       name: 'spy_quota_status',
-      description: 'Còn bao nhiêu quota search (100/ngày) và general (10.000 unit/ngày), reset lúc nào. 0 chi phí.',
+      description: 'Còn bao nhiêu quota search (100/ngày) và general (10.000 unit/ngày), reset lúc nào. Nếu multi-key: hiện per-key breakdown. 0 chi phí.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 16_384,
       handler: () => spy.quotaStatus(),
@@ -588,6 +621,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         order: args['order'] === 'date' || args['order'] === 'relevance' ? args['order'] : 'viewCount',
         maxResults: integer(args['max_results'], 50, 1, 50),
         publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
+        language: typeof args['language'] === 'string' ? args['language'] : undefined,
         dryRun: args['dry_run'] === true,
       }),
     }),
@@ -647,7 +681,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_corpus_videos',
-      description: 'Tìm video xuyên TOÀN BỘ corpus đã quét (không giới hạn một run). Lọc theo title, transcript, view, thời lượng, ngày. 0 quota.',
+      description: 'Tìm video xuyên TOÀN BỘ corpus đã quét (không giới hạn một run). Lọc theo title, transcript, view, velocity (views/ngày), thời lượng, ngày. 0 quota.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 120_000,
       handler: (args) => spy.corpusVideos({
@@ -661,6 +695,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
         publishedBefore: typeof args['published_before'] === 'string' ? args['published_before'] : undefined,
         hasTranscript: typeof args['has_transcript'] === 'boolean' ? args['has_transcript'] : undefined,
+        minVelocity: typeof args['min_velocity'] === 'number' ? args['min_velocity'] : undefined,
         minOutlierScore: typeof args['min_outlier_score'] === 'number' ? args['min_outlier_score'] : undefined,
         minViewPerSub: typeof args['min_view_per_sub'] === 'number' ? args['min_view_per_sub'] : undefined,
         orderBy: typeof args['order_by'] === 'string'

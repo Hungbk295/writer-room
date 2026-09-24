@@ -25,3 +25,11 @@ binaries/
 .agents/mcp_config.json
 .agents/skills/
 .grok/config.toml
+
+# Secrets & Service Accounts
+*service_account*.json
+*.pem
+*.key
+.env*
+!.env.example
+

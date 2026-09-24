@@ -6,9 +6,13 @@
  * trước đây không consume — decorator này vá lỗ hổng đó.
  *
  * assertDataApi() được gọi trước consume để không đốt ledger khi key rỗng.
+ *
+ * Multi-key: khi KeyPool được cung cấp, dùng consumeForKey thay vì consume,
+ * và tự rotate key khi gặp quota_exceeded.
  */
 import { AppError } from '../errors.ts';
-import type { QuotaLedger } from '../quota.ts';
+import type { QuotaLedger, QuotaOp, KeyPool } from '../quota.ts';
+import { keyId } from '../quota.ts';
 import type {
   YouTubeDataApiPort,
   VideoStatistics,
@@ -20,6 +24,10 @@ import type {
 } from './data-api.ts';
 
 export class QuotaCountingDataApi implements YouTubeDataApiPort {
+  private keyPool: KeyPool | null = null;
+  /** Callback to switch the underlying adapter's API key when rotating. */
+  private switchKey: ((key: string) => void) | null = null;
+
   constructor(
     private readonly inner: YouTubeDataApiPort,
     private readonly quota: QuotaLedger,
@@ -27,10 +35,45 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
     private readonly hasKey: () => boolean,
   ) {}
 
+  /** Bật multi-key rotation. */
+  setKeyPool(pool: KeyPool, switchKeyFn: (key: string) => void): void {
+    this.keyPool = pool;
+    this.switchKey = switchKeyFn;
+  }
+
   private assertKey(): void {
     if (!this.hasKey()) {
       throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey — không chạy được Data API');
     }
+  }
+
+  /**
+   * Consume quota — nếu có KeyPool thì dùng per-key, nếu không thì aggregate.
+   * Khi per-key hết quota, tự tìm key khác còn quota.
+   */
+  private consumeQuota(op: QuotaOp, calls = 1): void {
+    if (!this.keyPool || this.keyPool.isEmpty) {
+      // Single-key mode — backward compatible
+      this.quota.consume(op, calls);
+      return;
+    }
+
+    // Multi-key mode: tìm key còn quota
+    const availableKey = this.keyPool.pickAvailableKey(this.quota, op);
+    if (!availableKey) {
+      // Tất cả key đều hết quota
+      throw new AppError(
+        'quota_exceeded',
+        `Tất cả ${this.keyPool.size} API key đều hết quota cho ${op}. Key IDs: ${this.keyPool.allKeyIds.join(', ')}.`,
+        { retryable: false },
+      );
+    }
+
+    // Switch adapter sang key được chọn
+    this.switchKey?.(availableKey);
+
+    // Consume per-key (cũng cập nhật aggregate)
+    this.quota.consumeForKey(keyId(availableKey), op, calls);
   }
 
   /**
@@ -59,7 +102,7 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
     this.assertKey();
     const result = new Map<string, VideoStatistics>();
     for (const batch of QuotaCountingDataApi.batches(videoIds)) {
-      this.quota.consume('videos.list', 1);
+      this.consumeQuota('videos.list', 1);
       const part = await this.inner.fetchVideoStatistics(batch);
       for (const [key, value] of part) result.set(key, value);
     }
@@ -71,7 +114,7 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
     this.assertKey();
     const result = new Map<string, ChannelStatistics>();
     for (const batch of QuotaCountingDataApi.batches(channelIds)) {
-      this.quota.consume('channels.list', 1);
+      this.consumeQuota('channels.list', 1);
       const part = await this.inner.fetchChannelStatistics(batch);
       for (const [key, value] of part) result.set(key, value);
     }
@@ -83,23 +126,21 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
     if (!this.inner.search) {
       throw new AppError('capability_missing', 'Inner adapter không hỗ trợ search');
     }
-    // consume SAU khi chắc chắn call sẽ xảy ra — ghi sổ cho một request không
-    // bao giờ gửi đi cũng sai như không ghi sổ cho một request đã gửi.
-    this.quota.consume('search.list', 1);
+    this.consumeQuota('search.list', 1);
     return this.inner.search(input);
   }
 
   async fetchFeaturedChannels(channelId: string): Promise<string[]> {
     this.assertKey();
     if (!this.inner.fetchFeaturedChannels) return [];
-    this.quota.consume('channelSections.list', 1);
+    this.consumeQuota('channelSections.list', 1);
     return this.inner.fetchFeaturedChannels(channelId);
   }
 
   async fetchPublicSubscriptions(channelId: string, maxResults?: number): Promise<string[] | null> {
     this.assertKey();
     if (!this.inner.fetchPublicSubscriptions) return null;
-    this.quota.consume('subscriptions.list', 1);
+    this.consumeQuota('subscriptions.list', 1);
     return this.inner.fetchPublicSubscriptions(channelId, maxResults);
   }
 
@@ -112,7 +153,7 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
   }): Promise<CommentThread[]> {
     this.assertKey();
     if (!this.inner.fetchVideoComments) return [];
-    this.quota.consume('commentThreads.list', 1);
+    this.consumeQuota('commentThreads.list', 1);
     return this.inner.fetchVideoComments(input);
   }
 
@@ -124,23 +165,10 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
     if (limit <= 0) return [];
     this.assertKey();
     if (!this.inner.listUploadsPlaylistItems) return [];
-    // playlistItems.list trả tối đa 50 item/request và adapter tự phân trang bên
-    // trong (token nằm trong đó, decorator không chia lô được như videos/channels).
-    //
-    // Charge 1 TRƯỚC — ứng với request đầu tiên chắc chắn sẽ gửi. Các trang sau
-    // chỉ được ghi khi chúng đã thực sự trả về dữ liệu: `ceil(items/50) - 1`.
-    // KHÔNG charge `ceil(limit/50)` trước như bản cũ: xin 500 mà playlist chỉ có
-    // 12 video thì sổ ghi 10 unit cho 1 request — sổ nói dối theo hướng "đã tiêu
-    // nhiều hơn thực tế" và loop tự hãm sớm.
-    //
-    // Sai số còn lại, có biên và cố ý chấp nhận ở P0: nếu chết GIỮA lúc phân
-    // trang thì phần trang đã thử mà chưa trả về bị thiếu tối đa 1 unit. Muốn
-    // chính xác tuyệt đối thì phải cho pageToken lộ ra ở port để decorator tự
-    // lái từng trang — chưa đáng đổi API cho đường duy nhất dùng >50 (scan).
-    this.quota.consume('playlistItems.list', 1);
+    this.consumeQuota('playlistItems.list', 1);
     const items = await this.inner.listUploadsPlaylistItems(uploadsPlaylistId, limit, signal);
     const extraPages = Math.max(0, Math.ceil(items.length / 50) - 1);
-    if (extraPages > 0) this.quota.consume('playlistItems.list', extraPages);
+    if (extraPages > 0) this.consumeQuota('playlistItems.list', extraPages);
     return items;
   }
 
@@ -148,7 +176,7 @@ export class QuotaCountingDataApi implements YouTubeDataApiPort {
   async resolveChannelByHandle(handle: string): Promise<ChannelStatistics | null> {
     this.assertKey();
     if (!this.inner.resolveChannelByHandle) return null;
-    this.quota.consume('channels.list', 1);
+    this.consumeQuota('channels.list', 1);
     return this.inner.resolveChannelByHandle(handle);
   }
 }

@@ -34,6 +34,8 @@ export interface DiscoverVideosInput {
   order?: 'relevance' | 'viewCount' | 'date';
   maxResults?: number;
   publishedAfter?: string;
+  /** Override relevanceLanguage from market config (ISO 639-1, e.g. 'vi'). */
+  language?: string;
   dryRun?: boolean;
 }
 
@@ -176,7 +178,7 @@ export class DiscoveryService {
       order: input.order ?? 'viewCount',
       maxResults: Math.max(1, Math.min(input.maxResults ?? 50, 50)),
       regionCode: market.regionCode,
-      relevanceLanguage: market.relevanceLanguage,
+      relevanceLanguage: input.language ?? market.relevanceLanguage,
       videoDuration: niche.format.videoDuration === 'any' ? undefined : niche.format.videoDuration,
       publishedAfter: input.publishedAfter,
     });
