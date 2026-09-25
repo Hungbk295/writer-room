@@ -726,6 +726,10 @@ CREATE TABLE IF NOT EXISTS topic_videos (
   latest_views INTEGER, latest_likes INTEGER, latest_comments INTEGER, latest_at TEXT,
   views_gained_24h INTEGER,        -- NULL khi chưa có 2 snapshot (L6)
   outlier_score REAL,              -- latest_views / baseline_median; NULL khi baseline chưa tin cậy
+  -- 1 = đã thấy trong lượt quét uploads của CHÍNH kênh (daily_scan/setup). Chỉ
+  -- video này được tính baseline: video tìm qua search thiên về view cao, đưa
+  -- vào median sẽ đẩy baseline lên và làm sót outlier.
+  baseline_eligible INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (topic_id, video_id)
 );
 CREATE INDEX IF NOT EXISTS idx_topic_videos_channel
@@ -878,6 +882,13 @@ CREATE INDEX IF NOT EXISTS idx_video_stat_points_channel_time
  * Cột thêm vào bảng v5 sau khi v5 đã ra đời (DB dev có thể đã ở version 5 mà
  * thiếu cột). Chạy ALTER idempotent mỗi lần mở DB — rẻ và không cần bump version.
  */
+/**
+ * Nguồn video được tính baseline kênh: lượt quét uploads của chính kênh (mới
+ * nhất trước). Video đến từ search (weekly_search) hay chọn theo view cao thì
+ * không — chúng lệch lên và làm baseline cao giả.
+ */
+export const BASELINE_SOURCES: readonly string[] = ['daily_scan', 'setup'];
+
 const V5_ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; type: string }> = [
   { table: 'topic_channels', column: 'faceless_hint', type: 'REAL' },
   { table: 'topic_channels', column: 'faceless_hint_reasons_json', type: 'TEXT' },
@@ -1316,6 +1327,8 @@ export interface TopicVideoRow {
   latestAt: string | null;
   viewsGained24h: number | null;
   outlierScore: number | null;
+  /** Được tính baseline kênh — xem BASELINE_SOURCES. */
+  baselineEligible: boolean;
 }
 
 export interface DecisionRow {
@@ -1812,6 +1825,7 @@ function topicVideoRowFromRow(row: Row): TopicVideoRow {
     latestAt: nullableString(row['latest_at']),
     viewsGained24h: nullableNumber(row['views_gained_24h']),
     outlierScore: nullableNumber(row['outlier_score']),
+    baselineEligible: Number(row['baseline_eligible'] ?? 0) === 1,
   };
 }
 
@@ -1914,6 +1928,20 @@ export class SpyStore {
       } catch {
         // Cột đã tồn tại — bỏ qua.
       }
+    }
+    // baseline_eligible thêm sau v13. Backfill CHỈ ở lần ALTER thành công: chạy
+    // lại mỗi lần mở DB là vô hại hôm nay, nhưng sẽ gắn nhầm cờ cho các nguồn
+    // mới không được tính baseline (vd video top-view của Setup lướt v3.1).
+    try {
+      this.database.exec(
+        'ALTER TABLE topic_videos ADD COLUMN baseline_eligible INTEGER NOT NULL DEFAULT 0',
+      );
+      this.database.exec(
+        `UPDATE topic_videos SET baseline_eligible = 1
+         WHERE source IN (${BASELINE_SOURCES.map((s) => `'${s}'`).join(',')})`,
+      );
+    } catch {
+      // Cột đã tồn tại — bỏ qua.
     }
     // Fresh v7 databases already have the column; migrated v6 databases have
     // it after migrate6To7. Keep C1 object/index creation after the explicit
@@ -4549,8 +4577,8 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       `INSERT INTO topic_videos
          (topic_id, video_id, channel_id, title, published_at, duration_sec,
           thumbnail_url, source, found_by_keyword, first_seen_at,
-          latest_views, latest_likes, latest_comments, latest_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          latest_views, latest_likes, latest_comments, latest_at, baseline_eligible)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(topic_id, video_id) DO UPDATE SET
          title=excluded.title,
          channel_id=excluded.channel_id,
@@ -4561,12 +4589,16 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
          latest_views=excluded.latest_views,
          latest_likes=excluded.latest_likes,
          latest_comments=excluded.latest_comments,
-         latest_at=excluded.latest_at`,
+         latest_at=excluded.latest_at,
+         -- source giữ nguồn đầu tiên; cờ baseline thì một khi video đã hiện trong
+         -- lượt quét uploads của kênh là đủ điều kiện, dù lần đầu đến từ search.
+         baseline_eligible=MAX(topic_videos.baseline_eligible, excluded.baseline_eligible)`,
     ).run(
       row.topicId, row.videoId, row.channelId, row.title,
       row.publishedAt ?? null, row.durationSec ?? null, row.thumbnailUrl ?? null,
       row.source, row.foundByKeyword ?? null, row.capturedAt,
       row.views, row.likes ?? null, row.comments ?? null, row.capturedAt,
+      BASELINE_SOURCES.includes(row.source) ? 1 : 0,
     );
   }
 

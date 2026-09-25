@@ -181,6 +181,39 @@ describe('DAILY mode — D1–D5 (§6.3: 0 search call)', () => {
     store.close();
   });
 
+  test('baseline daily chỉ tính video uploads của kênh — video tìm qua search không đẩy baseline lên', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCactive', status: 'active', title: 'Kênh A' });
+    const uploads = makeVideos('đầu tư', 'UCactive', 12, 1_000);
+    dataApi.videosByChannel.set('UCactive', uploads);
+    const base = { topicId: 'fin', channelId: 'UCactive', durationSec: 600, capturedAt: '2026-08-21T00:00:00.000Z' };
+    // Video hit chỉ thấy qua weekly search, mới hơn mọi upload → nằm trong cửa sổ 30.
+    store.upsertTopicVideo({
+      ...base, videoId: 'UCactivehit', title: 'video hit', source: 'weekly_search',
+      publishedAt: '2026-08-21T00:00:00.000Z', views: 900_000,
+    });
+    // Một upload thật lần đầu đến từ search — daily thấy nó trong uploads → được tính.
+    store.upsertTopicVideo({
+      ...base, videoId: uploads[0]!.videoId, title: uploads[0]!.title, source: 'weekly_search',
+      publishedAt: uploads[0]!.publishedAt, views: 1_000,
+    });
+
+    await loop.runTick('fin', { mode: 'daily' });
+
+    const channel = store.listTopicChannelsByStatus('fin', ['active'])[0]!;
+    // Có video hit trong mẫu thì n=13 và max/median = 900 → kênh bị gắn nhầm xổ số.
+    expect(channel.baselineN).toBe(12);
+    expect(channel.baselineMedianViews).toBe(1_000);
+    expect(channel.maxViews).toBe(1_000);
+    const videos = new Map(store.listTopicVideos('fin', {}).map((v) => [v.videoId, v]));
+    expect(videos.get('UCactivehit')!.baselineEligible).toBe(false);
+    expect(videos.get(uploads[0]!.videoId)!.baselineEligible).toBe(true);
+    // source vẫn giữ nguồn đầu tiên để truy vết.
+    expect(videos.get(uploads[0]!.videoId)!.source).toBe('weekly_search');
+    store.close();
+  });
+
   test('daily chỉ quét kênh active — kênh paused/new không bị quét', async () => {
     const { store, dataApi, loop } = await setup();
     seedTopic(store);

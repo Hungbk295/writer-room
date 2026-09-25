@@ -153,7 +153,7 @@ CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
 <tr><th>Bảng có sẵn</th><th>Thay đổi</th></tr>
 <tr><td><code>topic_keywords</code></td><td>+ <code>niche_id</code>, <code>niche_source</code> ('loop'|'human'); origin thêm <code>daily_title</code></td></tr>
 <tr><td><code>topic_channels</code></td><td>+ <code>niche_id</code>, <code>niche_source</code>; kênh INIT: discovered_via=<code>user</code></td></tr>
-<tr><td><code>topic_videos</code></td><td>+ <code>niche_id</code> (máy gán theo <code>title_pattern</code>); + <code>pick_reason</code> ('recent'|'top_12m'|'daily_scan'|'weekly_search'). <b>Baseline chỉ tính trên 'recent' và 'daily_scan'</b> — nếu không, 5 video top view và video tìm qua search (thiên về view cao) sẽ đẩy baseline lên, làm sót outlier. Rủi ro này đã có trong v3: D3 đang tính baseline trên mọi video đã lưu của kênh, kể cả video từ weekly search.</td></tr>
+<tr><td><code>topic_videos</code></td><td>+ <code>niche_id</code> (máy gán theo <code>title_pattern</code>); <code>baseline_eligible</code> <b>(đã làm, commit riêng)</b>: = 1 khi video xuất hiện trong lượt quét uploads của chính kênh (<code>daily_scan</code>, <code>setup</code>). Baseline chỉ tính trên video này — video từ search (thiên về view cao) không còn đẩy baseline lên. v3.1: 5 video top view của Setup lướt ghi với source <code>setup_top</code>, không nằm trong <code>BASELINE_SOURCES</code> nên tự động bị loại.</td></tr>
 <tr><td><code>topics.setup_status</code></td><td>thêm <code>awaiting_niche_review</code>, <code>awaiting_painpoints</code> (giữ giá trị cũ cho chế độ dự phòng)</td></tr>
 <tr><td><code>decisions.entity_type</code></td><td>thêm <code>niche</code>, <code>painpoint</code></td></tr>
 <tr><td><code>topics.settings_json</code></td><td>thêm: quickRecentPerChannel 15, quickTopPerChannel 5 (top view trong 12 tháng), nicheCountMin/Max 5/8, previewVideosPerNiche 5, deepVideos 15, commentsPerVideo 100, painpointMinComments 10 / MinVideos 3 / MinChannels 2 / MinQuotes 3, weeklyFocusShare 0,75, unassignedClusterMin 5, nicheReviewAt "CN đầu tháng 16:00"</td></tr>
@@ -186,7 +186,7 @@ CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
 <table>
 <tr><th>#</th><th>Việc</th><th>Ai</th><th>Cổng</th></tr>
 <tr><td>0</td><td><b>Pilot bằng tay</b> Setup lướt trên list kênh INIT của JC (Spy MCP + công cụ có sẵn, không code mới): bản đồ ngách, keyword theo ngách, painpoint xem trước, đề xuất ngách focus</td><td>Claude</td><td class="stop">JC duyệt chất lượng đầu ra trước khi code</td></tr>
-<tr><td>0b</td><td><b>Sửa baseline</b> (<code>pick_reason</code>, chỉ tính trên video mới/daily) — độc lập với v3.1, nên làm cùng lúc commit v3</td><td>Devin B</td><td>test: video top/search không làm đổi baseline</td></tr>
+<tr><td>0b</td><td><b>Sửa baseline</b> (<code>baseline_eligible</code>, chỉ tính trên video uploads của kênh) — <b>ĐÃ XONG</b> 2026-09-25</td><td>Claude</td><td>test: video search không làm đổi baseline — pass</td></tr>
 <tr><td>1</td><td>DB v14 + store + <code>/init</code> + <code>/research/proposals</code> + decide niche/painpoint</td><td>Devin A</td><td>test HITL cho niche/painpoint</td></tr>
 <tr><td>2</td><td>Setup lướt Q1, Q2, Q4 + phần máy của Q5/P1/P3; daily D6; weekly chia 9/3, gắn ngách, W6; Niche review M1</td><td>Devin B</td><td>test tiêu chí 3–5</td></tr>
 <tr><td>3</td><td>Bước agent Q3, Q5, P2, M2 — skill <code>comment-insight</code> mở rộng, ghi qua <code>/research/proposals</code></td><td>Claude</td><td>tiêu chí 1, 6</td></tr>

@@ -71,8 +71,12 @@ function rowChannelId(row: TopicChannelRow): string {
 }
 
 /** Map TopicVideoRow → input của baselineOf. */
+/**
+ * Chỉ video từ lượt quét uploads của chính kênh — video tìm qua search thiên về
+ * view cao, đưa vào median sẽ đẩy baseline lên và làm sót outlier.
+ */
 function toBaselineInputs(videos: readonly TopicVideoRow[]): BaselineVideoInput[] {
-  return videos.map((v) => ({
+  return videos.filter((v) => v.baselineEligible).map((v) => ({
     views: v.latestViews,
     durationSec: v.durationSec,
     publishedAt: v.publishedAt,
@@ -217,8 +221,9 @@ export async function runDailyMode(ctx: ModeContext): Promise<DailyModeResult> {
     if (scanned.items.length > 0) section.channelsScanned++;
     section.newVideos += scannedNewVideos;
 
-    // --- baseline từ TOÀN BỘ topic_videos đã lưu (không chỉ 15 video hôm nay),
-    // để cửa sổ 30 được lấp dần qua nhiều ngày quét.
+    // --- baseline từ các video uploads đã lưu của kênh (không chỉ 15 video hôm
+    // nay), để cửa sổ 30 được lấp dần qua nhiều ngày quét. Video từ search bị
+    // loại trong toBaselineInputs.
     const stored = store.listTopicVideos(ctx.topicId, { channelId });
     const baseline = baselineOf(toBaselineInputs(stored), settings);
 
