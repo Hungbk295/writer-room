@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spy Pipeline v3.1</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2dfd8;--acc:#1f5f8b;--stop:#b4471f;--code:#f1eee8;--new:#2c6749}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--fg:#ebe9e4;--mut:#9a978f;--line:#34322e;--acc:#7ab3dc;--stop:#e8875f;--code:#23221f;--new:#86c9a4}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:1000px;margin:auto}
+h1{font-size:26px;margin:0 0 4px}h2{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:4px}h3{margin-top:22px}
+.mut{color:var(--mut)}code,pre{background:var(--code);font:13px ui-monospace,Menlo,monospace}code{padding:1px 4px;border-radius:3px}
+pre{padding:12px;overflow-x:auto;border-radius:6px}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--code)}
+.stop{color:var(--stop);font-weight:700}
+.tag{font-size:11px;padding:1px 6px;border-radius:3px;border:1px solid var(--line);white-space:nowrap}
+.tag.new{color:var(--new);border-color:var(--new)}.tag.mod{color:var(--acc);border-color:var(--acc)}.tag.has{color:var(--mut)}
+</style>
+</head>
+<body><main>
+<h1>Spy Research Pipeline v3.1 — Ngách &amp; Painpoint</h1>
+<p class="mut">SDD 008-rev2 · 2026-09-25 · Trạng thái: DRAFT — chờ pilot trên list kênh INIT của JC · Kế thừa <code>spy-research-pipeline-v3-lean.html</code> (đã triển khai, chưa commit) · Sơ đồ luồng: artifact "Luồng chạy Spy v3"</p>
+<p class="mut">Nhãn trạng thái từng bước: <span class="tag has">có sẵn v3</span> <span class="tag mod">sửa</span> <span class="tag new">mới v3.1</span></p>
+
+<h2>0 · Kết luận</h2>
+<p><b>Quyết định:</b> bổ sung tầng <b>Ngách</b> (tệp khán giả) và <b>Painpoint</b> vào v3; thay việc tìm kênh ở Setup bằng pha <b>INIT</b> (JC tự chọn list kênh) + <b>Setup lướt</b>; dồn việc mở rộng keyword và kênh sang <b>daily/weekly</b>; thêm <b>Niche review hằng tháng</b> để chuyển sang tệp khán giả kế tiếp.</p>
+<p><b>Vì sao:</b> v3 chỉ đáp ứng một phần nhu cầu 1 và không đáp ứng nhu cầu 2, 3. Keyword trong v3 là một danh sách phẳng để đi search; 38 keyword active của pov-finance đang trộn ít nhất 4 tệp khán giả khác nhau, và weekly search đều cả 38 nên càng chạy càng lan man. Có 4.129 comment trong DB nhưng không bước nào đọc.</p>
+<table>
+<tr><th>Nhu cầu của JC</th><th>v3</th><th>v3.1 đáp ứng ở đâu</th><th>Kiểm chứng</th></tr>
+<tr><td>1. List keyword ngách — focus một tệp khán giả trong topic rộng</td><td>Một phần: có keyword, không có tệp khán giả</td><td>Q3 gom keyword thành 5–8 ngách; ⏸A chọn đúng 1 ngách focus</td><td>100% keyword active có <code>niche_id</code> hoặc được đánh dấu chưa gán; DB chặn &gt;1 ngách focus</td></tr>
+<tr><td>2. Đỡ lan man; xong một tệp thì mở rộng sang tệp khác</td><td>Không: weekly search đều mọi keyword</td><td>Weekly chia 9/12 search cho ngách focus, 3/12 thăm dò; ⏸C Niche review hằng tháng chọn ngách kế</td><td>≥ 75% search call weekly thuộc ngách focus; mỗi lần đổi focus có dòng <code>decisions</code> của người</td></tr>
+<tr><td>3. Insight viewer, đặc biệt painpoint của nhóm keyword ngách</td><td>Không: đã cắt tầng insight</td><td>Q5 painpoint xem trước cho mọi ngách; P1–P3 đào sâu ngách focus; ⏸B duyệt</td><td>Mọi painpoint confirmed có ≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn</td></tr>
+</table>
+
+<h2>1 · Định nghĩa</h2>
+<table>
+<tr><th>Khái niệm</th><th>Định nghĩa</th></tr>
+<tr><td><b>Ngách</b></td><td>Một tệp khán giả trong topic: <b>ai</b> (người xem là ai), <b>hoàn cảnh</b> (đang ở đâu), <b>vấn đề</b> (kẹt ở đâu) + nhóm keyword + mẫu title để gán video. Không phải chủ đề: "Investing" là chủ đề; "người 30–40 tuổi sợ mình tụt hậu tài chính" là ngách.</td></tr>
+<tr><td><b>Ngách focus</b></td><td>Đúng 1 ngách mỗi topic tại một thời điểm, do người chọn. Weekly dồn search vào đây; painpoint được đào sâu ở đây.</td></tr>
+<tr><td><b>Painpoint</b></td><td>Câu hỏi ngầm / vấn đề của viewer rút từ comment: hoàn cảnh, rào cản, mong muốn, kèm <b>lời nguyên văn</b> và số bằng chứng. Gom theo hoàn cảnh + rào cản, không theo chủ đề (v2 đo: 2,64x so với 1,78x).</td></tr>
+<tr><td><b>Chưa gán</b></td><td>Keyword/kênh không khớp ngách nào. Khi ~5 keyword chưa gán tụ lại thành cụm → tín hiệu ngách mới ở Niche review.</td></tr>
+</table>
+
+<h2>2 · Luồng tổng</h2>
+<pre>
+MỘT LẦN / TOPIC                                               LẶP LẠI
+INIT ──► SETUP LƯỚT ──► <span class="stop">⏸A</span> ──► ĐÀO SÂU ──► <span class="stop">⏸B</span> ──►   DAILY  15:30, không search ─────┐
+(JC)     Q1–Q5          chọn    P1–P3       duyệt      WEEKLY CN 16:00, có search ────────┼─► <span class="stop">⏸ Inbox tuần</span>
+         bản đồ ngách,  ngách   painpoint   painpoint                                     │
+         keyword,       focus   ngách focus            NICHE REVIEW tháng ─► <span class="stop">⏸C</span> ngách kế ─► ĐÀO SÂU ─► <span class="stop">⏸B</span>
+         painpoint xem trước
+</pre>
+<p><b>Luật bất biến (giữ từ v3, mở rộng):</b> máy chỉ ghi <code>new</code>, <code>pending</code>, <code>proposed</code>, gợi ý, và <code>rejected</code> duy nhất vì sai ngôn ngữ. Chỉ người được đặt kênh/keyword <code>active</code>/<code>paused</code>, ngách <code>focus</code>, painpoint <code>confirmed</code>. Agent ghi qua một endpoint duy nhất, status bị ép về <code>proposed</code>.</p>
+
+<h2>3 · INIT — JC chọn kênh <span class="tag new">mới v3.1</span></h2>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th></tr>
+<tr><td>I0</td><td>Người</td><td>Nghiên cứu YouTube bằng mắt, gửi: topic (market, ngôn ngữ, region, 1 dòng mô tả) + list kênh (URL hoặc @handle; tuỳ chọn ghi chú lý do, đánh dấu kênh mẫu). Khuyến nghị 30–40 kênh: mỗi kênh lấy tối đa 20 video nên 40 kênh ≈ 800 title.</td><td><code>topics</code> · <code>topic_channels</code> status=<code>active</code>, discovered_via=<code>user</code> · <code>decisions</code> actor=human, reason=<code>init</code></td></tr>
+</table>
+<p>Kênh INIT đã là quyết định của người nên không qua bước duyệt kênh nữa. Nếu không có list kênh, Setup dùng lại cách cũ của v3 (search seed keyword) làm dự phòng.</p>
+
+<h2>4 · Setup lướt <span class="tag mod">sửa</span></h2>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th><th>Cổng</th><th>Trạng thái</th></tr>
+<tr><td>Q1</td><td>Máy</td><td>Resolve kênh; lấy <b>tối đa 20 video dài (≥ 300 s) mỗi kênh</b> = 15 video mới nhất + 5 video nhiều view nhất trong 12 tháng (không trùng). Baseline và outlier chỉ tính trên 15 video mới nhất; keyword, ngách, comment dùng cả 20</td><td><code>topic_videos</code>, <code>video_daily_views</code>, <code>topic_channels.baseline_*</code></td><td>Kênh chết / xổ số / sai ngôn ngữ → <b>chỉ cảnh báo</b>, không tự loại (người đã chọn)</td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td>Q2</td><td>Máy</td><td>Cụm 2–3 từ từ title, xuất hiện ở ≥ 2–3 kênh, trọng số theo mức vượt baseline</td><td><code>topic_keywords</code> pending, origin=<code>title_ngram</code>, bằng chứng</td><td>Corpus &lt; 800 title → cảnh báo mẫu nhỏ và hạ ngưỡng cụm từ xuống ≥ 2 kênh</td><td><span class="tag has">có sẵn v3</span> (S3)</td></tr>
+<tr><td>Q3</td><td>Agent</td><td>Đề xuất 5–8 ngách {ai, hoàn cảnh, vấn đề, keyword, mẫu title}; gán keyword; gán video theo mẫu title</td><td><code>niches</code> proposed · <code>topic_keywords.niche_id</code> (nguồn=loop) · <code>topic_videos.niche_id</code></td><td>Agent chỉ đề xuất; không tự gom cụm bằng thuật toán (v2: cụm tự sinh nuốt 73% corpus)</td><td><span class="tag new">mới</span></td></tr>
+<tr><td>Q4</td><td>Máy</td><td>Chấm ngách: cung (số video, số kênh), cầu (median view/baseline, tỉ lệ outlier), comment/1.000 view, điểm cơ hội + lý do</td><td><code>niches.*</code> metric</td><td>Ngách &lt; 10 video → "mẫu nhỏ"</td><td><span class="tag new">mới</span></td></tr>
+<tr><td>Q5</td><td>Máy + Agent</td><td>Mỗi ngách: 3–5 video tốt nhất, ~100 comment/video → painpoint xem trước kèm câu nguyên văn</td><td><code>video_comments</code> (có sẵn) · <code>painpoints</code> stage=<code>preview</code>, proposed</td><td>Ghi tỉ lệ nhiễu</td><td><span class="tag new">mới</span></td></tr>
+<tr><td class="stop">⏸A</td><td>Người</td><td colspan="4">Sửa/chốt ngách và gán keyword, loại keyword rác, <b>chọn đúng 1 ngách focus</b> — nhìn cung, cầu và painpoint xem trước cạnh nhau. <code>setup_status</code>=<code>awaiting_niche_review</code> cho tới khi có quyết định.</td></tr>
+</table>
+
+<h2>5 · Đào sâu ngách focus <span class="tag new">mới v3.1</span></h2>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th><th>Cổng</th></tr>
+<tr><td>P1</td><td>Máy</td><td>~15 video outlier của ngách focus, ≤ 100 comment/video (<code>spy_video_comments</code>), lọc nhiễu</td><td><code>video_comments</code></td><td>Ghi tỉ lệ nhiễu theo video; không xoá dòng nhiễu</td></tr>
+<tr><td>P2</td><td>Agent</td><td>Mỗi comment có tín hiệu → hoàn cảnh, vấn đề, cảm xúc, câu hỏi ngầm, mong muốn, câu nguyên văn; gom theo hoàn cảnh + rào cản</td><td><code>painpoints</code> stage=<code>deep</code>, proposed</td><td>Mỗi painpoint phải trỏ về comment_id thật</td></tr>
+<tr><td>P3</td><td>Máy</td><td>Kiểm bằng chứng</td><td><code>painpoints.strength</code></td><td>≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn → <code>strong</code>; thiếu → <code>weak</code></td></tr>
+<tr><td class="stop">⏸B</td><td>Người</td><td colspan="3">Duyệt painpoint → <code>confirmed</code>. Đây là đề bài cho writer. <code>setup_status</code>=<code>awaiting_painpoints</code> → <code>done</code>.</td></tr>
+</table>
+
+<h2>6 · Daily <span class="tag mod">sửa nhỏ</span></h2>
+<p>D1–D5 giữ nguyên v3 (không search; lần chạy thật 2026-09-25: 0 search, 31 unit, 15/15 kênh). Thêm:</p>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th><th>Trạng thái</th></tr>
+<tr><td>D6</td><td>Máy</td><td>Cụm từ trong title video mới đăng 7 ngày của kênh follow, xuất hiện ở ≥ 2 kênh → keyword ứng viên, gợi ý ngách theo mẫu title</td><td><code>topic_keywords</code> pending, origin=<code>daily_title</code>, <code>niche_id</code> (nguồn=loop)</td><td><span class="tag new">mới</span> · 0 search</td></tr>
+<tr><td>D5</td><td>Máy</td><td>Báo cáo ngày thêm mục riêng cho ngách focus</td><td><code>daily_reports</code></td><td><span class="tag mod">sửa</span></td></tr>
+</table>
+
+<h2>7 · Weekly <span class="tag mod">sửa</span></h2>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th><th>Trạng thái</th></tr>
+<tr><td>W1</td><td>Máy</td><td>12 search/tuần: <b>9 cho keyword ngách focus</b>, <b>3 thăm dò</b> (keyword ngách đang chờ + chưa gán); xoay theo <code>last_checked_at</code></td><td><code>topic_keywords</code> sức khoẻ</td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td>W2</td><td>Máy</td><td>Outlier trong follow, 7 ngày, ≥ 3× baseline</td><td>đọc <code>topic_videos</code></td><td><span class="tag has">có sẵn</span></td></tr>
+<tr><td>W3</td><td>Máy</td><td>Kênh outlier ngoài follow → inbox, <b>gắn ngách</b> theo keyword đã tìm ra nó</td><td><code>topic_channels</code> new, <code>niche_id</code> (nguồn=loop)</td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td>W4</td><td>Máy</td><td>Cụm từ chung của video outlier → keyword pending, gợi ý ngách</td><td><code>topic_keywords</code></td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td>W6</td><td>Máy</td><td>Chấm lại ngách (Q4) trên dữ liệu mới; đếm keyword chưa gán</td><td><code>niches.*</code> metric</td><td><span class="tag new">mới</span></td></tr>
+<tr><td>W5</td><td>Máy</td><td>Báo cáo tuần: tách ngách focus / thăm dò / chưa gán</td><td><code>daily_reports</code> weekly</td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td class="stop">⏸</td><td>Người</td><td colspan="3">Inbox tuần: kênh mới, keyword mới, gợi ý pause — <b>mục thuộc ngách focus xếp trước</b>; người xác nhận luôn ngách của từng mục.</td></tr>
+</table>
+<p>Mở rộng kênh chỉ ở weekly: v2 đo đường keyword-search chỉ ra 4/117 kênh dùng được (3,4%), mỗi search 100 unit — chạy hằng ngày là phí quota.</p>
+
+<h2>8 · Niche review hằng tháng <span class="tag new">mới v3.1</span></h2>
+<table>
+<tr><th>#</th><th>Ai</th><th>Bước</th><th>Dữ liệu</th></tr>
+<tr><td>M1</td><td>Máy</td><td>Tín hiệu ngách focus đã "đủ": số painpoint mới 4 tuần, số video outlier mới trong ngách 4 tuần, số kênh mới được duyệt vào ngách 4 tuần</td><td>Tính từ mốc thời gian có sẵn (<code>created_at</code>, <code>published_at</code>, <code>decisions.at</code>) — không cần bảng lịch sử</td></tr>
+<tr><td>M2</td><td>Máy + Agent</td><td>Xếp hạng ngách kế: điểm cơ hội + độ gần (kênh chung, painpoint chung). Cụm ≥ 5 keyword chưa gán → agent đề xuất ngách mới (proposed)</td><td><code>niches</code></td></tr>
+<tr><td class="stop">⏸C</td><td>Người</td><td colspan="2">Giữ focus hoặc chuyển: ngách cũ → <code>done</code>/<code>queued</code>, ngách mới → <code>focus</code> → chạy lại Đào sâu P1–P3 → ⏸B.</td></tr>
+</table>
+
+<h2>9 · Database — thay đổi so với v13</h2>
+<p class="mut">Tổng bảng mới từ v3 + v3.1: <b>5</b> (<code>topic_videos</code>, <code>video_daily_views</code>, <code>decisions</code>, <code>niches</code>, <code>painpoints</code>) — so với 16 của v2. Tái dùng <code>video_comments</code> có sẵn.</p>
+<pre>
+CREATE TABLE niches (
+  niche_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  name TEXT NOT NULL,
+  audience TEXT NOT NULL,          -- ai
+  situation TEXT NOT NULL,         -- hoàn cảnh
+  problem TEXT NOT NULL,           -- vấn đề
+  title_pattern TEXT NOT NULL,     -- regex gán video vào ngách
+  status TEXT NOT NULL DEFAULT 'proposed'
+    CHECK(status IN ('proposed','focus','queued','done','rejected')),
+  n_videos INTEGER, n_channels INTEGER,
+  median_rel_views REAL,           -- median(view / baseline kênh)
+  outlier_rate REAL,               -- % video ≥ outlier_multiple
+  comments_per_1k_views REAL,
+  opportunity_score REAL, score_reasons_json TEXT,
+  computed_at TEXT,
+  created_by TEXT NOT NULL CHECK(created_by IN ('agent','human')),
+  created_at TEXT NOT NULL, decided_at TEXT
+);
+CREATE UNIQUE INDEX uq_niche_focus ON niches(topic_id) WHERE status='focus';  -- đúng 1 ngách focus
+
+CREATE TABLE painpoints (
+  painpoint_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL, niche_id TEXT NOT NULL REFERENCES niches(niche_id),
+  underlying_question TEXT NOT NULL,   -- câu hỏi ngầm = đề bài video
+  situation TEXT, barrier TEXT, desired_outcome TEXT,
+  quotes_json TEXT NOT NULL,           -- câu nguyên văn của viewer
+  evidence_comment_ids_json TEXT NOT NULL,
+  n_comments INTEGER NOT NULL, n_videos INTEGER NOT NULL, n_channels INTEGER NOT NULL,
+  strength TEXT NOT NULL CHECK(strength IN ('strong','weak')),
+  stage TEXT NOT NULL CHECK(stage IN ('preview','deep')),
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','confirmed','rejected')),
+  created_by TEXT NOT NULL, created_at TEXT NOT NULL, decided_at TEXT
+);
+CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
+</pre>
+<table>
+<tr><th>Bảng có sẵn</th><th>Thay đổi</th></tr>
+<tr><td><code>topic_keywords</code></td><td>+ <code>niche_id</code>, <code>niche_source</code> ('loop'|'human'); origin thêm <code>daily_title</code></td></tr>
+<tr><td><code>topic_channels</code></td><td>+ <code>niche_id</code>, <code>niche_source</code>; kênh INIT: discovered_via=<code>user</code></td></tr>
+<tr><td><code>topic_videos</code></td><td>+ <code>niche_id</code> (máy gán theo <code>title_pattern</code>); + <code>pick_reason</code> ('recent'|'top_12m'|'daily_scan'|'weekly_search'). <b>Baseline chỉ tính trên 'recent' và 'daily_scan'</b> — nếu không, 5 video top view và video tìm qua search (thiên về view cao) sẽ đẩy baseline lên, làm sót outlier. Rủi ro này đã có trong v3: D3 đang tính baseline trên mọi video đã lưu của kênh, kể cả video từ weekly search.</td></tr>
+<tr><td><code>topics.setup_status</code></td><td>thêm <code>awaiting_niche_review</code>, <code>awaiting_painpoints</code> (giữ giá trị cũ cho chế độ dự phòng)</td></tr>
+<tr><td><code>decisions.entity_type</code></td><td>thêm <code>niche</code>, <code>painpoint</code></td></tr>
+<tr><td><code>topics.settings_json</code></td><td>thêm: quickRecentPerChannel 15, quickTopPerChannel 5 (top view trong 12 tháng), nicheCountMin/Max 5/8, previewVideosPerNiche 5, deepVideos 15, commentsPerVideo 100, painpointMinComments 10 / MinVideos 3 / MinChannels 2 / MinQuotes 3, weeklyFocusShare 0,75, unassignedClusterMin 5, nicheReviewAt "CN đầu tháng 16:00"</td></tr>
+</table>
+
+<h2>10 · API</h2>
+<table>
+<tr><th>Endpoint</th><th>Việc</th></tr>
+<tr><td><code>POST /api/spy/topics/:id/init</code></td><td>Nhận list kênh INIT</td></tr>
+<tr><td><code>POST /api/spy/research/proposals</code></td><td>Cửa duy nhất cho agent ghi ngách/painpoint; validate schema, ép status=proposed</td></tr>
+<tr><td><code>POST /api/spy/loop/decide</code></td><td>Mở rộng entity_type <code>niche</code> (focus/queued/done/rejected) và <code>painpoint</code> (confirmed/rejected)</td></tr>
+<tr><td>MCP: <code>spy_research_propose</code>, <code>spy_niches_list</code>, <code>spy_painpoints_list</code>, <code>spy_loop_decide</code> (mở rộng niche/painpoint)</td><td>Để agent đọc/ghi đề xuất và để JC duyệt qua chat trong giai đoạn chưa có màn hình web</td></tr>
+<tr><td><code>GET /api/spy/dash/niches</code> · <code>/niches/:id</code> · <code>/painpoints</code></td><td>Bảng Bản đồ ngách, Ngách focus, Tường painpoint</td></tr>
+<tr><td>Các endpoint dash hiện có</td><td>Thêm bộ lọc <code>niche_id</code> cho /keywords, /channels, /videos, /outliers, /hot; /overview thêm ngách focus</td></tr>
+</table>
+
+<h2>11 · Tiêu chí chấp nhận</h2>
+<ol>
+<li>Sau Setup lướt: 5–8 ngách proposed, mỗi ngách có đủ ai/hoàn cảnh/vấn đề, điểm cơ hội kèm lý do, ≥ 1 painpoint xem trước có câu nguyên văn.</li>
+<li>100% keyword active có <code>niche_id</code> do người xác nhận hoặc được đánh dấu chưa gán.</li>
+<li>DB từ chối ngách focus thứ hai trong cùng topic.</li>
+<li>Weekly: ≥ 75% search call thuộc keyword ngách focus (đo từ <code>loop_ticks.keywords_searched_json</code>).</li>
+<li>Daily D6: 0 search call; keyword mới đều có origin <code>daily_title</code> và bằng chứng ≥ 2 kênh.</li>
+<li>Mọi painpoint <code>confirmed</code>: ≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn, trỏ về comment_id thật, có dòng <code>decisions</code> actor=human.</li>
+<li>Agent/loop không bao giờ ghi niche <code>focus</code> hay painpoint <code>confirmed</code>; <code>hitl_violations</code> (mở rộng cho niche/painpoint) = 0.</li>
+<li>Toàn bộ test + typecheck xanh; <code>bay-tra-gop</code> (vi) vẫn chạy chế độ dự phòng.</li>
+</ol>
+
+<h2>12 · Thứ tự triển khai</h2>
+<table>
+<tr><th>#</th><th>Việc</th><th>Ai</th><th>Cổng</th></tr>
+<tr><td>0</td><td><b>Pilot bằng tay</b> Setup lướt trên list kênh INIT của JC (Spy MCP + công cụ có sẵn, không code mới): bản đồ ngách, keyword theo ngách, painpoint xem trước, đề xuất ngách focus</td><td>Claude</td><td class="stop">JC duyệt chất lượng đầu ra trước khi code</td></tr>
+<tr><td>0b</td><td><b>Sửa baseline</b> (<code>pick_reason</code>, chỉ tính trên video mới/daily) — độc lập với v3.1, nên làm cùng lúc commit v3</td><td>Devin B</td><td>test: video top/search không làm đổi baseline</td></tr>
+<tr><td>1</td><td>DB v14 + store + <code>/init</code> + <code>/research/proposals</code> + decide niche/painpoint</td><td>Devin A</td><td>test HITL cho niche/painpoint</td></tr>
+<tr><td>2</td><td>Setup lướt Q1, Q2, Q4 + phần máy của Q5/P1/P3; daily D6; weekly chia 9/3, gắn ngách, W6; Niche review M1</td><td>Devin B</td><td>test tiêu chí 3–5</td></tr>
+<tr><td>3</td><td>Bước agent Q3, Q5, P2, M2 — skill <code>comment-insight</code> mở rộng, ghi qua <code>/research/proposals</code></td><td>Claude</td><td>tiêu chí 1, 6</td></tr>
+<tr><td>4</td><td>Dashboard: 3 endpoint + bộ lọc niche; 3 bảng mới</td><td>Devin A</td><td>tiêu chí 7</td></tr>
+<tr><td>5</td><td><b>Màn hình duyệt</b> trên web: form INIT, Điểm dừng A (bản đồ ngách, gán keyword, chọn focus), B (duyệt painpoint kèm câu nguyên văn), C (niche review); inbox hiện cột ngách. Trong lúc chưa có, JC duyệt qua chat bằng MCP.</td><td>Devin A</td><td>mọi quyết định ghi <code>decisions</code> actor=human</td></tr>
+</table>
+
+<h2>13 · Quyết định</h2>
+<table>
+<tr><th>Quyết định</th><th>Trạng thái</th></tr>
+<tr><td>Chỉ 1 ngách focus mỗi lúc</td><td>JC đã chốt 2026-09-25</td></tr>
+<tr><td>Painpoint confirmed theo bằng chứng (≥ 10 comment, 3 video, 2 kênh, 3 câu nguyên văn), chưa cần lift</td><td>JC đã chốt 2026-09-25</td></tr>
+<tr><td>Pha INIT do JC chọn kênh; Setup lướt từ list đó</td><td>JC đề xuất 2026-09-25</td></tr>
+<tr><td>Mở rộng keyword ở daily + weekly, mở rộng kênh chỉ ở weekly</td><td>JC đồng ý 2026-09-25</td></tr>
+<tr><td>Tối đa 20 video mỗi kênh ở Setup lướt: 15 mới nhất (baseline, outlier) + 5 nhiều view nhất 12 tháng (bằng chứng nhu cầu, comment)</td><td>JC đã chốt 2026-09-25</td></tr>
+<tr><td>Pilot bằng tay trước khi code</td><td>Đề xuất — chờ list kênh INIT</td></tr>
+<tr><td>Bảng lịch sử keyword / kênh (cho biểu đồ xu hướng dài hạn)</td><td>Chưa quyết — Niche review không phụ thuộc</td></tr>
+</table>
+</main></body></html>
