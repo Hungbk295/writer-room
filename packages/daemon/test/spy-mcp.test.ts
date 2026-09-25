@@ -82,18 +82,23 @@ describe('Spy MCP server', () => {
     const payload = await callMcp(info, 2, 'tools/list');
     const tools = payload.result.tools!;
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      'spy_candidates_list',
       'spy_channel_momentum', 'spy_channel_outliers', 'spy_channel_profile', 'spy_channel_start',
       'spy_channel_videos', 'spy_competitors_list', 'spy_corpus_channels', 'spy_corpus_videos',
+      'spy_discover_channels', 'spy_discover_videos', 'spy_expand_graph',
       'spy_find_videos', 'spy_get_status', 'spy_global_video_search', 'spy_loop_inbox', 'spy_loop_report',
-      'spy_loop_status', 'spy_read_transcript', 'spy_read_video_material',
-      'spy_run_manifest', 'spy_title_patterns', 'spy_topics_list', 'spy_video_comments',
+      'spy_loop_status', 'spy_quota_status', 'spy_read_transcript', 'spy_read_video_material',
+      'spy_run_manifest', 'spy_scan_candidates', 'spy_title_patterns', 'spy_topics_list',
+      'spy_transcript_fetch', 'spy_video_comments',
       'spy_video_download_audio', 'spy_video_metrics', 'spy_video_start', 'spy_wait',
     ]);
-    // Mutation tools must never appear in the allowlist.
+    // Mutation tools must never appear in the allowlist. (Discovery/acquisition
+    // reads — spy_discover_*, spy_expand_graph, spy_scan_candidates,
+    // spy_transcript_fetch, spy_quota_status, spy_candidates_list — ARE allowed
+    // per M1 niche-scout orchestration; chỉ write tools bị chặn.)
     expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      'spy_cancel', 'spy_competitors_update', 'spy_discover_channels', 'spy_discover_videos',
-      'spy_expand_graph', 'spy_niche_set', 'spy_scan_candidates', 'spy_transcript_fetch',
-      'spy_transcript_normalize',
+      'spy_cancel', 'spy_competitors_update', 'spy_candidates_decide',
+      'spy_niche_set', 'spy_transcript_normalize',
       // spy.loop.write tools — intentionally excluded from allowlist
       'spy_loop_decide', 'spy_loop_tick',
     ]));

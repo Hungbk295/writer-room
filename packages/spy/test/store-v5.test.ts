@@ -90,7 +90,8 @@ describe('SpyStore v5 — topic_keywords', () => {
     });
     store.markKeywordSearched('fin', 'keyword1', 5);
     const kws = store.listTopicKeywords('fin');
-    expect(String(kws[0]!['status'])).toBe('searched');
+    // v13: 'searched' → 'active' (keyword đã từng search = đang theo dõi).
+    expect(String(kws[0]!['status'])).toBe('active');
     expect(Number(kws[0]!['yield_channels'])).toBe(5);
     expect(kws[0]!['last_searched_at']).not.toBeNull();
   });
@@ -125,21 +126,21 @@ describe('SpyStore v5 — topic_channels', () => {
       learnValueScore: 65,
       status: 'new',
     });
-    store.decideTopicChannels('fin', ['UCtest123'], 'shortlisted', 'loop_auto');
+    store.decideTopicChannels('fin', ['UCtest123'], 'active', 'user');
     const rows = store.listTopicChannels('fin');
-    expect(String(rows[0]!['status'])).toBe('shortlisted');
-    expect(String(rows[0]!['decided_by'])).toBe('loop_auto');
+    expect(String(rows[0]!['status'])).toBe('active');
+    expect(String(rows[0]!['decided_by'])).toBe('user');
   });
 
   test('countTopicChannelsByStatus', async () => {
     await setupStore();
     store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
     store.upsertTopicChannel({ topicId: 'fin', channelId: 'UC1', status: 'new' });
-    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UC2', status: 'shortlisted' });
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UC2', status: 'active' });
     store.upsertTopicChannel({ topicId: 'fin', channelId: 'UC3', status: 'rejected' });
     const counts = store.countTopicChannelsByStatus('fin');
     expect(counts['new']).toBe(1);
-    expect(counts['shortlisted']).toBe(1);
+    expect(counts['active']).toBe(1);
     expect(counts['rejected']).toBe(1);
   });
 });
@@ -273,8 +274,8 @@ describe('SpyStore v5 — decided_reason', () => {
     await setupStore();
     store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
     store.upsertTopicChannel({ topicId: 'fin', channelId: 'UC1', status: 'new' });
-    store.decideTopicChannels('fin', ['UC1'], 'shortlisted', 'user');
-    const rows = store.listTopicChannels('fin', { status: 'shortlisted' });
+    store.decideTopicChannels('fin', ['UC1'], 'active', 'user');
+    const rows = store.listTopicChannels('fin', { status: 'active' });
     expect(rows[0]!['decided_reason']).toBeNull();
     expect(String(rows[0]!['decided_by'])).toBe('user');
   });

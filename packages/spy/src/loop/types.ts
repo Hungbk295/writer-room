@@ -17,6 +17,14 @@ export const topicConfigSchema = z.object({
   market: z.string().min(2).max(5),
   /** ISO 639-1 — ngôn ngữ post-filter. */
   language: z.string().min(2).max(5),
+  /**
+   * ISO 3166-1 alpha-2, vd 'VN' | 'US' — search regionCode + languageMatch
+   * (ADR-7). Cột `topics.region` từ migration v13. Rỗng = chưa khai báo →
+   * runner rơi về suy luận cũ `market.toUpperCase().slice(0,2)` (topic 'vi'
+   * cho ra 'VI' không hợp lệ nhưng đó đúng là hành vi hiện tại — bay-tra-gop
+   * không đổi cho tới khi region được khai báo).
+   */
+  region: z.string().max(2).default(''),
   /** Kênh của mình trong chủ đề này — dùng làm baseline cho learnValue. */
   ownChannelIds: z.array(z.string()).default([]),
   /** Từ khoá gieo hạt — đưa vào discoverVideos. */
@@ -57,6 +65,12 @@ export interface TopicRow {
   label: string;
   market: string;
   language: string;
+  /** v13: ISO 3166-1 alpha-2 — undefined trước migration. */
+  region?: string | null;
+  /** v13: 'none' | 'awaiting_channels' | 'awaiting_keywords' | 'done'. */
+  setupStatus?: string;
+  /** v13: settings_json thô — store merge với DEFAULT_TOPIC_SETTINGS. */
+  settingsJson?: string | null;
   status: 'active' | 'paused' | 'archived';
   ownChannelIdsJson: string;   // JSON array
   briefMd: string;
@@ -65,6 +79,23 @@ export interface TopicRow {
   createdAt: string;
   updatedAt: string;
 }
+
+// ---------------------------------------------------------------------------
+// v3-lean — kiểu hợp đồng store sống ở store.ts (Devin A, migration v13):
+// LoopMode, TopicSettings (camelCase), TopicSetupStatus, các row v3,
+// KeywordOrigin. File này KHÔNG re-export chúng (tránh export-* ambiguity ở
+// index.ts) — caller import thẳng từ '../store.ts'. Hai import dưới chỉ phục
+// vụ nội bộ file.
+// ---------------------------------------------------------------------------
+
+import type { LoopMode, TopicSetupStatus } from '../store.ts';
+
+// ---------------------------------------------------------------------------
+// v3-lean — nhịp chạy (SetupStep là khái niệm của flow layer, store không cần)
+// ---------------------------------------------------------------------------
+
+/** Hai bước setup tách lệnh riêng — mỗi bước dừng chờ người duyệt (S2/S3). */
+export type SetupStep = 'channels' | 'keywords';
 
 export type TopicKeywordRelation =
   | 'seed'
@@ -75,52 +106,11 @@ export type TopicKeywordRelation =
   | 'yt_suggest'
   | 'llm_expand';
 
-export type TopicKeywordStatus = 'pending' | 'searched' | 'exhausted' | 'rejected';
-
-export interface TopicKeywordRow {
-  topicId: string;
-  termKey: string;           // unaccented lowercase
-  displayTerm: string;
-  relation: TopicKeywordRelation;
-  evidenceJson: string;      // {df_chan, df_vid, sample_videos[:5]} | {vendor, as_of, credit_cost}
-  status: TopicKeywordStatus;
-  yieldChannels: number;
-  lastSearchedAt: string | null;
-  addedAt: string;
-  addedBy: 'user' | 'loop' | 'agent';
-}
-
-export interface TopicChannelRow {
-  topicId: string;
-  channelId: string;
-  fitScore: number | null;
-  fitReasonsJson: string;        // FitReason[]
-  /** Verdict thật (agent vision). P0 LUÔN null. */
-  facelessScore: number | null;
-  facelessSignalsJson: string;   // FacelessSignal[]
-  /** Phỏng đoán text-only 0..1 — không phải verdict, không dùng để reject. */
-  facelessHint: number | null;
-  facelessHintReasonsJson: string;  // FacelessHintReason[]
-  /** JSON string[] — ≤6 hqdefault URL cho lưới review Inbox. */
-  thumbnailsJson: string | null;
-  styleMatchScore: number | null;
-  styleNotes: string | null;
-  learnValueScore: number | null;
-  /** JSON {method, sampleSize, reasons: LearnValueReason[]}. */
-  learnValueReasonsJson: string | null;
-  status: 'new' | 'shortlisted' | 'studied' | 'rejected' | 'own';
-  decidedBy: 'user' | 'loop_auto' | null;
-  decidedAt: string | null;
-  /** 'lang_mismatch' | 'low_fit' | 'fit_learn_auto' | null (user quyết). */
-  decidedReason: string | null;
-  spyRunId: string | null;
-  langDetected: string | null;
-  langConfidence: number | null;
-  /** JSON {method, evidenceField, majority, declaredCount, sampleSize}. */
-  langEvidenceJson: string | null;
-  firstSeenAt: string;
-  lastScoredAt: string | null;
-}
+/**
+ * v13 CHECK: pending | active | paused | rejected. Migration đã ánh xạ
+ * searched→active, exhausted→paused — không còn row legacy để đọc.
+ */
+export type TopicKeywordStatus = 'pending' | 'active' | 'paused' | 'rejected';
 
 export type LoopTickStatus = 'running' | 'done' | 'failed' | 'skipped_quota';
 export type LoopTickStep = 'expand' | 'search' | 'enrich' | 'triage' | 'scan' | 'harvest' | 'report';
@@ -129,6 +119,8 @@ export interface LoopTickRow {
   tickId: string;
   topicId: string;
   quotaDay: string;             // YYYY-MM-DD Pacific
+  /** v13: nhịp của tick — idempotency theo (topic_id, quota_day, mode). */
+  mode?: LoopMode;
   startedAt: string;
   finishedAt: string | null;
   status: LoopTickStatus;
@@ -147,6 +139,8 @@ export interface DailyReportRow {
   reportId: string;
   reportDate: string;            // YYYY-MM-DD
   topicId: string | null;        // NULL = tổng hợp
+  /** v13: report thuộc nhịp nào — UNIQUE (topic_id, report_date, mode). */
+  mode?: LoopMode;
   summaryJson: string;           // ReportSummaryJson (immutable)
   markdown: string;
   createdAt: string;
@@ -173,6 +167,10 @@ export interface TickResult {
   tickId: string;
   topicId: string;
   quotaDay: string;
+  /** Nhịp của tick (v3). Legacy runTick không truyền → undefined. */
+  mode?: LoopMode;
+  /** Chỉ mode='setup': bước đã chạy trong tick này. */
+  setupStep?: SetupStep;
   status: LoopTickStatus;
   dryRun: boolean;
   searchCallsUsed: number;
@@ -221,7 +219,8 @@ export interface InboxItem {
     term: string | null;
     fromChannelId: string | null;
   };
-  status: 'new' | 'shortlisted' | 'studied' | 'rejected' | 'own';
+  /** v13 CHECK: new | active | paused | rejected | own (không còn shortlisted/studied). */
+  status: 'new' | 'active' | 'paused' | 'rejected' | 'own';
   decidedBy: 'user' | 'loop_auto' | null;
   decidedAt: string | null;
   firstSeenAt: string;
@@ -231,23 +230,33 @@ export interface InboxItem {
 // Loop status (delivery.md §3)
 // ---------------------------------------------------------------------------
 
+export interface LoopTickBrief {
+  tickId: string;
+  quotaDay: string;
+  status: LoopTickStatus;
+  step: LoopTickStep;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+
 export interface LoopStatus {
   topicId: string;
   topicLabel: string;
   topicStatus: 'active' | 'paused' | 'archived';
-  lastTick: {
-    tickId: string;
-    quotaDay: string;
-    status: LoopTickStatus;
-    step: LoopTickStep;
-    startedAt: string;
-    finishedAt: string | null;
-    error: string | null;
-  } | null;
+  /** v13: vị trí funnel setup của topic. */
+  setupStatus?: TopicSetupStatus | string;
+  lastTick: LoopTickBrief | null;
+  /**
+   * v3: tick gần nhất THEO NHỊP — scheduler daily/weekly cần nhìn riêng từng
+   * mode, vì lastTick đơn lẻ chỉ kể được tick mới nhất bất kể nhịp.
+   */
+  lastTickByMode?: Partial<Record<LoopMode, LoopTickBrief | null>>;
   nextTickAt: string | null;    // ISO — null khi topic paused
   inboxTotal: number;           // status=new
-  shortlistedTotal: number;
-  studiedTotal: number;
+  /** v3: Follow List = kênh active (tên cũ shortlistedTotal/studiedTotal). */
+  activeTotal: number;
+  pausedTotal: number;
   keywordsPending: number;
   /**
    * Quota TOÀN NGÀY — cả năm trường cùng một namespace (sổ global của quota-day).
@@ -293,13 +302,47 @@ export interface ReportDelta {
   vsDate: string | null;
   newCandidatesPrev: number | null;
   inboxTotalPrev: number | null;
-  shortlistedTotalPrev: number | null;
-  studiedTotalPrev: number | null;
+  /** v3: active/paused (tên cũ shortlistedTotalPrev/studiedTotalPrev). */
+  activeTotalPrev: number | null;
+  pausedTotalPrev: number | null;
   keywordsPendingPrev: number | null;
   firstSeenToday: string[];
-  movedToShortlistToday: string[];
-  userDecisionsSinceLast: { shortlisted: number; rejected: number };
-  newlyExhausted: string[];
+  /** v3: kênh được duyệt sang active (tên cũ movedToShortlistToday). */
+  movedToActiveToday: string[];
+  /** v3: số quyết định 'active' của người (tên cũ .shortlisted). */
+  userDecisionsSinceLast: { active: number; rejected: number };
+  /** v3: keyword vừa bị paused (tên cũ newlyExhausted). */
+  newlyPaused: string[];
+}
+
+/** Số liệu riêng của từng nhịp trong daily_reports.summary_json. */
+export interface DailyReportSection {
+  newVideos: number;
+  channelsScanned: number;
+  channelsChecked: number;
+  topGained24h: Array<{ videoId: string; title: string; channelTitle: string; viewsGained24h: number; views: number | null }>;
+  topOutliers: Array<{ videoId: string; title: string; channelTitle: string; outlierScore: number; views: number | null }>;
+  suggestions: Array<{ channelId: string; title: string | null; suggestion: string }>;
+}
+
+export interface WeeklyReportSection {
+  keywordsSearched: Array<{ termKey: string; term: string; nResults: number; nFollowed: number; medianViews: number | null }>;
+  outliersInFollow: Array<{ videoId: string; title: string; channelTitle: string; outlierScore: number }>;
+  newChannelsProposed: Array<{ channelId: string; title: string | null; outlierScore: number | null; baselineMedianViews: number | null; foundByKeyword: string }>;
+  channelsRejectedLang: number;
+  channelsFilteredDeadLottery: number;
+  newKeywords: Array<{ termKey: string; display: string; nVideos: number }>;
+}
+
+export interface SetupReportSection {
+  step: SetupStep;
+  /** S2: kênh đề xuất / loại ngôn ngữ / lọc dead-lottery; S3: keyword đề xuất. */
+  channelsProposed: number;
+  channelsRejectedLang: number;
+  channelsFilteredDeadLottery: number;
+  keywordsProposed: number;
+  /** 'awaiting_channels' | 'awaiting_keywords' — điểm dừng chờ người. */
+  awaitingStatus: TopicSetupStatus;
 }
 
 export interface ReportSummaryJson {
@@ -308,6 +351,11 @@ export interface ReportSummaryJson {
   reportDate: string;
   topicId: string | null;
   topicLabel: string;
+  /** v3: nhịp sinh ra report — daily | weekly | setup. */
+  mode?: LoopMode;
+  daily?: DailyReportSection;
+  weekly?: WeeklyReportSection;
+  setup?: SetupReportSection;
   tick: {
     tickId: string;
     status: LoopTickStatus;
@@ -340,7 +388,8 @@ export interface ReportSummaryJson {
   inboxTotal: number;
   topLearn: TopLearnEntry[];
   newKeywords: string[];
-  exhaustedKeywords: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
+  /** v3: keyword đang paused (tên cũ exhaustedKeywords — web đọc fallback). */
+  pausedKeywords: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
   scannedChannels: Array<{ channelId: string; title: string | null; spyRunId: string | null; topTitlePattern: string | null; outliers: string[] }>;
   delta: ReportDelta;
   warnings: string[];

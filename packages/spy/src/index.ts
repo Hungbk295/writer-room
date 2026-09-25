@@ -81,6 +81,9 @@ export * from './loop/planner.ts';
 export * from './loop/report.ts';
 export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
+export * from './dash/types.ts';
+export * from './dash/registry.ts';
+export * from './dash/activity.ts';
 
 
 export interface SpyServiceOptions {

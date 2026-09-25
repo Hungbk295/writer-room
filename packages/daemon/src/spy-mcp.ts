@@ -289,7 +289,7 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       topic_id: { type: 'string', minLength: 1 },
-      status: { type: 'string', enum: ['new', 'shortlisted', 'rejected', 'studied'] },
+      status: { type: 'string', enum: ['new', 'active', 'paused', 'rejected', 'own'] },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
       cursor: { type: 'integer', minimum: 0 },
     },

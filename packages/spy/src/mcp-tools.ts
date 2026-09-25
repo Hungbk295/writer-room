@@ -843,7 +843,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     // ── Spy Loop — 2 write tools (requiredScopes spy.loop.write, KHÔNG vào EXPOSED_TOOL_NAMES) ───
     wrap({
       name: 'spy_loop_decide',
-      description: '[Write] Duyệt / loại kênh trong inbox. requiredScopes: spy.loop.write — KHÔNG có trong allowlist MCP mặc định; chỉ user dùng qua HTTP.',
+      description: '[Write] Duyệt / loại kênh trong inbox (v13: active | paused | rejected | new). requiredScopes: spy.loop.write — KHÔNG có trong allowlist MCP mặc định; chỉ user dùng qua HTTP.',
       requiredScopes: ['spy.loop.write'],
       outputLimitBytes: 16_384,
       handler: async (args) => {
@@ -852,7 +852,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
             decide: (params: {
               topicId: string;
               channelIds: string[];
-              status: 'shortlisted' | 'rejected';
+              status: 'active' | 'paused' | 'rejected' | 'new';
               negativeKeyword?: string;
               decidedBy?: string;
             }) => Promise<unknown>;
@@ -861,9 +861,10 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         if (!loop) throw new AppError('capability_missing', 'spy.loop chưa khởi tạo');
         const topicId = text(args['topic_id'], 'topic_id');
         const channelIds = stringList(args['channel_ids'], 'channel_ids');
-        const status = args['status'] === 'shortlisted' || args['status'] === 'rejected'
-          ? args['status']
-          : (() => { throw new AppError('invalid_input', 'status phải là shortlisted | rejected'); })();
+        const status = args['status'] === 'active' || args['status'] === 'paused'
+          || args['status'] === 'rejected' || args['status'] === 'new'
+          ? args['status'] as 'active' | 'paused' | 'rejected' | 'new'
+          : (() => { throw new AppError('invalid_input', 'status phải là active | paused | rejected | new'); })();
         return loop.decide({
           topicId,
           channelIds,
@@ -882,7 +883,12 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       handler: async (args) => {
         const loop = (spy as unknown as {
           loop?: {
-            tick: (params: { topicId: string; dryRun?: boolean }) => Promise<unknown>;
+            tick: (params: {
+              topicId: string;
+              dryRun?: boolean;
+              mode?: 'daily' | 'weekly' | 'setup';
+              setupStep?: 'channels' | 'keywords';
+            }) => Promise<unknown>;
             isRunning: (topicId: string) => boolean;
           }
         }).loop;
@@ -892,7 +898,14 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
           throw new AppError('invalid_input', `Tick đang chạy cho topic ${topicId}`);
         }
         const dryRun = args['dry_run'] === true;
-        return loop.tick({ topicId, dryRun });
+        // v3: mode='daily'|'weekly'|'setup' (setup cần setup_step); bỏ mode = tick legacy.
+        const mode = args['mode'] === 'daily' || args['mode'] === 'weekly' || args['mode'] === 'setup'
+          ? args['mode']
+          : undefined;
+        const setupStep = args['setup_step'] === 'channels' || args['setup_step'] === 'keywords'
+          ? args['setup_step']
+          : undefined;
+        return loop.tick({ topicId, dryRun, mode, setupStep });
       },
     }),
   ];

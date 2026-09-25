@@ -58,8 +58,9 @@ import { LoopScheduler } from './spy/loop-scheduler.ts';
 import { ChannelWatchScheduler } from './spy/channel-watch-scheduler.ts';
 import { isValidIanaTimeZone, loadChannelWatchConfig, saveChannelWatchConfig } from './spy/channel-watch-config.ts';
 import { sendTelegramReport } from './spy/report-telegram.ts';
-import { createSpyLoopAdapter, type SpyLoopAdapter } from './spy/loop-contract.ts';
+import { createSpyLoopAdapter, type SpyLoopAdapter, type LoopMode, type SetupStep } from './spy/loop-contract.ts';
 import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
+import { handleSpyDash } from './spy/dash-routes.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -737,6 +738,13 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
             ephemeralUrl: info.url,
           });
         }
+      }
+
+      // ── Spy Dashboard API — 16 endpoint GET read-only (plan spy-dashboard-api)
+      if (pathname.startsWith('/api/spy/dash')) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        if (method !== 'GET') return error('Spy Dashboard chỉ nhận GET', 405);
+        return handleSpyDash(url, spy);
       }
 
       if (pathname === '/api/writer/mcp' || pathname === '/api/writer/mcp/') {
@@ -2668,6 +2676,20 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && pathname === '/api/spy/loop/inbox') {
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (!loop) return error('Spy Loop chưa khởi tạo', 503);
+        // v3 (§P3): ?topic_id= → inbox HITL gồm 3 nhóm — kênh chờ duyệt
+        // (status=new), keyword chờ duyệt (pending), kênh máy đang gợi ý
+        // (suggestion != null). Người duyệt đọc hết một lượt trước khi decide.
+        const topicIdV3 = url.searchParams.get('topic_id');
+        if (topicIdV3) {
+          const channelsAll = spy.store.listTopicChannelsByStatus(
+            topicIdV3, ['new', 'active', 'paused', 'rejected', 'own'],
+          );
+          return json({
+            channels_new: channelsAll.filter((c) => c.status === 'new'),
+            keywords_pending: spy.store.listKeywordsByStatus(topicIdV3, ['pending']),
+            channels_suggested: channelsAll.filter((c) => c.suggestion !== null && c.suggestion !== ''),
+          });
+        }
         const topicId = url.searchParams.get('topic');
         if (!topicId) return error('topic bắt buộc');
         const statusFilter = url.searchParams.get('status') ?? undefined;
@@ -2682,17 +2704,43 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (!loop) return error('Spy Loop chưa khởi tạo', 503);
         const body = await readBody(req);
+        // v3 (§P3): {topic_id, entity_type, entity_id, to_status, reason} —
+        // đường duy nhất đưa kênh/keyword sang active|paused|rejected, ghi
+        // decisions actor='human' (tôn chỉ 1). entity_id: channel_id hoặc term_key.
+        const entityType = typeof body['entity_type'] === 'string' ? body['entity_type'] : null;
+        if (entityType) {
+          const topicId = typeof body['topic_id'] === 'string' ? body['topic_id'] : '';
+          const entityId = typeof body['entity_id'] === 'string' ? body['entity_id'] : '';
+          const toStatus = typeof body['to_status'] === 'string' ? body['to_status'] : '';
+          const reason = typeof body['reason'] === 'string' ? body['reason'] : null;
+          if (!topicId || !entityId || !toStatus) {
+            return error('topic_id, entity_type, entity_id, to_status bắt buộc');
+          }
+          if (entityType === 'channel') {
+            spy.store.decideChannel(topicId, entityId, toStatus, reason);
+          } else if (entityType === 'keyword') {
+            spy.store.decideKeyword(topicId, entityId, toStatus, reason);
+          } else {
+            return error('entity_type phải là channel|keyword');
+          }
+          return json({ ok: true, entity_type: entityType, entity_id: entityId, to_status: toStatus });
+        }
         const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
         const channelIds = Array.isArray(body['channelIds'])
           ? (body['channelIds'] as unknown[]).map(String)
           : [];
         // 'new' = undo quyết định gần nhất (phím `u` trên dashboard) — không cần
         // endpoint riêng, chỉ là đưa dòng về lại trạng thái chờ duyệt.
-        const status = body['status'] === 'shortlisted' || body['status'] === 'rejected' || body['status'] === 'new'
-          ? body['status']
-          : null;
+        // 'shortlisted' (client v2) được map sang 'active' — adapter giờ chỉ
+        // nhận enum v3.
+        const rawStatus = body['status'];
+        const status = rawStatus === 'shortlisted'
+          ? 'active'
+          : rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'rejected' || rawStatus === 'new'
+            ? rawStatus
+            : null;
         if (!topicId || channelIds.length === 0 || !status) {
-          return error('topicId, channelIds[], status (shortlisted|rejected|new) bắt buộc');
+          return error('topicId, channelIds[], status (active|paused|rejected|new) bắt buộc');
         }
         const result = await loop.decide({
           topicId,
@@ -2773,9 +2821,24 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         }
         // Dry-run chỉ lập kế hoạch, không gọi API nào → trả ngay.
         if (body['dryRun'] === true) return json(await loop.planTick(topicId));
+        // v3: mode ('daily'|'weekly'|'setup', mặc định daily) + setupStep
+        // ('channels'|'keywords') forward cho runner mode-mới. setupStep chỉ có
+        // nghĩa khi mode='setup' nhưng cứ forward — runner bỏ qua khi không cần.
+        const mode = body['mode'] === undefined
+          ? 'daily'
+          : ['daily', 'weekly', 'setup'].includes(String(body['mode']))
+            ? (body['mode'] as LoopMode)
+            : null;
+        if (mode === null) return error('mode phải là daily|weekly|setup');
+        const setupStep = body['setupStep'] === undefined
+          ? undefined
+          : ['channels', 'keywords'].includes(String(body['setupStep']))
+            ? (body['setupStep'] as SetupStep)
+            : null;
+        if (setupStep === null) return error('setupStep phải là channels|keywords');
         // Tick thật chạy nền để không giữ kết nối HTTP suốt vài phút.
-        void loopScheduler.runTick(topicId);
-        return json({ ok: true, running: true, dryRun: false });
+        void loopScheduler.runTick(topicId, { mode, setupStep });
+        return json({ ok: true, running: true, dryRun: false, mode });
       }
 
       // ── Spy Loop — Reports ────────────────────────────────────
@@ -2816,7 +2879,10 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       }
 
       // ── Spy Loop — Studied ────────────────────────────────────
-      if (method === 'GET' && pathname === '/api/spy/loop/studied') {
+      // v3: Follow List = kênh status=active. `/follow-list` là tên mới;
+      // `/studied` giữ làm alias cho client v2 cũ. Adapter vẫn gọi
+      // listStudied — Devin B đổi tên method thì cập nhật cả hai nhánh này.
+      if (method === 'GET' && (pathname === '/api/spy/loop/follow-list' || pathname === '/api/spy/loop/studied')) {
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (!loop) return error('Spy Loop chưa khởi tạo', 503);
         const topicId = url.searchParams.get('topic');

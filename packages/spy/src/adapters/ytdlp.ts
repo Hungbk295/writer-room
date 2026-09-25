@@ -50,7 +50,16 @@ export interface YoutubePort {
   listChannel(canonicalUrl: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
   /** Zero-config keyword search used by Writer Room's Source Pack explorer. */
   searchVideos?(query: string, limit: number, signal?: AbortSignal): Promise<YoutubeVideoInfo[]>;
-  fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
+  /**
+   * `options.languages` điều khiển thứ tự ưu tiên phụ đề theo ngôn ngữ của
+   * topic (ADR-7). Bỏ trống = `DEFAULT_SUBTITLE_LANGUAGE_PREFERENCE`, tức
+   * `['vi','en']` như trước — caller không truyền thì hành vi không đổi.
+   */
+  fetchTranscript(
+    canonicalUrl: string,
+    signal?: AbortSignal,
+    options?: { languages?: readonly string[] },
+  ): Promise<YoutubeTranscript>;
   /**
    * Lean fallback for `fetchTranscript`. Skips the metadata dump and the
    * preferred-track lookup entirely — it asks yt-dlp for one auto-caption
@@ -61,7 +70,11 @@ export interface YoutubePort {
    * Optional so existing YoutubePort test doubles are unaffected — callers
    * must use `?.()` and treat a missing implementation as "no fallback".
    */
-  fetchAutoSubsFallback?(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript>;
+  fetchAutoSubsFallback?(
+    canonicalUrl: string,
+    signal?: AbortSignal,
+    options?: { languages?: readonly string[] },
+  ): Promise<YoutubeTranscript>;
   streamUrl(canonicalUrl: string, signal?: AbortSignal): Promise<string>;
   downloadAudio?(
     canonicalUrl: string,
@@ -169,7 +182,27 @@ function parseJson(buffer: Buffer): YtDlpJson {
   }
 }
 
-const SUBTITLE_LANGUAGE_PREFERENCE = ['vi', 'en'];
+/**
+ * Mặc định lịch sử của hệ thống (đặt theo topic đầu tiên `bay-tra-gop`, ngôn
+ * ngữ `vi`). Giữ làm fallback để caller chưa truyền `languages` chạy y như cũ.
+ */
+export const DEFAULT_SUBTITLE_LANGUAGE_PREFERENCE: readonly string[] = ['vi', 'en'];
+
+/**
+ * ADR-7: thứ tự ưu tiên phụ đề theo ngôn ngữ topic, không hardcode 'vi'.
+ * Quy tắc: ngôn ngữ topic đứng đầu, 'en' làm fallback phổ thông, bỏ trùng.
+ *   vi → ['vi','en']  (giữ đúng hành vi cũ)
+ *   en → ['en']        (không lấy phụ đề 'vi' vào corpus tiếng Anh)
+ *   ja → ['ja','en']
+ */
+export function subtitleLanguagesFor(language: string | null | undefined): string[] {
+  const preferred = (language ?? '').trim().toLowerCase();
+  const out: string[] = [];
+  for (const lang of [preferred, 'en']) {
+    if (lang && !out.includes(lang)) out.push(lang);
+  }
+  return out.length > 0 ? out : [...DEFAULT_SUBTITLE_LANGUAGE_PREFERENCE];
+}
 
 /**
  * Rank the available caption tracks. Prefers a real human transcript, then the
@@ -177,16 +210,17 @@ const SUBTITLE_LANGUAGE_PREFERENCE = ['vi', 'en'];
  */
 function preferredTrack(
   info: YtDlpJson,
+  preference: readonly string[],
 ): { language: string; source: 'manual' | 'auto' } | null {
   for (const [source, tracks] of [
     ['manual', info.subtitles],
     ['auto', info.automatic_captions],
   ] as const) {
-    const languages = Object.keys(tracks ?? {});
-    for (const wanted of SUBTITLE_LANGUAGE_PREFERENCE) {
-      const original = languages.find((language) => language === `${wanted}-orig`);
-      const exact = languages.find((language) => language === wanted);
-      const prefixed = languages.find((language) => language.startsWith(`${wanted}-`));
+    const available = Object.keys(tracks ?? {});
+    for (const wanted of preference) {
+      const original = available.find((language) => language === `${wanted}-orig`);
+      const exact = available.find((language) => language === wanted);
+      const prefixed = available.find((language) => language.startsWith(`${wanted}-`));
       const chosen = original ?? exact ?? prefixed;
       if (chosen) return { language: chosen, source };
     }
@@ -198,7 +232,17 @@ export class YtDlpAdapter implements YoutubePort {
   constructor(
     private readonly binary = 'yt-dlp',
     private readonly cookieFile?: string,
+    /**
+     * Thứ tự ưu tiên phụ đề mặc định của adapter. Mỗi lời gọi có thể ghi đè
+     * bằng `options.languages`; bỏ trống = `['vi','en']` (ADR-7: không còn
+     * hardcode, mặc định này tồn tại để giữ nguyên hành vi topic `vi`).
+     */
+    private readonly subtitleLanguages: readonly string[] = DEFAULT_SUBTITLE_LANGUAGE_PREFERENCE,
   ) {}
+
+  private resolveSubtitleLanguages(options?: { languages?: readonly string[] }): readonly string[] {
+    return options?.languages?.length ? options.languages : this.subtitleLanguages;
+  }
 
   private baseArgs(): string[] {
     return [
@@ -310,7 +354,11 @@ export class YtDlpAdapter implements YoutubePort {
     });
   }
 
-  async fetchTranscript(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript> {
+  async fetchTranscript(
+    canonicalUrl: string,
+    signal?: AbortSignal,
+    options?: { languages?: readonly string[] },
+  ): Promise<YoutubeTranscript> {
     const directory = await mkdtemp(join(tmpdir(), 'writer-room-subs-'));
     try {
       // Two calls on purpose. yt-dlp writes manual and automatic tracks to the same
@@ -321,7 +369,7 @@ export class YtDlpAdapter implements YoutubePort {
         [...this.baseArgs(), '--dump-single-json', '--skip-download', canonicalUrl],
         { signal, timeoutMs: 90_000, maximumStdoutBytes: 16 * 1024 * 1024 },
       )).stdout);
-      const track = preferredTrack(metadata);
+      const track = preferredTrack(metadata, this.resolveSubtitleLanguages(options));
       if (!track) return { status: 'missing', language: null, source: 'unknown', segments: [] };
 
       const result = await requireSuccessfulProcess(
@@ -382,10 +430,14 @@ export class YtDlpAdapter implements YoutubePort {
    * same `${lang}-orig` before `${lang}` order as `preferredTrack` above.
    * `--sleep-requests 1` throttles the sequential attempts.
    */
-  async fetchAutoSubsFallback(canonicalUrl: string, signal?: AbortSignal): Promise<YoutubeTranscript> {
+  async fetchAutoSubsFallback(
+    canonicalUrl: string,
+    signal?: AbortSignal,
+    options?: { languages?: readonly string[] },
+  ): Promise<YoutubeTranscript> {
     const directory = await mkdtemp(join(tmpdir(), 'writer-room-subs-fallback-'));
     try {
-      for (const base of SUBTITLE_LANGUAGE_PREFERENCE) {
+      for (const base of this.resolveSubtitleLanguages(options)) {
         for (const lang of [`${base}-orig`, base]) {
           await requireSuccessfulProcess(
             this.binary,

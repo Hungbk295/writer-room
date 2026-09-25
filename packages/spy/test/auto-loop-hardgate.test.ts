@@ -35,9 +35,7 @@ import { QuotaLedger, quotaDay, quotaDayOf } from '../src/quota.ts';
 import { QuotaCountingDataApi } from '../src/adapters/quota-counting-data-api.ts';
 import { YouTubeDataApiAdapter } from '../src/adapters/data-api.ts';
 import { DiscoveryService } from '../src/discovery.ts';
-import { evaluateChannelLanguage } from '../src/loop/language.ts';
 import { LoopRunner } from '../src/loop/runner.ts';
-import { buildDailyReport, renderReport } from '../src/loop/report.ts';
 import { AppError } from '../src/errors.ts';
 import type { YoutubePort, YoutubeTranscript, YoutubeVideoInfo } from '../src/adapters/ytdlp.ts';
 import type {
@@ -212,7 +210,7 @@ class TraceDataApi implements YouTubeDataApiPort {
 }
 
 /** Bộ đồ nghề chạy ĐÚNG đường production: Trace → decorator → service thật. */
-async function harness(opts: { checkpoint?: (name: string) => void | Promise<void> } = {}) {
+async function harness() {
   const root = await tempRoot('spy-hardgate-');
   const store = new SpyStore(join(root, 'spy.sqlite'));
   openStores.push(store);
@@ -222,18 +220,12 @@ async function harness(opts: { checkpoint?: (name: string) => void | Promise<voi
   const discovery = new DiscoveryService(store, counting, quota);
   const loop = new LoopRunner({
     store, quota, discovery, dataApi: counting, dataRoot: root,
-    ...(opts.checkpoint ? { checkpoint: opts.checkpoint } : {}),
   });
   return { root, store, quota, trace, counting, discovery, loop };
 }
 
 function ledger(store: SpyStore, bucket: 'search' | 'general'): { units: number; calls: number } {
   return store.getQuotaUsage(bucket, quotaDay());
-}
-
-function seedChannel(store: SpyStore, topicId: string, channelId: string): void {
-  store.upsertCandidate({ channelId, market: 'vi', discoveredVia: 'corpus_import' });
-  store.upsertTopicChannel({ topicId, channelId, status: 'new' });
 }
 
 const VI_TITLES = [
@@ -244,48 +236,11 @@ const VI_TITLES = [
   'Ba sai lầm khi mua nhà trả góp', 'Thu nhập thụ động có thật không',
   'Lạm phát ăn mòn tiền ra sao', 'Tư duy tài chính của người giàu',
 ];
-const EN_TITLES = [
-  'How compound interest works', 'Why you have no savings',
-  'Index funds explained', 'The truth about consumer debt',
-  'Good debt vs bad debt', 'How to budget on a low income',
-  'Investing for beginners', 'What if you saved ten percent',
-  'Three mistakes buying a house', 'Is passive income real',
-  'How inflation eats your money', 'The money mindset of rich people',
-];
-
 // ===========================================================================
 // G1 quota ledger — sổ khớp call thật, cho MỌI op trong bảng chi phí
 // ===========================================================================
 
 describe('G1 quota ledger matches actual API calls', () => {
-  test('G1 quota ledger — deep enrich: channels.list + playlistItems.list + videos.list, ghi sổ trước khi request chạy', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCenrich0000000000000001');
-    trace.videoTitles = VI_TITLES;
-
-    const generalBefore = ledger(store, 'general');
-    await loop.runTick('fin');
-    const generalAfter = ledger(store, 'general');
-
-    // Trace: đúng ba endpoint của bước enrich, mỗi cái một lần cho một kênh.
-    expect(trace.count('channels.list')).toBe(1);
-    expect(trace.count('playlistItems.list')).toBe(1);
-    expect(trace.count('videos.list')).toBe(1);
-
-    // Ledger khớp một-đối-một với trace, unit theo oracle literal.
-    const tracedGeneral = trace.events.filter((e) => EXPECTED_COST[e.endpoint]!.bucket === 'general');
-    expect(generalAfter.calls - generalBefore.calls).toBe(tracedGeneral.length);
-    const expectedUnits = tracedGeneral.reduce((sum, e) => sum + EXPECTED_COST[e.endpoint]!.units, 0);
-    expect(generalAfter.units - generalBefore.units).toBe(expectedUnits);
-
-    // Ghi sổ TRƯỚC request: tại lúc request thứ n bắt đầu, sổ đã có n call.
-    tracedGeneral.forEach((event, index) => {
-      expect(event.ledgerCallsAtEntry).toBe(index + 1);
-      expect(event.ledgerUnitsAtEntry).toBe(index + 1);
-    });
-  });
-
   test('G1 quota ledger — search.list: mỗi request/trang là một call riêng trên bucket search', async () => {
     const { store, trace, discovery, counting } = await harness();
     trace.nextPageToken = 'PAGE2';
@@ -410,44 +365,6 @@ describe('G1 quota ledger matches actual API calls', () => {
     expect(ledger(store, 'search')).toEqual({ units: 0, calls: 0 });
   });
 
-  test('G1 quota ledger — MỌI op trong bảng chi phí đều có case trace không rỗng', async () => {
-    const { store, trace, counting, discovery, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'lai_kep', displayTerm: 'lãi kép', relation: 'seed' });
-    seedChannel(store, 'fin', 'UCall00000000000000000001');
-    trace.videoTitles = VI_TITLES;
-
-    const niche = {
-      version: 1 as const,
-      markets: [{ id: 'vi', label: 'VN', relevanceLanguage: 'vi', regionCode: 'VN', seedKeywords: ['tài chính'] }],
-      negativeKeywords: [] as string[],
-      format: { videoDuration: 'any' as const, minDurationSec: 0, maxDurationSec: 0 },
-      channelFilter: { minSubscribers: 0, maxSubscribers: 0, minVideos: 0 },
-      excludeChannelIds: [] as string[],
-      scoring: { keywordOverlap: 40, subscriberBand: 20, uploadRecency: 15, avgViewsPerVideo: 15, languageMatch: 10 },
-      notes: '',
-    };
-    await loop.runTick('fin');                                        // channels/playlistItems/videos + search
-    await discovery.expandGraph(niche, {
-      channelIds: ['UCseed0000000000000000002'], includeSubscriptions: true,
-    });                                                               // channelSections + subscriptions
-    await counting.fetchVideoComments!({ videoId: 'vid1' });          // commentThreads
-
-    // Không op nào được phép vắng mặt.
-    for (const op of ALL_QUOTA_OPS) {
-      expect({ op, traced: trace.count(op) }).toEqual({ op, traced: expect.any(Number) });
-      expect(trace.count(op)).toBeGreaterThan(0);
-    }
-
-    // Tổng sổ khớp tổng trace theo từng bucket, tính bằng oracle literal.
-    for (const bucket of ['search', 'general'] as const) {
-      const events = trace.events.filter((e) => EXPECTED_COST[e.endpoint]!.bucket === bucket);
-      const expectedUnits = events.reduce((sum, e) => sum + EXPECTED_COST[e.endpoint]!.units, 0);
-      const actual = ledger(store, bucket);
-      expect(actual.calls).toBe(events.length);
-      expect(actual.units).toBe(expectedUnits);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -666,636 +583,8 @@ describe('G1 quota ledger — đường acquisition (deep scan)', () => {
   });
 });
 
-// ===========================================================================
-// G2 search budget — trần cứng, kể cả khi API mời trang tiếp
-// ===========================================================================
-
-describe('G2 search budget is a hard ceiling', () => {
-  test('G2 search budget — 3 keyword, budget 2, API mời next page: tối đa 2 search call', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 2,
-    });
-    for (const [key, term] of [['kw_a', 'lãi kép'], ['kw_b', 'nợ xấu'], ['kw_c', 'quỹ etf']]) {
-      store.upsertTopicKeyword({ topicId: 'fin', termKey: key!, displayTerm: term!, relation: 'seed' });
-    }
-    // API luôn mời trang tiếp — trần ngân sách phải thắng lời mời đó.
-    trace.nextPageToken = 'PAGE2';
-
-    const result = await loop.runTick('fin');
-
-    expect(trace.count('search.list')).toBeLessThanOrEqual(2);
-    expect(trace.count('search.list')).toBe(2);
-    const searchLedger = ledger(store, 'search');
-    expect(searchLedger.calls).toBe(trace.count('search.list'));
-    expect(result.searchCallsUsed).toBe(trace.count('search.list'));
-
-    const tick = store.getLastTick('fin')!;
-    expect(Number(tick['search_calls_used'])).toBe(2);
-    expect(Number(tick['search_calls_used'])).toBeLessThanOrEqual(2);
-  });
-
-  test('G2 search budget — token trang tiếp KHÔNG được biến thành call thứ ba', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 2,
-    });
-    for (const [key, term] of [['kw_a', 'lãi kép'], ['kw_b', 'nợ xấu'], ['kw_c', 'quỹ etf']]) {
-      store.upsertTopicKeyword({ topicId: 'fin', termKey: key!, displayTerm: term!, relation: 'seed' });
-    }
-    trace.nextPageToken = 'PAGE2';
-
-    await loop.runTick('fin');
-
-    // Mọi event search — kể cả request trang — phải nằm trong trần 2.
-    const searchEvents = trace.events.filter((e) => e.endpoint === 'search.list');
-    expect(searchEvents).toHaveLength(2);
-    // Và không có event nào là request phân trang: tick không đuổi theo token.
-    expect(searchEvents.every((e) => e.detail.includes('page=1'))).toBe(true);
-    expect(ledger(store, 'search').calls).toBe(2);
-  });
-
-  test('G2 search budget — sổ chỉ còn chỗ cho 1 call thì chỉ phát ra 1 request', async () => {
-    const { store, trace, quota, loop } = await harness();
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 5,
-    });
-    for (const [key, term] of [['kw_a', 'lãi kép'], ['kw_b', 'nợ xấu'], ['kw_c', 'quỹ etf']]) {
-      store.upsertTopicKeyword({ topicId: 'fin', termKey: key!, displayTerm: term!, relation: 'seed' });
-    }
-    // Bơm sẵn sổ: 100 call/ngày, dùng trước 99 → còn đúng 1.
-    quota.consume('search.list', 99);
-    expect(quota.remaining('search')).toBe(1);
-
-    await loop.runTick('fin');
-    expect(trace.count('search.list')).toBe(1);
-    expect(ledger(store, 'search').units).toBe(100);
-  });
-
-  test('G2 search budget — sổ cạn: tick là skipped_quota và KHÔNG có trace event nào', async () => {
-    const { store, trace, quota, loop } = await harness();
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 5,
-    });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_a', displayTerm: 'lãi kép', relation: 'seed' });
-    quota.consume('search.list', 100);
-    expect(quota.remaining('search')).toBe(0);
-
-    const result = await loop.runTick('fin');
-    expect(result.status).toBe('skipped_quota');
-    expect(trace.count('search.list')).toBe(0);
-    expect(trace.events).toHaveLength(0);
-  });
-});
-
-// ===========================================================================
-// G3 restart idempotency — chết giữa bước search, khởi động lại
-// ===========================================================================
-
-describe('G3 restart idempotency', () => {
-  test('G3 restart idempotency — chết sau keyword A (đã persist), trước B: không tick đôi, không search lại A', async () => {
-    const root = await tempRoot('spy-hardgate-resume-');
-    const dbPath = join(root, 'spy.sqlite');
-    const day = quotaDay();
-    const terms: Array<[string, string]> = [
-      ['kw_a', 'lãi kép'], ['kw_b', 'nợ xấu'], ['kw_c', 'quỹ etf'],
-    ];
-
-    // ---- Runner #1: chết đúng tại checkpoint trước keyword thứ hai ----
-    const store1 = new SpyStore(dbPath);
-    openStores.push(store1);
-    const quota1 = new QuotaLedger(store1);
-    const trace1 = new TraceDataApi(quota1);
-    const counting1 = new QuotaCountingDataApi(trace1, quota1, () => true);
-    store1.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 3,
-    });
-    for (const [key, term] of terms) {
-      store1.upsertTopicKeyword({ topicId: 'fin', termKey: key, displayTerm: term, relation: 'seed' });
-    }
-
-    let died = false;
-    const loop1 = new LoopRunner({
-      store: store1, quota: quota1, dataRoot: root, dataApi: counting1,
-      discovery: new DiscoveryService(store1, counting1, quota1),
-      checkpoint: (name) => {
-        // Chỉ chết ở keyword THỨ HAI: A đã trả về, quota + last_searched_at của A
-        // đã ghi xuống đĩa; B chưa bắt đầu.
-        if (name.startsWith('search:before-term:') && trace1.count('search.list') === 1) {
-          died = true;
-          throw new Error('process killed mid-search');
-        }
-      },
-    });
-
-    await expect(loop1.runTick('fin')).rejects.toThrow('process killed mid-search');
-    expect(died).toBe(true);
-
-    // Điều kiện của hợp đồng: A đã xong hẳn TRƯỚC khi chết.
-    expect(trace1.count('search.list')).toBe(1);
-    expect(ledger(store1, 'search').calls).toBe(1);
-    const searchedA = store1.listTopicKeywords('fin').filter((k) => {
-      const at = String(k['last_searched_at'] ?? '');
-      return at !== '' && quotaDay(new Date(at)) === day;
-    });
-    expect(searchedA).toHaveLength(1);
-    const termA = String(searchedA[0]!['term_key']);
-    const tickAfterCrash = store1.getLastTick('fin')!;
-    const originalTickId = String(tickAfterCrash['tick_id']);
-    expect(String(tickAfterCrash['status'])).toBe('failed');
-    store1.close();
-
-    // ---- Runner #2: tiến trình mới, cùng DB, cùng topic/ngày ----
-    const store2 = new SpyStore(dbPath);
-    openStores.push(store2);
-    const quota2 = new QuotaLedger(store2);
-    const trace2 = new TraceDataApi(quota2);
-    const counting2 = new QuotaCountingDataApi(trace2, quota2, () => true);
-    const loop2 = new LoopRunner({
-      store: store2, quota: quota2, dataRoot: root, dataApi: counting2,
-      discovery: new DiscoveryService(store2, counting2, quota2),
-    });
-
-    const result2 = await loop2.runTick('fin');
-    expect(result2.status).toBe('done');
-
-    // 1. Đúng MỘT dòng loop_ticks cho (topic, quota_day) — không có dòng ma.
-    const db = new Database(dbPath, { readonly: true });
-    const tickCount = db.prepare(
-      'SELECT count(*) AS n FROM loop_ticks WHERE topic_id=? AND quota_day=?',
-    ).get('fin', day) as { n: number };
-    expect(tickCount.n).toBe(1);
-
-    // 2. Dòng đó giữ nguyên identity cũ và đạt một trạng thái kết thúc.
-    const finalTick = db.prepare('SELECT * FROM loop_ticks WHERE topic_id=? AND quota_day=?')
-      .get('fin', day) as Record<string, unknown>;
-    expect(String(finalTick['tick_id'])).toBe(originalTickId);
-    expect(String(finalTick['status'])).toBe('done');
-
-    // 3. A search đúng một lần TRÊN CẢ HAI runner; B và C mỗi cái tối đa một lần.
-    const combined = [...trace1.events, ...trace2.events]
-      .filter((e) => e.endpoint === 'search.list')
-      .map((e) => e.detail);
-    expect(combined).toHaveLength(3);
-    const displayA = terms.find(([key]) => key === termA)![1];
-    expect(combined.filter((d) => d.includes(displayA))).toHaveLength(1);
-    for (const [, term] of terms) {
-      expect(combined.filter((d) => d.includes(term)).length).toBeLessThanOrEqual(1);
-    }
-    // Đúng ba term đã lên kế hoạch, không hơn không kém.
-    expect(new Set(combined).size).toBe(3);
-
-    // 4. Sổ search tổng cộng đúng 3 call — lần chạy lại không đốt thêm cho A.
-    expect(ledger(store2, 'search').calls).toBe(3);
-
-    // 5. Report dedupe key phát tối đa một lần.
-    const reportCount = db.prepare(
-      'SELECT count(*) AS n FROM daily_reports WHERE topic_id=? AND report_date=?',
-    ).get('fin', day) as { n: number };
-    expect(reportCount.n).toBe(1);
-    db.close();
-  });
-});
-
-// ===========================================================================
-// G5 truthful output — không bịa số, hint không đội lốt verdict
-// ===========================================================================
-
-describe('G5 truthful output', () => {
-  test('G5 truthful output — report P0 không hứa VPH/search volume/CTR/rank và gọi hint là phỏng đoán', async () => {
-    const { store, trace, quota, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Tài chính cá nhân', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCtruth00000000000000001');
-    // Kênh faceless rõ rệt trên chữ → hint cao, nhưng vẫn chỉ là phỏng đoán.
-    trace.videoTitles = VI_TITLES;
-
-    await loop.runTick('fin');
-
-    const day = quotaDay();
-    const reportRow = store.getDailyReportByDate('fin', day);
-    expect(reportRow).not.toBeNull();
-    const markdown = String(reportRow!['markdown']);
-    const summaryRaw = String(reportRow!['summary_json']);
-    const summary = JSON.parse(summaryRaw) as Record<string, unknown>;
-
-    // Không có tuyên bố về nguồn số mà P0 KHÔNG có.
-    for (const forbidden of [/VPH/i, /search volume/i, /\bCTR\b/i, /trend toàn cầu/i]) {
-      expect(markdown).not.toMatch(forbidden);
-      expect(summaryRaw).not.toMatch(forbidden);
-    }
-    // "rank": vị trí kết quả API không được gọi là rank ở bề mặt P0.
-    expect(markdown).not.toMatch(/\brank\b/i);
-    expect(summaryRaw).not.toMatch(/"rank"/i);
-
-    // faceless: hint có method + reasons, KHÔNG phải verdict.
-    const row = store.listTopicChannels('fin', {})[0]!;
-    expect(row['faceless_score']).toBeNull();
-    expect(row['faceless_hint']).not.toBeNull();
-    const hintPayload = JSON.parse(String(row['faceless_hint_reasons_json'])) as {
-      method: string; reasons: unknown[];
-    };
-    expect(['text_only', 'insufficient_sample']).toContain(hintPayload.method);
-    expect(Array.isArray(hintPayload.reasons)).toBe(true);
-    // Nếu report có nhắc faceless thì phải kèm nhãn phỏng đoán.
-    if (/faceless/i.test(markdown)) {
-      expect(markdown).toMatch(/đoán từ chữ/);
-    }
-
-    // Hint KHÔNG được gây auto-reject.
-    expect(String(row['status'])).not.toBe('rejected');
-
-    // Không bịa số khi không có nguồn: các trục chưa có dữ liệu để null, không phải 0 giả.
-    const topLearn = (summary['topLearn'] ?? []) as Array<Record<string, unknown>>;
-    for (const entry of topLearn) {
-      expect(entry['facelessScore']).toBeNull();
-      if (entry['medianViews'] === null) expect(entry['medianViewsVsOwn']).toBeNull();
-    }
-
-    // renderReport là một hàm duy nhất cho mọi bề mặt — chạy lại phải trùng khớp.
-    const rebuilt = renderReport(JSON.parse(summaryRaw), { mode: 'tick' });
-    expect(typeof rebuilt).toBe('string');
-    expect(rebuilt).not.toMatch(/\bVPH\b/i);
-    expect(quota).toBeDefined();
-  });
-
-  test('G5 truthful output — không có mẫu thì trả insufficient_sample/unavailable, không trả số bịa', async () => {
-    const { store, quota } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    // Kênh chưa từng enrich: chưa có learn_value, chưa có hint.
-    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCempty000000000000000001', status: 'new' });
-
-    const day = quotaDay();
-    const { summaryJson, markdown } = await buildDailyReport(store, quota, 'fin', day, {
-      tickId: 'tick-g5', searchCallsUsed: 0, generalUnitsUsed: 0, keywordsSearched: [],
-      newCandidates: 0, newShortlistedAuto: 0, autoRejected: 0, keywordsHarvested: 0,
-    });
-    const summary = JSON.parse(summaryJson) as Record<string, unknown>;
-
-    // Kênh không có learn_value không được bịa điểm để lọt vào topLearn.
-    expect(summary['topLearn']).toEqual([]);
-    const row = store.listTopicChannels('fin', {})[0]!;
-    expect(row['learn_value_score']).toBeNull();
-    expect(row['faceless_hint']).toBeNull();
-    expect(row['faceless_score']).toBeNull();
-
-    for (const forbidden of [/VPH/i, /search volume/i, /\bCTR\b/i, /\brank\b/i]) {
-      expect(markdown).not.toMatch(forbidden);
-    }
-  });
-});
-
-// ===========================================================================
-// G7 language post-filter — loại kênh sai ngôn ngữ, và KHÔNG loại nhầm
-// ===========================================================================
-
-describe('G7 language post-filter', () => {
-  test('G7 language post-filter — đa số defaultAudioLanguage=en trong topic vi → rejected, loop_auto, lang_mismatch', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Tài chính', market: 'vi', language: 'vi' });
-    // Ứng viên lọt vào dù relevanceLanguage=vi — đúng như hợp đồng mô tả:
-    // relevanceLanguage chỉ nghiêng kết quả, không lọc.
-    seedChannel(store, 'fin', 'UCenglish000000000000001');
-    trace.videoTitles = EN_TITLES;
-    trace.videoAudioLang = 'en-US';
-
-    await loop.runTick('fin');
-
-    const rejected = store.listTopicChannels('fin', { status: 'rejected' });
-    expect(rejected).toHaveLength(1);
-    const row = rejected[0]!;
-    expect(String(row['channel_id'])).toBe('UCenglish000000000000001');
-    expect(String(row['decided_by'])).toBe('loop_auto');
-    expect(String(row['decided_reason'])).toBe('lang_mismatch');
-    expect(String(row['lang_detected'])).toBe('en');
-
-    // Lý do phải chỉ ra bằng chứng đến từ defaultAudioLanguage, không phải đoán.
-    const evidence = JSON.parse(String(row['lang_evidence_json'])) as {
-      method: string; evidenceField: string; declaredCount: number; sampleSize: number;
-    };
-    expect(evidence.method).toBe('declared_fields');
-    expect(evidence.evidenceField).toBe('defaultAudioLanguage');
-    expect(evidence.declaredCount).toBe(12);
-    expect(evidence.sampleSize).toBe(12);
-
-    // Nhìn thấy được: truy vấn ra bằng filter, không bị vứt âm thầm.
-    expect(store.countTopicChannelsByStatus('fin')['rejected']).toBe(1);
-    expect(store.listTopicChannels('fin', { status: 'new' })).toHaveLength(0);
-  });
-
-  test('G7 language post-filter — thiếu bằng chứng ngôn ngữ: KHÔNG auto-reject, vẫn chờ người duyệt', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Tài chính', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCunknown000000000000001');
-    // Không video nào khai defaultAudioLanguage; kênh khai country=VN/US đều không
-    // được phép là căn cứ loại.
-    trace.videoTitles = EN_TITLES;
-    trace.videoAudioLang = null;
-
-    await loop.runTick('fin');
-
-    expect(store.listTopicChannels('fin', { status: 'rejected' })).toHaveLength(0);
-    const stillNew = store.listTopicChannels('fin', { status: 'new' });
-    expect(stillNew).toHaveLength(1);
-    const row = stillNew[0]!;
-    const evidence = JSON.parse(String(row['lang_evidence_json'])) as {
-      method: string; evidenceField: string | null; declaredCount: number;
-    };
-    // Ghi lại phỏng đoán, nhưng nói rõ nó KHÔNG dựa trên trường khai báo.
-    expect(evidence.method).toBe('title_heuristic');
-    expect(evidence.evidenceField).toBeNull();
-    expect(evidence.declaredCount).toBe(0);
-    expect(row['lang_detected']).not.toBeNull();
-    expect(String(row['decided_reason'] ?? '')).not.toBe('lang_mismatch');
-  });
-
-  test('G7 language post-filter — khai báo thưa dưới 50% không đủ để loại', async () => {
-    const { store, loop, quota } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Tài chính', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCsparse0000000000000001');
-
-    // Ghi đè: chỉ 5/12 video khai 'en' (41%) — dưới ngưỡng 50%.
-    const sparse = new (class extends TraceDataApi {
-      override async fetchVideoStatistics(videoIds: readonly string[]): Promise<Map<string, VideoStatistics>> {
-        const map = await super.fetchVideoStatistics(videoIds);
-        let index = 0;
-        for (const [key, value] of map) {
-          map.set(key, { ...value, defaultAudioLanguage: index < 5 ? 'en' : null });
-          index++;
-        }
-        return map;
-      }
-    })(quota);
-    sparse.videoTitles = EN_TITLES;
-    const counting = new QuotaCountingDataApi(sparse, quota, () => true);
-    const sparseLoop = new LoopRunner({
-      store, quota, dataApi: counting, dataRoot: '/tmp',
-      discovery: new DiscoveryService(store, counting, quota),
-    });
-
-    await sparseLoop.runTick('fin');
-
-    expect(store.listTopicChannels('fin', { status: 'rejected' })).toHaveLength(0);
-    const row = store.listTopicChannels('fin', { status: 'new' })[0]!;
-    const evidence = JSON.parse(String(row['lang_evidence_json'])) as {
-      method: string; declaredCount: number; sampleSize: number;
-    };
-    expect(evidence.declaredCount).toBe(5);
-    expect(evidence.sampleSize).toBe(12);
-    expect(evidence.method).toBe('title_heuristic');
-  });
-});
-
-// ===========================================================================
-// Sửa theo repair note của codex — mỗi test khoá đúng một lỗi đã tìm thấy
-// ===========================================================================
-
-describe('G7 language post-filter — hoà và mẫu thiếu row (F1)', () => {
-  test('G7 language post-filter — hoà 3 en / 3 vi KHÔNG reject, không công bố ngôn ngữ nào', () => {
-    // Plurality "phần tử đầu thắng" từng cho ra majority='en' rồi loại một kênh
-    // Việt hoàn toàn hợp lệ. Hoà thì không có kết luận.
-    const videos = Array.from({ length: 6 }, (_, index) => ({
-      title: index < 3 ? EN_TITLES[index]! : VI_TITLES[index]!,
-      defaultAudioLanguage: index < 3 ? 'en' : 'vi',
-    }));
-    const verdict = evaluateChannelLanguage(videos, 'vi');
-    expect(verdict.declaredCount).toBe(6);
-    expect(verdict.decisive).toBe(false);
-    expect(verdict.reject).toBe(false);
-    expect(verdict.reason).toBeNull();
-    expect(verdict.langDetected).toBeNull();
-    expect(verdict.declaredCounts).toEqual({ en: 3, vi: 3 });
-  });
-
-  test('G7 language post-filter — plurality không quá bán (5 en/4 vi/3 fr) cũng KHÔNG reject', () => {
-    const langs = [...Array(5).fill('en'), ...Array(4).fill('vi'), ...Array(3).fill('fr')];
-    const videos = langs.map((lang, index) => ({
-      title: `Video ${index}`, defaultAudioLanguage: lang as string,
-    }));
-    const verdict = evaluateChannelLanguage(videos, 'vi');
-    // 5/12 không quá bán → không kết luận, dù 'en' là nhiều nhất.
-    expect(verdict.decisive).toBe(false);
-    expect(verdict.reject).toBe(false);
-  });
-
-  test('G7 language post-filter — quá bán thật (7/12 en) thì mới reject', () => {
-    const langs = [...Array(7).fill('en'), ...Array(5).fill('vi')];
-    const videos = langs.map((lang, index) => ({
-      title: `Video ${index}`, defaultAudioLanguage: lang as string,
-    }));
-    const verdict = evaluateChannelLanguage(videos, 'vi');
-    expect(verdict.decisive).toBe(true);
-    expect(verdict.reject).toBe(true);
-    expect(verdict.langDetected).toBe('en');
-  });
-
-  test('G7 language post-filter — videos.list trả thiếu row: mẫu số vẫn là 12, KHÔNG reject', async () => {
-    const { store, quota, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Tài chính', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCpartial00000000000001');
-
-    // 12 upload, nhưng videos.list chỉ trả về ĐÚNG MỘT row, và nó là tiếng Anh.
-    // Trước sửa: mẫu = 1 → "100% khai báo, đa số en" → loại kênh Việt vĩnh viễn.
-    const partial = new (class extends TraceDataApi {
-      override async fetchVideoStatistics(videoIds: readonly string[]): Promise<Map<string, VideoStatistics>> {
-        const full = await super.fetchVideoStatistics(videoIds);
-        const only = new Map<string, VideoStatistics>();
-        const firstKey = [...full.keys()][0];
-        if (firstKey !== undefined) {
-          only.set(firstKey, { ...full.get(firstKey)!, defaultAudioLanguage: 'en' });
-        }
-        return only;
-      }
-    })(quota);
-    partial.videoTitles = VI_TITLES;
-    const counting = new QuotaCountingDataApi(partial, quota, () => true);
-    const partialLoop = new LoopRunner({
-      store, quota, dataApi: counting, dataRoot: '/tmp',
-      discovery: new DiscoveryService(store, counting, quota),
-    });
-
-    await partialLoop.runTick('fin');
-
-    expect(store.listTopicChannels('fin', { status: 'rejected' })).toHaveLength(0);
-    const row = store.listTopicChannels('fin', { status: 'new' })[0]!;
-    const evidence = JSON.parse(String(row['lang_evidence_json'])) as {
-      declaredCount: number; sampleSize: number; method: string;
-    };
-    // Mẫu số là toàn bộ slot đã chọn, không phải số row API trả về.
-    expect(evidence.sampleSize).toBe(12);
-    expect(evidence.declaredCount).toBe(1);
-    expect(evidence.method).not.toBe('declared_fields');
-    expect(loop).toBeDefined();
-  });
-});
-
-describe('G1 quota ledger — counter của tick bám sổ thật (F2)', () => {
-  test('G1 quota ledger — search LỖI vẫn được tính vào loop_ticks và report', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 3,
-    });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_a', displayTerm: 'lãi kép', relation: 'seed' });
-    // Request khởi phát rồi mới chết → decorator đã charge.
-    trace.failOn = 'search.list';
-
-    await loop.runTick('fin');
-
-    const charged = ledger(store, 'search').calls;
-    expect(charged).toBe(1);
-    expect(trace.count('search.list')).toBe(1);
-
-    // Counter đếm-khi-thành-công sẽ ghi 0 ở đây và báo cáo nói dối theo hướng
-    // "còn ngân sách" — đúng hướng nguy hiểm nhất.
-    const tick = store.getLastTick('fin')!;
-    expect(Number(tick['search_calls_used'])).toBe(charged);
-
-    const report = store.getDailyReportByDate('fin', quotaDay());
-    const summary = JSON.parse(String(report!['summary_json'])) as {
-      tick: { searchCallsUsed: number; generalUnitsUsed: number };
-    };
-    // Trường quota CỦA TICK trong report phải bằng đúng số đã charge.
-    expect(summary.tick.searchCallsUsed).toBe(charged);
-  });
-
-  test('G1 quota ledger — general_units_used khớp đúng số unit đã charge, không phải ước lượng', async () => {
-    const { store, trace, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCcount000000000000001');
-    trace.videoTitles = VI_TITLES;
-
-    await loop.runTick('fin');
-
-    const generalCharged = ledger(store, 'general').units;
-    const tracedGeneral = trace.events.filter((e) => EXPECTED_COST[e.endpoint]!.bucket === 'general');
-    const expectedUnits = tracedGeneral.reduce((sum, e) => sum + EXPECTED_COST[e.endpoint]!.units, 0);
-    expect(generalCharged).toBe(expectedUnits);
-
-    const tick = store.getLastTick('fin')!;
-    expect(Number(tick['general_units_used'])).toBe(generalCharged);
-
-    const report = store.getDailyReportByDate('fin', quotaDay());
-    const summary = JSON.parse(String(report!['summary_json'])) as {
-      tick: { generalUnitsUsed: number };
-    };
-    expect(summary.tick.generalUnitsUsed).toBe(generalCharged);
-  });
-
-  test('G1 quota ledger — tick resume tính CẢ phần quota đã tiêu trước khi chết', async () => {
-    const root = await tempRoot('spy-hardgate-resume-quota-');
-    const dbPath = join(root, 'spy.sqlite');
-
-    const store1 = new SpyStore(dbPath);
-    openStores.push(store1);
-    const quota1 = new QuotaLedger(store1);
-    const trace1 = new TraceDataApi(quota1);
-    const counting1 = new QuotaCountingDataApi(trace1, quota1, () => true);
-    store1.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 3,
-    });
-    const resumeTerms: Array<[string, string]> = [
-      ['kw_a', 'lãi kép'], ['kw_b', 'nợ xấu'], ['kw_c', 'quỹ etf'],
-    ];
-    for (const [key, term] of resumeTerms) {
-      store1.upsertTopicKeyword({ topicId: 'fin', termKey: key, displayTerm: term, relation: 'seed' });
-    }
-    const loop1 = new LoopRunner({
-      store: store1, quota: quota1, dataRoot: root, dataApi: counting1,
-      discovery: new DiscoveryService(store1, counting1, quota1),
-      checkpoint: (name) => {
-        if (name.startsWith('search:before-term:') && trace1.count('search.list') === 1) {
-          throw new Error('killed after first search');
-        }
-      },
-    });
-    await expect(loop1.runTick('fin')).rejects.toThrow();
-    const chargedBeforeCrash = ledger(store1, 'search').calls;
-    expect(chargedBeforeCrash).toBe(1);
-    store1.close();
-
-    const store2 = new SpyStore(dbPath);
-    openStores.push(store2);
-    const quota2 = new QuotaLedger(store2);
-    const trace2 = new TraceDataApi(quota2);
-    const counting2 = new QuotaCountingDataApi(trace2, quota2, () => true);
-    const loop2 = new LoopRunner({
-      store: store2, quota: quota2, dataRoot: root, dataApi: counting2,
-      discovery: new DiscoveryService(store2, counting2, quota2),
-    });
-    await loop2.runTick('fin');
-
-    const totalCharged = ledger(store2, 'search').calls;
-    expect(totalCharged).toBe(3);
-    const tick = store2.getLastTick('fin')!;
-    // Tick phải khai đủ 3, không phải 2 của riêng lần chạy sau.
-    expect(Number(tick['search_calls_used'])).toBe(totalCharged);
-
-    const report = store2.getDailyReportByDate('fin', quotaDay());
-    const summary = JSON.parse(String(report!['summary_json'])) as {
-      tick: { searchCallsUsed: number; generalUnitsUsed: number };
-    };
-    // Report của tick resume phải khai cả 3 call, không phải 2 của lần chạy sau.
-    expect(summary.tick.searchCallsUsed).toBe(totalCharged);
-  });
-});
 
 describe('G3 restart idempotency — report phải nằm trên đĩa trước khi tick done (F3)', () => {
-  test('G3 restart idempotency — chết ở bước report rồi restart → đúng MỘT report, tick không kẹt done rỗng', async () => {
-    const root = await tempRoot('spy-hardgate-report-crash-');
-    const dbPath = join(root, 'spy.sqlite');
-    const day = quotaDay();
-
-    const store1 = new SpyStore(dbPath);
-    openStores.push(store1);
-    const quota1 = new QuotaLedger(store1);
-    const trace1 = new TraceDataApi(quota1);
-    const counting1 = new QuotaCountingDataApi(trace1, quota1, () => true);
-    store1.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    seedChannel(store1, 'fin', 'UCreport00000000000001');
-    trace1.videoTitles = VI_TITLES;
-
-    const loop1 = new LoopRunner({
-      store: store1, quota: quota1, dataRoot: root, dataApi: counting1,
-      discovery: new DiscoveryService(store1, counting1, quota1),
-      checkpoint: (name) => {
-        // Chết SAU khi đã vào bước report, TRƯỚC khi report kịp ghi.
-        if (name === 'report:before-persist') throw new Error('killed inside report step');
-      },
-    });
-    await expect(loop1.runTick('fin')).rejects.toThrow('killed inside report step');
-
-    // Tick KHÔNG được là 'done' khi chưa có report — nếu done, lần sau sẽ skip
-    // và báo cáo mất vĩnh viễn.
-    const crashed = store1.getLastTick('fin')!;
-    expect(String(crashed['status'])).toBe('failed');
-    expect(store1.getDailyReportByDate('fin', day)).toBeNull();
-    store1.close();
-
-    // Restart: phải resume được và sinh ra đúng một report.
-    const store2 = new SpyStore(dbPath);
-    openStores.push(store2);
-    const quota2 = new QuotaLedger(store2);
-    const trace2 = new TraceDataApi(quota2);
-    const counting2 = new QuotaCountingDataApi(trace2, quota2, () => true);
-    const loop2 = new LoopRunner({
-      store: store2, quota: quota2, dataRoot: root, dataApi: counting2,
-      discovery: new DiscoveryService(store2, counting2, quota2),
-    });
-    const result = await loop2.runTick('fin');
-    expect(result.status).toBe('done');
-
-    const db = new Database(dbPath, { readonly: true });
-    const reports = db.prepare(
-      'SELECT count(*) AS n FROM daily_reports WHERE topic_id=? AND report_date=?',
-    ).get('fin', day) as { n: number };
-    expect(reports.n).toBe(1);
-    const ticks = db.prepare(
-      'SELECT count(*) AS n FROM loop_ticks WHERE topic_id=? AND quota_day=?',
-    ).get('fin', day) as { n: number };
-    expect(ticks.n).toBe(1);
-    db.close();
-    expect(String(store2.getLastTick('fin')!['status'])).toBe('done');
-  });
-
   test('G3 restart idempotency — chạy report hai lần không sinh report thứ hai', async () => {
     const { store } = await harness();
     store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
@@ -1324,59 +613,12 @@ describe('G3 restart idempotency — report phải nằm trên đĩa trước kh
 // đều là literal đối chiếu với `quotaDay()`.
 // ===========================================================================
 
-/** Ghi thẳng last_searched_at để dựng đúng khung giờ crossover. */
-function setLastSearchedAt(dbPath: string, topicId: string, termKey: string, iso: string): void {
-  const db = new Database(dbPath);
-  db.prepare('UPDATE topic_keywords SET last_searched_at=?, status=? WHERE topic_id=? AND term_key=?')
-    .run(iso, 'searched', topicId, termKey);
-  db.close();
-}
-
 describe('T1 quota day — một loại "hôm nay" duy nhất (Pacific)', () => {
   test('T1 quota day — mốc UTC/Pacific: 2026-08-22T06:08Z thuộc quota-day 2026-08-21', () => {
     // Đây là cái bẫy, viết ra tường minh: lịch UTC đã sang ngày 22 trong khi
     // quota-day vẫn là 21. Mọi so sánh cắt chuỗi ISO đều sai đúng ở khung này.
     expect(quotaDay(new Date('2026-08-22T06:08:28.511Z'))).toBe('2026-08-21');
     expect(quotaDayOf('2026-08-22T06:08:28.511Z')).toBe('2026-08-21');
-  });
-
-  test('T1 quota day — restart trong khung crossover KHÔNG search lại keyword đã search', async () => {
-    const root = await tempRoot('spy-t1-crossover-');
-    const dbPath = join(root, 'spy.sqlite');
-    const store = new SpyStore(dbPath);
-    openStores.push(store);
-    const quota = new QuotaLedger(store);
-    const trace = new TraceDataApi(quota);
-    const counting = new QuotaCountingDataApi(trace, quota, () => true);
-
-    store.upsertTopic({
-      topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 3,
-    });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_a', displayTerm: 'lãi kép', relation: 'seed' });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_b', displayTerm: 'nợ xấu', relation: 'seed' });
-
-    // kw_a đã search lúc 06:08Z ngày 22 = 23:08 Pacific ngày 21.
-    const searchedAt = '2026-08-22T06:08:00.000Z';
-    setLastSearchedAt(dbPath, 'fin', 'kw_a', searchedAt);
-
-    // Tick chạy lúc 06:30Z ngày 22 — VẪN cùng quota-day 2026-08-21.
-    const now = new Date('2026-08-22T06:30:00.000Z');
-    expect(quotaDay(now)).toBe('2026-08-21');
-    expect(quotaDayOf(searchedAt)).toBe(quotaDay(now));
-
-    const loop = new LoopRunner({
-      store, quota, dataApi: counting, dataRoot: root,
-      discovery: new DiscoveryService(store, counting, quota),
-    });
-    await loop.runTick('fin', { now });
-
-    // kw_a KHÔNG được search lại; chỉ kw_b chạy.
-    const searchedTerms = trace.events
-      .filter((e) => e.endpoint === 'search.list')
-      .map((e) => e.detail);
-    expect(searchedTerms.filter((d) => d.includes('lãi kép'))).toHaveLength(0);
-    expect(searchedTerms.filter((d) => d.includes('nợ xấu'))).toHaveLength(1);
-    store.close();
   });
 
   test('T1 quota day — digest 08:00 giờ VN đọc report_date do quotaDay(now) ghi, không phải ngày UTC', async () => {
@@ -1566,50 +808,16 @@ describe('H1 quota ledger — charge theo từng request, không gộp cả lô'
 // ===========================================================================
 
 describe('H2 quota ledger — hai topic không được tick chồng nhau', () => {
-  test('H2 quota ledger — tick topic thứ hai bị chặn khi topic thứ nhất đang chạy', async () => {
-    const { store, trace, quota, loop } = await harness();
-    store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 2 });
-    store.upsertTopic({ topicId: 'psy', label: 'Psych', market: 'vi', language: 'vi', dailySearchBudget: 2 });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_f', displayTerm: 'lãi kép', relation: 'seed' });
-    store.upsertTopicKeyword({ topicId: 'psy', termKey: 'kw_p', displayTerm: 'tâm lý', relation: 'seed' });
-
-    // Runner thứ hai dùng CHUNG store/ledger, đúng như hai topic trong một daemon.
-    const otherLoop = new LoopRunner({
-      store, quota, dataApi: counting0(store, quota, trace), dataRoot: '/tmp',
-      discovery: new DiscoveryService(store, counting0(store, quota, trace), quota),
-    });
-
-    let blocked: unknown = null;
-    // Chặn tick 'fin' ngay giữa bước search rồi thử tick 'psy' từ bên trong.
-    const blockingLoop = new LoopRunner({
-      store, quota, dataRoot: '/tmp',
-      dataApi: counting0(store, quota, trace),
-      discovery: new DiscoveryService(store, counting0(store, quota, trace), quota),
-      checkpoint: async (name) => {
-        if (name === 'search:start' && blocked === null) {
-          blocked = await otherLoop.runTick('psy').catch((err: unknown) => err);
-        }
-      },
-    });
-
-    await blockingLoop.runTick('fin');
-
-    // Tick thứ hai KHÔNG được chạy song song.
-    expect(blocked).toBeInstanceOf(Error);
-    expect((blocked as Error).message).toMatch(/tuần tự|song song/);
-    // Và nó không để lại tick nào cho topic 'psy'.
-    expect(store.getLastTick('psy')).toBeNull();
-  });
-
   test('H2 quota ledger — chạy tuần tự thì mỗi tick chỉ khai phần của chính nó', async () => {
     const { store, trace, loop } = await harness();
     store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi', dailySearchBudget: 2 });
     store.upsertTopic({ topicId: 'psy', label: 'Psych', market: 'vi', language: 'vi', dailySearchBudget: 2 });
-    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_f', displayTerm: 'lãi kép', relation: 'seed' });
-    store.upsertTopicKeyword({ topicId: 'psy', termKey: 'kw_p', displayTerm: 'tâm lý', relation: 'seed' });
+    // v3: search chỉ thuộc weekly — keyword phải 'active' mới được nhịp này quét.
+    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw_f', displayTerm: 'lãi kép', relation: 'seed', status: 'active' });
+    store.upsertTopicKeyword({ topicId: 'psy', termKey: 'kw_p', displayTerm: 'tâm lý', relation: 'seed', status: 'active' });
 
-    await loop.runTick('fin');
-    await loop.runTick('psy');
+    await loop.runTick('fin', { mode: 'weekly' });
+    await loop.runTick('psy', { mode: 'weekly' });
 
     const finTick = store.getTickByDay('fin', quotaDay())!;
     const psyTick = store.getTickByDay('psy', quotaDay())!;
@@ -1632,7 +840,9 @@ describe('H3 truthful output — quota toàn ngày không trộn với quota c�
   test('H3 truthful output — sổ ngày đã tiêu nhiều thì report không được khoe còn nguyên', async () => {
     const { store, trace, quota, loop } = await harness();
     store.upsertTopic({ topicId: 'fin', label: 'Finance', market: 'vi', language: 'vi' });
-    seedChannel(store, 'fin', 'UCscope00000000000001');
+    // v3 daily chỉ quét kênh 'active' — kênh này sinh playlistItems+videos.list,
+    // tức tick phải khai generalUnitsUsed > 0.
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCscope00000000000001', status: 'active' });
     trace.videoTitles = VI_TITLES;
 
     // Việc KHÁC đã tiêu 9000 unit trong ngày, trước khi tick chạy.

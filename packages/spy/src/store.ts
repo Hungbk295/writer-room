@@ -35,7 +35,11 @@ import type {
 // version here is bookkeeping only.
 // v11 -> v12: api_quota_usage_per_key for multi-key rotation. New table,
 // IF NOT EXISTS — no ALTER required.
-export const SCHEMA_VERSION = 12;
+// v12 -> v13: Spy Pipeline v3 Lean (docs/plans/spy-research-pipeline-v3-lean.html §4).
+// Đổi CHECK status của topic_keywords/topic_channels + UNIQUE của loop_ticks/
+// daily_reports ⇒ rebuild bảng trong migrate12To13() (transaction). 3 bảng mới
+// topic_videos, video_daily_views, decisions đã có IF NOT EXISTS ở dưới.
+export const SCHEMA_VERSION = 13;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -322,6 +326,13 @@ CREATE TABLE IF NOT EXISTS topics (
   brief_md TEXT NOT NULL DEFAULT '',
   faceless_required INTEGER NOT NULL DEFAULT 1,
   daily_search_budget INTEGER NOT NULL DEFAULT 20,
+  -- v13 §4.1: region = thị trường search (US, VN) — tách khỏi language.
+  region TEXT,
+  -- v13 §3: ngưỡng riêng của topic, merge lên DEFAULT_TOPIC_SETTINGS khi đọc.
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  -- v13 §2: topic đang kẹt ở điểm dừng HITL nào của setup.
+  setup_status TEXT NOT NULL DEFAULT 'none'
+    CHECK(setup_status IN ('none','awaiting_channels','awaiting_keywords','done')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -330,11 +341,25 @@ CREATE TABLE IF NOT EXISTS topic_keywords (
   topic_id TEXT NOT NULL,
   term_key TEXT NOT NULL,
   display_term TEXT NOT NULL,
-  relation TEXT NOT NULL,
+  relation TEXT NOT NULL DEFAULT '',
   evidence_json TEXT NOT NULL DEFAULT '{}',
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','searched','exhausted','rejected')),
+  -- v13 §4.2 = Keyword List: pending → active|paused|rejected (searched→active,
+  -- exhausted→paused ở migration). Loop chỉ được ghi 'pending'; active/paused/
+  -- rejected đi qua endpoint duyệt với actor='human' (tôn chỉ 1).
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','paused','rejected')),
+  -- v13 §4.2: keyword phải có origin dữ liệu thật (L1). NULL = chưa chứng minh
+  -- được nguồn (dữ liệu migrate từ enum cũ).
+  origin TEXT CHECK(origin IS NULL OR origin IN ('seed','title_ngram','outlier_title','user')),
   yield_channels INTEGER NOT NULL DEFAULT 0,
   last_searched_at TEXT,
+  -- v13 §4.2: sức khoẻ sau lần search gần nhất (W1) — bao nhiêu kết quả, bao
+  -- nhiêu từ kênh follow, view trung vị.
+  last_checked_at TEXT,
+  last_n_results INTEGER,
+  last_n_followed INTEGER,
+  last_median_views REAL,
+  decided_at TEXT,
+  decided_reason TEXT,
   added_at TEXT NOT NULL,
   added_by TEXT NOT NULL DEFAULT 'user' CHECK(added_by IN ('user','loop','agent')),
   PRIMARY KEY (topic_id, term_key)
@@ -372,7 +397,10 @@ CREATE TABLE IF NOT EXISTS topic_channels (
   learn_value_score REAL,
   -- LearnValueReason[] — §7 bắt buộc mọi điểm số phải kèm reasons + method.
   learn_value_reasons_json TEXT,
-  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','shortlisted','studied','rejected','own')),
+  -- v13 §4.3 = Follow List: new → active|paused|rejected|own (studied→active,
+  -- shortlisted→new/active ở migration). Loop chỉ ghi 'new' hoặc rejected
+  -- (duy nhất lang_mismatch); còn lại qua endpoint duyệt actor='human'.
+  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','active','paused','rejected','own')),
   decided_by TEXT CHECK(decided_by IN ('user','loop_auto')),
   decided_at TEXT,
   -- Lý do máy đọc được: 'lang_mismatch' | 'low_fit' | 'fit_learn_auto' | NULL (user).
@@ -383,6 +411,25 @@ CREATE TABLE IF NOT EXISTS topic_channels (
   -- Bằng chứng cho quyết định ngôn ngữ: {method, evidenceField, majority,
   -- declaredCount, sampleSize}. Reject phải nói được nó dựa vào field NÀO.
   lang_evidence_json TEXT,
+  -- v13 §4.3: denormalize để inbox/dashboard đọc mà không cần join.
+  title TEXT,
+  handle TEXT,
+  subscriber_count INTEGER,
+  -- v13 §4.3: kênh đến từ đường nào, keyword/thực thể nào (provenance gọn —
+  -- lịch sử đầy đủ vẫn ở topic_channel_sources).
+  discovered_via TEXT,
+  discovered_from TEXT,
+  -- v13 §4.3: baseline cuốn chiếu — median view của N video dài gần nhất,
+  -- thay cho regime/Pettitt đã cắt. baseline_n < baseline_min_n ⇒ chưa tin cậy.
+  baseline_median_views REAL,
+  baseline_n INTEGER,
+  max_views INTEGER,
+  baseline_at TEXT,
+  last_published_at TEXT,
+  last_checked_at TEXT,
+  -- v13 §4.3 + tôn chỉ 1: máy chỉ GỢI Ý (vd 'pause_silent'), không tự đổi status.
+  suggestion TEXT,
+  suggestion_at TEXT,
   first_seen_at TEXT NOT NULL,
   last_scored_at TEXT,
   PRIMARY KEY (topic_id, channel_id)
@@ -411,7 +458,10 @@ CREATE TABLE IF NOT EXISTS loop_ticks (
   scanned_channels INTEGER NOT NULL DEFAULT 0,
   keywords_harvested INTEGER NOT NULL DEFAULT 0,
   error TEXT,
-  UNIQUE(topic_id, quota_day)
+  -- v13 §4.4: 3 nhịp chạy trên cùng một sổ tick — một topic có thể có tick
+  -- daily VÀ weekly trong cùng một quota_day.
+  mode TEXT NOT NULL DEFAULT 'daily' CHECK(mode IN ('setup','daily','weekly')),
+  UNIQUE(topic_id, quota_day, mode)
 );
 
 CREATE TABLE IF NOT EXISTS daily_reports (
@@ -421,14 +471,16 @@ CREATE TABLE IF NOT EXISTS daily_reports (
   summary_json TEXT NOT NULL,
   markdown TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  delivered_json TEXT NOT NULL DEFAULT '{}'
+  delivered_json TEXT NOT NULL DEFAULT '{}',
+  -- v13 §4.4: báo cáo ngày và báo cáo tuần (W5) chung một sổ.
+  mode TEXT NOT NULL DEFAULT 'daily' CHECK(mode IN ('setup','daily','weekly'))
 );
 CREATE INDEX IF NOT EXISTS idx_daily_reports_topic_date
   ON daily_reports(topic_id, report_date DESC);
--- Một topic chỉ có ĐÚNG một report mỗi ngày. COALESCE vì SQLite coi các NULL là
--- khác nhau trong UNIQUE, mà topic_id NULL = báo cáo tổng cũng chỉ được có một.
+-- Một topic chỉ có ĐÚNG một report mỗi (ngày, mode). COALESCE vì SQLite coi các
+-- NULL là khác nhau trong UNIQUE, mà topic_id NULL = báo cáo tổng cũng chỉ được có một.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_reports_topic_date
-  ON daily_reports(COALESCE(topic_id, ''), report_date);
+  ON daily_reports(COALESCE(topic_id, ''), report_date, mode);
 
 -- v6: Corpus Intelligence P0. These tables are intentionally separate from
 -- Auto-Loop candidate/topic/inbox tables: a draft evidence item must never
@@ -654,6 +706,69 @@ CREATE TABLE IF NOT EXISTS search_video_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_search_video_cache_fetched
   ON search_video_cache(fetched_at);
+
+-- ── v13: Spy Pipeline v3 Lean (plan §4.5) ───────────────────────────────────
+-- Ba bảng mới duy nhất — không có bảng rs_* nào (tôn chỉ 2).
+
+-- Mỗi video mà topic đang theo dõi (1 dòng / topic / video). Giá trị "latest_*"
+-- là bản sao để dashboard đọc nhanh — lịch sử thật nằm ở video_daily_views.
+CREATE TABLE IF NOT EXISTS topic_videos (
+  topic_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  published_at TEXT,
+  duration_sec REAL,
+  thumbnail_url TEXT,
+  source TEXT NOT NULL,            -- setup | daily_scan | weekly_search
+  found_by_keyword TEXT,           -- term_key khi source=weekly_search
+  first_seen_at TEXT NOT NULL,
+  latest_views INTEGER, latest_likes INTEGER, latest_comments INTEGER, latest_at TEXT,
+  views_gained_24h INTEGER,        -- NULL khi chưa có 2 snapshot (L6)
+  outlier_score REAL,              -- latest_views / baseline_median; NULL khi baseline chưa tin cậy
+  PRIMARY KEY (topic_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_videos_channel
+  ON topic_videos(topic_id, channel_id, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_topic_videos_outlier
+  ON topic_videos(topic_id, outlier_score DESC);
+
+-- Snapshot view, append-only, tối đa 1 dòng / video / ngày (INSERT OR IGNORE —
+-- quét lại trong ngày không tạo thêm dòng).
+CREATE TABLE IF NOT EXISTS video_daily_views (
+  topic_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  day TEXT NOT NULL,               -- YYYY-MM-DD (quota_day)
+  views INTEGER NOT NULL, likes INTEGER, comments INTEGER,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY (topic_id, video_id, day)
+);
+
+-- Nhật ký mọi đổi trạng thái kênh/keyword — bằng chứng cho tôn chỉ 1 (HITL):
+-- mọi dòng to_status IN (active,rejected,paused) phải có actor='human';
+-- actor='loop' chỉ được to_status IN (new,pending,rejected) và rejected chỉ
+-- kèm reason='lang_mismatch'.
+CREATE TABLE IF NOT EXISTS decisions (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL CHECK(actor IN ('human','loop')),
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('channel','keyword')),
+  entity_id TEXT NOT NULL,
+  from_status TEXT, to_status TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  tick_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_entity
+  ON decisions(topic_id, entity_type, entity_id, at DESC);
+
+-- §4 spy-dashboard-api: index đọc cho 16 endpoint /api/spy/dash/*.
+CREATE INDEX IF NOT EXISTS idx_video_daily_views_day
+  ON video_daily_views(topic_id, day);
+CREATE INDEX IF NOT EXISTS idx_decisions_at
+  ON decisions(topic_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_topic_videos_published
+  ON topic_videos(topic_id, published_at DESC);
 `;
 
 
@@ -1067,6 +1182,155 @@ export interface P0Report {
   createdAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// v13 — Spy Pipeline v3 Lean: kiểu dòng + settings theo hợp đồng store (§3, §4).
+// Enum status mới: loop chỉ ghi new/pending (+ rejected duy nhất lang_mismatch)
+// và suggestion; active/paused/rejected còn lại chỉ qua endpoint duyệt human.
+// ---------------------------------------------------------------------------
+
+export type LoopMode = 'setup' | 'daily' | 'weekly';
+export type TopicSetupStatus = 'none' | 'awaiting_channels' | 'awaiting_keywords' | 'done';
+export type TopicChannelStatusV3 = 'new' | 'active' | 'paused' | 'rejected' | 'own';
+export type TopicKeywordStatusV3 = 'pending' | 'active' | 'paused' | 'rejected';
+export type KeywordOrigin = 'seed' | 'title_ngram' | 'outlier_title' | 'user';
+
+/** Ngưỡng §3 plan — merge settings_json của topic lên mặc định này khi đọc. */
+export interface TopicSettings {
+  /** views / baseline_median để gọi là outlier. */
+  outlierMultiple: number;
+  /** max/median > ngưỡng ⇒ kênh xổ số, không đề xuất. */
+  lotteryRatio: number;
+  /** Video dưới ngưỡng không tính baseline/outlier (loại Shorts). */
+  minDurationSec: number;
+  /** Số video dài gần nhất tính median. */
+  baselineWindow: number;
+  /** Ít hơn ⇒ baseline chưa tin cậy, không tính outlier. */
+  baselineMinN: number;
+  /** Median dưới ngưỡng ⇒ kênh dead, không đề xuất. */
+  deadMedian: number;
+  /** Không đăng quá số ngày ⇒ gợi ý pause. */
+  silentDays: number;
+  /** Video mới nhất quét mỗi ngày / kênh. */
+  dailyScanPerChannel: number;
+  /** Số search call tối đa mỗi tuần. */
+  weeklyKeywordBudget: number;
+  /** Số kênh ngoài follow quét nhanh / tuần. */
+  weeklyNewChannelScan: number;
+  /** n-gram phải xuất hiện ở ≥ N kênh (setup). */
+  ngramMinChannels: number;
+  /** Giờ chạy daily, Asia/Ho_Chi_Minh (mặc định 15:30). */
+  dailyAt: string;
+  /** Giờ chạy weekly (mặc định "CN 16:00" — Chủ nhật 16:00). */
+  weeklyAt: string;
+}
+
+export const DEFAULT_TOPIC_SETTINGS: TopicSettings = {
+  outlierMultiple: 3,
+  lotteryRatio: 50,
+  minDurationSec: 300,
+  baselineWindow: 30,
+  baselineMinN: 10,
+  deadMedian: 500,
+  silentDays: 60,
+  dailyScanPerChannel: 15,
+  weeklyKeywordBudget: 12,
+  weeklyNewChannelScan: 10,
+  ngramMinChannels: 3,
+  dailyAt: '15:30',
+  weeklyAt: 'CN 16:00',
+};
+
+export interface TopicChannelRow {
+  topicId: string;
+  channelId: string;
+  title: string | null;
+  handle: string | null;
+  subscriberCount: number | null;
+  fitScore: number | null;
+  fitReasonsJson: string;
+  facelessScore: number | null;
+  facelessSignalsJson: string;
+  facelessHint: number | null;
+  facelessHintReasonsJson: string | null;
+  thumbnailsJson: string | null;
+  styleMatchScore: number | null;
+  styleNotes: string | null;
+  learnValueScore: number | null;
+  learnValueReasonsJson: string | null;
+  status: TopicChannelStatusV3;
+  decidedBy: 'user' | 'loop_auto' | null;
+  decidedAt: string | null;
+  decidedReason: string | null;
+  spyRunId: string | null;
+  langDetected: string | null;
+  langConfidence: number | null;
+  langEvidenceJson: string | null;
+  discoveredVia: string | null;
+  discoveredFrom: string | null;
+  baselineMedianViews: number | null;
+  baselineN: number | null;
+  maxViews: number | null;
+  baselineAt: string | null;
+  lastPublishedAt: string | null;
+  lastCheckedAt: string | null;
+  suggestion: string | null;
+  suggestionAt: string | null;
+  firstSeenAt: string;
+  lastScoredAt: string | null;
+}
+
+export interface TopicKeywordRow {
+  topicId: string;
+  termKey: string;
+  displayTerm: string;
+  relation: string;
+  evidenceJson: string;
+  status: TopicKeywordStatusV3;
+  origin: KeywordOrigin | null;
+  yieldChannels: number;
+  lastSearchedAt: string | null;
+  lastCheckedAt: string | null;
+  lastNResults: number | null;
+  lastNFollowed: number | null;
+  lastMedianViews: number | null;
+  decidedAt: string | null;
+  decidedReason: string | null;
+  addedAt: string;
+  addedBy: 'user' | 'loop' | 'agent';
+}
+
+export interface TopicVideoRow {
+  topicId: string;
+  videoId: string;
+  channelId: string;
+  title: string;
+  publishedAt: string | null;
+  durationSec: number | null;
+  thumbnailUrl: string | null;
+  source: string;
+  foundByKeyword: string | null;
+  firstSeenAt: string;
+  latestViews: number | null;
+  latestLikes: number | null;
+  latestComments: number | null;
+  latestAt: string | null;
+  viewsGained24h: number | null;
+  outlierScore: number | null;
+}
+
+export interface DecisionRow {
+  id: string;
+  topicId: string;
+  at: string;
+  actor: 'human' | 'loop';
+  entityType: 'channel' | 'keyword';
+  entityId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  reason: string;
+  tickId: string | null;
+}
+
 type Row = Record<string, unknown>;
 
 function candidateFromRow(row: Row): CandidateChannel {
@@ -1463,9 +1727,118 @@ function videoCommentFromRow(row: Row): VideoCommentRecord {
   };
 }
 
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function topicChannelRowFromRow(row: Row): TopicChannelRow {
+  return {
+    topicId: String(row['topic_id']),
+    channelId: String(row['channel_id']),
+    title: nullableString(row['title']),
+    handle: nullableString(row['handle']),
+    subscriberCount: nullableNumber(row['subscriber_count']),
+    fitScore: nullableNumber(row['fit_score']),
+    fitReasonsJson: String(row['fit_reasons_json'] ?? '[]'),
+    facelessScore: nullableNumber(row['faceless_score']),
+    facelessSignalsJson: String(row['faceless_signals_json'] ?? '[]'),
+    facelessHint: nullableNumber(row['faceless_hint']),
+    facelessHintReasonsJson: nullableString(row['faceless_hint_reasons_json']),
+    thumbnailsJson: nullableString(row['thumbnails_json']),
+    styleMatchScore: nullableNumber(row['style_match_score']),
+    styleNotes: nullableString(row['style_notes']),
+    learnValueScore: nullableNumber(row['learn_value_score']),
+    learnValueReasonsJson: nullableString(row['learn_value_reasons_json']),
+    status: String(row['status']) as TopicChannelStatusV3,
+    decidedBy: nullableString(row['decided_by']) as TopicChannelRow['decidedBy'],
+    decidedAt: nullableString(row['decided_at']),
+    decidedReason: nullableString(row['decided_reason']),
+    spyRunId: nullableString(row['spy_run_id']),
+    langDetected: nullableString(row['lang_detected']),
+    langConfidence: nullableNumber(row['lang_confidence']),
+    langEvidenceJson: nullableString(row['lang_evidence_json']),
+    discoveredVia: nullableString(row['discovered_via']),
+    discoveredFrom: nullableString(row['discovered_from']),
+    baselineMedianViews: nullableNumber(row['baseline_median_views']),
+    baselineN: nullableNumber(row['baseline_n']),
+    maxViews: nullableNumber(row['max_views']),
+    baselineAt: nullableString(row['baseline_at']),
+    lastPublishedAt: nullableString(row['last_published_at']),
+    lastCheckedAt: nullableString(row['last_checked_at']),
+    suggestion: nullableString(row['suggestion']),
+    suggestionAt: nullableString(row['suggestion_at']),
+    firstSeenAt: String(row['first_seen_at']),
+    lastScoredAt: nullableString(row['last_scored_at']),
+  };
+}
+
+function topicKeywordRowFromRow(row: Row): TopicKeywordRow {
+  return {
+    topicId: String(row['topic_id']),
+    termKey: String(row['term_key']),
+    displayTerm: String(row['display_term']),
+    relation: String(row['relation'] ?? ''),
+    evidenceJson: String(row['evidence_json'] ?? '{}'),
+    status: String(row['status']) as TopicKeywordStatusV3,
+    origin: nullableString(row['origin']) as TopicKeywordRow['origin'],
+    yieldChannels: Number(row['yield_channels']),
+    lastSearchedAt: nullableString(row['last_searched_at']),
+    lastCheckedAt: nullableString(row['last_checked_at']),
+    lastNResults: nullableNumber(row['last_n_results']),
+    lastNFollowed: nullableNumber(row['last_n_followed']),
+    lastMedianViews: nullableNumber(row['last_median_views']),
+    decidedAt: nullableString(row['decided_at']),
+    decidedReason: nullableString(row['decided_reason']),
+    addedAt: String(row['added_at']),
+    addedBy: String(row['added_by']) as TopicKeywordRow['addedBy'],
+  };
+}
+
+function topicVideoRowFromRow(row: Row): TopicVideoRow {
+  return {
+    topicId: String(row['topic_id']),
+    videoId: String(row['video_id']),
+    channelId: String(row['channel_id']),
+    title: String(row['title']),
+    publishedAt: nullableString(row['published_at']),
+    durationSec: nullableNumber(row['duration_sec']),
+    thumbnailUrl: nullableString(row['thumbnail_url']),
+    source: String(row['source']),
+    foundByKeyword: nullableString(row['found_by_keyword']),
+    firstSeenAt: String(row['first_seen_at']),
+    latestViews: nullableNumber(row['latest_views']),
+    latestLikes: nullableNumber(row['latest_likes']),
+    latestComments: nullableNumber(row['latest_comments']),
+    latestAt: nullableString(row['latest_at']),
+    viewsGained24h: nullableNumber(row['views_gained_24h']),
+    outlierScore: nullableNumber(row['outlier_score']),
+  };
+}
+
+function decisionFromRow(row: Row): DecisionRow {
+  return {
+    id: String(row['id']),
+    topicId: String(row['topic_id']),
+    at: String(row['at']),
+    actor: String(row['actor']) as DecisionRow['actor'],
+    entityType: String(row['entity_type']) as DecisionRow['entityType'],
+    entityId: String(row['entity_id']),
+    fromStatus: nullableString(row['from_status']),
+    toStatus: String(row['to_status']),
+    reason: String(row['reason']),
+    tickId: nullableString(row['tick_id']),
+  };
+}
+
 export class SpyStore {
   readonly databasePath: string;
   private readonly database: Database;
+
+  /** Database thô cho truy vấn read-only (dash/*) — lớp trên tự giữ read-only,
+   *  không route nào được ghi qua cổng này. */
+  get rawDb(): Database {
+    return this.database;
+  }
 
   constructor(path: string) {
     this.databasePath = resolve(path);
@@ -1506,6 +1879,9 @@ export class SpyStore {
       }
       if (version < 10) {
         this.migrate9To10();
+      }
+      if (version < 13) {
+        this.migrate12To13();
       }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
@@ -1671,6 +2047,223 @@ export class SpyStore {
       }
 
       this.database.prepare('UPDATE schema_version SET version=?').run(10);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw error;
+    }
+  }
+
+  /**
+   * v12 → v13 (plan v3-lean §4): rebuild 3 bảng có CHECK/UNIQUE cũ và map status
+   * sang enum mới. SQLite không sửa được CHECK/UNIQUE trên bảng có sẵn nên
+   * phải tạo bảng mới + copy + drop + rename — toàn bộ trong MỘT transaction để
+   * crash giữa chừng không để lại nửa bảng.
+   *
+   * Map status:
+   *   topic_keywords: searched→active, exhausted→paused.
+   *   topic_channels: studied→active; shortlisted do user quyết → active;
+   *     shortlisted do loop_auto (hoặc chưa ai quyết) → new (về lại inbox).
+   *   loop_ticks: dòng cũ mode='daily'.
+   * topics chỉ ALTER ADD COLUMN (không rebuild — p0_* đang REFERENCES topics).
+   */
+  private migrate12To13(): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      // 0. Đảm bảo các cột v5+ đã thêm sau (faceless_hint, decided_reason, …)
+      //    tồn tại trước khi copy — DB nào đó có thể chưa từng mở ở version có
+      //    V5_ADDED_COLUMNS nên INSERT SELECT thiếu cột sẽ chết giữa migration.
+      for (const { table, column, type } of V5_ADDED_COLUMNS) {
+        try {
+          this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        } catch (error) {
+          if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+        }
+      }
+
+      // 1. topics — 3 cột mới §4.1. Chịu lỗi duplicate để sửa được DB nâng cấp dở.
+      for (const statement of [
+        'ALTER TABLE topics ADD COLUMN region TEXT',
+        "ALTER TABLE topics ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE topics ADD COLUMN setup_status TEXT NOT NULL DEFAULT 'none' CHECK(setup_status IN ('none','awaiting_channels','awaiting_keywords','done'))",
+      ]) {
+        try {
+          this.database.exec(statement);
+        } catch (error) {
+          if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+        }
+      }
+
+      // 2. topic_keywords — rebuild với CHECK status mới + cột mới §4.2.
+      this.database.exec(`
+CREATE TABLE topic_keywords_v13 (
+  topic_id TEXT NOT NULL,
+  term_key TEXT NOT NULL,
+  display_term TEXT NOT NULL,
+  relation TEXT NOT NULL DEFAULT '',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active','paused','rejected')),
+  origin TEXT CHECK(origin IS NULL OR origin IN ('seed','title_ngram','outlier_title','user')),
+  yield_channels INTEGER NOT NULL DEFAULT 0,
+  last_searched_at TEXT,
+  last_checked_at TEXT,
+  last_n_results INTEGER,
+  last_n_followed INTEGER,
+  last_median_views REAL,
+  decided_at TEXT,
+  decided_reason TEXT,
+  added_at TEXT NOT NULL,
+  added_by TEXT NOT NULL DEFAULT 'user' CHECK(added_by IN ('user','loop','agent')),
+  PRIMARY KEY (topic_id, term_key)
+);
+INSERT INTO topic_keywords_v13 (
+  topic_id, term_key, display_term, relation, evidence_json, status, origin,
+  yield_channels, last_searched_at, last_checked_at, last_n_results,
+  last_n_followed, last_median_views, decided_at, decided_reason, added_at, added_by
+)
+SELECT
+  topic_id, term_key, display_term, relation, evidence_json,
+  CASE status WHEN 'searched' THEN 'active' WHEN 'exhausted' THEN 'paused' ELSE status END,
+  -- origin enum mới: suy ra từ relation cũ khi trùng nghĩa, còn lại 'user' nếu
+  -- chính người thêm; không đoán được thì để NULL (không gán bừa).
+  CASE
+    WHEN relation='seed' THEN 'seed'
+    WHEN relation='harvested_title' THEN 'title_ngram'
+    WHEN added_by='user' THEN 'user'
+    ELSE NULL END,
+  yield_channels, last_searched_at, NULL, NULL, NULL, NULL, NULL, NULL,
+  added_at, added_by
+FROM topic_keywords;
+DROP TABLE topic_keywords;
+ALTER TABLE topic_keywords_v13 RENAME TO topic_keywords;
+CREATE INDEX idx_topic_keywords_status
+  ON topic_keywords(topic_id, status, yield_channels DESC);
+      `);
+
+      // 3. topic_channels — rebuild với CHECK status mới + cột mới §4.3.
+      this.database.exec(`
+CREATE TABLE topic_channels_v13 (
+  topic_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  fit_score REAL,
+  fit_reasons_json TEXT NOT NULL DEFAULT '[]',
+  faceless_score REAL,
+  faceless_signals_json TEXT NOT NULL DEFAULT '[]',
+  faceless_hint REAL,
+  faceless_hint_reasons_json TEXT,
+  thumbnails_json TEXT,
+  style_match_score REAL,
+  style_notes TEXT,
+  learn_value_score REAL,
+  learn_value_reasons_json TEXT,
+  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','active','paused','rejected','own')),
+  decided_by TEXT CHECK(decided_by IN ('user','loop_auto')),
+  decided_at TEXT,
+  decided_reason TEXT,
+  spy_run_id TEXT,
+  lang_detected TEXT,
+  lang_confidence REAL,
+  lang_evidence_json TEXT,
+  title TEXT,
+  handle TEXT,
+  subscriber_count INTEGER,
+  discovered_via TEXT,
+  discovered_from TEXT,
+  baseline_median_views REAL,
+  baseline_n INTEGER,
+  max_views INTEGER,
+  baseline_at TEXT,
+  last_published_at TEXT,
+  last_checked_at TEXT,
+  suggestion TEXT,
+  suggestion_at TEXT,
+  first_seen_at TEXT NOT NULL,
+  last_scored_at TEXT,
+  PRIMARY KEY (topic_id, channel_id)
+);
+INSERT INTO topic_channels_v13 (
+  topic_id, channel_id, fit_score, fit_reasons_json, faceless_score,
+  faceless_signals_json, faceless_hint, faceless_hint_reasons_json,
+  thumbnails_json, style_match_score, style_notes, learn_value_score,
+  learn_value_reasons_json, status, decided_by, decided_at, decided_reason,
+  spy_run_id, lang_detected, lang_confidence, lang_evidence_json,
+  first_seen_at, last_scored_at
+)
+SELECT
+  topic_id, channel_id, fit_score, fit_reasons_json, faceless_score,
+  faceless_signals_json, faceless_hint, faceless_hint_reasons_json,
+  thumbnails_json, style_match_score, style_notes, learn_value_score,
+  learn_value_reasons_json,
+  CASE
+    WHEN status='studied' THEN 'active'
+    WHEN status='shortlisted' AND decided_by='user' THEN 'active'
+    WHEN status='shortlisted' THEN 'new'
+    ELSE status END,
+  decided_by, decided_at, decided_reason,
+  spy_run_id, lang_detected, lang_confidence, lang_evidence_json,
+  first_seen_at, last_scored_at
+FROM topic_channels;
+DROP TABLE topic_channels;
+ALTER TABLE topic_channels_v13 RENAME TO topic_channels;
+CREATE INDEX idx_topic_channels_status_fit
+  ON topic_channels(topic_id, status, fit_score DESC);
+      `);
+
+      // 4. loop_ticks — rebuild để đổi UNIQUE thành (topic_id, quota_day, mode);
+      //    mọi tick cũ đều là nhịp ngày.
+      this.database.exec(`
+CREATE TABLE loop_ticks_v13 (
+  tick_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  quota_day TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','failed','skipped_quota')),
+  step TEXT NOT NULL DEFAULT 'expand',
+  search_calls_used INTEGER NOT NULL DEFAULT 0,
+  general_units_used INTEGER NOT NULL DEFAULT 0,
+  search_baseline_calls INTEGER NOT NULL DEFAULT 0,
+  general_baseline_units INTEGER NOT NULL DEFAULT 0,
+  keywords_searched_json TEXT NOT NULL DEFAULT '[]',
+  new_candidates INTEGER NOT NULL DEFAULT 0,
+  new_shortlisted_auto INTEGER NOT NULL DEFAULT 0,
+  scanned_channels INTEGER NOT NULL DEFAULT 0,
+  keywords_harvested INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  mode TEXT NOT NULL DEFAULT 'daily' CHECK(mode IN ('setup','daily','weekly')),
+  UNIQUE(topic_id, quota_day, mode)
+);
+INSERT INTO loop_ticks_v13 (
+  tick_id, topic_id, quota_day, started_at, finished_at, status, step,
+  search_calls_used, general_units_used, search_baseline_calls,
+  general_baseline_units, keywords_searched_json, new_candidates,
+  new_shortlisted_auto, scanned_channels, keywords_harvested, error, mode
+)
+SELECT
+  tick_id, topic_id, quota_day, started_at, finished_at, status, step,
+  search_calls_used, general_units_used, search_baseline_calls,
+  general_baseline_units, keywords_searched_json, new_candidates,
+  new_shortlisted_auto, scanned_channels, keywords_harvested, error, 'daily'
+FROM loop_ticks;
+DROP TABLE loop_ticks;
+ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
+      `);
+
+      // 5. daily_reports — chỉ cần cột mode + unique index theo mode (không có
+      //    CHECK/UNIQUE trong bảng cũ nên không phải rebuild).
+      try {
+        this.database.exec(
+          "ALTER TABLE daily_reports ADD COLUMN mode TEXT NOT NULL DEFAULT 'daily' CHECK(mode IN ('setup','daily','weekly'))",
+        );
+      } catch (error) {
+        if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+      }
+      this.database.exec('DROP INDEX IF EXISTS uq_daily_reports_topic_date');
+      this.database.exec(
+        "CREATE UNIQUE INDEX uq_daily_reports_topic_date ON daily_reports(COALESCE(topic_id, ''), report_date, mode)",
+      );
+
+      this.database.prepare('UPDATE schema_version SET version=?').run(13);
       this.database.exec('COMMIT');
     } catch (error) {
       try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
@@ -3203,17 +3796,21 @@ export class SpyStore {
     briefMd?: string;
     facelessRequired?: boolean;
     dailySearchBudget?: number;
+    // v13 §4.1: thị trường search (US, VN) — tách khỏi language.
+    region?: string | null;
   }): void {
     const now = nowIso();
     this.database.prepare(
       `INSERT INTO topics (topic_id, label, market, language, status, own_channel_ids_json,
-         brief_md, faceless_required, daily_search_budget, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         brief_md, faceless_required, daily_search_budget, region, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(topic_id) DO UPDATE SET
          label=excluded.label, market=excluded.market, language=excluded.language,
          status=excluded.status, own_channel_ids_json=excluded.own_channel_ids_json,
          brief_md=excluded.brief_md, faceless_required=excluded.faceless_required,
-         daily_search_budget=excluded.daily_search_budget, updated_at=excluded.updated_at`,
+         daily_search_budget=excluded.daily_search_budget,
+         region=COALESCE(excluded.region, topics.region),
+         updated_at=excluded.updated_at`,
     ).run(
       input.topicId,
       input.label,
@@ -3224,6 +3821,7 @@ export class SpyStore {
       input.briefMd ?? '',
       input.facelessRequired !== false ? 1 : 0,
       input.dailySearchBudget ?? 20,
+      input.region ?? null,
       now,
       now,
     );
@@ -3284,8 +3882,10 @@ export class SpyStore {
   }
 
   markKeywordSearched(topicId: string, termKey: string, yieldDelta = 0): void {
+    // v13: 'searched' không còn trong CHECK — keyword đã từng search = active.
+    // Sức khoẻ search (n_results, median…) ghi qua updateKeywordCheck.
     this.database.prepare(
-      `UPDATE topic_keywords SET status='searched', last_searched_at=?, yield_channels=yield_channels+?
+      `UPDATE topic_keywords SET status='active', last_searched_at=?, yield_channels=yield_channels+?
        WHERE topic_id=? AND term_key=?`,
     ).run(nowIso(), yieldDelta, topicId, termKey);
   }
@@ -3367,9 +3967,22 @@ export class SpyStore {
     learnValueScore?: number | null;
     /** JSON LearnValueReason[] — điểm không kèm lý do là điểm không dùng được. */
     learnValueReasonsJson?: string | null;
+    /** v13: denormalize + provenance + baseline (§4.3). */
+    title?: string | null;
+    handle?: string | null;
+    subscriberCount?: number | null;
+    discoveredVia?: string | null;
+    discoveredFrom?: string | null;
+    baselineMedianViews?: number | null;
+    baselineN?: number | null;
+    maxViews?: number | null;
+    baselineAt?: string | null;
+    lastPublishedAt?: string | null;
+    lastCheckedAt?: string | null;
     status?: string;
     decidedBy?: 'user' | 'loop_auto' | null;
     decidedAt?: string | null;
+    decidedReason?: string | null;
     spyRunId?: string | null;
     langDetected?: string | null;
     langConfidence?: number | null;
@@ -3381,10 +3994,13 @@ export class SpyStore {
          (topic_id, channel_id, fit_score, fit_reasons_json, faceless_score,
           faceless_signals_json, faceless_hint, faceless_hint_reasons_json,
           thumbnails_json, learn_value_score, learn_value_reasons_json,
-          status, decided_by, decided_at,
+          status, decided_by, decided_at, decided_reason,
           spy_run_id, lang_detected, lang_confidence, lang_evidence_json,
+          title, handle, subscriber_count, discovered_via, discovered_from,
+          baseline_median_views, baseline_n, max_views, baseline_at,
+          last_published_at, last_checked_at,
           first_seen_at, last_scored_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(topic_id, channel_id) DO UPDATE SET
          fit_score=COALESCE(excluded.fit_score, fit_score),
          fit_reasons_json=COALESCE(excluded.fit_reasons_json, fit_reasons_json),
@@ -3401,10 +4017,23 @@ export class SpyStore {
          status=CASE WHEN topic_channels.decided_by IS NULL THEN excluded.status ELSE topic_channels.status END,
          decided_by=COALESCE(excluded.decided_by, topic_channels.decided_by),
          decided_at=COALESCE(excluded.decided_at, topic_channels.decided_at),
+         decided_reason=COALESCE(excluded.decided_reason, topic_channels.decided_reason),
          spy_run_id=COALESCE(excluded.spy_run_id, spy_run_id),
          lang_detected=COALESCE(excluded.lang_detected, lang_detected),
          lang_confidence=COALESCE(excluded.lang_confidence, lang_confidence),
          lang_evidence_json=COALESCE(excluded.lang_evidence_json, lang_evidence_json),
+         title=COALESCE(excluded.title, title),
+         handle=COALESCE(excluded.handle, handle),
+         subscriber_count=COALESCE(excluded.subscriber_count, subscriber_count),
+         -- Provenance lần ĐẦU thắng — upsert sau không được viết đè nguồn gốc.
+         discovered_via=COALESCE(topic_channels.discovered_via, excluded.discovered_via),
+         discovered_from=COALESCE(topic_channels.discovered_from, excluded.discovered_from),
+         baseline_median_views=COALESCE(excluded.baseline_median_views, baseline_median_views),
+         baseline_n=COALESCE(excluded.baseline_n, baseline_n),
+         max_views=COALESCE(excluded.max_views, max_views),
+         baseline_at=COALESCE(excluded.baseline_at, baseline_at),
+         last_published_at=COALESCE(excluded.last_published_at, last_published_at),
+         last_checked_at=COALESCE(excluded.last_checked_at, last_checked_at),
          last_scored_at=excluded.last_scored_at`,
     ).run(
       input.topicId, input.channelId,
@@ -3420,10 +4049,22 @@ export class SpyStore {
       input.status ?? 'new',
       input.decidedBy ?? null,
       input.decidedAt ?? null,
+      input.decidedReason ?? null,
       input.spyRunId ?? null,
       input.langDetected ?? null,
       input.langConfidence ?? null,
       input.langEvidenceJson ?? null,
+      input.title ?? null,
+      input.handle ?? null,
+      input.subscriberCount ?? null,
+      input.discoveredVia ?? null,
+      input.discoveredFrom ?? null,
+      input.baselineMedianViews ?? null,
+      input.baselineN ?? null,
+      input.maxViews ?? null,
+      input.baselineAt ?? null,
+      input.lastPublishedAt ?? null,
+      input.lastCheckedAt ?? null,
       now,
       now,
     );
@@ -3518,27 +4159,45 @@ export class SpyStore {
   // v5 — Loop ticks
   // ---------------------------------------------------------------------------
 
-  insertLoopTick(input: {
+  /**
+   * v13: tick gắn mode ('setup'|'daily'|'weekly') — UNIQUE(topic_id, quota_day,
+   * mode) nên daily và weekly được chạy cùng một quota_day.
+   */
+  createLoopTick(input: {
     tickId: string;
     topicId: string;
     quotaDay: string;
+    mode?: LoopMode;
     searchBaselineCalls?: number;
     generalBaselineUnits?: number;
   }): boolean {
     try {
       this.database.prepare(
         `INSERT INTO loop_ticks (tick_id, topic_id, quota_day, started_at, status, step,
-           search_baseline_calls, general_baseline_units)
-         VALUES (?, ?, ?, ?, 'running', 'expand', ?, ?)`,
+           search_baseline_calls, general_baseline_units, mode)
+         VALUES (?, ?, ?, ?, 'running', 'expand', ?, ?, ?)`,
       ).run(
         input.tickId, input.topicId, input.quotaDay, nowIso(),
         input.searchBaselineCalls ?? 0, input.generalBaselineUnits ?? 0,
+        input.mode ?? 'daily',
       );
       return true;
     } catch {
-      // UNIQUE constraint violated → tick already exists for this quota_day
+      // UNIQUE constraint violated → tick already exists for this (quota_day, mode)
       return false;
     }
+  }
+
+  /** Giữ tên cũ cho caller v5 — tick không khai mode được coi là 'daily'. */
+  insertLoopTick(input: {
+    tickId: string;
+    topicId: string;
+    quotaDay: string;
+    mode?: LoopMode;
+    searchBaselineCalls?: number;
+    generalBaselineUnits?: number;
+  }): boolean {
+    return this.createLoopTick(input);
   }
 
   updateLoopTick(tickId: string, patch: {
@@ -3579,13 +4238,28 @@ export class SpyStore {
     );
   }
 
-  getLastTick(topicId: string): Row | null {
+  /**
+   * Tick gần nhất của topic. v13: truyền `mode` để lọc đúng nhịp — một ngày có
+   * thể có cả tick daily lẫn weekly (UNIQUE là (topic, quota_day, mode)).
+   */
+  getLastTick(topicId: string, mode?: LoopMode): Row | null {
+    if (mode !== undefined) {
+      return this.database.prepare(
+        'SELECT * FROM loop_ticks WHERE topic_id=? AND mode=? ORDER BY quota_day DESC, started_at DESC LIMIT 1',
+      ).get(topicId, mode) as Row | null;
+    }
     return this.database.prepare(
       'SELECT * FROM loop_ticks WHERE topic_id=? ORDER BY quota_day DESC, started_at DESC LIMIT 1',
     ).get(topicId) as Row | null;
   }
 
-  getTickByDay(topicId: string, quotaDay: string): Row | null {
+  /** Tick của một ngày quota — `mode` lọc đúng tick daily/weekly/setup cùng ngày. */
+  getTickByDay(topicId: string, quotaDay: string, mode?: LoopMode): Row | null {
+    if (mode !== undefined) {
+      return this.database.prepare(
+        'SELECT * FROM loop_ticks WHERE topic_id=? AND quota_day=? AND mode=?',
+      ).get(topicId, quotaDay, mode) as Row | null;
+    }
     return this.database.prepare(
       'SELECT * FROM loop_ticks WHERE topic_id=? AND quota_day=?',
     ).get(topicId, quotaDay) as Row | null;
@@ -3601,11 +4275,13 @@ export class SpyStore {
     topicId: string | null;
     summaryJson: string;
     markdown: string;
+    /** v13: 'daily' (mặc định) | 'weekly' | 'setup'. */
+    mode?: LoopMode;
   }): void {
     this.database.prepare(
-      `INSERT INTO daily_reports (report_id, report_date, topic_id, summary_json, markdown, created_at, delivered_json)
-       VALUES (?, ?, ?, ?, ?, ?, '{}')`,
-    ).run(input.reportId, input.reportDate, input.topicId, input.summaryJson, input.markdown, nowIso());
+      `INSERT INTO daily_reports (report_id, report_date, topic_id, summary_json, markdown, created_at, delivered_json, mode)
+       VALUES (?, ?, ?, ?, ?, ?, '{}', ?)`,
+    ).run(input.reportId, input.reportDate, input.topicId, input.summaryJson, input.markdown, nowIso(), input.mode ?? 'daily');
   }
 
   /**
@@ -3620,9 +4296,10 @@ export class SpyStore {
     topicId: string | null;
     summaryJson: string;
     markdown: string;
+    mode?: LoopMode;
   }): { created: boolean; reportId: string } {
     return this.transaction(() => {
-      const existing = this.getDailyReportByDate(input.topicId, input.reportDate);
+      const existing = this.getDailyReportByDate(input.topicId, input.reportDate, input.mode ?? 'daily');
       if (existing) return { created: false, reportId: String(existing['report_id']) };
       this.insertDailyReport(input);
       return { created: true, reportId: input.reportId };
@@ -3642,15 +4319,15 @@ export class SpyStore {
     return this.database.prepare('SELECT * FROM daily_reports WHERE report_id=?').get(reportId) as Row | null;
   }
 
-  getDailyReportByDate(topicId: string | null, date: string): Row | null {
+  getDailyReportByDate(topicId: string | null, date: string, mode: LoopMode = 'daily'): Row | null {
     if (topicId === null) {
       return this.database.prepare(
-        'SELECT * FROM daily_reports WHERE topic_id IS NULL AND report_date=? LIMIT 1',
-      ).get(date) as Row | null;
+        'SELECT * FROM daily_reports WHERE topic_id IS NULL AND report_date=? AND mode=? LIMIT 1',
+      ).get(date, mode) as Row | null;
     }
     return this.database.prepare(
-      'SELECT * FROM daily_reports WHERE topic_id=? AND report_date=? LIMIT 1',
-    ).get(topicId, date) as Row | null;
+      'SELECT * FROM daily_reports WHERE topic_id=? AND report_date=? AND mode=? LIMIT 1',
+    ).get(topicId, date, mode) as Row | null;
   }
 
   markDelivered(reportId: string, key: string, value: string): void {
@@ -3660,6 +4337,469 @@ export class SpyStore {
     delivered[key] = value;
     this.database.prepare('UPDATE daily_reports SET delivered_json=? WHERE report_id=?')
       .run(JSON.stringify(delivered), reportId);
+  }
+
+  // ── v13 — Spy Pipeline v3 Lean: hợp đồng store ─────────────────────────
+  // Luật bất biến (plan §2): các method do loop gọi CHỈ ghi status
+  // new/pending, rejected (duy nhất lang_mismatch) và suggestion. Mọi chuyển
+  // sang active/paused/rejected khác đi qua decideChannel/decideKeyword với
+  // actor='human' và đều được ghi vào bảng decisions để truy vết.
+
+  /**
+   * Ngưỡng của topic = DEFAULT_TOPIC_SETTINGS + topics.settings_json.
+   * settings_json hỏng → trả mặc định, không ném — một topic cấu hình sai không
+   * được làm chết cả tick.
+   */
+  getTopicSettings(topicId: string): TopicSettings {
+    const settings: TopicSettings = { ...DEFAULT_TOPIC_SETTINGS };
+    const row = this.getTopic(topicId);
+    const raw = row ? row['settings_json'] : null;
+    if (typeof raw !== 'string' || raw.trim() === '') return settings;
+    let parsed: Record<string, unknown>;
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return settings;
+      parsed = value as Record<string, unknown>;
+    } catch {
+      return settings;
+    }
+    // Chấp nhận cả snake_case (tên khoá trong plan §3) lẫn camelCase — khoá
+    // không phải number/string hợp lệ bị bỏ qua, không ghi đè mặc định.
+    const writable = settings as unknown as Record<string, unknown>;
+    const pickNum = (snake: string, camel: keyof TopicSettings): void => {
+      const v = parsed[snake] ?? parsed[camel as string];
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        writable[camel] = v;
+      }
+    };
+    const pickStr = (snake: string, camel: keyof TopicSettings): void => {
+      const v = parsed[snake] ?? parsed[camel as string];
+      if (typeof v === 'string' && v.trim() !== '') {
+        writable[camel] = v;
+      }
+    };
+    pickNum('outlier_multiple', 'outlierMultiple');
+    pickNum('lottery_ratio', 'lotteryRatio');
+    pickNum('min_duration_sec', 'minDurationSec');
+    pickNum('baseline_window', 'baselineWindow');
+    pickNum('baseline_min_n', 'baselineMinN');
+    pickNum('dead_median', 'deadMedian');
+    pickNum('silent_days', 'silentDays');
+    pickNum('daily_scan_per_channel', 'dailyScanPerChannel');
+    pickNum('weekly_keyword_budget', 'weeklyKeywordBudget');
+    pickNum('weekly_new_channel_scan', 'weeklyNewChannelScan');
+    pickNum('ngram_min_channels', 'ngramMinChannels');
+    pickStr('daily_at', 'dailyAt');
+    pickStr('weekly_at', 'weeklyAt');
+    return settings;
+  }
+
+  setTopicSetupStatus(topicId: string, status: TopicSetupStatus): void {
+    const result = this.database.prepare(
+      'UPDATE topics SET setup_status=?, updated_at=? WHERE topic_id=?',
+    ).run(status, nowIso(), topicId);
+    if (Number(result.changes) === 0) {
+      throw new AppError('not_found', `Topic ${topicId} không tồn tại`);
+    }
+  }
+
+  listTopicChannelsByStatus(topicId: string, statuses: string[]): TopicChannelRow[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    return this.database.prepare(
+      `SELECT * FROM topic_channels WHERE topic_id=? AND status IN (${placeholders})
+       ORDER BY first_seen_at ASC, channel_id ASC`,
+    ).all(topicId, ...statuses).map((row) => topicChannelRowFromRow(row as Row));
+  }
+
+  /**
+   * Đề xuất kênh ứng viên vào inbox. CHỈ tạo status='new' — INSERT OR IGNORE
+   * nên không bao giờ ghi đè status/quyết định đã có (tôn chỉ 1). Khi chèn được
+   * thì ghi decisions(actor='loop', to='new') để truy vết kênh đến từ đâu.
+   */
+  upsertTopicChannelCandidate(row: {
+    topicId: string;
+    channelId: string;
+    title: string;
+    handle?: string;
+    subscriberCount?: number;
+    discoveredVia: string;
+    discoveredFrom?: string;
+    thumbnailsJson?: string;
+    langDetected?: string;
+    tickId?: string;
+  }): { inserted: boolean } {
+    const result = this.database.prepare(
+      `INSERT OR IGNORE INTO topic_channels
+         (topic_id, channel_id, title, handle, subscriber_count,
+          thumbnails_json, lang_detected, discovered_via, discovered_from,
+          status, first_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`,
+    ).run(
+      row.topicId, row.channelId, row.title,
+      row.handle ?? null, row.subscriberCount ?? null,
+      row.thumbnailsJson ?? null, row.langDetected ?? null,
+      row.discoveredVia, row.discoveredFrom ?? null,
+      nowIso(),
+    );
+    const inserted = Number(result.changes) > 0;
+    if (inserted) {
+      this.recordDecision({
+        topicId: row.topicId,
+        actor: 'loop',
+        entityType: 'channel',
+        entityId: row.channelId,
+        fromStatus: null,
+        toStatus: 'new',
+        reason: `candidate:${row.discoveredVia}`,
+        tickId: row.tickId,
+      });
+    }
+    return { inserted };
+  }
+
+  /**
+   * Cổng ngôn ngữ (L3): reject duy nhất cho lang_mismatch — hành động tự động
+   * duy nhất mà loop được phép quyết status (plan §2).
+   */
+  rejectChannelForLanguage(
+    topicId: string,
+    channelId: string,
+    evidenceJson: string,
+    tickId?: string,
+  ): void {
+    const current = this.database.prepare(
+      'SELECT status FROM topic_channels WHERE topic_id=? AND channel_id=?',
+    ).get(topicId, channelId) as Row | undefined;
+    if (!current) {
+      throw new AppError('not_found', `Kênh ${channelId} không có trong topic ${topicId}`);
+    }
+    const now = nowIso();
+    this.database.prepare(
+      `UPDATE topic_channels SET status='rejected', decided_by='loop_auto',
+         decided_at=?, decided_reason='lang_mismatch', lang_evidence_json=?
+       WHERE topic_id=? AND channel_id=?`,
+    ).run(now, evidenceJson, topicId, channelId);
+    this.recordDecision({
+      topicId,
+      actor: 'loop',
+      entityType: 'channel',
+      entityId: channelId,
+      fromStatus: nullableString(current['status']),
+      toStatus: 'rejected',
+      reason: 'lang_mismatch',
+      tickId,
+    });
+  }
+
+  /** Baseline cuốn chiếu của kênh (thay regime/Pettitt đã cắt — plan §1). */
+  updateChannelBaseline(
+    topicId: string,
+    channelId: string,
+    baseline: {
+      baselineMedianViews: number | null;
+      baselineN: number | null;
+      maxViews: number | null;
+      lastPublishedAt: string | null;
+      lastCheckedAt: string | null;
+    },
+  ): void {
+    this.database.prepare(
+      `UPDATE topic_channels SET baseline_median_views=?, baseline_n=?, max_views=?,
+         baseline_at=?, last_published_at=?, last_checked_at=?
+       WHERE topic_id=? AND channel_id=?`,
+    ).run(
+      baseline.baselineMedianViews, baseline.baselineN, baseline.maxViews,
+      nowIso(), baseline.lastPublishedAt, baseline.lastCheckedAt,
+      topicId, channelId,
+    );
+  }
+
+  /**
+   * Gợi ý của máy cho người (vd 'pause_silent'). suggestion=null = gỡ gợi ý.
+   * Không bao giờ đổi status — quyết định là của người (tôn chỉ 1).
+   */
+  setChannelSuggestion(topicId: string, channelId: string, suggestion: string | null): void {
+    this.database.prepare(
+      'UPDATE topic_channels SET suggestion=?, suggestion_at=? WHERE topic_id=? AND channel_id=?',
+    ).run(suggestion, suggestion === null ? null : nowIso(), topicId, channelId);
+  }
+
+  /**
+   * Ghi video topic đang theo dõi + cập nhật bản sao latest_* để dashboard đọc
+   * nhanh. first_seen_at/source/found_by_keyword là provenance — upsert sau
+   * không đè nguồn ban đầu.
+   */
+  upsertTopicVideo(row: {
+    topicId: string;
+    videoId: string;
+    channelId: string;
+    title: string;
+    publishedAt?: string | null;
+    durationSec?: number | null;
+    thumbnailUrl?: string | null;
+    source: string;
+    foundByKeyword?: string | null;
+    views: number | null;
+    likes?: number | null;
+    comments?: number | null;
+    capturedAt: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO topic_videos
+         (topic_id, video_id, channel_id, title, published_at, duration_sec,
+          thumbnail_url, source, found_by_keyword, first_seen_at,
+          latest_views, latest_likes, latest_comments, latest_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id, video_id) DO UPDATE SET
+         title=excluded.title,
+         channel_id=excluded.channel_id,
+         published_at=COALESCE(excluded.published_at, topic_videos.published_at),
+         duration_sec=COALESCE(excluded.duration_sec, topic_videos.duration_sec),
+         thumbnail_url=COALESCE(excluded.thumbnail_url, topic_videos.thumbnail_url),
+         found_by_keyword=COALESCE(topic_videos.found_by_keyword, excluded.found_by_keyword),
+         latest_views=excluded.latest_views,
+         latest_likes=excluded.latest_likes,
+         latest_comments=excluded.latest_comments,
+         latest_at=excluded.latest_at`,
+    ).run(
+      row.topicId, row.videoId, row.channelId, row.title,
+      row.publishedAt ?? null, row.durationSec ?? null, row.thumbnailUrl ?? null,
+      row.source, row.foundByKeyword ?? null, row.capturedAt,
+      row.views, row.likes ?? null, row.comments ?? null, row.capturedAt,
+    );
+  }
+
+  /**
+   * Snapshot view append-only — INSERT OR IGNORE theo (topic, video, day) nên
+   * quét lại trong cùng ngày không tạo thêm dòng (sai số ngày là chấp nhận
+   * được, cộng dồn thì không).
+   */
+  recordVideoDailyView(row: {
+    topicId: string;
+    videoId: string;
+    day: string;
+    views: number;
+    likes?: number | null;
+    comments?: number | null;
+    capturedAt: string;
+  }): { inserted: boolean } {
+    const result = this.database.prepare(
+      `INSERT OR IGNORE INTO video_daily_views
+         (topic_id, video_id, day, views, likes, comments, captured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      row.topicId, row.videoId, row.day, row.views,
+      row.likes ?? null, row.comments ?? null, row.capturedAt,
+    );
+    return { inserted: Number(result.changes) > 0 };
+  }
+
+  /** views_gained_24h/outlier_score do flow tính (L6: NULL khi mới 1 snapshot). */
+  updateVideoDerived(
+    topicId: string,
+    videoId: string,
+    derived: { viewsGained24h: number | null; outlierScore: number | null },
+  ): void {
+    this.database.prepare(
+      'UPDATE topic_videos SET views_gained_24h=?, outlier_score=? WHERE topic_id=? AND video_id=?',
+    ).run(derived.viewsGained24h, derived.outlierScore, topicId, videoId);
+  }
+
+  listVideoDailyViews(topicId: string, videoId: string, limit = 30): { day: string; views: number }[] {
+    return this.database.prepare(
+      'SELECT day, views FROM video_daily_views WHERE topic_id=? AND video_id=? ORDER BY day DESC LIMIT ?',
+    ).all(topicId, videoId, limit).map((row) => ({
+      day: String((row as Row)['day']),
+      views: Number((row as Row)['views']),
+    }));
+  }
+
+  listTopicVideos(topicId: string, filter: {
+    channelId?: string;
+    publishedAfter?: string;
+    minOutlier?: number;
+    source?: string;
+    limit?: number;
+  } = {}): TopicVideoRow[] {
+    const where: string[] = ['topic_id=?'];
+    const params: Array<string | number> = [topicId];
+    if (filter.channelId !== undefined) { where.push('channel_id=?'); params.push(filter.channelId); }
+    if (filter.publishedAfter !== undefined) { where.push('published_at>=?'); params.push(filter.publishedAfter); }
+    if (filter.minOutlier !== undefined) { where.push('outlier_score>=?'); params.push(filter.minOutlier); }
+    if (filter.source !== undefined) { where.push('source=?'); params.push(filter.source); }
+    params.push(filter.limit ?? 100);
+    return this.database.prepare(
+      `SELECT * FROM topic_videos WHERE ${where.join(' AND ')}
+       ORDER BY published_at DESC, latest_views DESC LIMIT ?`,
+    ).all(...params).map((row) => topicVideoRowFromRow(row as Row));
+  }
+
+  /**
+   * Đề xuất keyword ứng viên (S3 n-gram, W4 outlier_title). CHỈ tạo
+   * status='pending' — INSERT OR IGNORE, không ghi đè quyết định đã có.
+   */
+  upsertKeywordCandidate(input: {
+    topicId: string;
+    termKey: string;
+    displayTerm: string;
+    origin: KeywordOrigin;
+    evidenceJson: string;
+    tickId?: string;
+  }): { inserted: boolean } {
+    const result = this.database.prepare(
+      `INSERT OR IGNORE INTO topic_keywords
+         (topic_id, term_key, display_term, relation, evidence_json, status, origin, added_at, added_by)
+       VALUES (?, ?, ?, '', ?, 'pending', ?, ?, ?)`,
+    ).run(
+      input.topicId, input.termKey, input.displayTerm,
+      input.evidenceJson, input.origin, nowIso(),
+      input.origin === 'user' ? 'user' : 'loop',
+    );
+    const inserted = Number(result.changes) > 0;
+    if (inserted) {
+      this.recordDecision({
+        topicId: input.topicId,
+        actor: 'loop',
+        entityType: 'keyword',
+        entityId: input.termKey,
+        fromStatus: null,
+        toStatus: 'pending',
+        reason: `candidate:${input.origin}`,
+        tickId: input.tickId,
+      });
+    }
+    return { inserted };
+  }
+
+  listKeywordsByStatus(topicId: string, statuses: string[]): TopicKeywordRow[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    return this.database.prepare(
+      `SELECT * FROM topic_keywords WHERE topic_id=? AND status IN (${placeholders})
+       ORDER BY yield_channels DESC, added_at ASC`,
+    ).all(topicId, ...statuses).map((row) => topicKeywordRowFromRow(row as Row));
+  }
+
+  /**
+   * Sức khoẻ keyword sau một lần search (W1): bao nhiêu kết quả, bao nhiêu từ
+   * kênh đang follow, view trung vị. last_searched_at cũng được cập nhật để
+   * code báo cáo cũ đọc đúng lần search gần nhất.
+   */
+  updateKeywordCheck(
+    topicId: string,
+    termKey: string,
+    check: {
+      lastCheckedAt: string;
+      lastNResults: number | null;
+      lastNFollowed: number | null;
+      lastMedianViews: number | null;
+    },
+  ): void {
+    this.database.prepare(
+      `UPDATE topic_keywords SET last_checked_at=?, last_n_results=?,
+         last_n_followed=?, last_median_views=?, last_searched_at=?
+       WHERE topic_id=? AND term_key=?`,
+    ).run(
+      check.lastCheckedAt, check.lastNResults, check.lastNFollowed,
+      check.lastMedianViews, check.lastCheckedAt, topicId, termKey,
+    );
+  }
+
+  /**
+   * Quyết định của NGƯỜI trên kênh — đường duy nhất chuyển sang
+   * active/paused/rejected (lý do khác) hoặc trả về new/own. Ghi decisions
+   * actor='human' làm bằng chứng tôn chỉ 1.
+   */
+  decideChannel(topicId: string, channelId: string, toStatus: string, reason: string | null): void {
+    if (!['new', 'active', 'paused', 'rejected', 'own'].includes(toStatus)) {
+      throw new AppError('invalid_input', `to_status kênh không hợp lệ: ${toStatus}`);
+    }
+    const current = this.database.prepare(
+      'SELECT status FROM topic_channels WHERE topic_id=? AND channel_id=?',
+    ).get(topicId, channelId) as Row | undefined;
+    if (!current) {
+      throw new AppError('not_found', `Kênh ${channelId} không có trong topic ${topicId}`);
+    }
+    const now = nowIso();
+    this.database.prepare(
+      `UPDATE topic_channels SET status=?, decided_by='user', decided_at=?, decided_reason=?
+       WHERE topic_id=? AND channel_id=?`,
+    ).run(toStatus, now, reason, topicId, channelId);
+    this.recordDecision({
+      topicId,
+      actor: 'human',
+      entityType: 'channel',
+      entityId: channelId,
+      fromStatus: nullableString(current['status']),
+      toStatus,
+      reason: reason ?? 'human_decision',
+    });
+  }
+
+  /** Quyết định của NGƯỜI trên keyword — tương đương decideChannel. */
+  decideKeyword(topicId: string, termKey: string, toStatus: string, reason: string | null): void {
+    if (!['pending', 'active', 'paused', 'rejected'].includes(toStatus)) {
+      throw new AppError('invalid_input', `to_status keyword không hợp lệ: ${toStatus}`);
+    }
+    const current = this.database.prepare(
+      'SELECT status FROM topic_keywords WHERE topic_id=? AND term_key=?',
+    ).get(topicId, termKey) as Row | undefined;
+    if (!current) {
+      throw new AppError('not_found', `Keyword ${termKey} không có trong topic ${topicId}`);
+    }
+    const now = nowIso();
+    this.database.prepare(
+      'UPDATE topic_keywords SET status=?, decided_at=?, decided_reason=? WHERE topic_id=? AND term_key=?',
+    ).run(toStatus, now, reason, topicId, termKey);
+    this.recordDecision({
+      topicId,
+      actor: 'human',
+      entityType: 'keyword',
+      entityId: termKey,
+      fromStatus: nullableString(current['status']),
+      toStatus,
+      reason: reason ?? 'human_decision',
+    });
+  }
+
+  /**
+   * Nhật ký quyết định — nội bộ. Mọi đổi trạng thái kênh/keyword phải đi qua
+   * đây để trả lời được "ai, khi nào, vì sao" (bằng chứng tôn chỉ 1).
+   */
+  recordDecision(input: {
+    topicId: string;
+    actor: 'human' | 'loop';
+    entityType: 'channel' | 'keyword';
+    entityId: string;
+    fromStatus: string | null;
+    toStatus: string;
+    reason: string;
+    tickId?: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO decisions (id, topic_id, at, actor, entity_type, entity_id, from_status, to_status, reason, tick_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      randomUUID(), input.topicId, nowIso(), input.actor, input.entityType,
+      input.entityId, input.fromStatus, input.toStatus, input.reason,
+      input.tickId ?? null,
+    );
+  }
+
+  listDecisions(topicId: string, filter: {
+    entityType?: 'channel' | 'keyword';
+    entityId?: string;
+    limit?: number;
+  } = {}): DecisionRow[] {
+    const where: string[] = ['topic_id=?'];
+    const params: Array<string | number> = [topicId];
+    if (filter.entityType !== undefined) { where.push('entity_type=?'); params.push(filter.entityType); }
+    if (filter.entityId !== undefined) { where.push('entity_id=?'); params.push(filter.entityId); }
+    params.push(filter.limit ?? 100);
+    return this.database.prepare(
+      `SELECT * FROM decisions WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ?`,
+    ).all(...params).map((row) => decisionFromRow(row as Row));
   }
 
   // ── P0 Corpus Intelligence store ───────────────────────────────────────

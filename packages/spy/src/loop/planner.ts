@@ -65,8 +65,9 @@ export function planTick(
   const otherPending = allKeywords.filter(
     (k) => String(k['status']) === 'pending' && String(k['relation']) !== 'seed',
   );
+  // v13: 'searched' → 'active' sau migration — keyword đã từng search là active.
   const topYield = allKeywords
-    .filter((k) => String(k['status']) === 'searched' && Number(k['yield_channels']) > 0)
+    .filter((k) => String(k['status']) === 'active' && Number(k['yield_channels']) > 0)
     .sort((a, b) => Number(b['yield_channels']) - Number(a['yield_channels']));
 
   const budget = Math.min(dailySearchBudget, searchRemaining);
@@ -86,18 +87,12 @@ export function planTick(
     selected.push(String(k['term_key']));
   }
 
-  // Channels to expand: shortlisted/studied chưa expand trong 7 ngày
-  const channelsToExpand = store.listTopicChannels(topicId, {
-    status: 'shortlisted',
-    limit: 20,
+  // Channels to expand: kênh active (v13 gộp shortlisted+user/studied → active)
+  // chưa expand trong 7 ngày.
+  const allExpandChannels = store.listTopicChannels(topicId, {
+    status: 'active',
+    limit: 30,
   }).map((r) => String(r['channel_id']));
-
-  const studiedChannels = store.listTopicChannels(topicId, {
-    status: 'studied',
-    limit: 10,
-  }).map((r) => String(r['channel_id']));
-
-  const allExpandChannels = [...new Set([...channelsToExpand, ...studiedChannels])].slice(0, 30);
 
   // Ước lượng quota: expand ~1 unit/kênh, enrich ~2 unit/kênh search result
   const estimatedGeneralUnits = allExpandChannels.length + selected.length * 4;
