@@ -31,7 +31,6 @@ binaries/
 .grok/config.toml
 
 # Secrets & Service Accounts
-*service_account*.json
 !service_account.json.example
 *.pem
 *.key
