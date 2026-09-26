@@ -74,8 +74,20 @@ function err(message: string, status = 400): Response {
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Mặc định ngày = quota_day Pacific (khoá ngày của pipeline), KHÔNG UTC
-// ISO date — hai khoá lệch nhau 17:00–23:59 Pacific (review M1).
+// ISO date — hai khoá lệch nhau 17:00–23:59 Pacific (review M1). Dùng cho
+// so khớp CHÍNH XÁC 1 ngày trên cột đã bucket theo quota_day
+// (video_daily_views.day, /overview?date, /hot?date) — ĐỪNG dùng làm cận
+// trên của một range.
 const todayDay = (): string => quotaDay();
+// Cận trên của MỌI range (from/to) trong file này — kể cả range áp lên cột
+// mốc thời gian thật (decisions.at, topic_videos.published_at, dùng
+// substr(...,1,10) để so). Pacific luôn trễ hơn hoặc bằng UTC cùng lúc, nên
+// ngày UTC hôm nay luôn >= mọi quota_day có thể tồn tại — dùng nó làm cận
+// trên vừa đúng cho cột mốc thời gian thật, vừa không làm hẹp cận trên của
+// cột quota_day (an toàn theo cả hai chiều). Sự cố thật: 2026-09-26 02:21Z,
+// quotaDay()='2026-09-25' — một decision ghi NGAY LÚC ĐÓ (at=hôm nay UTC)
+// biến mất khỏi /decisions vì to (Pacific, hôm qua) < at (UTC, hôm nay).
+const todayDayUtc = (): string => new Date().toISOString().slice(0, 10);
 
 function shiftDay(day: string, delta: number): string {
   const d = new Date(`${day}T00:00:00.000Z`);
@@ -83,9 +95,9 @@ function shiftDay(day: string, delta: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** from/to mặc định 28 ngày gần nhất theo quota_day. Ném string mô tả lỗi. */
+/** from/to mặc định 28 ngày gần nhất, cận trên = todayDayUtc() (xem comment). Ném string mô tả lỗi. */
 function parseRange(url: URL): DashRange {
-  const to = url.searchParams.get('to') ?? todayDay();
+  const to = url.searchParams.get('to') ?? todayDayUtc();
   const from = url.searchParams.get('from') ?? shiftDay(to, -27);
   if (!DAY_RE.test(from) || !DAY_RE.test(to)) {
     throw 'from/to phải là YYYY-MM-DD';
@@ -379,7 +391,10 @@ export function handleSpyDash(url: URL, spy: SpyService): Response {
     // 11 /outliers?topic_id&from&to&scope&min_multiple&limit&offset
     if (path === 'outliers') {
       const topicId = requireTopic(url, spy);
-      const to = url.searchParams.get('to') ?? todayDay();
+      // published_at là mốc thời gian thật (không phải quota_day) — cận trên
+      // phải là todayDayUtc(), không phải todayDay() (xem comment ở khai
+      // báo todayDayUtc). Cùng lỗi lớp M1, khác cột.
+      const to = url.searchParams.get('to') ?? todayDayUtc();
       const from = url.searchParams.get('from') ?? shiftDay(to, -6);
       if (!DAY_RE.test(from) || !DAY_RE.test(to) || from > to) {
         throw 'from/to không hợp lệ';

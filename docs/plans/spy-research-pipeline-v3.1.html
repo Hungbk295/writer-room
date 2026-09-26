@@ -30,7 +30,7 @@ th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-alig
 <table>
 <tr><th>Nhu cầu của JC</th><th>v3</th><th>v3.1 đáp ứng ở đâu</th><th>Kiểm chứng</th></tr>
 <tr><td>1. List keyword ngách — focus một tệp khán giả trong topic rộng</td><td>Một phần: có keyword, không có tệp khán giả</td><td>Q3 gom keyword thành 5–8 ngách; ⏸A chọn đúng 1 ngách focus</td><td>100% keyword active có <code>niche_id</code> hoặc được đánh dấu chưa gán; DB chặn &gt;1 ngách focus</td></tr>
-<tr><td>2. Đỡ lan man; xong một tệp thì mở rộng sang tệp khác</td><td>Không: weekly search đều mọi keyword</td><td>Weekly chia 9/12 search cho ngách focus, 3/12 thăm dò; ⏸C Niche review hằng tháng chọn ngách kế</td><td>≥ 75% search call weekly thuộc ngách focus; mỗi lần đổi focus có dòng <code>decisions</code> của người</td></tr>
+<tr><td>2. Đỡ lan man; xong một tệp thì mở rộng sang tệp khác</td><td>Không: weekly search đều mọi keyword</td><td>Weekly chia đều search cho các ngách focus (tối đa 2), phần còn lại thăm dò; ⏸C Niche review hằng tháng chọn ngách kế</td><td>≥ 75% search call weekly thuộc ngách focus; mỗi lần đổi focus có dòng <code>decisions</code> của người</td></tr>
 <tr><td>3. Insight viewer, đặc biệt painpoint của nhóm keyword ngách</td><td>Không: đã cắt tầng insight</td><td>Q5 painpoint xem trước cho mọi ngách; P1–P3 đào sâu ngách focus; ⏸B duyệt</td><td>Mọi painpoint confirmed có ≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn</td></tr>
 </table>
 
@@ -38,7 +38,7 @@ th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-alig
 <table>
 <tr><th>Khái niệm</th><th>Định nghĩa</th></tr>
 <tr><td><b>Ngách</b></td><td>Một tệp khán giả trong topic: <b>ai</b> (người xem là ai), <b>hoàn cảnh</b> (đang ở đâu), <b>vấn đề</b> (kẹt ở đâu) + nhóm keyword + mẫu title để gán video. Không phải chủ đề: "Investing" là chủ đề; "người 30–40 tuổi sợ mình tụt hậu tài chính" là ngách.</td></tr>
-<tr><td><b>Ngách focus</b></td><td>Đúng 1 ngách mỗi topic tại một thời điểm, do người chọn. Weekly dồn search vào đây; painpoint được đào sâu ở đây.</td></tr>
+<tr><td><b>Ngách focus</b></td><td><b>Tối đa 2 ngách</b> mỗi topic tại một thời điểm (sửa 2026-09-25, ban đầu chốt 1), do người chọn. Weekly chia đều search cho các ngách focus; painpoint được đào sâu ở từng ngách.</td></tr>
 <tr><td><b>Painpoint</b></td><td>Câu hỏi ngầm / vấn đề của viewer rút từ comment: hoàn cảnh, rào cản, mong muốn, kèm <b>lời nguyên văn</b> và số bằng chứng. Gom theo hoàn cảnh + rào cản, không theo chủ đề (v2 đo: 2,64x so với 1,78x).</td></tr>
 <tr><td><b>Chưa gán</b></td><td>Keyword/kênh không khớp ngách nào. Khi ~5 keyword chưa gán tụ lại thành cụm → tín hiệu ngách mới ở Niche review.</td></tr>
 </table>
@@ -92,7 +92,7 @@ INIT ──► SETUP LƯỚT ──► <span class="stop">⏸A</span> ──► 
 <h2>7 · Weekly <span class="tag mod">sửa</span></h2>
 <table>
 <tr><th>#</th><th>Ai</th><th>Bước</th><th>Ghi vào</th><th>Trạng thái</th></tr>
-<tr><td>W1</td><td>Máy</td><td>12 search/tuần: <b>9 cho keyword ngách focus</b>, <b>3 thăm dò</b> (keyword ngách đang chờ + chưa gán); xoay theo <code>last_checked_at</code></td><td><code>topic_keywords</code> sức khoẻ</td><td><span class="tag mod">sửa</span></td></tr>
+<tr><td>W1</td><td>Máy</td><td>12 search/tuần: <b>chia đều cho các ngách focus</b> (1 ngách → 9/3; 2 ngách → ~5/5, còn 2 thăm dò), phần thăm dò lấy keyword ngách chờ + chưa gán; xoay theo <code>last_checked_at</code></td><td><code>topic_keywords</code> sức khoẻ</td><td><span class="tag mod">sửa</span></td></tr>
 <tr><td>W2</td><td>Máy</td><td>Outlier trong follow, 7 ngày, ≥ 3× baseline</td><td>đọc <code>topic_videos</code></td><td><span class="tag has">có sẵn</span></td></tr>
 <tr><td>W3</td><td>Máy</td><td>Kênh outlier ngoài follow → inbox, <b>gắn ngách</b> theo keyword đã tìm ra nó</td><td><code>topic_channels</code> new, <code>niche_id</code> (nguồn=loop)</td><td><span class="tag mod">sửa</span></td></tr>
 <tr><td>W4</td><td>Máy</td><td>Cụm từ chung của video outlier → keyword pending, gợi ý ngách</td><td><code>topic_keywords</code></td><td><span class="tag mod">sửa</span></td></tr>
@@ -132,7 +132,9 @@ CREATE TABLE niches (
   created_by TEXT NOT NULL CHECK(created_by IN ('agent','human')),
   created_at TEXT NOT NULL, decided_at TEXT
 );
-CREATE UNIQUE INDEX uq_niche_focus ON niches(topic_id) WHERE status='focus';  -- đúng 1 ngách focus
+-- Đúng 1–2 ngách focus: DB không ép bằng UNIQUE INDEX (không diễn tả được "tối đa N" trong SQLite);
+-- chặn ở tầng ứng dụng khi ghi to_status='focus' — đếm COUNT(*) WHERE status='focus' AND topic_id=?,
+-- từ chối nếu >= topics.settings_json.maxFocusNiches (mặc định 1, đổi 2 khi cần).
 
 CREATE TABLE painpoints (
   painpoint_id TEXT PRIMARY KEY,
@@ -156,7 +158,7 @@ CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
 <tr><td><code>topic_videos</code></td><td>+ <code>niche_id</code> (máy gán theo <code>title_pattern</code>); <code>baseline_eligible</code> <b>(đã làm, commit riêng)</b>: = 1 khi video xuất hiện trong lượt quét uploads của chính kênh (<code>daily_scan</code>, <code>setup</code>). Baseline chỉ tính trên video này — video từ search (thiên về view cao) không còn đẩy baseline lên. v3.1: 5 video top view của Setup lướt ghi với source <code>setup_top</code>, không nằm trong <code>BASELINE_SOURCES</code> nên tự động bị loại.</td></tr>
 <tr><td><code>topics.setup_status</code></td><td>thêm <code>awaiting_niche_review</code>, <code>awaiting_painpoints</code> (giữ giá trị cũ cho chế độ dự phòng)</td></tr>
 <tr><td><code>decisions.entity_type</code></td><td>thêm <code>niche</code>, <code>painpoint</code></td></tr>
-<tr><td><code>topics.settings_json</code></td><td>thêm: quickRecentPerChannel 15, quickTopPerChannel 5 (top view trong 12 tháng), nicheCountMin/Max 5/8, previewVideosPerNiche 5, deepVideos 15, commentsPerVideo 100, painpointMinComments 10 / MinVideos 3 / MinChannels 2 / MinQuotes 3, weeklyFocusShare 0,75, unassignedClusterMin 5, nicheReviewAt "CN đầu tháng 16:00"</td></tr>
+<tr><td><code>topics.settings_json</code></td><td>thêm: quickRecentPerChannel 15, quickTopPerChannel 5 (top view trong 12 tháng), nicheCountMin/Max 5/8, previewVideosPerNiche 5, deepVideos 15, commentsPerVideo 100, painpointMinComments 10 / MinVideos 3 / MinChannels 2 / MinQuotes 3, maxFocusNiches 1 (đổi 2 khi JC chọn nhiều ngách), weeklyFocusShare 0,75 (chia đều cho các ngách focus khi >1), unassignedClusterMin 5, nicheReviewAt "CN đầu tháng 16:00"</td></tr>
 </table>
 
 <h2>10 · API</h2>
@@ -175,7 +177,7 @@ CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
 <li>Sau Setup lướt: 5–8 ngách proposed, mỗi ngách có đủ ai/hoàn cảnh/vấn đề, điểm cơ hội kèm lý do, ≥ 1 painpoint xem trước có câu nguyên văn.</li>
 <li>100% keyword active có <code>niche_id</code> do người xác nhận hoặc được đánh dấu chưa gán.</li>
 <li>DB từ chối ngách focus thứ hai trong cùng topic.</li>
-<li>Weekly: ≥ 75% search call thuộc keyword ngách focus (đo từ <code>loop_ticks.keywords_searched_json</code>).</li>
+<li>Weekly: ≥ 75% search call thuộc keyword của (các) ngách focus, chia đều khi có 2 ngách (đo từ <code>loop_ticks.keywords_searched_json</code>).</li>
 <li>Daily D6: 0 search call; keyword mới đều có origin <code>daily_title</code> và bằng chứng ≥ 2 kênh.</li>
 <li>Mọi painpoint <code>confirmed</code>: ≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn, trỏ về comment_id thật, có dòng <code>decisions</code> actor=human.</li>
 <li>Agent/loop không bao giờ ghi niche <code>focus</code> hay painpoint <code>confirmed</code>; <code>hitl_violations</code> (mở rộng cho niche/painpoint) = 0.</li>
@@ -197,7 +199,7 @@ CREATE INDEX idx_painpoints_niche ON painpoints(topic_id, niche_id, status);
 <h2>13 · Quyết định</h2>
 <table>
 <tr><th>Quyết định</th><th>Trạng thái</th></tr>
-<tr><td>Chỉ 1 ngách focus mỗi lúc</td><td>JC đã chốt 2026-09-25</td></tr>
+<tr><td>Tối đa 2 ngách focus song song (sửa từ "chỉ 1")</td><td>JC đổi quyết định 2026-09-25 — chọn N2 + N3 cho pilot pov-finance/finance-us; search chia đều thay vì 9/3</td></tr>
 <tr><td>Painpoint confirmed theo bằng chứng (≥ 10 comment, 3 video, 2 kênh, 3 câu nguyên văn), chưa cần lift</td><td>JC đã chốt 2026-09-25</td></tr>
 <tr><td>Pha INIT do JC chọn kênh; Setup lướt từ list đó</td><td>JC đề xuất 2026-09-25</td></tr>
 <tr><td>Mở rộng keyword ở daily + weekly, mở rộng kênh chỉ ở weekly</td><td>JC đồng ý 2026-09-25</td></tr>

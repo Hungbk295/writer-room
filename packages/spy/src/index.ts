@@ -115,6 +115,32 @@ export interface GlobalVideoSearchInput {
   refresh?: 'never' | 'if_stale' | 'always';
   /** Cache TTL in hours for `refresh: 'if_stale'`. Defaults to 24. */
   maxAgeHours?: number;
+  /**
+   * ISO 8601 lower/upper bound on `publishedAt`, forwarded to
+   * YouTube Data API `search.list` (SearchInput.publishedAfter/Before).
+   * Ignored on the yt-dlp fallback — it has no date filter, so a request
+   * with these set still runs but `fallbackReason`/`providerUsed` say so
+   * instead of silently pretending the filter applied.
+   *
+   * Any of these three set bypasses `search_query_cache` entirely (that
+   * cache is keyed by query+language+region+provider only — see the schema
+   * comment above `search_query_cache` — so a filtered call must never be
+   * read from or written to it, or a later plain call would silently
+   * inherit someone else's date/order filter).
+   */
+  publishedAfter?: string;
+  publishedBefore?: string;
+  /** Defaults to 'relevance', matching prior behaviour. */
+  order?: 'relevance' | 'date' | 'viewCount';
+  /**
+   * Forwarded to YouTube Data API `search.list` (SearchInput.videoDuration).
+   * 'short' = YouTube's own bucket, DƯỚI 4 PHÚT — không phải "là Shorts"
+   * (Shorts thật ≤60s, hoặc ≤3 phút cho một số kênh mới hơn). Đây là bộ lọc
+   * rẻ nhất có ở tầng API để thu hẹp trước khi lọc chính xác bằng
+   * `durationSec` trên kết quả trả về — không dùng để KẾT LUẬN một video là
+   * Short, chỉ để giảm số kết quả cần kéo về. Ignored trên yt-dlp fallback.
+   */
+  videoDuration?: 'any' | 'short' | 'medium' | 'long';
 }
 
 export interface GlobalVideoSearchResult {
@@ -1088,6 +1114,29 @@ export class SpyService {
     }
     const maxAgeMs = rawMaxAgeHours * 3_600_000;
 
+    const validateIsoDate = (value: unknown, name: string): string | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+        throw new AppError('invalid_input', `${name} phải là chuỗi ngày ISO 8601 hợp lệ`);
+      }
+      return value;
+    };
+    const publishedAfter = validateIsoDate(input.publishedAfter, 'published_after');
+    const publishedBefore = validateIsoDate(input.publishedBefore, 'published_before');
+    const order = input.order ?? 'relevance';
+    if (order !== 'relevance' && order !== 'date' && order !== 'viewCount') {
+      throw new AppError('invalid_input', "order phải là 'relevance' | 'date' | 'viewCount'");
+    }
+    const videoDuration = input.videoDuration ?? 'any';
+    if (!['any', 'short', 'medium', 'long'].includes(videoDuration)) {
+      throw new AppError('invalid_input', "video_duration phải là 'any' | 'short' | 'medium' | 'long'");
+    }
+    // Bất kỳ filter nào ở đây làm cache theo query+language+region+provider
+    // (search_query_cache) không còn đúng nghĩa nữa — bỏ qua cả đọc lẫn ghi,
+    // không để một lần gọi có filter làm nhiễm bộ nhớ đệm của query trần.
+    const hasCustomFilter = Boolean(publishedAfter) || Boolean(publishedBefore)
+      || order !== 'relevance' || videoDuration !== 'any';
+
     const base = { query, limit, language, region };
     const queryNorm = normalizeSearchQuery(query);
     const dataApiAvailable = this.dataApiAdapter === null || Boolean(this.config.youtubeDataApiKey?.trim());
@@ -1100,7 +1149,8 @@ export class SpyService {
     const cacheAgeSeconds = cacheAgeMs === null ? null : Math.round(cacheAgeMs / 1000);
 
     const servableFromCache = Boolean(
-      cached
+      !hasCustomFilter
+      && cached
       && cached.limitRequested >= limit
       && refresh !== 'always'
       && (refresh === 'never' || (cacheAgeMs !== null && cacheAgeMs <= maxAgeMs)),
@@ -1130,14 +1180,18 @@ export class SpyService {
       };
     }
 
-    const missStatus: GlobalVideoSearchResult['cache']['status'] = !cached
+    // Với filter, `cached` (nếu có) là bộ nhớ đệm của QUERY TRẦN — không nói
+    // được gì về lần gọi có filter này, nên không dùng age/status của nó
+    // (không phải 'stale', không phải 'insufficient_limit': đơn giản là chưa
+    // từng có cache cho tổ hợp filter này, luôn 'miss').
+    const missStatus: GlobalVideoSearchResult['cache']['status'] = hasCustomFilter || !cached
       ? 'miss'
       : cached.limitRequested < limit
         ? 'insufficient_limit'
         : refresh === 'always'
           ? 'forced'
           : 'stale';
-    const cache = { status: missStatus, ageSeconds: cacheAgeSeconds };
+    const cache = { status: missStatus, ageSeconds: hasCustomFilter ? null : cacheAgeSeconds };
 
     let live: GlobalVideoSearchResult;
     if (dataApiAvailable) {
@@ -1148,10 +1202,13 @@ export class SpyService {
         const searched = await this.countingApi.search({
           q: query,
           type: 'video',
-          order: 'relevance',
+          order,
           maxResults: limit,
           relevanceLanguage: language,
           regionCode: region,
+          publishedAfter,
+          publishedBefore,
+          videoDuration,
         });
         const hits = searched.hits.filter(
           (hit): hit is typeof hit & { videoId: string } => hit.kind === 'video' && Boolean(hit.videoId),
@@ -1192,17 +1249,19 @@ export class SpyService {
       live = await this.globalVideoSearchWithYtDlp(base, 'youtube_data_api_not_configured', cache);
     }
 
-    this.store.upsertSearchQueryCache({
-      queryNorm,
-      language,
-      region,
-      providerUsed: live.providerUsed,
-      limitRequested: limit,
-      localeHintsApplied: live.localeHintsApplied,
-      fallbackReason: live.fallbackReason,
-      videoIds: live.videos.map((video) => video.videoId),
-      fetchedAt: nowIso,
-    });
+    if (!hasCustomFilter) {
+      this.store.upsertSearchQueryCache({
+        queryNorm,
+        language,
+        region,
+        providerUsed: live.providerUsed,
+        limitRequested: limit,
+        localeHintsApplied: live.localeHintsApplied,
+        fallbackReason: live.fallbackReason,
+        videoIds: live.videos.map((video) => video.videoId),
+        fetchedAt: nowIso,
+      });
+    }
     for (const video of live.videos) {
       this.store.upsertSearchVideoCache({
         sourceVideoId: video.videoId,

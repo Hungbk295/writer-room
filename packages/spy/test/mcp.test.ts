@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { AppError } from '../src/errors.ts';
 import { SpyService, spyTools } from '../src/index.ts';
 import type { VideoSnapshot } from '../src/schema.ts';
+import type { YoutubePort, YoutubeVideoInfo, YoutubeTranscript } from '../src/adapters/ytdlp.ts';
+import type { YouTubeDataApiPort, VideoStatistics } from '../src/adapters/data-api.ts';
 
 async function spyWithTranscript() {
   const root = await mkdtemp(join(tmpdir(), 'spy-mcp-read-'));
@@ -47,6 +49,69 @@ describe('spy MCP tools', () => {
     await expect(
       start.handler({ url: 'https://youtube.com/@x' }, { subject: 'a', scopes: new Set(['spy.read']) }),
     ).rejects.toMatchObject({ code: 'forbidden' } satisfies Partial<AppError>);
+  });
+
+  test('spy_channel_start without min_duration_sec keeps Shorts (regression: MCP layer used to inject 60, silently dropping ≤60s videos)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spy-mcp-shorts-'));
+    const videos: YoutubeVideoInfo[] = [
+      {
+        sourceVideoId: 'SHORTAAAAAA', canonicalUrl: 'https://www.youtube.com/watch?v=SHORTAAAAAA',
+        title: 'Video ngắn 45s', channelTitle: 'Kênh Demo', channelId: 'UCdemoChannel00000000000',
+        viewCount: 500, durationSec: 45, publishedAt: '2026-09-01T00:00:00.000Z', thumbnailUrl: null,
+      },
+      {
+        sourceVideoId: 'LONGAAAAAAA', canonicalUrl: 'https://www.youtube.com/watch?v=LONGAAAAAAA',
+        title: 'Video dài 400s', channelTitle: 'Kênh Demo', channelId: 'UCdemoChannel00000000000',
+        viewCount: 1000, durationSec: 400, publishedAt: '2026-09-01T00:00:00.000Z', thumbnailUrl: null,
+      },
+    ];
+    const youtube: YoutubePort = {
+      listChannel: async () => videos,
+      inspectVideo: async (url) => videos.find((v) => url.includes(v.sourceVideoId)) ?? videos[0]!,
+      streamUrl: async () => '',
+      thumbnail: async () => ({ bytes: new Uint8Array(), mimeType: 'image/jpeg' }),
+      fetchTranscript: async (): Promise<YoutubeTranscript> => ({ status: 'missing', language: null, source: 'unknown', segments: [] }),
+    };
+    const dataApi: YouTubeDataApiPort = {
+      fetchVideoStatistics: async (ids) => {
+        const map = new Map<string, VideoStatistics>();
+        for (const id of ids) {
+          const v = videos.find((x) => x.sourceVideoId === id);
+          if (!v) continue;
+          map.set(id, {
+            videoId: id, likeCount: 1, commentCount: 0, viewCount: v.viewCount,
+            publishedAt: v.publishedAt, publishedAtPrecision: 'second', durationSec: v.durationSec,
+            tags: [], title: v.title, channelId: v.channelId, channelTitle: v.channelTitle,
+            thumbnailUrl: null, defaultAudioLanguage: null, defaultLanguage: null,
+          });
+        }
+        return map;
+      },
+      fetchChannelStatistics: async () => new Map(),
+    };
+    const spy = new SpyService({ dataRoot: root, youtube, dataApi });
+    await spy.init();
+    const tools = spyTools(spy);
+    const start = tools.find((t) => t.name === 'spy_channel_start')!;
+
+    // KHÔNG truyền min_duration_sec — đây chính là lỗi cũ: MCP tool tự đặt
+    // mặc định 60 (khác schema.ts/cli.ts/http.ts đều mặc định 0), khiến
+    // video 45s bị loại âm thầm ngay cả khi người gọi không muốn lọc gì.
+    const started = await start.handler(
+      { url: 'https://www.youtube.com/@demo/videos', depth: 'metadata' },
+      { subject: 'a', scopes: new Set(['spy.start']) },
+    ) as { operationId: string };
+
+    let op = await spy.wait(started.operationId, 5_000);
+    while (op.status === 'queued' || op.status === 'running') {
+      op = await spy.wait(started.operationId, 5_000);
+    }
+    expect(op.status).toBe('completed');
+
+    const run = spy.store.getSpyRunByOperation(started.operationId)!;
+    const snapshots = spy.store.listVideoSnapshots(run.id);
+    const ids = snapshots.map((s) => s.sourceVideoId).sort();
+    expect(ids).toEqual(['LONGAAAAAAA', 'SHORTAAAAAA']);
   });
 
   test('output over limit is truncated', async () => {

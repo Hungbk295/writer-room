@@ -361,17 +361,24 @@ describe('Spy Dashboard API — 16 endpoint', () => {
     }
   });
 
-  test('M1: from/to + date mặc định theo quota_day Pacific, không phải UTC', async () => {
+  test('M1 (bug lớp mới, đã sửa): /timeseries dùng cận trên UTC-hôm-nay, không phải quota_day', async () => {
+    // /timeseries gộp 6 metric có khoá ngày khác nhau: views_gained/search_calls
+    // dựa trên cột đã bucket theo quota_day (Pacific luôn <= UTC nên UTC-hôm-nay
+    // vẫn là cận trên an toàn cho chúng); new_channels/approvals/outliers dựa
+    // trên substr(mốc thời gian thật, 1, 10). Nếu cận trên vẫn là quota_day
+    // Pacific, một quyết định/video ghi trong ~7-8h UTC-đã-sang-ngày-mới-nhưng-
+    // Pacific-chưa sẽ biến mất khỏi kết quả — sự cố thật đo được lúc
+    // 2026-09-26 02:21Z: quotaDay()='2026-09-25', một decisions.at ghi ngay
+    // lúc đó bị loại khỏi /decisions. Cận trên đúng cho MỌI metric dùng
+    // chung route là UTC-hôm-nay.
     const { service, handler } = await boot();
     seed(service);
     const res = await get(handler, `/timeseries?topic_id=${TOPIC}&metric=views_gained`);
     const body = (await res.json()) as { meta: { from: string; to: string } };
-    // meta.to phải bằng quotaDay() của pipeline. Khi giờ Pacific đang
-    // 17:00–23:59, UTC-ISO-day đã sang ngày sau — contract này bắt đúng
-    // loại lệch ngày mà review M1 chỉ ra.
-    expect(body.meta.to).toBe(quotaDay());
+    expect(body.meta.to).toBe(new Date().toISOString().slice(0, 10));
     // Bản thân quotaDay lệch UTC tại biên: 05:00Z mùa hè = 22:00 Pacific
-    // ngày hôm trước → quota-day là ngày trước, UTC-day là ngày sau.
+    // ngày hôm trước → quota-day là ngày trước, UTC-day là ngày sau. Đây
+    // chính là độ lệch khiến quota_day không dùng được làm cận trên chung.
     expect(quotaDay(new Date('2026-09-25T05:00:00Z'))).toBe('2026-09-24');
   });
 

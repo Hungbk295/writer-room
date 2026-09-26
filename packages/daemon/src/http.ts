@@ -692,6 +692,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
   const externalTurnDeps = () => ({
     scheduler: harness.pipeline.scheduler, workflow: harness.workflow, dataDir: dataRoot(),
   });
+  // cloudflared adds cf-* headers to every request it forwards, so their
+  // presence means the caller came through the tunnel.  The MCP discovery
+  // GETs return the bearer token itself — fine on loopback, but remote
+  // callers must already hold it.
+  const viaTunnel = (req: Request) => Boolean(req.headers.get('cf-ray') || req.headers.get('cf-connecting-ip'));
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -732,6 +737,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (method === 'GET') {
           const info = spyMcp?.info();
           if (!info) return error('Spy MCP đang tắt', 404);
+          if (viaTunnel(req) && req.headers.get('authorization') !== `Bearer ${info.token}`) return error('Unauthorized', 401);
           return json({
             url: `${url.origin}/api/spy/mcp`,
             token: info.token,
@@ -765,6 +771,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (method === 'GET') {
           const info = writerMcp?.info();
           if (!info) return error('Writer MCP đang tắt', 404);
+          if (viaTunnel(req) && req.headers.get('authorization') !== `Bearer ${info.token}`) return error('Unauthorized', 401);
           return json({
             url: `${url.origin}/api/writer/mcp`,
             token: info.token,
@@ -811,6 +818,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (method === 'GET') {
           const info = generalPackMcp?.info();
           if (!info) return error('General Pack MCP đang tắt', 404);
+          if (viaTunnel(req) && req.headers.get('authorization') !== `Bearer ${info.token}`) return error('Unauthorized', 401);
           return json({
             url: `${url.origin}/api/general-pack/mcp`,
             token: info.token,
@@ -996,6 +1004,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
       if (method === 'GET' && pathname === '/api/team/mcp') {
         const info = harness.teamMcpInfo();
         if (!info) return error('MCP team server chưa sẵn sàng', 503);
+        if (viaTunnel(req) && req.headers.get('authorization') !== `Bearer ${info.token}`) return error('Unauthorized', 401);
         return json(info);
       }
 

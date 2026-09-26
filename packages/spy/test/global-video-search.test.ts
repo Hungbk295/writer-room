@@ -134,6 +134,9 @@ describe('globalVideoSearch', () => {
       maxResults: 12,
       relevanceLanguage: 'vi',
       regionCode: 'VN',
+      publishedAfter: undefined,
+      publishedBefore: undefined,
+      videoDuration: 'any',
     }]);
     expect(dataApi.statCalls).toEqual([['abc123def45']]);
     expect(ytDlpCalls).toEqual([]);
@@ -356,6 +359,115 @@ describe('globalVideoSearch', () => {
       const merged = service.store.getSearchVideoCacheRows(['abc123def45']).get('abc123def45')!;
       expect(merged.publishedAt).toBe('2026-07-31T00:00:00Z');
       expect(merged.publishedAtKnown).toBe(true);
+    });
+  });
+
+  describe('published_after / published_before / order', () => {
+    test('forwards publishedAfter/publishedBefore/order to the Data API search call', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({
+        query: 'how to build wealth in 5 years',
+        limit: 10,
+        publishedAfter: '2026-08-01T00:00:00Z',
+        publishedBefore: '2026-09-01T00:00:00Z',
+        order: 'viewCount',
+      });
+
+      expect(dataApi.searchCalls).toEqual([{
+        q: 'how to build wealth in 5 years',
+        type: 'video',
+        order: 'viewCount',
+        maxResults: 10,
+        relevanceLanguage: 'vi',
+        regionCode: 'VN',
+        publishedAfter: '2026-08-01T00:00:00Z',
+        publishedBefore: '2026-09-01T00:00:00Z',
+        videoDuration: 'any',
+      }]);
+    });
+
+    test('forwards video_duration=short to the Data API search call (bypasses cache like other filters)', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({
+        query: 'finance shorts',
+        limit: 10,
+        videoDuration: 'short',
+      });
+
+      expect(dataApi.searchCalls).toEqual([{
+        q: 'finance shorts',
+        type: 'video',
+        order: 'relevance',
+        maxResults: 10,
+        relevanceLanguage: 'vi',
+        regionCode: 'VN',
+        publishedAfter: undefined,
+        publishedBefore: undefined,
+        videoDuration: 'short',
+      }]);
+    });
+
+    test('rejects an invalid video_duration', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await expect(
+        service.globalVideoSearch({ query: 'x', videoDuration: 'huge' as never }),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+    });
+
+    test('rejects a malformed published_after before calling either provider', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      await expect(service.globalVideoSearch({
+        query: 'x', publishedAfter: 'not-a-date',
+      })).rejects.toThrow(AppError);
+      expect(dataApi.searchCalls).toEqual([]);
+      expect(ytDlpCalls).toEqual([]);
+    });
+
+    // §1 (plan tài liệu): search_query_cache khoá theo query+language+region+
+    // provider — KHÔNG mang filter ngày/order. Một lần gọi có filter phải
+    // không đọc và không ghi vào đó, nếu không lần gọi trần kế tiếp (không
+    // filter) sẽ vô tình thừa hưởng danh sách video đã bị lọc theo ngày.
+    test('a filtered call bypasses cache both ways — it never reads a plain cache hit, and a later plain call never inherits its filtered result', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      const plain = await service.globalVideoSearch({ query: 'tài chính cá nhân', limit: 5 });
+      expect(plain.cache).toEqual({ status: 'miss', ageSeconds: null });
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Cùng query, nhưng có publishedAfter — phải KHÔNG ăn cache của lần trần
+      // ở trên (nếu ăn, cache.status sẽ là 'hit' và searchCalls không tăng).
+      const filtered = await service.globalVideoSearch({
+        query: 'tài chính cá nhân', limit: 5, publishedAfter: '2026-01-01T00:00:00Z',
+      });
+      expect(filtered.cache).toEqual({ status: 'miss', ageSeconds: null });
+      expect(dataApi.searchCalls).toHaveLength(2);
+      expect(dataApi.searchCalls[1]!.publishedAfter).toBe('2026-01-01T00:00:00Z');
+
+      // Gọi lại đúng query trần (không filter) lần nữa — vẫn phải ăn cache của
+      // LẦN ĐẦU (trần), không bị lần filtered ghi đè.
+      const plainAgain = await service.globalVideoSearch({ query: 'tài chính cá nhân', limit: 5 });
+      expect(plainAgain.cache.status).toBe('hit');
+      expect(dataApi.searchCalls).toHaveLength(2); // không gọi API lần 3
+    });
+
+    test('order: date bypasses cache the same way as a date filter', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({ query: 'x', order: 'date' });
+      const second = await service.globalVideoSearch({ query: 'x', order: 'date' });
+      expect(second.cache).toEqual({ status: 'miss', ageSeconds: null }); // luôn miss, không bao giờ 'hit'
+      expect(dataApi.searchCalls).toHaveLength(2);
     });
   });
 });

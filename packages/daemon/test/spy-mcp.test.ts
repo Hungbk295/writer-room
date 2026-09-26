@@ -141,7 +141,7 @@ describe('Spy MCP server', () => {
     expect(channelStart).toMatchObject({
       required: ['url'],
       properties: {
-        min_duration_sec: { type: 'integer', default: 60 },
+        min_duration_sec: { type: 'integer', default: 0 },
         max_duration_sec: { type: 'integer' },
         published_after: { type: 'string' },
         published_before: { type: 'string' },

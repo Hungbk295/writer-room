@@ -116,7 +116,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
   return [
     wrap({
       name: 'spy_channel_start',
-      description: 'Chạy Channel Spy cho URL kênh/playlist. depth: metadata|transcript.',
+      description: 'Chạy Channel Spy cho URL kênh/playlist. Mặc định KHÔNG lọc theo thời lượng (min_duration_sec=0) nên kết quả có cả Shorts — set min_duration_sec để loại. depth: metadata|transcript.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 8_192,
       handler: (args, context) => spy.channelSpy({
@@ -125,7 +125,11 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         selectionMode: args['selection_mode'] === 'latest' ? 'latest' : 'popular',
         scanLimit: integer(args['scan_limit'], 60, 1, 500),
         rankBy: args['rank_by'] === 'views' ? 'views' : 'velocity',
-        minDurationSec: integer(args['min_duration_sec'], 60, 0, 7200),
+        // Mặc định 0 = không lọc, khớp với schema.ts/cli.ts/http.ts — trước đây
+        // tool này tự ý đặt 60 (loại Shorts ≤60s) khác hẳn mọi caller khác,
+        // nên gọi spy_channel_start không truyền tham số sẽ ÂM THẦM mất hết
+        // Shorts trong kết quả, kể cả khi người gọi không hề muốn lọc.
+        minDurationSec: integer(args['min_duration_sec'], 0, 0, 7200),
         maxDurationSec: typeof args['max_duration_sec'] === 'number'
           ? integer(args['max_duration_sec'], 0, 0, 72_000)
           : undefined,
@@ -482,7 +486,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_global_video_search',
-      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp, cache theo query+video (mặc định làm tươi sau 24h) và luôn trả providerUsed/fallbackReason/cache.',
+      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp, cache theo query+video (mặc định làm tươi sau 24h) và luôn trả providerUsed/fallbackReason/cache. published_after/published_before/order/video_duration (chỉ áp dụng khi Data API khả dụng — yt-dlp fallback bỏ qua) bỏ qua cache, luôn gọi API mới. video_duration=short lọc theo bộ đếm <4 phút của YouTube (KHÔNG đúng nghĩa "là Shorts") — muốn chắc chắn ≤60s thì tự lọc thêm bằng durationSec trong kết quả trả về.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.globalVideoSearch({
@@ -494,6 +498,12 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
           ? undefined
           : (text(args['refresh'], 'refresh') as 'never' | 'if_stale' | 'always'),
         maxAgeHours: args['max_age_hours'] === undefined ? undefined : (args['max_age_hours'] as number),
+        publishedAfter: args['published_after'] === undefined ? undefined : text(args['published_after'], 'published_after'),
+        publishedBefore: args['published_before'] === undefined ? undefined : text(args['published_before'], 'published_before'),
+        order: args['order'] === undefined ? undefined : (text(args['order'], 'order') as 'relevance' | 'date' | 'viewCount'),
+        videoDuration: args['video_duration'] === undefined
+          ? undefined
+          : (text(args['video_duration'], 'video_duration') as 'any' | 'short' | 'medium' | 'long'),
       }),
     }),
     wrap({
