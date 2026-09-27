@@ -37,3 +37,4 @@ binaries/
 .env*
 !.env.example
 
+/artifacts/
