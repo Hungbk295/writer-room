@@ -177,27 +177,35 @@ export class ResearchTaskStore {
   bind(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number;workerSubject?:string;profile:string;sessionRef?:string;leaseUntil?:string}) {
     if(actor.role!=='operator') fail('FORBIDDEN','operator required');
     return this.command(id,arg.commandId,'bind',arg,()=>{ const row=this.task(id); this.authorize(actor,row);
-      const orphaned=['running','pause_requested'].includes(row.phase)&&(!row.lease_until||row.lease_until<iso());
-      if(!['created','ready','paused','blocked','unknown','cancel_requested'].includes(row.phase)&&!orphaned) fail('PHASE','cannot bind now');
-      const changes:Record<string,unknown>={worker_profile:asString(arg.profile,'profile'),phase:'ready'};
+      const orphaned=['running','pause_requested','cancel_requested'].includes(row.phase)&&(!row.lease_until||row.lease_until<iso());
+      if(!['created','ready','paused','blocked','unknown'].includes(row.phase)&&!orphaned) fail('PHASE','cannot bind now');
+      // Cancel intent must survive a rebind: a cancel_requested orphan is
+      // reassigned to the queue but stays cancel_requested — the next worker
+      // claims it, then must cancel_ack. It never silently reverts to 'ready'.
+      const keepCancel = row.phase === 'cancel_requested';
+      const changes:Record<string,unknown>={worker_profile:asString(arg.profile,'profile'),phase:keepCancel?'cancel_requested':'ready'};
       // Omitting workerSubject opens the queue: any worker on the profile may claim.
       changes.worker_subject=arg.workerSubject!==undefined?asString(arg.workerSubject,'workerSubject'):null;
       changes.worker_session=arg.sessionRef?asString(arg.sessionRef,'sessionRef'):'queued';
       changes.lease_until=arg.leaseUntil?asString(arg.leaseUntil,'leaseUntil'):null;
       this.bump(id,arg.expectedVersion,changes);
-      this.event(id,orphaned?'worker_orphaned':'worker_bound',{subject:arg.workerSubject??null,profile:arg.profile}); return this.get(actor,id); });
+      this.event(id,orphaned?'worker_orphaned':'worker_bound',{subject:arg.workerSubject??null,profile:arg.profile,cancelPreserved:keepCancel}); return this.get(actor,id); });
   }
   /** A worker claims the oldest `ready` task queued on its profile. The claim binds
    *  `worker_subject` (if the operator left the queue open) and starts the lease. */
   claim(actor:Actor,arg:{commandId:string;profile:string;sessionRef:string;leaseUntil:string}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');
     const profile=asString(arg.profile,'profile');
-    const row=this.db.query("SELECT * FROM research_tasks WHERE worker_profile=? AND phase='ready' AND (worker_subject IS NULL OR worker_subject=?) ORDER BY created_at LIMIT 1").get(profile,actor.subject) as any;
+    // 'cancel_requested' rows are also claimable: the worker that picks one up
+    // inherits the pending cancel and must ack it (phase stays cancel_requested
+    // until research_task_ack cancel_ack). That is how a rebound orphan keeps
+    // the operator's cancel intent.
+    const row=this.db.query("SELECT * FROM research_tasks WHERE worker_profile=? AND phase IN ('ready','cancel_requested') AND (worker_subject IS NULL OR worker_subject=?) ORDER BY created_at LIMIT 1").get(profile,actor.subject) as any;
     if(!row) return null;
     return this.command(row.id,arg.commandId,'claim',arg,()=>{
-      const current=this.task(row.id);if(current.phase!=='ready'||current.worker_profile!==profile||(current.worker_subject&&current.worker_subject!==actor.subject))fail('CONFLICT','assignment changed');
+      const current=this.task(row.id);if(!['ready','cancel_requested'].includes(current.phase)||current.worker_profile!==profile||(current.worker_subject&&current.worker_subject!==actor.subject))fail('CONFLICT','assignment changed');
       if(Date.parse(arg.leaseUntil)<=Date.now())fail('INVALID','lease must be future');
-      this.bump(row.id,current.version,{worker_subject:actor.subject,worker_session:asString(arg.sessionRef,'sessionRef'),lease_until:arg.leaseUntil,phase:'running'});
+      this.bump(row.id,current.version,{worker_subject:actor.subject,worker_session:asString(arg.sessionRef,'sessionRef'),lease_until:arg.leaseUntil,phase:current.phase==='cancel_requested'?'cancel_requested':'running'});
       this.event(row.id,'claimed',{profile,sessionRef:arg.sessionRef,worker:actor.subject});return this.get(actor,row.id);
     });
   }
@@ -260,7 +268,13 @@ export class ResearchTaskStore {
   }
   registerArtifact(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number;roundIndex:number;type:'manifest'|'report'|'checkpoint'|'other';path:string}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');
-    return this.command(id,arg.commandId,'artifact',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);if(arg.roundIndex<1||arg.roundIndex>row.round_index)fail('INVALID','roundIndex invalid');const path=realpathSync(resolve(arg.path));const rel=relative(join(this.artifactRoot,id),path);if(rel.startsWith('..')||isAbsolute(rel)||!rel)fail('FORBIDDEN','artifact outside task dir');const stat=statSync(path);if(!stat.isFile())fail('INVALID','artifact must be file');const bytes=readFileSync(path);if(bytes.length>10_000_000)fail('INVALID','artifact too large');const hash=sha(bytes);const artifactId=randomUUID();this.db.query('INSERT INTO research_artifacts VALUES(?,?,?,?,?,?,?,?)').run(artifactId,id,arg.roundIndex,arg.type,path,hash,bytes.length,'registered');this.bump(id,arg.expectedVersion,{});this.event(id,'artifact_registered',{artifactId,type:arg.type,sha256:hash});return {artifactId,sha256:hash,size:bytes.length,version:row.version+1};});
+    return this.command(id,arg.commandId,'artifact',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);if(arg.roundIndex<1||arg.roundIndex>row.round_index)fail('INVALID','roundIndex invalid');const path=realpathSync(resolve(arg.path));const rel=relative(join(this.artifactRoot,id),path);if(rel.startsWith('..')||isAbsolute(rel)||!rel)fail('FORBIDDEN','artifact outside task dir');const stat=statSync(path);if(!stat.isFile())fail('INVALID','artifact must be file');const bytes=readFileSync(path);if(bytes.length>10_000_000)fail('INVALID','artifact too large');const hash=sha(bytes);
+      // Supersede: re-registering the same path replaces the stored hash in
+      // place (one artifact row per path) — the drifted/'stale' row heals and
+      // the swap is audit-logged as artifact_superseded with old→new sha256.
+      const prev=this.db.query('SELECT * FROM research_artifacts WHERE task_id=? AND path=?').get(id,path) as any;
+      if(prev){this.db.query("UPDATE research_artifacts SET round_index=?,type=?,sha256=?,size=?,validation_state='registered' WHERE id=?").run(arg.roundIndex,arg.type,hash,bytes.length,prev.id);this.bump(id,arg.expectedVersion,{});this.event(id,'artifact_superseded',{artifactId:prev.id,path,type:arg.type,oldSha256:prev.sha256,newSha256:hash});return {artifactId:prev.id,sha256:hash,size:bytes.length,version:row.version+1};}
+      const artifactId=randomUUID();this.db.query('INSERT INTO research_artifacts VALUES(?,?,?,?,?,?,?,?)').run(artifactId,id,arg.roundIndex,arg.type,path,hash,bytes.length,'registered');this.bump(id,arg.expectedVersion,{});this.event(id,'artifact_registered',{artifactId,type:arg.type,sha256:hash});return {artifactId,sha256:hash,size:bytes.length,version:row.version+1};});
   }
   completeTask(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');

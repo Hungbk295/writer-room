@@ -377,3 +377,53 @@ test('daemon projects artifactDir on get/claim; registerArtifact enforces the pe
     expect(() => store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: reg.version, roundIndex: 1, type: 'other', path: join(other.artifactDir, 'their.md') })).toThrow(/outside task dir/);
   } finally { store.close(); }
 });
+
+test('artifact supersede: re-register same path heals a drifted/stale row with audit', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-supersede-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => ({ status: 'completed', videoIds: [] }) });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const future = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, budget: { maxRounds: 1, maxUniqueVideos: 5, maxSearchCost: 5 } });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const done = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    const dir = t.artifactDir;
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(dir, 'report.md'), 'report v1');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: done.version, roundIndex: 1, type: 'manifest', path: join(dir, 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(dir, 'report.md') });
+    // Agent rewrites the report → drift → completion blocked.
+    writeFileSync(join(dir, 'report.md'), 'report v2 (regenerated)');
+    expect(() => store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version })).toThrow(/drifted/);
+    // Supersede: same path re-registers, heals the stale row, audited.
+    const a3 = store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: a2.version, roundIndex: 1, type: 'report', path: join(dir, 'report.md') });
+    expect(a3.artifactId).toBe(a2.artifactId); // same row, new hash
+    const ev = store.events(owner, 't1').map((e: any) => e.type);
+    expect(ev).toContain('artifact_superseded');
+    expect(store.completeTask(worker, 't1', { commandId: 'f2', expectedVersion: a3.version }).phase).toBe('completed');
+  } finally { store.close(); }
+});
+
+test('rebind of a cancel_requested orphan preserves the cancel intent', () => {
+  const { store, owner, worker, worker2, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, workerSubject: 'w-1', profile: 'research' });
+    store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's1', leaseUntil: new Date(Date.now() + 60_000).toISOString() });
+    const running = store.get(owner, 't1');
+    const cancelReq = store.transition(owner, 't1', { commandId: 'cx', expectedVersion: running.version, action: 'cancel' });
+    expect(cancelReq.phase).toBe('cancel_requested');
+    // Worker dies; lease expires; operator rebinds the orphan.
+    store.db.query("UPDATE research_tasks SET lease_until=? WHERE id='t1'").run(new Date(Date.now() - 1000).toISOString());
+    const rebound = store.bind(owner, 't1', { commandId: 'rebind', expectedVersion: cancelReq.version, profile: 'research' });
+    expect(rebound.phase).toBe('cancel_requested'); // NOT reset to ready
+    // The next worker claims it — phase stays cancel_requested until ack.
+    const reclaimed = store.claim(worker2, { commandId: 'c2', profile: 'research', sessionRef: 's2', leaseUntil: new Date(Date.now() + 60_000).toISOString() })!;
+    expect(reclaimed.phase).toBe('cancel_requested');
+    expect(reclaimed.worker_subject).toBe('w-2');
+    const cancelled = store.transition(worker2, 't1', { commandId: 'ack', expectedVersion: reclaimed.version, action: 'cancel_ack' });
+    expect(cancelled.phase).toBe('cancelled');
+  } finally { store.close(); }
+});
