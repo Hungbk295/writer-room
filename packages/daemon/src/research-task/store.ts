@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync, statSync, readFileSync } from 'node:fs';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
-export type Actor = { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile?: string };
+export type Actor = { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile?: string } | { role: 'viewer'; subject: string };
 export type Phase = 'created' | 'ready' | 'running' | 'pause_requested' | 'paused' | 'cancel_requested' | 'cancelled' | 'blocked' | 'failed' | 'completed' | 'unknown';
 export type Budget = { maxRounds: number; maxUniqueVideos: number; maxSearchCost: number };
 export class ResearchTaskError extends Error { constructor(public code: string, message: string) { super(message); } }
@@ -40,6 +40,7 @@ export class ResearchTaskStore {
   close() { this.db.close(); }
   private task(id: string): any { const row = this.db.query('SELECT * FROM research_tasks WHERE id=?').get(id) as any; return row ?? fail('NOT_FOUND', 'task not found'); }
   private authorize(actor: Actor, row: any, write = false) {
+    if (actor.role === 'viewer') { if (write) fail('FORBIDDEN', 'viewer is read-only'); return; }
     if (actor.role === 'operator') { if (actor.subject !== row.owner_id) fail('FORBIDDEN', 'operator is not owner'); }
     else if (row.worker_subject !== actor.subject || (!row.lease_until || row.lease_until < iso())) fail('FORBIDDEN', 'worker not bound or lease expired');
     if (write && actor.role === 'worker' && !['running','pause_requested','cancel_requested'].includes(row.phase)) fail('PHASE', 'task is not active');
@@ -77,7 +78,9 @@ export class ResearchTaskStore {
   get(actor:Actor,id:string) { const row=this.task(id); this.authorize(actor,row); return this.view(row); }
   list(actor:Actor,arg:{phase?:Phase;limit?:number}={}) {
     const limit=Math.min(arg.limit??100,500);
-    const rows=actor.role==='operator'
+    const rows=actor.role==='viewer'
+      ? (arg.phase?this.db.query('SELECT * FROM research_tasks WHERE phase=? ORDER BY created_at DESC LIMIT ?').all(arg.phase,limit):this.db.query('SELECT * FROM research_tasks ORDER BY created_at DESC LIMIT ?').all(limit))
+      : actor.role==='operator'
       ? (arg.phase?this.db.query('SELECT * FROM research_tasks WHERE owner_id=? AND phase=? ORDER BY created_at DESC LIMIT ?').all(actor.subject,arg.phase,limit):this.db.query('SELECT * FROM research_tasks WHERE owner_id=? ORDER BY created_at DESC LIMIT ?').all(actor.subject,limit))
       : (arg.phase?this.db.query('SELECT * FROM research_tasks WHERE worker_subject=? AND phase=? ORDER BY created_at DESC LIMIT ?').all(actor.subject,arg.phase,limit):this.db.query('SELECT * FROM research_tasks WHERE worker_subject=? ORDER BY created_at DESC LIMIT ?').all(actor.subject,limit));
     return (rows as any[]).map(r=>this.view(r));

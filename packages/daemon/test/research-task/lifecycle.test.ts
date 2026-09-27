@@ -138,21 +138,28 @@ test('hard gate: spyRunIds verified against source-of-truth; artifact drift bloc
   } finally { store.close(); }
 });
 
-test('token registry: ensure heals a stale profile but keeps the issued token', () => {
+test('token registry: legacy real-dir fixture heals profile/role drift, keeps issued tokens', () => {
   const root = mkdtempSync(join(tmpdir(), 'research-tokens-'));
+  // Mirrors the actual writer-room-data/config/hermes-actors.json dev-1 provisioned.
   writeFileSync(join(root, 'actors.json'), JSON.stringify({ actors: [
     { role: 'operator', subject: 'hermes:wr-operator', token: 'op-token-aaaaaaaaaaaaaaaa' },
     { role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher', token: 'wk-token-bbbbbbbbbbbbbbbb' },
+    { role: 'worker', subject: 'hermes:wr-writer', profile: 'writer', token: 'ww-token-cccccccccccccccc' },
   ] }));
   const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  const op = registry.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
+  expect(op.token).toBe('op-token-aaaaaaaaaaaaaaaa');
   const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
   expect((healed as { profile?: string }).profile).toBe('research');
   expect(healed.token).toBe('wk-token-bbbbbbbbbbbbbbbb');
-  const op = registry.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
-  expect(op.token).toBe('op-token-aaaaaaaaaaaaaaaa');
-  // Reloading sees the healed state; resolve maps the kept token to the new profile.
+  // wr-writer was provisioned as a worker — the Research surface downgrades it to
+  // read-only viewer, keeping the token.
+  const viewer = registry.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
+  expect(viewer.role).toBe('viewer');
+  expect(viewer.token).toBe('ww-token-cccccccccccccccc');
   const reopened = new ResearchTokenRegistry(join(root, 'actors.json'));
   expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect(reopened.resolve('ww-token-cccccccccccccccc')).toEqual({ role: 'viewer', subject: 'hermes:wr-writer' });
   expect(reopened.resolve('nope')).toBeNull();
 });
 
@@ -171,6 +178,7 @@ test('MCP: token scopes the actor; tools/list and tools/call are both filtered',
   const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
   const op = registry.ensure({ role: 'operator', subject: 'owner-1' });
   const wk = registry.ensure({ role: 'worker', subject: 'w-1', profile: 'research' });
+  const vw = registry.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
   const server = new McpResearchServer(store, registry);
   try {
     const unauth = await server.handleFetch(new Request('http://x/mcp', { method: 'POST', headers: { authorization: 'Bearer nope' }, body: '{}' }));
@@ -181,6 +189,11 @@ test('MCP: token scopes the actor; tools/list and tools/call are both filtered',
     expect(opTools).not.toContain('research_task_claim');
     expect(wkTools).toContain('research_task_claim');
     expect(wkTools).not.toContain('research_task_create');
+    // Viewer token sees only read tools and cannot reach worker mutations.
+    const vwTools = (await rpc(server, vw.token, 'tools/list')).result.tools.map((t: any) => t.name);
+    expect(vwTools.sort()).toEqual(['research_task_events', 'research_task_get', 'research_task_list']);
+    const vwDenied = await rpc(server, vw.token, 'tools/call', { name: 'research_task_claim', arguments: { commandId: 'x', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 60_000).toISOString() } });
+    expect(vwDenied.error.code).toBe(-32602);
     // A worker token calling an operator tool by name is rejected like an unknown tool.
     const denied = await rpc(server, wk.token, 'tools/call', { name: 'research_task_create', arguments: { commandId: 'x', mode: 'k', input: {} } });
     expect(denied.error.code).toBe(-32602);

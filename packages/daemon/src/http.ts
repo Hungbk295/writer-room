@@ -623,7 +623,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // Profiles match dev-1's provisioned identities: queue names are 'research'
   // and 'writer' (claim/bind use these), subjects are hermes:wr-*.
   const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
-  const writerWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-writer', profile: 'writer' });
+  // The Writer profile token is read-only on the Research surface (P0: it may
+  // observe task state, never claim or settle). Worker grants only for queues
+  // a worker may actually run.
+  const writerViewer = researchTokens.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
   const researchMcp = new McpResearchServer(researchStore, researchTokens);
   await researchMcp.start();
   writeFileSync(
@@ -633,7 +636,7 @@ export async function createHttpApp(): Promise<HttpApp> {
       actors: [
         { role: 'operator', subject: researchOperator.subject, token: researchOperator.token },
         { role: 'worker', subject: researchWorker.subject, profile: 'research', token: researchWorker.token },
-        { role: 'worker', subject: writerWorker.subject, profile: 'writer', token: writerWorker.token },
+        { role: 'viewer', subject: writerViewer.subject, token: writerViewer.token },
       ],
     }, null, 2),
     { encoding: 'utf8', mode: 0o600 },

@@ -23,7 +23,7 @@ const PROTOCOL_VERSION = '2025-03-26';
 const SERVER_NAME = 'writer-room-research';
 
 type ToolArgs = Record<string, unknown>;
-type Role = Actor['role'] | 'both';
+type Role = 'operator' | 'worker' | 'read';
 
 interface ResearchToolDef {
   name: string;
@@ -163,15 +163,15 @@ export class McpResearchServer {
     const taskId = (a: ToolArgs) => reqStr(a, 'taskId');
     return [
       // ── Shared reads (operator sees own tasks; worker sees bound tasks)
-      { name: 'research_task_get', role: 'both',
+      { name: 'research_task_get', role: 'read',
         description: 'Projection của một ResearchTask: phase, version, budget (spent/reserved/uniqueVideos), workerBinding, leaseExpired, lastError.',
         inputSchema: { type: 'object', properties: { taskId: TASK }, required: ['taskId'] },
         handler: (a, args) => store.get(a, taskId(args)) },
-      { name: 'research_task_list', role: 'both',
+      { name: 'research_task_list', role: 'read',
         description: 'Liệt kê task theo scope của token: operator thấy task mình sở hữu, worker thấy task đang bind. Lọc theo phase.',
         inputSchema: { type: 'object', properties: { phase: { type: 'string', enum: RESEARCH_PHASES }, limit: { type: 'integer' } } },
         handler: (a, args) => ({ tasks: store.list(a, { phase: optStr(args, 'phase') as Phase | undefined, limit: optInt(args, 'limit') }) }) },
-      { name: 'research_task_events', role: 'both',
+      { name: 'research_task_events', role: 'read',
         description: 'Event log bền của task sau cursor (dùng cho progress watcher/outbox). Trả mảng {cursor,type,payload_json,created_at}.',
         inputSchema: { type: 'object', properties: { taskId: TASK, afterCursor: { type: 'integer' }, limit: { type: 'integer' } }, required: ['taskId'] },
         handler: (a, args) => ({ events: store.events(a, taskId(args), optInt(args, 'afterCursor') ?? 0, optInt(args, 'limit') ?? 100) }) },
@@ -279,7 +279,7 @@ export class McpResearchServer {
       case 'ping': return {};
       case 'tools/list':
         return {
-          tools: [...this.tools.values()].filter((t) => t.role === 'both' || t.role === actor.role).map((t) => ({
+          tools: [...this.tools.values()].filter((t) => t.role === 'read' || t.role === actor.role).map((t) => ({
             name: t.name, description: t.description, inputSchema: t.inputSchema,
           })),
         };
@@ -294,7 +294,7 @@ export class McpResearchServer {
 
   private callTool(actor: Actor, name: string, args: ToolArgs): unknown {
     const tool = this.tools.get(name);
-    if (!tool || (tool.role !== 'both' && tool.role !== actor.role)) {
+    if (!tool || (tool.role !== 'read' && tool.role !== actor.role)) {
       const err = new Error(`tool not found: ${name}`) as Error & { rpcCode: number };
       err.rpcCode = -32602;
       throw err;

@@ -11,7 +11,8 @@ import type { Actor } from './store.ts';
 
 export type ActorGrant =
   | { role: 'operator'; subject: string; token: string }
-  | { role: 'worker'; subject: string; profile: string; token: string };
+  | { role: 'worker'; subject: string; profile: string; token: string }
+  | { role: 'viewer'; subject: string; token: string };
 
 interface RegistryFile {
   actors: ActorGrant[];
@@ -46,13 +47,23 @@ export class ResearchTokenRegistry {
    * stay valid — and the correction is logged. A registry row is never deleted
    * here; revocation stays an explicit `revoke()`.
    */
-  ensure(grant: { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile: string }): ActorGrant {
-    const found = this.grants.find((g) => g.role === grant.role && g.subject === grant.subject);
+  ensure(grant: { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile: string } | { role: 'viewer'; subject: string }): ActorGrant {
+    const found = this.grants.find((g) => g.subject === grant.subject);
     if (found) {
-      if (grant.role === 'worker' && found.role === 'worker' && found.profile !== grant.profile) {
-        console.warn(`[research-mcp] actor ${grant.subject}: profile '${found.profile}' → '${grant.profile}' (token kept)`);
-        found.profile = grant.profile;
+      // Drift heal with audit: the daemon seed is canonical, so a stale role or
+      // profile in a previously provisioned file is corrected in place — the
+      // issued token is kept (no orphan credential, no silent privilege change:
+      // every correction is logged). A row is never deleted or rotated here;
+      // revocation stays an explicit `revoke()`.
+      const foundProfile = found.role === 'worker' ? found.profile : undefined;
+      const wantProfile = grant.role === 'worker' ? grant.profile : undefined;
+      if (found.role !== grant.role || foundProfile !== wantProfile) {
+        console.warn(`[research-mcp] actor ${grant.subject}: ${found.role}${foundProfile ? `/${foundProfile}` : ''} → ${grant.role}${wantProfile ? `/${wantProfile}` : ''} (token kept)`);
+        this.grants = this.grants.filter((g) => g !== found);
+        const healed = { ...grant, token: found.token } as ActorGrant;
+        this.grants.push(healed);
         this.save();
+        return healed;
       }
       return found;
     }
@@ -73,9 +84,9 @@ export class ResearchTokenRegistry {
   resolve(token: string): Actor | null {
     const grant = this.grants.find((g) => g.token === token);
     if (!grant) return null;
-    return grant.role === 'worker'
-      ? { role: 'worker', subject: grant.subject, profile: grant.profile }
-      : { role: 'operator', subject: grant.subject };
+    if (grant.role === 'worker') return { role: 'worker', subject: grant.subject, profile: grant.profile };
+    if (grant.role === 'viewer') return { role: 'viewer', subject: grant.subject };
+    return { role: 'operator', subject: grant.subject };
   }
 
   /** Safe listing for bootstrap tooling — token values are masked. */
