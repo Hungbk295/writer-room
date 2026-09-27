@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ResearchTaskStore } from '../../src/research-task/store.ts';
@@ -161,6 +161,19 @@ test('token registry: legacy real-dir fixture heals profile/role drift, keeps is
   expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
   expect(reopened.resolve('ww-token-cccccccccccccccc')).toEqual({ role: 'viewer', subject: 'hermes:wr-writer' });
   expect(reopened.resolve('nope')).toBeNull();
+});
+
+test('cross-repo: daemon seed queue === Hermes RESEARCH_QUEUE', () => {
+  // The queue string is a two-repo contract: daemon seed (http.ts) must equal
+  // wr-runtime.py RESEARCH_QUEUE. Fails loud if either side drifts.
+  const daemonSrc = readFileSync(join(import.meta.dir, '../../src/http.ts'), 'utf8');
+  const seed = daemonSrc.match(/subject:\s*'hermes:wr-researcher',\s*profile:\s*'([^']+)'/)?.[1];
+  expect(seed).toBe('research');
+  const hermesPy = join(import.meta.dir, '../../../../../hermes/scripts/wr-runtime.py');
+  if (existsSync(hermesPy)) {
+    const q = readFileSync(hermesPy, 'utf8').match(/RESEARCH_QUEUE\s*=\s*'([^']+)'/)?.[1];
+    expect(q).toBe(seed);
+  }
 });
 
 const rpc = async (server: McpResearchServer, token: string, method: string, params: unknown = {}) => {
