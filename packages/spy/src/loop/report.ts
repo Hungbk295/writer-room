@@ -1,16 +1,23 @@
 /**
- * loop/report.ts — buildDailyReport + renderReport.
+ * loop/report.ts — buildV3Report + renderReport.
  *
- * `buildDailyReport` → ReportSummaryJson (immutable) + markdown.
+ * `buildV3Report` → ReportSummaryJson (immutable) + markdown, gắn mode nhịp.
  * `renderReport` → markdown Vietnamese cho DB / Telegram / MCP / web <pre>.
  */
 import { randomUUID } from 'node:crypto';
-import type { SpyStore } from '../store.ts';
+import type { SpyStore, LoopMode } from '../store.ts';
 import type { QuotaLedger } from '../quota.ts';
-import type { ReportSummaryJson, TopLearnEntry, ReportDelta } from './types.ts';
+import type {
+  DailyReportSection,
+  ReportSummaryJson,
+  SetupReportSection,
+  WeeklyReportSection,
+} from './types.ts';
 
 export interface TickBrief {
   tickId: string;
+  /** v3: nhịp của tick — report phải gắn mode (§2: report mode=daily/weekly). */
+  mode?: LoopMode;
   searchCallsUsed: number;
   generalUnitsUsed: number;
   keywordsSearched: string[];
@@ -18,9 +25,21 @@ export interface TickBrief {
   newShortlistedAuto: number;
   autoRejected: number;
   keywordsHarvested: number;
+  /** Số liệu riêng của nhịp — đúng một trong ba tuỳ mode. */
+  daily?: DailyReportSection;
+  weekly?: WeeklyReportSection;
+  setup?: SetupReportSection;
+  /** Mốc thời gian thật của tick — fallback now() nếu caller không truyền. */
+  startedAt?: string;
+  finishedAt?: string;
 }
 
-export async function buildDailyReport(
+/**
+ * Report cho tick v3 (daily | weekly | setup). Cùng skeleton với
+ * buildDailyReport — nhãn topic, quota ngày, inbox, delta — cộng section riêng
+ * của nhịp. KHÔNG suy diễn hành động của người duyệt: số liệu chỉ đến từ tick.
+ */
+export async function buildV3Report(
   store: SpyStore,
   quota: QuotaLedger,
   topicId: string,
@@ -38,120 +57,29 @@ export async function buildDailyReport(
   const searchBucket = quotaStatus.buckets.find((b) => b.bucket === 'search');
   const generalBucket = quotaStatus.buckets.find((b) => b.bucket === 'general');
 
-  // Top 5 learn_value
-  const topChannels = store.listTopicChannels(topicId, { limit: 100 });
-  const topLearn: TopLearnEntry[] = topChannels
-    .filter((r) => r['learn_value_score'] !== null)
-    .sort((a, b) => Number(b['learn_value_score']) - Number(a['learn_value_score']))
-    .slice(0, 5)
-    .map((r) => {
-      const channelId = String(r['channel_id']);
-      const cand = store.listCandidates({ limit: 1, cursor: 0 }).find((c) => c.channelId === channelId);
-      return {
-        channelId,
-        title: cand?.title ?? null,
-        url: `https://www.youtube.com/channel/${channelId}`,
-        subscriberCount: cand?.subscriberCount ?? null,
-        ageMonths: null,
-        medianViews: null,
-        medianViewsVsOwn: null,
-        ownChannelTitle: null,
-        facelessScore: r['faceless_score'] === null || r['faceless_score'] === undefined
-          ? null
-          : Number(r['faceless_score']),
-        facelessHint: r['faceless_hint'] === null || r['faceless_hint'] === undefined
-          ? null
-          : Number(r['faceless_hint']),
-        fitScore: r['fit_score'] ? Number(r['fit_score']) : null,
-        learnValueScore: r['learn_value_score'] ? Number(r['learn_value_score']) : null,
-        foundVia: 'search',
-        status: String(r['status']),
-        decidedBy: r['decided_by'] ? String(r['decided_by']) : null,
-        why: [],
-      } as TopLearnEntry;
-    });
-
-  // Delta vs previous report
-  const prevReports = store.listDailyReports(topicId, 2);
-  const prevRow = prevReports.find((r) => String(r['report_date']) !== reportDate);
-  let delta: ReportDelta = {
-    vsReportId: null,
-    vsDate: null,
-    newCandidatesPrev: null,
-    inboxTotalPrev: null,
-    shortlistedTotalPrev: null,
-    studiedTotalPrev: null,
-    keywordsPendingPrev: null,
-    firstSeenToday: [],
-    movedToShortlistToday: [],
-    userDecisionsSinceLast: { shortlisted: 0, rejected: 0 },
-    newlyExhausted: [],
-  };
-
-  if (prevRow) {
-    try {
-      const prevSummary = JSON.parse(String(prevRow['summary_json'])) as ReportSummaryJson;
-      delta = {
-        vsReportId: String(prevRow['report_id']),
-        vsDate: String(prevRow['report_date']),
-        newCandidatesPrev: prevSummary.funnel?.newCandidates ?? null,
-        inboxTotalPrev: prevSummary.inboxTotal ?? null,
-        shortlistedTotalPrev: prevSummary.funnel?.autoShortlisted ?? null,
-        studiedTotalPrev: null,
-        keywordsPendingPrev: null,
-        firstSeenToday: [],
-        movedToShortlistToday: [],
-        userDecisionsSinceLast: { shortlisted: 0, rejected: 0 },
-        newlyExhausted: [],
-      };
-    } catch {
-      // Ignore parse error
-    }
-  }
-
-  // New keywords (harvested today)
-  const allKeywords = store.listTopicKeywords(topicId);
-  const newKeywords = allKeywords
-    .filter((k) => {
-      const addedAt = String(k['added_at'] ?? '');
-      return addedAt.startsWith(reportDate) && String(k['relation']) === 'harvested_title';
-    })
-    .map((k) => String(k['display_term']));
-
-  const exhaustedKeywords = allKeywords
-    .filter((k) => String(k['status']) === 'exhausted')
-    .map((k) => ({
-      term: String(k['display_term']),
-      rejectRate: 0,
-      yieldChannels: Number(k['yield_channels']),
-    }));
-
   const summary: ReportSummaryJson = {
     version: 1,
     reportId: randomUUID(),
     reportDate,
     topicId,
     topicLabel,
+    mode: tick.mode,
+    daily: tick.daily,
+    weekly: tick.weekly,
+    setup: tick.setup,
     tick: {
       tickId: tick.tickId,
       status: 'done',
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      durationSec: 0,
+      startedAt: tick.startedAt ?? new Date().toISOString(),
+      finishedAt: tick.finishedAt ?? new Date().toISOString(),
+      durationSec: tick.startedAt
+        ? Math.max(0, Math.round((Date.parse(tick.finishedAt ?? new Date().toISOString()) - Date.parse(tick.startedAt)) / 1000))
+        : 0,
       error: null,
       dryRun: false,
-      // Quota của RIÊNG tick này (khối `quota` bên dưới là của cả ngày). Hai con
-      // số này phải bằng đúng số call đã bị charge cho tick, kể cả call lỗi và
-      // phần đã tiêu trước khi resume.
       searchCallsUsed: tick.searchCallsUsed,
       generalUnitsUsed: tick.generalUnitsUsed,
     },
-    // Khối `quota` = TOÀN NGÀY, cả bốn số cùng một namespace (sổ global).
-    //
-    // Trước đây `searchUsed`/`generalUsed` lấy từ tick còn `searchRemainingDay`/
-    // `generalLimit` lấy từ sổ global — trộn hai phạm vi trông giống nhau, nên
-    // report có thể hiện "1/10000" trong khi sổ thật đã tiêu 9999 cho việc khác,
-    // và người đọc tưởng còn nguyên ngân sách. Số theo tick nằm ở `tick.*`.
     quota: {
       searchUsed: searchBucket?.used ?? 0,
       searchBudget: dailyBudget,
@@ -163,18 +91,30 @@ export async function buildDailyReport(
       expanded: 0,
       searched: tick.searchCallsUsed,
       newCandidates: tick.newCandidates,
-      autoShortlisted: tick.newShortlistedAuto,
+      autoShortlisted: 0,
       pendingReview: inboxTotal,
       autoRejected: tick.autoRejected,
       scanned: 0,
       keywordsHarvested: tick.keywordsHarvested,
     },
     inboxTotal,
-    topLearn,
-    newKeywords,
-    exhaustedKeywords,
+    topLearn: [],
+    newKeywords: tick.weekly?.newKeywords.map((k) => k.display) ?? [],
+    pausedKeywords: [],
     scannedChannels: [],
-    delta,
+    delta: {
+      vsReportId: null,
+      vsDate: null,
+      newCandidatesPrev: null,
+      inboxTotalPrev: null,
+      activeTotalPrev: null,
+      pausedTotalPrev: null,
+      keywordsPendingPrev: null,
+      firstSeenToday: [],
+      movedToActiveToday: [],
+      userDecisionsSinceLast: { active: 0, rejected: 0 },
+      newlyPaused: [],
+    },
     warnings: [],
     links: {
       dashboard: `http://127.0.0.1:4187/#/spy/loop?topic=${topicId}`,
@@ -183,15 +123,15 @@ export async function buildDailyReport(
   };
 
   const markdown = renderReport(summary, { mode: 'tick' });
-
   return { summaryJson: JSON.stringify(summary), markdown };
 }
 
 export function renderReport(summary: ReportSummaryJson, opts: { mode: 'tick' | 'digest' }): string {
   const lines: string[] = [];
   const { mode } = opts;
+  const tickMode = summary.mode ? ` [${summary.mode}]` : '';
 
-  lines.push(`📊 Spy Loop — ${summary.topicLabel} — ${summary.reportDate}`);
+  lines.push(`📊 Spy Loop — ${summary.topicLabel} — ${summary.reportDate}${tickMode}`);
   lines.push('');
 
   if (mode === 'tick' && summary.tick) {
@@ -200,11 +140,79 @@ export function renderReport(summary: ReportSummaryJson, opts: { mode: 'tick' | 
     lines.push('');
   }
 
-  // Funnel
+  // Funnel — dòng legacy chỉ render khi thật sự có funnel cũ; tick v3 ghi
+  // autoShortlisted=0 và section riêng bên dưới kể phần còn lại.
   const f = summary.funnel;
-  lines.push(`**Kênh mới:** ${f.newCandidates} → auto-shortlist ${f.autoShortlisted} · chờ duyệt ${f.pendingReview} · auto-reject ${f.autoRejected}`);
+  if (!summary.mode) {
+    lines.push(`**Kênh mới:** ${f.newCandidates} → auto-shortlist ${f.autoShortlisted} · chờ duyệt ${f.pendingReview} · auto-reject ${f.autoRejected}`);
+    lines.push('');
+  }
   lines.push(`**Inbox:** ${summary.inboxTotal} kênh chờ duyệt`);
   lines.push('');
+
+  // --- Section theo nhịp v3 ---
+  if (summary.daily) {
+    const d = summary.daily;
+    lines.push(`🌅 **Daily:** quét ${d.channelsScanned}/${d.channelsChecked} kênh active · ${d.newVideos} video mới`);
+    if (d.topGained24h.length > 0) {
+      lines.push('');
+      lines.push('🚀 **Tăng view 24h**');
+      for (const v of d.topGained24h.slice(0, 5)) {
+        lines.push(`• ${v.title} — +${v.viewsGained24h.toLocaleString('en-US')} (${v.channelTitle})`);
+      }
+    }
+    if (d.topOutliers.length > 0) {
+      lines.push('');
+      lines.push('🔥 **Outlier**');
+      for (const v of d.topOutliers.slice(0, 5)) {
+        lines.push(`• ${v.title} — ×${v.outlierScore} (${v.channelTitle})`);
+      }
+    }
+    if (d.suggestions.length > 0) {
+      lines.push('');
+      lines.push(`💤 **Gợi ý pause_silent:** ${d.suggestions.map((s) => s.title ?? s.channelId).join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  if (summary.weekly) {
+    const w = summary.weekly;
+    lines.push(`📈 **Weekly:** search ${w.keywordsSearched.length} keyword · đề xuất ${w.newChannelsProposed.length} kênh · ${w.newKeywords.length} keyword mới`);
+    if (w.keywordsSearched.length > 0) {
+      lines.push('');
+      lines.push('**Keyword đã search**');
+      for (const k of w.keywordsSearched.slice(0, 8)) {
+        lines.push(`• "${k.term}" — ${k.nResults} kết quả, ${k.nFollowed} trong follow`);
+      }
+    }
+    if (w.outliersInFollow.length > 0) {
+      lines.push('');
+      lines.push('🔥 **Outlier trong follow**');
+      for (const v of w.outliersInFollow.slice(0, 5)) {
+        lines.push(`• ${v.title} — ×${v.outlierScore} (${v.channelTitle})`);
+      }
+    }
+    if (w.newChannelsProposed.length > 0) {
+      lines.push('');
+      lines.push('🆕 **Kênh đề xuất (chờ duyệt)**');
+      for (const c of w.newChannelsProposed.slice(0, 8)) {
+        const base = c.baselineMedianViews !== null ? `median ${c.baselineMedianViews}` : 'chưa có baseline';
+        lines.push(`• ${c.title ?? c.channelId} — ×${c.outlierScore ?? '?'} · ${base} · qua "${c.foundByKeyword}"`);
+      }
+    }
+    if (w.channelsRejectedLang > 0 || w.channelsFilteredDeadLottery > 0) {
+      lines.push('');
+      lines.push(`🚫 Lọc: ${w.channelsRejectedLang} lệch ngôn ngữ · ${w.channelsFilteredDeadLottery} dead/lottery`);
+    }
+    lines.push('');
+  }
+
+  if (summary.setup) {
+    const s = summary.setup;
+    lines.push(`🧱 **Setup (${s.step}):** ${s.channelsProposed} kênh đề xuất · ${s.channelsRejectedLang} lệch ngôn ngữ · ${s.channelsFilteredDeadLottery} dead/lottery · ${s.keywordsProposed} keyword đề xuất`);
+    lines.push(`⏸ **Đang chờ:** ${s.awaitingStatus} — người duyệt quyết định bước tiếp`);
+    lines.push('');
+  }
 
   // Delta
   if (summary.delta.vsDate) {
@@ -249,8 +257,8 @@ export function renderReport(summary: ReportSummaryJson, opts: { mode: 'tick' | 
   }
 
   // Exhausted
-  if (summary.exhaustedKeywords.length > 0) {
-    const ex = summary.exhaustedKeywords.slice(0, 3);
+  if (summary.pausedKeywords.length > 0) {
+    const ex = summary.pausedKeywords.slice(0, 3);
     lines.push(`⚠ **Keyword exhausted:** ${ex.map((e) => `"${e.term}" (yield ${e.yieldChannels})`).join(', ')}`);
     lines.push('');
   }

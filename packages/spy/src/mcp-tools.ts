@@ -116,7 +116,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
   return [
     wrap({
       name: 'spy_channel_start',
-      description: 'Chạy Channel Spy cho URL kênh/playlist. depth: metadata|transcript.',
+      description: 'Chạy Channel Spy cho URL kênh/playlist. Mặc định KHÔNG lọc theo thời lượng (min_duration_sec=0) nên kết quả có cả Shorts — set min_duration_sec để loại. depth: metadata|transcript.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 8_192,
       handler: (args, context) => spy.channelSpy({
@@ -125,7 +125,11 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         selectionMode: args['selection_mode'] === 'latest' ? 'latest' : 'popular',
         scanLimit: integer(args['scan_limit'], 60, 1, 500),
         rankBy: args['rank_by'] === 'views' ? 'views' : 'velocity',
-        minDurationSec: integer(args['min_duration_sec'], 60, 0, 7200),
+        // Mặc định 0 = không lọc, khớp với schema.ts/cli.ts/http.ts — trước đây
+        // tool này tự ý đặt 60 (loại Shorts ≤60s) khác hẳn mọi caller khác,
+        // nên gọi spy_channel_start không truyền tham số sẽ ÂM THẦM mất hết
+        // Shorts trong kết quả, kể cả khi người gọi không hề muốn lọc.
+        minDurationSec: integer(args['min_duration_sec'], 0, 0, 7200),
         maxDurationSec: typeof args['max_duration_sec'] === 'number'
           ? integer(args['max_duration_sec'], 0, 0, 72_000)
           : undefined,
@@ -482,7 +486,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_global_video_search',
-      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp, cache theo query+video (mặc định làm tươi sau 24h) và luôn trả providerUsed/fallbackReason/cache.',
+      description: 'Tìm video YouTube theo keyword cho agents. Ưu tiên Data API (vi/VN), tự fallback yt-dlp, cache theo query+video (mặc định làm tươi sau 24h) và luôn trả providerUsed/fallbackReason/cache. published_after/published_before/order/video_duration (chỉ áp dụng khi Data API khả dụng — yt-dlp fallback bỏ qua) bỏ qua cache, luôn gọi API mới. video_duration=short lọc theo bộ đếm <4 phút của YouTube (KHÔNG đúng nghĩa "là Shorts") — muốn chắc chắn ≤60s thì tự lọc thêm bằng durationSec trong kết quả trả về.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 64_000,
       handler: (args) => spy.globalVideoSearch({
@@ -494,6 +498,12 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
           ? undefined
           : (text(args['refresh'], 'refresh') as 'never' | 'if_stale' | 'always'),
         maxAgeHours: args['max_age_hours'] === undefined ? undefined : (args['max_age_hours'] as number),
+        publishedAfter: args['published_after'] === undefined ? undefined : text(args['published_after'], 'published_after'),
+        publishedBefore: args['published_before'] === undefined ? undefined : text(args['published_before'], 'published_before'),
+        order: args['order'] === undefined ? undefined : (text(args['order'], 'order') as 'relevance' | 'date' | 'viewCount'),
+        videoDuration: args['video_duration'] === undefined
+          ? undefined
+          : (text(args['video_duration'], 'video_duration') as 'any' | 'short' | 'medium' | 'long'),
       }),
     }),
     wrap({
@@ -524,12 +534,45 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       }),
     }),
     // ---------------------------------------------------------------------
+    // Config — xem và cập nhật API key + settings
+    // ---------------------------------------------------------------------
+    wrap({
+      name: 'spy_config_get',
+      description: 'Xem config hiện tại (API key masked, số key trong pool, concurrency, sampling). 0 chi phí.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 16_384,
+      handler: () => spy.getPublicConfig(),
+    }),
+    wrap({
+      name: 'spy_config_set',
+      description: 'Cập nhật config: thêm/đổi API key, thêm nhiều key cho rotation (youtubeDataApiKeys: string[]), concurrency, sampling. Key được lưu vào config/spy.json.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 16_384,
+      handler: async (args) => {
+        const patch: Record<string, unknown> = {};
+        if (args['youtube_data_api_key'] !== undefined) {
+          patch.youtubeDataApiKey = args['youtube_data_api_key'] as string;
+        }
+        if (args['youtube_data_api_keys'] !== undefined) {
+          patch.youtubeDataApiKeys = args['youtube_data_api_keys'] as string[];
+        }
+        if (args['concurrency'] !== undefined) {
+          patch.concurrency = args['concurrency'] as number;
+        }
+        if (args['sampling'] !== undefined) {
+          patch.sampling = args['sampling'] as Record<string, unknown>;
+        }
+        await spy.updateConfig(patch as Parameters<typeof spy.updateConfig>[0]);
+        return spy.getPublicConfig();
+      },
+    }),
+    // ---------------------------------------------------------------------
     // Discovery — xem plan/claude/spy-discovery-design.md
     // Bucket search: 100 call/ngày. Bucket general: 10.000 unit/ngày.
     // ---------------------------------------------------------------------
     wrap({
       name: 'spy_quota_status',
-      description: 'Còn bao nhiêu quota search (100/ngày) và general (10.000 unit/ngày), reset lúc nào. 0 chi phí.',
+      description: 'Còn bao nhiêu quota search (100/ngày) và general (10.000 unit/ngày), reset lúc nào. Nếu multi-key: hiện per-key breakdown. 0 chi phí.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 16_384,
       handler: () => spy.quotaStatus(),
@@ -588,6 +631,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         order: args['order'] === 'date' || args['order'] === 'relevance' ? args['order'] : 'viewCount',
         maxResults: integer(args['max_results'], 50, 1, 50),
         publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
+        language: typeof args['language'] === 'string' ? args['language'] : undefined,
         dryRun: args['dry_run'] === true,
       }),
     }),
@@ -647,7 +691,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     }),
     wrap({
       name: 'spy_corpus_videos',
-      description: 'Tìm video xuyên TOÀN BỘ corpus đã quét (không giới hạn một run). Lọc theo title, transcript, view, thời lượng, ngày. 0 quota.',
+      description: 'Tìm video xuyên TOÀN BỘ corpus đã quét (không giới hạn một run). Lọc theo title, transcript, view, velocity (views/ngày), thời lượng, ngày. 0 quota.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 120_000,
       handler: (args) => spy.corpusVideos({
@@ -661,6 +705,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         publishedAfter: typeof args['published_after'] === 'string' ? args['published_after'] : undefined,
         publishedBefore: typeof args['published_before'] === 'string' ? args['published_before'] : undefined,
         hasTranscript: typeof args['has_transcript'] === 'boolean' ? args['has_transcript'] : undefined,
+        minVelocity: typeof args['min_velocity'] === 'number' ? args['min_velocity'] : undefined,
         minOutlierScore: typeof args['min_outlier_score'] === 'number' ? args['min_outlier_score'] : undefined,
         minViewPerSub: typeof args['min_view_per_sub'] === 'number' ? args['min_view_per_sub'] : undefined,
         orderBy: typeof args['order_by'] === 'string'
@@ -846,7 +891,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     // ── Spy Loop — 2 write tools (requiredScopes spy.loop.write, KHÔNG vào EXPOSED_TOOL_NAMES) ───
     wrap({
       name: 'spy_loop_decide',
-      description: '[Write] Duyệt / loại kênh trong inbox. requiredScopes: spy.loop.write — KHÔNG có trong allowlist MCP mặc định; chỉ user dùng qua HTTP.',
+      description: '[Write] Duyệt / loại kênh trong inbox (v13: active | paused | rejected | new). requiredScopes: spy.loop.write — KHÔNG có trong allowlist MCP mặc định; chỉ user dùng qua HTTP.',
       requiredScopes: ['spy.loop.write'],
       outputLimitBytes: 16_384,
       handler: async (args) => {
@@ -855,7 +900,7 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
             decide: (params: {
               topicId: string;
               channelIds: string[];
-              status: 'shortlisted' | 'rejected';
+              status: 'active' | 'paused' | 'rejected' | 'new';
               negativeKeyword?: string;
               decidedBy?: string;
             }) => Promise<unknown>;
@@ -864,9 +909,10 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         if (!loop) throw new AppError('capability_missing', 'spy.loop chưa khởi tạo');
         const topicId = text(args['topic_id'], 'topic_id');
         const channelIds = stringList(args['channel_ids'], 'channel_ids');
-        const status = args['status'] === 'shortlisted' || args['status'] === 'rejected'
-          ? args['status']
-          : (() => { throw new AppError('invalid_input', 'status phải là shortlisted | rejected'); })();
+        const status = args['status'] === 'active' || args['status'] === 'paused'
+          || args['status'] === 'rejected' || args['status'] === 'new'
+          ? args['status'] as 'active' | 'paused' | 'rejected' | 'new'
+          : (() => { throw new AppError('invalid_input', 'status phải là active | paused | rejected | new'); })();
         return loop.decide({
           topicId,
           channelIds,
@@ -885,7 +931,12 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       handler: async (args) => {
         const loop = (spy as unknown as {
           loop?: {
-            tick: (params: { topicId: string; dryRun?: boolean }) => Promise<unknown>;
+            tick: (params: {
+              topicId: string;
+              dryRun?: boolean;
+              mode?: 'daily' | 'weekly' | 'setup';
+              setupStep?: 'channels' | 'keywords';
+            }) => Promise<unknown>;
             isRunning: (topicId: string) => boolean;
           }
         }).loop;
@@ -895,7 +946,14 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
           throw new AppError('invalid_input', `Tick đang chạy cho topic ${topicId}`);
         }
         const dryRun = args['dry_run'] === true;
-        return loop.tick({ topicId, dryRun });
+        // v3: mode='daily'|'weekly'|'setup' (setup cần setup_step); bỏ mode = tick legacy.
+        const mode = args['mode'] === 'daily' || args['mode'] === 'weekly' || args['mode'] === 'setup'
+          ? args['mode']
+          : undefined;
+        const setupStep = args['setup_step'] === 'channels' || args['setup_step'] === 'keywords'
+          ? args['setup_step']
+          : undefined;
+        return loop.tick({ topicId, dryRun, mode, setupStep });
       },
     }),
   ];

@@ -111,6 +111,14 @@ export function scoreChannelFit(
   candidate: FitCandidateInput,
   niche: NicheConfig,
   market?: NicheMarket,
+  /**
+   * ADR-7: `options.region` là ISO 3166-1 của topic (cột `topics.region`,
+   * migration v13). Vì sao cần tham số riêng: `market.regionCode` được suy từ
+   * `topic.market` (`'vi'`→`'VI'`, `'en'`→`'EN'` — không phải mã quốc gia),
+   * nên factor languageMatch không bao giờ khớp `candidate.country`. Không
+   * truyền thì giữ đúng hành vi cũ (đọc `market.regionCode`).
+   */
+  options?: { region?: string | null },
 ): FitResult {
   const weights = niche.scoring;
   const reasons: FitReason[] = [];
@@ -202,13 +210,14 @@ export function scoreChannelFit(
   }
   reasons.push({ factor: 'avgViewsPerVideo', points: round2(avgPoints), max: weights.avgViewsPerVideo, detail: avgDetail });
 
-  // 6. Khớp thị trường theo country của kênh.
+  // 6. Khớp thị trường theo country của kênh — region của topic, không suy từ market id (ADR-7).
   let langPoints = 0;
   let langDetail = 'không có country';
   if (market && candidate.country) {
-    const matched = candidate.country.toUpperCase() === market.regionCode.toUpperCase();
+    const region = (options?.region ?? market.regionCode).toUpperCase();
+    const matched = candidate.country.toUpperCase() === region;
     langPoints = matched ? weights.languageMatch : 0;
-    langDetail = matched ? `country ${candidate.country} khớp market ${market.id}` : `country ${candidate.country} khác market ${market.id}`;
+    langDetail = matched ? `country ${candidate.country} khớp region ${region}` : `country ${candidate.country} khác region ${region}`;
   }
   reasons.push({ factor: 'languageMatch', points: round2(langPoints), max: weights.languageMatch, detail: langDetail });
 

@@ -1,5 +1,70 @@
 import { AppError } from '../errors.ts';
+import { keyId } from '../quota.ts';
 
+/**
+ * Google trả 403 cho NHIỀU lý do khác nhau, phân biệt bằng `error.errors[0].reason`
+ * trong body JSON — KHÔNG phải qua HTTP status (luôn là 403 cho cả hai nhóm dưới).
+ * Trước đây `fetch()` chỉ nhìn `response.status` và ném `provider_error` chung
+ * chung cho mọi 403 — caller (QuotaCountingDataApi/globalVideoSearch) không có
+ * cách nào phân biệt "key này hết quota, thử key khác" với "key này sai, đừng
+ * thử lại nó" nên luôn rơi thẳng xuống yt-dlp thay vì rotate.
+ *
+ * `quotaExceeded`/`dailyLimitExceeded` là do Cloud Console báo hết quota NGÀY
+ * hôm nay cho đúng key này (developers.google.com/youtube/v3/determine_quota_cost).
+ * `rateLimitExceeded`/`userRateLimitExceeded` là giới hạn tần suất ngắn hạn (per
+ * 100 giây) — về bản chất khác quota/ngày nhưng hành vi cần cũng giống nhau ở
+ * đây: đừng dùng key này cho request này nữa, thử key khác nếu có.
+ */
+const QUOTA_ERROR_REASONS = new Set([
+  'quotaExceeded',
+  'dailyLimitExceeded',
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+]);
+
+/** Key sai/không dùng được — khác quota: sẽ KHÔNG tự hết hạn khi sang ngày mới. */
+const INVALID_KEY_REASONS = new Set([
+  'keyInvalid',
+  'API_KEY_INVALID',
+  'accessNotConfigured',
+  'keyExpired',
+]);
+
+async function classifyGoogleApiError(response: Response, apiKey: string): Promise<AppError> {
+  const status = response.status;
+  let reason: string | null = null;
+  let googleMessage: string | null = null;
+  try {
+    const body = await response.json() as {
+      error?: { message?: string; errors?: Array<{ reason?: string }> };
+    };
+    reason = body?.error?.errors?.[0]?.reason ?? null;
+    googleMessage = body?.error?.message ?? null;
+  } catch {
+    // Body không phải JSON hợp lệ (hiếm) — vẫn phân loại theo status.
+  }
+  const kid = keyId(apiKey);
+  const details = { httpStatus: status, reason, keyId: kid, googleMessage };
+
+  if (status === 403 && reason && QUOTA_ERROR_REASONS.has(reason)) {
+    return new AppError(
+      'quota_exceeded',
+      `Key ...${kid} thật sự hết quota ở Google (403 ${reason})${googleMessage ? `: ${googleMessage}` : ''}.`,
+      { retryable: false, details },
+    );
+  }
+  if (status === 403 && reason && INVALID_KEY_REASONS.has(reason)) {
+    return new AppError(
+      'unauthorized',
+      `Key ...${kid} không dùng được (403 ${reason})${googleMessage ? `: ${googleMessage}` : ''} — kiểm tra key/API đã bật chưa, key này sẽ không tự hồi phục khi sang ngày quota mới.`,
+      { retryable: false, details },
+    );
+  }
+  return new AppError('provider_error', `YouTube Data API ${status}${reason ? ` (${reason})` : ''}`, {
+    retryable: status >= 500 || status === 429,
+    details,
+  });
+}
 
 export function youtubeThumbnailUrl(videoId: string): string {
   return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
@@ -232,13 +297,31 @@ function asStringId(id: ApiItem['id']): string | null {
 
 export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
   private apiKey?: string;
+  private apiKeys: string[] = [];
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey;
+    if (apiKey?.trim()) this.apiKeys = [apiKey.trim()];
   }
 
+  /** Backward compat — set single key. */
   setApiKey(apiKey?: string): void {
     this.apiKey = apiKey;
+    // Don't overwrite apiKeys if they were set via setApiKeys
+    if (this.apiKeys.length <= 1) {
+      this.apiKeys = apiKey?.trim() ? [apiKey.trim()] : [];
+    }
+  }
+
+  /** Set multiple keys for rotation. Overrides single key. */
+  setApiKeys(keys: string[]): void {
+    this.apiKeys = keys.filter((k) => k.trim().length > 0);
+    this.apiKey = this.apiKeys[0];
+  }
+
+  /** Switch to a specific key (called by rotation logic). */
+  useKey(key: string): void {
+    this.apiKey = key;
   }
 
   private enabled(): boolean {
@@ -252,9 +335,7 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     const response = await fetch(url, { signal });
     if (!response.ok) {
-      throw new AppError('provider_error', `YouTube Data API ${response.status}`, {
-        retryable: response.status >= 500 || response.status === 429,
-      });
+      throw await classifyGoogleApiError(response, this.apiKey!);
     }
     return await response.json() as ListResponse;
   }

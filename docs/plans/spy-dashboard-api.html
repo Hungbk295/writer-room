@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spy Dashboard API</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2dfd8;--code:#f1eee8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--fg:#ebe9e4;--mut:#9a978f;--line:#34322e;--code:#23221f}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:980px;margin:auto}h1{font-size:26px;margin:0 0 4px}h2{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.mut{color:var(--mut)}code,pre{background:var(--code);font:13px ui-monospace,Menlo,monospace}code{padding:1px 4px;border-radius:3px}
+pre{padding:12px;overflow-x:auto;border-radius:6px}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--code)}
+</style>
+</head>
+<body><main>
+<h1>Spy Dashboard API</h1>
+<p class="mut">Đi kèm <code>spy-research-pipeline-v3-lean.html</code> · 2026-09-25 · DRAFT</p>
+
+<h2>0 · Kết luận</h2>
+<p>Một bộ <b>16 endpoint GET read-only</b> dưới <code>/api/spy/dash/*</code> đọc thẳng schema v13, trả JSON phẳng để vẽ biểu đồ không cần biến đổi thêm. Không endpoint nào ghi dữ liệu — việc ghi (duyệt kênh/keyword) vẫn chỉ qua <code>POST /api/spy/loop/decide</code>, giữ nguyên nguyên tắc HITL.</p>
+
+<h2>1 · Quy ước chung</h2>
+<table>
+<tr><th>Quy ước</th><th>Giá trị</th></tr>
+<tr><td>Auth</td><td>Như các route <code>/api/spy/*</code> hiện có (token daemon)</td></tr>
+<tr><td>Tham số bắt buộc</td><td><code>topic_id</code> (trừ <code>/topics</code>, <code>/quota</code>, <code>/meta</code>)</td></tr>
+<tr><td>Khoảng thời gian</td><td><code>from</code>, <code>to</code> = <code>YYYY-MM-DD</code> theo <code>quota_day</code>; mặc định 28 ngày gần nhất</td></tr>
+<tr><td>Phân trang</td><td><code>limit</code> (mặc định 50, tối đa 500), <code>offset</code></td></tr>
+<tr><td>Sắp xếp</td><td><code>sort</code> (whitelist theo endpoint), <code>order=asc|desc</code></td></tr>
+<tr><td>Envelope</td><td><code>{ data: [...] | {...}, meta: { topic_id, as_of, total?, limit?, offset?, from?, to? } }</code></td></tr>
+<tr><td>Số</td><td>Số thô (integer/float), không format locale — bài học sự cố <code>74.68 → 746830645091782</code></td></tr>
+<tr><td>Thời gian</td><td>ISO-8601 UTC; khoá ngày là <code>quota_day</code></td></tr>
+<tr><td>Giá trị chưa đủ dữ liệu</td><td><code>null</code>, không bao giờ 0 (vd <code>views_gained_24h</code> khi mới có 1 snapshot)</td></tr>
+<tr><td>Lỗi</td><td>400 tham số sai · 404 topic/entity không có · <code>{ error: string }</code></td></tr>
+<tr><td>Xuất CSV</td><td>Mọi endpoint dạng danh sách nhận <code>format=csv</code></td></tr>
+</table>
+
+<h2>2 · Danh sách endpoint</h2>
+<table>
+<tr><th>#</th><th>Endpoint</th><th>Trả lời câu hỏi</th><th>Widget gợi ý</th></tr>
+<tr><td>1</td><td><code>GET /dash/meta</code></td><td>Định nghĩa chỉ số + ngưỡng mặc định</td><td>Tooltip, chú giải</td></tr>
+<tr><td>2</td><td><code>GET /dash/topics</code></td><td>Có những topic nào, đang kẹt ở điểm dừng nào</td><td>Bộ chọn topic</td></tr>
+<tr><td>3</td><td><code>GET /dash/overview</code></td><td>Hôm nay thế nào so với hôm qua</td><td>Dải KPI</td></tr>
+<tr><td>4</td><td><code>GET /dash/channels</code></td><td>Follow list + inbox, kênh nào mạnh/yếu</td><td>Bảng kênh</td></tr>
+<tr><td>5</td><td><code>GET /dash/channels/:channel_id</code></td><td>Chi tiết 1 kênh + lịch sử quyết định</td><td>Trang kênh</td></tr>
+<tr><td>6</td><td><code>GET /dash/channels/:channel_id/timeseries</code></td><td>Kênh tăng view/đăng bài theo ngày</td><td>Line/bar</td></tr>
+<tr><td>7</td><td><code>GET /dash/keywords</code></td><td>Keyword nào còn khoẻ, keyword nào cạn</td><td>Bảng + board 4 cột</td></tr>
+<tr><td>8</td><td><code>GET /dash/videos</code></td><td>Video đang theo dõi, lọc/sắp xếp tự do</td><td>Bảng video</td></tr>
+<tr><td>9</td><td><code>GET /dash/videos/:video_id/timeseries</code></td><td>Đường view của 1 video</td><td>Sparkline</td></tr>
+<tr><td>10</td><td><code>GET /dash/hot</code></td><td>Top video tăng view trong ngày X (lịch sử được)</td><td>Board nóng</td></tr>
+<tr><td>11</td><td><code>GET /dash/outliers</code></td><td>Video nổ trong tuần, trong/ngoài follow</td><td>Board outlier</td></tr>
+<tr><td>12</td><td><code>GET /dash/timeseries</code></td><td>Chuỗi thời gian tổng hợp theo metric</td><td>Biểu đồ xu hướng</td></tr>
+<tr><td>13</td><td><code>GET /dash/inbox</code></td><td>Việc đang chờ người duyệt</td><td>Badge + danh sách</td></tr>
+<tr><td>14</td><td><code>GET /dash/decisions</code></td><td>Ai đã quyết gì, bằng chứng HITL</td><td>Audit log</td></tr>
+<tr><td>15</td><td><code>GET /dash/ticks</code></td><td>Lịch sử chạy daily/weekly/setup, lỗi, quota</td><td>Run history</td></tr>
+<tr><td>16</td><td><code>GET /dash/reports</code> · <code>GET /dash/quota</code></td><td>Báo cáo đã sinh; quota theo ngày</td><td>Report viewer, quota bar</td></tr>
+</table>
+
+<h2>3 · Chi tiết</h2>
+
+<h3>1 · <code>/dash/meta</code></h3>
+<pre>{ data: {
+  metrics: [{ key: "outlier_score", label: "Bội số outlier", formula: "latest_views / baseline_median_views", null_when: "baseline_n &lt; baseline_min_n" }, ...],
+  default_settings: { outlierMultiple: 3, lotteryRatio: 50, minDurationSec: 300, ... },
+  enums: { channel_status: [...], keyword_status: [...], keyword_origin: [...], discovered_via: [...], tick_mode: [...] }
+}}</pre>
+
+<h3>2 · <code>/dash/topics</code></h3>
+<pre>data[]: { topic_id, label, market, language, region, status, setup_status,
+  channels_active, keywords_active, videos_tracked, inbox_pending,
+  last_daily_at, last_daily_status, last_weekly_at, last_weekly_status }</pre>
+
+<h3>3 · <code>/dash/overview?topic_id=&amp;date=</code></h3>
+<pre>data: {
+  date,                                     // mặc định hôm nay (quota_day)
+  channels: { new, active, paused, rejected, own },
+  keywords: { pending, active, paused, rejected },
+  videos_tracked, new_videos_today, new_videos_7d,
+  views_gained_today,                       // Σ gained của video có đủ 2 snapshot
+  outliers_7d: { followed, external },
+  inbox_pending: { channels, keywords, suggestions },
+  quota_today: { search_calls, general_units },
+  delta_vs_prev_day: { views_gained_today, new_videos_today, channels_active, keywords_active },
+  last_ticks: { daily: {at, status}, weekly: {at, status} }
+}</pre>
+
+<h3>4 · <code>/dash/channels?topic_id=&amp;status=&amp;discovered_via=&amp;q=&amp;sort=</code></h3>
+<p class="mut">sort ∈ baseline_median_views · subscriber_count · last_published_at · views_gained_7d · outliers_28d · first_seen_at</p>
+<pre>data[]: { channel_id, title, handle, url, subscriber_count, status, suggestion,
+  discovered_via, discovered_from, first_seen_at, decided_at, decided_reason,
+  baseline_median_views, baseline_n, baseline_reliable, max_views, max_over_median,
+  is_dead, is_lottery,
+  last_published_at, days_since_upload, last_checked_at,
+  videos_tracked, uploads_28d, views_gained_7d, outliers_28d,
+  thumbnails: string[] }</pre>
+
+<h3>5 · <code>/dash/channels/:channel_id?topic_id=</code></h3>
+<pre>data: { channel: {...như #4}, recent_videos: [...#8, 20 dòng], decisions: [...#14 của kênh] }</pre>
+
+<h3>6 · <code>/dash/channels/:channel_id/timeseries?topic_id=&amp;from=&amp;to=</code></h3>
+<pre>data[]: { day, total_views, views_gained, uploads, videos_observed }</pre>
+
+<h3>7 · <code>/dash/keywords?topic_id=&amp;status=&amp;origin=&amp;q=&amp;sort=</code></h3>
+<p class="mut">sort ∈ last_median_views · last_n_followed · last_checked_at · added_at</p>
+<pre>data[]: { term_key, display_term, status, origin, added_by, added_at, decided_at, decided_reason,
+  last_checked_at, last_n_results, last_n_followed, pct_followed,   // n_followed / n_results
+  last_median_views, channels_discovered,                           // số kênh có discovered_from = keyword
+  evidence: { n_channels, sample_video_ids } }</pre>
+
+<h3>8 · <code>/dash/videos?topic_id=&amp;channel_id=&amp;source=&amp;keyword=&amp;published_after=&amp;min_outlier=&amp;min_duration=&amp;sort=</code></h3>
+<p class="mut">sort ∈ views_gained_24h · outlier_score · latest_views · published_at · first_seen_at</p>
+<pre>data[]: { video_id, url, title, thumbnail_url, channel_id, channel_title, channel_status,
+  published_at, age_days, duration_sec, is_short,
+  latest_views, latest_likes, latest_comments, latest_at,
+  views_gained_24h, outlier_score, is_outlier, launch_spike,   // age_days &lt; 3
+  source, found_by_keyword, first_seen_at, snapshots }</pre>
+
+<h3>9 · <code>/dash/videos/:video_id/timeseries?topic_id=</code></h3>
+<pre>data[]: { day, views, likes, comments, views_gained }   // gained = hiệu với snapshot trước, null cho điểm đầu</pre>
+
+<h3>10 · <code>/dash/hot?topic_id=&amp;date=&amp;limit=10&amp;exclude_launch=true</code></h3>
+<p>Tính từ <code>video_daily_views</code> cho đúng ngày <code>date</code> (không phải giá trị latest), nên xem lại được bảng nóng của bất kỳ ngày nào.</p>
+<pre>data[]: { rank, video_id, title, channel_id, channel_title, views, views_gained, window_days,
+  gained_per_day, heat,                  // gained_per_day / (baseline_median/30)
+  outlier_score, age_days, launch_spike }</pre>
+
+<h3>11 · <code>/dash/outliers?topic_id=&amp;from=&amp;to=&amp;scope=followed|external|all&amp;min_multiple=</code></h3>
+<p>Mặc định: 7 ngày gần nhất, <code>scope=all</code>, <code>min_multiple</code> = <code>outlierMultiple</code> của topic.</p>
+<pre>data[]: { video_id, title, channel_id, channel_title, channel_status, scope,
+  published_at, latest_views, baseline_median_views, outlier_score,
+  found_by_keyword, channel_in_inbox }</pre>
+
+<h3>12 · <code>/dash/timeseries?topic_id=&amp;metric=&amp;from=&amp;to=&amp;group_by=day|week</code></h3>
+<table>
+<tr><th>metric</th><th>Nguồn</th></tr>
+<tr><td>views_gained</td><td>Σ hiệu snapshot liên tiếp, video kênh active</td></tr>
+<tr><td>new_videos</td><td>topic_videos theo published_at</td></tr>
+<tr><td>outliers</td><td>video có outlier_score ≥ ngưỡng theo published_at</td></tr>
+<tr><td>new_channels</td><td>decisions to_status=new theo at</td></tr>
+<tr><td>approvals</td><td>decisions actor=human, tách theo to_status</td></tr>
+<tr><td>search_calls · general_units</td><td>loop_ticks theo quota_day, tách theo mode</td></tr>
+</table>
+<pre>data[]: { bucket, value, breakdown?: { [key]: number } }</pre>
+
+<h3>13 · <code>/dash/inbox?topic_id=</code></h3>
+<pre>data: { channels_new: [...#4], keywords_pending: [...#7], channels_suggested: [...#4],
+        counts: { channels, keywords, suggestions } }</pre>
+
+<h3>14 · <code>/dash/decisions?topic_id=&amp;actor=&amp;entity_type=&amp;entity_id=&amp;from=&amp;to=</code></h3>
+<pre>data[]: { id, at, actor, entity_type, entity_id, entity_label, from_status, to_status, reason, tick_id }
+meta.summary: { by_actor: { human, loop }, loop_to_status: { new, pending, rejected },
+                hitl_violations }   // số dòng actor=loop với to_status ∈ {active, paused} — phải luôn = 0</pre>
+
+<h3>15 · <code>/dash/ticks?topic_id=&amp;mode=&amp;from=&amp;to=</code></h3>
+<pre>data[]: { tick_id, mode, quota_day, started_at, finished_at, duration_sec, status, step, error,
+  search_calls_used, general_units_used, scanned_channels, new_candidates, keywords_harvested }</pre>
+
+<h3>16 · <code>/dash/reports?topic_id=&amp;mode=&amp;date=</code> · <code>/dash/quota?from=&amp;to=</code></h3>
+<pre>reports data[]: { report_id, report_date, mode, summary, markdown, delivered }
+quota   data[]: { quota_day, bucket, units, calls }</pre>
+
+<h2>4 · Triển khai</h2>
+<ul>
+<li>Truy vấn đặt ở <code>packages/spy/src/dash-queries.ts</code> (hàm thuần nhận <code>Database</code>), route ở <code>packages/daemon/src/spy/dash-routes.ts</code>, <code>http.ts</code> chỉ thêm một dòng mount — tránh phình <code>http.ts</code>.</li>
+<li>Thêm index: <code>video_daily_views(topic_id, day)</code>, <code>decisions(topic_id, at DESC)</code>, <code>topic_videos(topic_id, published_at DESC)</code>.</li>
+<li>Không materialize bảng mới; mọi chỉ số tính khi đọc. Nếu <code>/hot</code> hoặc <code>/timeseries</code> vượt 300 ms trên dữ liệu thật mới cân nhắc cache.</li>
+</ul>
+
+<h2>5 · Tiêu chí chấp nhận</h2>
+<ol>
+<li>16 endpoint trả 200 trên DB đã di trú <code>pov-finance</code>; mỗi endpoint có ≥1 test route thật.</li>
+<li><code>/dash/decisions</code> <code>meta.summary.hitl_violations = 0</code> sau khi chạy daily + weekly + setup.</li>
+<li><code>/dash/hot?date=D</code> trả cùng kết quả khi gọi hôm nay và 7 ngày sau (tính từ snapshot lịch sử).</li>
+<li>Không field số nào là chuỗi; không field "chưa đủ dữ liệu" nào trả 0 thay cho null.</li>
+<li>Mọi endpoint p95 &lt; 300 ms trên DB thật; <code>format=csv</code> mở được bằng Google Sheets không lệch số.</li>
+<li>Không route nào dưới <code>/dash</code> nhận method khác GET.</li>
+</ol>
+</main></body></html>

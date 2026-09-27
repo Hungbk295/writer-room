@@ -24,14 +24,17 @@ import type { SpyService } from '@writer-room/spy';
 import { normalizeTermKey, planTick, quotaDay } from '@writer-room/spy';
 import type {
   CandidateChannel,
+  LoopMode,
   LoopStatus,
   ReportSummaryJson,
+  SetupStep,
   TickResult,
+  TopicSettings,
 } from '@writer-room/spy';
 
 type CandidateRecord = CandidateChannel;
 
-export type { LoopStatus, ReportSummaryJson, TickResult };
+export type { LoopMode, LoopStatus, ReportSummaryJson, SetupStep, TickResult, TopicSettings };
 
 // ─── Wire types (hợp đồng JSON với packages/web) ──────────────────────────────
 
@@ -89,7 +92,8 @@ export interface InboxItem {
    */
   langEvidence: LangEvidence | null;
   foundVia: { relation: string; term: string | null; fromChannelId: string | null };
-  status: 'new' | 'shortlisted' | 'studied' | 'rejected' | 'own';
+  /** v13 CHECK: new | active | paused | rejected | own. */
+  status: 'new' | 'active' | 'paused' | 'rejected' | 'own';
   decidedBy: string | null;
   /** Lý do máy đọc được khi loop tự quyết: 'lang_mismatch' | 'low_fit' | … */
   decidedReason: string | null;
@@ -121,7 +125,8 @@ export interface KeywordItem {
   termKey: string;
   displayTerm: string;
   relation: string;
-  status: 'pending' | 'searched' | 'exhausted' | 'rejected';
+  /** v13 CHECK: pending | active | paused | rejected. */
+  status: 'pending' | 'active' | 'paused' | 'rejected';
   yieldChannels: number;
   lastSearchedAt: string | null;
   addedAt: string;
@@ -211,7 +216,7 @@ export interface SpyLoopAdapter {
   decide(params: {
     topicId: string;
     channelIds: string[];
-    status: 'shortlisted' | 'rejected' | 'new';
+    status: 'new' | 'active' | 'paused' | 'rejected';
     negativeKeyword?: string;
     decidedBy?: 'user' | 'loop_auto';
   }): Promise<{ updated: number }>;
@@ -220,10 +225,17 @@ export interface SpyLoopAdapter {
   decideKeyword(params: {
     topicId: string;
     termKeys: string[];
-    status: 'pending' | 'rejected';
+    status: 'pending' | 'active' | 'paused' | 'rejected';
     addToNegative?: boolean;
   }): Promise<{ updated: number }>;
-  tick(params: { topicId: string }): Promise<TickResult>;
+  /**
+   * Tick thật. `mode` v3: 'daily' (0 search call), 'weekly' (search bounded),
+   * 'setup' (cần `setupStep` S2='channels' | S3='keywords'). Bỏ `mode` = tick
+   * legacy v5 — giữ nguyên cho caller cũ.
+   */
+  tick(params: { topicId: string; mode?: LoopMode; setupStep?: SetupStep }): Promise<TickResult>;
+  /** Ngưỡng của topic (settings_json merge mặc định §3 plan) — scheduler đọc dailyAt/weeklyAt. */
+  topicSettings(topicId: string): Promise<TopicSettings>;
   /** Dry-run: chỉ lập kế hoạch + ước tính chi phí, KHÔNG gọi API nào. */
   planTick(topicId: string): Promise<TickPlanView>;
   listReports(params: { topicId?: string; limit?: number }): Promise<StoredReport[]>;
@@ -408,7 +420,8 @@ function keywordFromRow(row: Row): KeywordItem {
     termKey: str(row, 'term_key'),
     displayTerm: str(row, 'display_term'),
     relation: str(row, 'relation'),
-    status: status === 'searched' || status === 'exhausted' || status === 'rejected' ? status : 'pending',
+    // v13: searched→active, exhausted→paused đã được migration ánh xạ.
+    status: status === 'active' || status === 'paused' || status === 'rejected' ? status : 'pending',
     yieldChannels: Number(row['yield_channels'] ?? 0),
     lastSearchedAt: nstr(row, 'last_searched_at'),
     addedAt: str(row, 'added_at'),
@@ -617,7 +630,7 @@ class SpyLoopService implements SpyLoopAdapter {
           fromChannelId: candidate?.discoveredFrom ?? null,
         };
       })(),
-      status: (['new', 'shortlisted', 'studied', 'rejected', 'own'].includes(status)
+      status: (['new', 'active', 'paused', 'rejected', 'own'].includes(status)
         ? status
         : 'new') as InboxItem['status'],
       decidedBy: nstr(row, 'decided_by'),
@@ -689,22 +702,21 @@ class SpyLoopService implements SpyLoopAdapter {
   async decide(params: {
     topicId: string;
     channelIds: string[];
-    status: 'shortlisted' | 'rejected' | 'new';
+    status: 'new' | 'active' | 'paused' | 'rejected';
     negativeKeyword?: string;
     decidedBy?: 'user' | 'loop_auto';
   }): Promise<{ updated: number }> {
-    this.spy.store.decideTopicChannels(
-      params.topicId,
-      params.channelIds,
-      params.status,
-      params.decidedBy ?? 'user',
-      // Người duyệt quyết → decided_reason để null (quy ước của store);
-      // undo cũng vậy vì nó xoá quyết định chứ không tạo lý do mới.
-      null,
-    );
-    // "Reject + negative keyword": không có bảng negative riêng ở P0 — đánh dấu
-    // term là `rejected` trong topic_keywords để loop không search lại (§2.3).
+    // v13: đường duy nhất đổi status là decideChannel — ghi decisions
+    // actor='human' (tôn chỉ 1). `decidedBy` giữ trong signature cho caller cũ;
+    // quyết định ở đây luôn là của người duyệt.
+    // "Reject + negative keyword" đi qua decided_reason='reject_neg:<kw>'
+    // (hợp đồng web — không thêm cột mới); term cũng được đánh rejected để
+    // loop không search lại (§2.3).
     const negative = params.negativeKeyword?.trim();
+    const reason = negative && params.status === 'rejected' ? `reject_neg:${negative}` : null;
+    for (const channelId of params.channelIds) {
+      this.spy.store.decideChannel(params.topicId, channelId, params.status, reason);
+    }
     if (negative) {
       this.spy.store.setKeywordStatus(params.topicId, normalizeTermKey(negative), 'rejected');
     }
@@ -744,18 +756,27 @@ class SpyLoopService implements SpyLoopAdapter {
   async decideKeyword(params: {
     topicId: string;
     termKeys: string[];
-    status: 'pending' | 'rejected';
+    status: 'pending' | 'active' | 'paused' | 'rejected';
   }): Promise<{ updated: number }> {
+    // v13: qua decideKeyword của hợp đồng store — ghi decisions actor='human'.
     for (const termKey of params.termKeys) {
-      this.spy.store.setKeywordStatus(params.topicId, termKey, params.status);
+      this.spy.store.decideKeyword(params.topicId, termKey, params.status, null);
     }
     return { updated: params.termKeys.length };
   }
 
   // ── Tick ────────────────────────────────────────────────────────────────────
 
-  async tick(params: { topicId: string }): Promise<TickResult> {
-    return this.spy.loop.runTick(params.topicId, { dryRun: false });
+  async tick(params: { topicId: string; mode?: LoopMode; setupStep?: SetupStep }): Promise<TickResult> {
+    return this.spy.loop.runTick(params.topicId, {
+      dryRun: false,
+      mode: params.mode,
+      setupStep: params.setupStep,
+    });
+  }
+
+  async topicSettings(topicId: string): Promise<TopicSettings> {
+    return this.spy.store.getTopicSettings(topicId);
   }
 
   async planTick(topicId: string): Promise<TickPlanView> {
@@ -773,7 +794,7 @@ class SpyLoopService implements SpyLoopAdapter {
           estimatedSearchCalls: 0,
           estimatedGeneralUnits: expandUnits,
           keywords: [],
-          note: `${plan.channelsToExpand.length} kênh shortlisted/studied chưa mở rộng đồ thị`,
+          note: `${plan.channelsToExpand.length} kênh active chưa mở rộng đồ thị`,
         },
         {
           step: 'SEARCH',
@@ -834,7 +855,8 @@ class SpyLoopService implements SpyLoopAdapter {
     this.candidateCache = null;
     this.sourceCache = null;
     this.termLabelCache = null;
-    return (this.spy.store.listTopicChannels(topicId, { status: 'studied', limit: 200 }) as Row[])
+    // v3: Follow List = kênh active (migration đã gộp studied → active).
+    return (this.spy.store.listTopicChannels(topicId, { status: 'active', limit: 200 }) as Row[])
       .map((row) => {
         const channelId = str(row, 'channel_id');
         const candidate = this.candidateById(channelId);

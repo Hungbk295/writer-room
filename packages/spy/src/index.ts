@@ -3,13 +3,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AppError } from './errors.ts';
 import { ArtifactStore } from './artifacts.ts';
-import { SpyStore, type SearchVideoCacheRow, type VideoCommentRecord } from './store.ts';
+import { SpyStore, type SearchQueryCacheRow, type SearchVideoCacheRow, type VideoCommentRecord } from './store.ts';
 import { OperationManager } from './operations.ts';
 import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
 import { HarvestService } from './harvest.ts';
 
-import { QuotaLedger } from './quota.ts';
+import { QuotaLedger, KeyPool, keyId } from './quota.ts';
 import { DiscoveryService } from './discovery.ts';
 import { nicheConfigSchema, NICHE_TEMPLATE, scoreChannelFit, type NicheConfig } from './niche.ts';
 import { buildSourcePack } from './source-pack.ts';
@@ -82,6 +82,9 @@ export * from './loop/planner.ts';
 export * from './loop/report.ts';
 export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
+export * from './dash/types.ts';
+export * from './dash/registry.ts';
+export * from './dash/activity.ts';
 export * from './news-radar.ts';
 
 
@@ -114,6 +117,32 @@ export interface GlobalVideoSearchInput {
   refresh?: 'never' | 'if_stale' | 'always';
   /** Cache TTL in hours for `refresh: 'if_stale'`. Defaults to 24. */
   maxAgeHours?: number;
+  /**
+   * ISO 8601 lower/upper bound on `publishedAt`, forwarded to
+   * YouTube Data API `search.list` (SearchInput.publishedAfter/Before).
+   * Ignored on the yt-dlp fallback — it has no date filter, so a request
+   * with these set still runs but `fallbackReason`/`providerUsed` say so
+   * instead of silently pretending the filter applied.
+   *
+   * Any of these three set bypasses `search_query_cache` entirely (that
+   * cache is keyed by query+language+region+provider only — see the schema
+   * comment above `search_query_cache` — so a filtered call must never be
+   * read from or written to it, or a later plain call would silently
+   * inherit someone else's date/order filter).
+   */
+  publishedAfter?: string;
+  publishedBefore?: string;
+  /** Defaults to 'relevance', matching prior behaviour. */
+  order?: 'relevance' | 'date' | 'viewCount';
+  /**
+   * Forwarded to YouTube Data API `search.list` (SearchInput.videoDuration).
+   * 'short' = YouTube's own bucket, DƯỚI 4 PHÚT — không phải "là Shorts"
+   * (Shorts thật ≤60s, hoặc ≤3 phút cho một số kênh mới hơn). Đây là bộ lọc
+   * rẻ nhất có ở tầng API để thu hẹp trước khi lọc chính xác bằng
+   * `durationSec` trên kết quả trả về — không dùng để KẾT LUẬN một video là
+   * Short, chỉ để giảm số kết quả cần kéo về. Ignored trên yt-dlp fallback.
+   */
+  videoDuration?: 'any' | 'short' | 'medium' | 'long';
 }
 
 export interface GlobalVideoSearchResult {
@@ -148,6 +177,28 @@ export interface GlobalVideoSearchResult {
   }>;
 }
 
+/**
+ * `fallbackReason` cho yt-dlp fallback trong `globalVideoSearch`.
+ *
+ * Trước đây MỌI lỗi Data API (kể cả "tất cả key trong pool đều hết quota")
+ * đều gộp chung thành `youtube_data_api_${error.code}` — với code
+ * `quota_exceeded` thì kết quả là `youtube_data_api_quota_exceeded`, không
+ * nói được đây là do rotate hết cả pool (đáng để cấu hình thêm key/đợi qua
+ * ngày) hay do chính THAM SỐ của request (vd single-key legacy) hết quota.
+ * `QuotaCountingDataApi.withRotation` đính `details.allKeysExhausted` +
+ * `details.triedKeyIds` khi nó thật sự đã thử hết mọi key trong pool — dùng
+ * ngay thông tin đó thay vì đoán lại từ error code.
+ */
+function globalVideoSearchFallbackReason(error: unknown): string {
+  if (!(error instanceof AppError)) return 'youtube_data_api_provider_failure';
+  const details = error.details as { allKeysExhausted?: boolean; triedKeyIds?: string[] } | undefined;
+  if (details?.allKeysExhausted) {
+    const keys = details.triedKeyIds?.length ? `:${details.triedKeyIds.join(',')}` : '';
+    return `youtube_data_api_all_keys_exhausted${keys}`;
+  }
+  return `youtube_data_api_${error.code}`;
+}
+
 /** Cache key normalization: whitespace/case only — must stay provider-agnostic. */
 function normalizeSearchQuery(query: string): string {
   return query.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -176,6 +227,26 @@ async function loadConfig(dataRoot: string, override?: SpyConfig): Promise<SpyCo
     ...override,
     sampling: { ...fromFile.sampling, ...override.sampling },
   });
+}
+
+/**
+ * Merge youtubeDataApiKey (single, backward compat) và youtubeDataApiKeys (array)
+ * thành một danh sách deduplicated. Single key được thêm vào đầu nếu chưa có.
+ */
+function resolveApiKeys(config: SpyConfig): string[] {
+  const keys: string[] = [];
+  // Array keys có ưu tiên
+  if (config.youtubeDataApiKeys?.length) {
+    keys.push(...config.youtubeDataApiKeys.filter((k) => k.trim().length > 0));
+  }
+  // Single key backward compat — thêm nếu chưa có
+  if (config.youtubeDataApiKey?.trim()) {
+    const single = config.youtubeDataApiKey.trim();
+    if (!keys.includes(single)) {
+      keys.unshift(single);
+    }
+  }
+  return keys;
 }
 
 interface OutlierRow {
@@ -278,9 +349,10 @@ export class SpyService {
    * Adapter đã bọc QuotaCountingDataApi. MỌI call Data API phải đi qua field này,
    * nếu không ledger sẽ tưởng còn quota rồi ăn 403 thật (§2.2).
    */
-  private readonly countingApi: YouTubeDataApiPort;
+  private readonly countingApi: QuotaCountingDataApi;
   private readonly dataApiAdapter: YouTubeDataApiAdapter | null;
   private readonly llm: LlmPort;
+  private keyPool: KeyPool;
 
   constructor(opts: SpyServiceOptions) {
     this.dataRoot = resolve(opts.dataRoot);
@@ -305,6 +377,11 @@ export class SpyService {
     this.llm = opts.llm ?? new DeterministicStubLlm();
     this.quota = new QuotaLedger(this.store);
 
+    // Build key pool from config — merge youtubeDataApiKeys + youtubeDataApiKey
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    // Wire pool vào ledger để aggregate remaining/canAfford/status dùng đúng limit tổng
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+
     // MỌI adapter đều được bọc — kể cả adapter inject từ test.
     //
     // Trước đây adapter inject được miễn bọc để tránh double-count, nhưng
@@ -317,7 +394,12 @@ export class SpyService {
     // fake do test truyền vào TỰ NÓ là capability nên hasKey luôn true.
     const countingApi = opts.dataApi
       ? new QuotaCountingDataApi(opts.dataApi, this.quota, () => true)
-      : new QuotaCountingDataApi(this.dataApi, this.quota, () => Boolean(this.config.youtubeDataApiKey?.trim()));
+      : new QuotaCountingDataApi(this.dataApi, this.quota, () => !this.keyPool.isEmpty || Boolean(this.config.youtubeDataApiKey?.trim()));
+    // Wire multi-key rotation
+    if (!opts.dataApi && this.dataApiAdapter && !this.keyPool.isEmpty) {
+      this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+      countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+    }
     this.countingApi = countingApi;
 
     this.acquisition = new AcquisitionService(
@@ -362,7 +444,17 @@ export class SpyService {
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
     await this.artifacts.initialize();
     this.config = await loadConfig(this.dataRoot, this.config);
-    this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    // Refresh key pool from config
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+    if (this.dataApiAdapter) {
+      if (!this.keyPool.isEmpty) {
+        this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+        this.countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+      } else {
+        this.dataApiAdapter.setApiKey(this.config.youtubeDataApiKey);
+      }
+    }
     this.harvest.setConcurrency(this.config.concurrency);
     this.operations.reconcile();
     await importTopicFiles(this.dataRoot, this.store);
@@ -658,10 +750,15 @@ export class SpyService {
 
   /** Public settings view — API key is masked. */
   getPublicConfig() {
+    const allKeys = resolveApiKeys(this.config);
     const key = this.config.youtubeDataApiKey?.trim() || '';
     return {
-      hasApiKey: key.length > 0,
+      hasApiKey: key.length > 0 || allKeys.length > 0,
       apiKeyLast4: key.length >= 4 ? key.slice(-4) : null,
+      /** Số key hiện tại trong pool. */
+      totalApiKeys: allKeys.length,
+      /** Last4 của mỗi key trong pool. */
+      apiKeyIds: allKeys.map((k) => keyId(k)),
       concurrency: this.config.concurrency ?? 1,
       sampling: samplingPolicySchema.parse(this.config.sampling ?? {}),
     };
@@ -669,6 +766,7 @@ export class SpyService {
 
   async updateConfig(patch: {
     youtubeDataApiKey?: string | null;
+    youtubeDataApiKeys?: string[];
     concurrency?: number;
     sampling?: Partial<SamplingPolicy>;
   }): Promise<SpyConfig> {
@@ -684,18 +782,35 @@ export class SpyService {
       const value = patch.youtubeDataApiKey?.trim() || '';
       next.youtubeDataApiKey = value || undefined;
     }
+    if (patch.youtubeDataApiKeys !== undefined) {
+      next.youtubeDataApiKeys = patch.youtubeDataApiKeys.filter((k) => k.trim().length > 0);
+    }
     this.config = spyConfigSchema.parse(next);
-    this.dataApiAdapter?.setApiKey(this.config.youtubeDataApiKey);
+    // Rebuild key pool
+    this.keyPool = new KeyPool(resolveApiKeys(this.config));
+    if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
+    if (this.dataApiAdapter) {
+      if (!this.keyPool.isEmpty) {
+        this.dataApiAdapter.setApiKeys(this.keyPool.allKeys as string[]);
+        this.countingApi.setKeyPool(this.keyPool, (key) => this.dataApiAdapter!.useKey(key));
+      } else {
+        this.dataApiAdapter.setApiKey(this.config.youtubeDataApiKey);
+      }
+    }
     this.harvest.setConcurrency(this.config.concurrency);
     this.acquisition.setDefaultSampling(this.config.sampling);
 
     const configPath = defaultConfigPath(this.dataRoot);
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
-    const toWrite = {
+    const toWrite: Record<string, unknown> = {
       youtubeDataApiKey: this.config.youtubeDataApiKey ?? '',
       concurrency: this.config.concurrency ?? 1,
       sampling: this.config.sampling ?? {},
     };
+    // Chỉ ghi youtubeDataApiKeys khi có nhiều hơn 1 key
+    if (this.config.youtubeDataApiKeys?.length) {
+      toWrite.youtubeDataApiKeys = this.config.youtubeDataApiKeys;
+    }
     await writeFile(configPath, `${JSON.stringify(toWrite, null, 2)}\n`, 'utf8');
     return this.config;
   }
@@ -908,6 +1023,7 @@ export class SpyService {
   private assertDataApi(): void {
     // Adapter được inject từ ngoài (test, hoặc backend khác) tự lo credential.
     if (this.dataApiAdapter === null) return;
+    if (!this.keyPool.isEmpty) return; // multi-key pool có key
     if (!this.config.youtubeDataApiKey?.trim()) {
       throw new AppError('capability_missing', 'Chưa cấu hình youtubeDataApiKey trong config/spy.json');
     }
@@ -1025,6 +1141,29 @@ export class SpyService {
     }
     const maxAgeMs = rawMaxAgeHours * 3_600_000;
 
+    const validateIsoDate = (value: unknown, name: string): string | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+        throw new AppError('invalid_input', `${name} phải là chuỗi ngày ISO 8601 hợp lệ`);
+      }
+      return value;
+    };
+    const publishedAfter = validateIsoDate(input.publishedAfter, 'published_after');
+    const publishedBefore = validateIsoDate(input.publishedBefore, 'published_before');
+    const order = input.order ?? 'relevance';
+    if (order !== 'relevance' && order !== 'date' && order !== 'viewCount') {
+      throw new AppError('invalid_input', "order phải là 'relevance' | 'date' | 'viewCount'");
+    }
+    const videoDuration = input.videoDuration ?? 'any';
+    if (!['any', 'short', 'medium', 'long'].includes(videoDuration)) {
+      throw new AppError('invalid_input', "video_duration phải là 'any' | 'short' | 'medium' | 'long'");
+    }
+    // Bất kỳ filter nào ở đây làm cache theo query+language+region+provider
+    // (search_query_cache) không còn đúng nghĩa nữa — bỏ qua cả đọc lẫn ghi,
+    // không để một lần gọi có filter làm nhiễm bộ nhớ đệm của query trần.
+    const hasCustomFilter = Boolean(publishedAfter) || Boolean(publishedBefore)
+      || order !== 'relevance' || videoDuration !== 'any';
+
     const base = { query, limit, language, region };
     const queryNorm = normalizeSearchQuery(query);
     const dataApiAvailable = this.dataApiAdapter === null || Boolean(this.config.youtubeDataApiKey?.trim());
@@ -1032,12 +1171,51 @@ export class SpyService {
 
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
-    const cached = this.store.getSearchQueryCache(queryNorm, language, region, providerBranch);
+    const primaryCached = this.store.getSearchQueryCache(queryNorm, language, region, providerBranch);
+
+    /**
+     * Một dòng cache đến từ yt-dlp fallback VÌ Data API vừa lỗi (quota/key,
+     * không phải "chưa cấu hình") được ghi dưới khoá `provider_used='ytdlp'`
+     * (phản ánh ĐÚNG kết quả thật) — khác với `providerBranch` ('youtube_data_api')
+     * dùng để tra ở trên khi Data API đang được cấu hình, nên trước đây dòng
+     * đó là MỒ CÔI: không bao giờ được đọc lại trong khi dataApiAvailable vẫn
+     * true, mọi lần gọi lặp lại trong lúc key/pool đang gặp sự cố đều phải
+     * gọi lại provider (fail lại, fallback lại) — không có gì được cache.
+     *
+     * Tra thêm dòng 'ytdlp' này, nhưng chỉ CHẤP NHẬN nó trong một cửa sổ TTL
+     * NGẮN — nó phản ánh một sự cố tạm thời (quota key hết/key sai), Data API
+     * rất có thể đã dùng lại được ở lần gọi kế tiếp (rotate sang key khác còn
+     * quota, hoặc key vừa 403 đã sang quota-day mới). Phục vụ nó cho cả
+     * `refresh:'if_stale'` (mặc định) trong suốt maxAgeHours (thường 24h) sẽ
+     * khoá agent vào yt-dlp (thiếu publishedAt) lâu hơn cần thiết.
+     * `refresh:'never'` vẫn giữ nguyên ngữ nghĩa "đừng quan tâm tuổi cache".
+     * `youtube_data_api_not_configured` (không phải sự cố, là trạng thái ổn
+     * định) không bị giới hạn TTL này — nó vốn dĩ chỉ ghi/đọc dưới khoá
+     * 'ytdlp' vì providerBranch cũng là 'ytdlp' khi ấy, không cần lookup phụ.
+     */
+    const QUOTA_FALLBACK_CACHE_TTL_MS = 15 * 60_000;
+    const isQuotaFallbackRow = (row: SearchQueryCacheRow | null): row is SearchQueryCacheRow => Boolean(
+      row
+      && row.providerUsed === 'ytdlp'
+      && row.fallbackReason
+      && row.fallbackReason !== 'youtube_data_api_not_configured'
+      && row.fallbackReason.startsWith('youtube_data_api_'),
+    );
+    let cached = primaryCached;
+    if (!cached && providerBranch === 'youtube_data_api') {
+      const fallbackCached = this.store.getSearchQueryCache(queryNorm, language, region, 'ytdlp');
+      const fallbackAgeMs = fallbackCached ? nowMs - Date.parse(fallbackCached.fetchedAt) : null;
+      const fallbackUsable = isQuotaFallbackRow(fallbackCached)
+        && (refresh === 'never' || (fallbackAgeMs !== null && fallbackAgeMs <= QUOTA_FALLBACK_CACHE_TTL_MS));
+      if (fallbackUsable) cached = fallbackCached;
+    }
+
     const cacheAgeMs = cached ? nowMs - Date.parse(cached.fetchedAt) : null;
     const cacheAgeSeconds = cacheAgeMs === null ? null : Math.round(cacheAgeMs / 1000);
 
     const servableFromCache = Boolean(
-      cached
+      !hasCustomFilter
+      && cached
       && cached.limitRequested >= limit
       && refresh !== 'always'
       && (refresh === 'never' || (cacheAgeMs !== null && cacheAgeMs <= maxAgeMs)),
@@ -1067,14 +1245,18 @@ export class SpyService {
       };
     }
 
-    const missStatus: GlobalVideoSearchResult['cache']['status'] = !cached
+    // Với filter, `cached` (nếu có) là bộ nhớ đệm của QUERY TRẦN — không nói
+    // được gì về lần gọi có filter này, nên không dùng age/status của nó
+    // (không phải 'stale', không phải 'insufficient_limit': đơn giản là chưa
+    // từng có cache cho tổ hợp filter này, luôn 'miss').
+    const missStatus: GlobalVideoSearchResult['cache']['status'] = hasCustomFilter || !cached
       ? 'miss'
       : cached.limitRequested < limit
         ? 'insufficient_limit'
         : refresh === 'always'
           ? 'forced'
           : 'stale';
-    const cache = { status: missStatus, ageSeconds: cacheAgeSeconds };
+    const cache = { status: missStatus, ageSeconds: hasCustomFilter ? null : cacheAgeSeconds };
 
     let live: GlobalVideoSearchResult;
     if (dataApiAvailable) {
@@ -1085,10 +1267,13 @@ export class SpyService {
         const searched = await this.countingApi.search({
           q: query,
           type: 'video',
-          order: 'relevance',
+          order,
           maxResults: limit,
           relevanceLanguage: language,
           regionCode: region,
+          publishedAfter,
+          publishedBefore,
+          videoDuration,
         });
         const hits = searched.hits.filter(
           (hit): hit is typeof hit & { videoId: string } => hit.kind === 'video' && Boolean(hit.videoId),
@@ -1119,9 +1304,7 @@ export class SpyService {
         if (error instanceof AppError && error.code === 'invalid_input') throw error;
         live = await this.globalVideoSearchWithYtDlp(
           base,
-          error instanceof AppError
-            ? `youtube_data_api_${error.code}`
-            : 'youtube_data_api_provider_failure',
+          globalVideoSearchFallbackReason(error),
           cache,
         );
       }
@@ -1129,17 +1312,23 @@ export class SpyService {
       live = await this.globalVideoSearchWithYtDlp(base, 'youtube_data_api_not_configured', cache);
     }
 
-    this.store.upsertSearchQueryCache({
-      queryNorm,
-      language,
-      region,
-      providerUsed: live.providerUsed,
-      limitRequested: limit,
-      localeHintsApplied: live.localeHintsApplied,
-      fallbackReason: live.fallbackReason,
-      videoIds: live.videos.map((video) => video.videoId),
-      fetchedAt: nowIso,
-    });
+    if (!hasCustomFilter) {
+      // provider_used ở đây LUÔN là kết quả THẬT (live.providerUsed), không
+      // phải providerBranch — xem lookup phụ ở trên (fallbackCached) cho lý
+      // do dòng 'ytdlp' ghi khi providerBranch='youtube_data_api' vẫn cần
+      // đọc lại được trong cửa sổ TTL ngắn.
+      this.store.upsertSearchQueryCache({
+        queryNorm,
+        language,
+        region,
+        providerUsed: live.providerUsed,
+        limitRequested: limit,
+        localeHintsApplied: live.localeHintsApplied,
+        fallbackReason: live.fallbackReason,
+        videoIds: live.videos.map((video) => video.videoId),
+        fetchedAt: nowIso,
+      });
+    }
     for (const video of live.videos) {
       this.store.upsertSearchVideoCache({
         sourceVideoId: video.videoId,
@@ -1384,7 +1573,21 @@ export class SpyService {
   // ---------------------------------------------------------------------------
 
   quotaStatus() {
-    return { ...this.quota.status(), history: this.store.listQuotaUsage(14) };
+    const base = { ...this.quota.status(), history: this.store.listQuotaUsage(14) };
+    if (this.keyPool.size > 1) {
+      const perKey = this.quota.statusPerKey(this.keyPool.allKeys as string[]);
+      return {
+        ...base,
+        multiKey: {
+          totalKeys: this.keyPool.size,
+          currentKeyId: this.keyPool.currentKeyId ?? null,
+          keys: perKey.keys,
+          totalSearchRemaining: perKey.totalSearchRemaining,
+          totalGeneralRemaining: perKey.totalGeneralRemaining,
+        },
+      };
+    }
+    return base;
   }
 
   async discoverChannels(input: Parameters<DiscoveryService['discoverChannels']>[1]) {

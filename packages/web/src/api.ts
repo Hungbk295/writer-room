@@ -1240,8 +1240,10 @@ export interface LoopStatus {
   } | null;
   nextTickAt: string | null;
   inboxTotal: number;
-  shortlistedTotal: number;
-  studiedTotal: number;
+  // v13: Follow List = kênh active (được duyệt) / paused (tạm dừng) —
+  // shortlisted/studied của v2 đã map vào hai trạng thái này ở migration.
+  activeTotal: number;
+  pausedTotal: number;
   keywordsPending: number;
   quota: {
     searchUsed: number;
@@ -1420,7 +1422,9 @@ export interface LangEvidence {
   summary: string;
 }
 
-export type KeywordStatus = 'pending' | 'searched' | 'exhausted' | 'rejected';
+// v13 Keyword List: pending chờ duyệt → active|paused|rejected (searched→active,
+// exhausted→paused ở migration v12→v13).
+export type KeywordStatus = 'pending' | 'active' | 'paused' | 'rejected';
 
 export interface Keyword {
   topicId: string;
@@ -1513,20 +1517,28 @@ export interface ReportSummaryJson {
     why: string[];
   }>;
   newKeywords: string[];
-  exhaustedKeywords: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
+  // v13: keyword tạm dừng. Báo cáo v2 cũ vẫn ghi `exhaustedKeywords` — đọc được cả hai.
+  pausedKeywords?: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
+  exhaustedKeywords?: Array<{ term: string; rejectRate: number; yieldChannels: number }>;
   scannedChannels: Array<{ channelId: string; title: string; spyRunId: string | null; topTitlePattern: string | null; outliers: string[] }>;
   delta: {
     vsReportId: string | null;
     vsDate: string | null;
     newCandidatesPrev: number | null;
     inboxTotalPrev: number | null;
-    shortlistedTotalPrev: number | null;
-    studiedTotalPrev: number | null;
     keywordsPendingPrev: number | null;
+    // v13: Follow List = active/paused. Report v2 cũ trong DB vẫn mang tên
+    // shortlisted/studied — cả hai bộ tên đều optional, UI đọc cái nào có.
+    activeTotalPrev?: number | null;
+    pausedTotalPrev?: number | null;
+    shortlistedTotalPrev?: number | null;
+    studiedTotalPrev?: number | null;
     firstSeenToday: string[];
-    movedToShortlistToday: string[];
-    userDecisionsSinceLast: { shortlisted: number; rejected: number };
-    newlyExhausted: string[];
+    movedToActiveToday?: string[];
+    movedToShortlistToday?: string[];
+    userDecisionsSinceLast: { active?: number; shortlisted?: number; rejected: number };
+    newlyPaused?: string[];
+    newlyExhausted?: string[];
   };
   warnings: string[];
   links: { dashboard: string; mcpTool: string };
@@ -2116,14 +2128,31 @@ export const api = {
     return request<{ items: InboxItem[]; total: number; nextCursor: number | null }>(`/api/spy/loop/inbox?${q}`);
   },
 
-  /** `status: 'new'` = undo (phím `u`) — đưa kênh trở lại hàng chờ duyệt. */
+  /**
+   * v3 HITL decide — đường duy nhất đổi trạng thái kênh/keyword, ghi decisions
+   * actor='human'. `toStatus: 'new'` = undo (phím `u`) — đưa về hàng chờ duyệt.
+   * Channel to_status: new|active|paused|rejected|own. Keyword: pending|active|paused|rejected.
+   */
   loopDecide: (body: {
     topicId: string;
-    channelIds: string[];
-    status: 'shortlisted' | 'rejected' | 'new';
-    negativeKeyword?: string;
+    entityType: 'channel' | 'keyword';
+    entityId: string;
+    toStatus: string;
+    reason?: string | null;
   }) =>
-    request<{ updated: number }>('/api/spy/loop/decide', { method: 'POST', body: JSON.stringify(body) }),
+    request<{ ok: boolean; entity_type: string; entity_id: string; to_status: string }>(
+      '/api/spy/loop/decide',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          topic_id: body.topicId,
+          entity_type: body.entityType,
+          entity_id: body.entityId,
+          to_status: body.toStatus,
+          reason: body.reason ?? null,
+        }),
+      },
+    ),
 
   /**
    * Cold start #1 (design §1.2): dán URL kênh / `@handle` / `UC…`.
@@ -2151,8 +2180,7 @@ export const api = {
       body: JSON.stringify({ topicId: body.topicId, term: body.displayTerm, relation: body.relation }),
     }),
 
-  decideKeywords: (body: { topicId: string; termKeys: string[]; status: KeywordStatus; negative?: boolean }) =>
-    request<{ ok: boolean; updated: number }>('/api/spy/loop/keywords/decide', { method: 'POST', body: JSON.stringify(body) }),
+
 
   loopTick: (body: { topicId: string; dryRun?: boolean }) =>
     request<TickPlan | { ok: boolean; running: boolean; dryRun: false }>('/api/spy/loop/tick', { method: 'POST', body: JSON.stringify(body) }),
@@ -2166,7 +2194,9 @@ export const api = {
   resendReport: (id: string) =>
     request<{ ok: boolean }>(`/api/spy/loop/reports/${encodeURIComponent(id)}/resend`, { method: 'POST' }),
 
-  loopStudied: (topicId: string) =>
+  // v3: Follow List = kênh status=active. Route /follow-list (alias /studied
+  // còn tồn tại phía daemon cho client cũ).
+  loopFollowList: (topicId: string) =>
     request<{
       channels: Array<{
         channelId: string;
@@ -2180,7 +2210,7 @@ export const api = {
         facelessHint: number | null;
         decidedAt: string | null;
       }>;
-    }>(`/api/spy/loop/studied?topic=${encodeURIComponent(topicId)}`),
+    }>(`/api/spy/loop/follow-list?topic=${encodeURIComponent(topicId)}`),
 
   getSpyLoopSettings: () =>
     request<SpyLoopSettings>('/api/settings/spy-loop'),

@@ -5,7 +5,7 @@
  *   SpyLoopPage
  *     TopicSwitcher
  *     LoopKpiRow + TickActions + DryRunPlanModal
- *     tabs: InboxTab | KeywordBoardTab | StudiedTab | ReportsTab
+ *     tabs: InboxTab | KeywordBoardTab | FollowTab | ReportsTab
  *   LoopSettingsPanel (bottom of page)
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -287,8 +287,8 @@ function LoopKpiRow({ status }: { status: LoopStatus | null }) {
         <div><span class="muted">Unit quota</span><strong> {q.generalUsed.toLocaleString()}/{q.generalLimit.toLocaleString()}</strong></div>
       </>}
       <div><span class="muted">New</span> <strong>{status.inboxTotal}</strong></div>
-      <div><span class="muted">Shortlisted</span> <strong>{status.shortlistedTotal}</strong></div>
-      <div><span class="muted">Studied</span> <strong>{status.studiedTotal}</strong></div>
+      <div><span class="muted">Active</span> <strong>{status.activeTotal}</strong></div>
+      <div><span class="muted">Paused</span> <strong>{status.pausedTotal}</strong></div>
       <div><span class="muted">Keyword pending</span> <strong>{status.keywordsPending}</strong></div>
       {status.lastTick && (
         <div>
@@ -371,7 +371,7 @@ function TickActions({ topicId, onDone }: { topicId: string; onDone: () => void 
           quotaDay: '2026-08-20',
           dryRun: true,
           steps: [
-            { step: 'EXPAND', estimatedSearchCalls: 0, estimatedGeneralUnits: 4, keywords: [], note: '2 kênh shortlisted chưa expand' },
+            { step: 'EXPAND', estimatedSearchCalls: 0, estimatedGeneralUnits: 4, keywords: [], note: '2 kênh active chưa expand' },
             { step: 'SEARCH', estimatedSearchCalls: 3, estimatedGeneralUnits: 0, keywords: ms.newKeywords, note: 'keyword pending có df_chan ≥ 2' },
             { step: 'ENRICH', estimatedSearchCalls: 0, estimatedGeneralUnits: 82, keywords: [], note: '41 kênh mới × 2 unit' },
             { step: 'AUTO-TRIAGE', estimatedSearchCalls: 0, estimatedGeneralUnits: 0, keywords: [], note: 'fit + learn gates (faceless hint KHÔNG auto-reject)' },
@@ -524,7 +524,7 @@ function InboxRow({
   item: InboxItem;
   selected: boolean;
   onSelect: () => void;
-  onDecide: (status: 'shortlisted' | 'rejected', neg?: string) => void;
+  onDecide: (status: 'active' | 'rejected', neg?: string) => void;
 }) {
   const [showReasons, setShowReasons] = useState(false);
 
@@ -574,7 +574,7 @@ function InboxRow({
           </div>
           <Row style={{ gap: '0.4rem' }} onClick={(e) => e.stopPropagation()}>
             <button class="btn teal" style={{ fontSize: '0.8rem', padding: '3px 10px' }}
-              onClick={() => onDecide('shortlisted')}>S Shortlist</button>
+              onClick={() => onDecide('active')}>A Approve</button>
             <button class="btn secondary" style={{ fontSize: '0.8rem', padding: '3px 10px' }}
               onClick={() => onDecide('rejected')}>R Reject</button>
             <button class="btn secondary" style={{ fontSize: '0.8rem', padding: '3px 10px' }}
@@ -797,7 +797,7 @@ function ColdStartPanel({ topicId, onChanged }: { topicId: string; onChanged: ()
 interface PastDecision {
   item: InboxItem;
   index: number;
-  status: 'shortlisted' | 'rejected';
+  status: 'active' | 'rejected';
 }
 
 function InboxTab({ topicId }: { topicId: string }) {
@@ -836,7 +836,7 @@ function InboxTab({ topicId }: { topicId: string }) {
 
   const decide = async (
     item: InboxItem,
-    status: 'shortlisted' | 'rejected',
+    status: 'active' | 'rejected',
     negativeKeyword?: string,
   ) => {
     const index = items.findIndex((row) => row.channelId === item.channelId);
@@ -846,7 +846,12 @@ function InboxTab({ topicId }: { topicId: string }) {
 
     try {
       if (!IS_MOCK) {
-        await api.loopDecide({ topicId, channelIds: [item.channelId], status, negativeKeyword });
+        // v3 decide: 1 entity/call. Negative keyword v3 chưa có trường riêng —
+        // giữ lại trong reason để audit trail không mất thông tin.
+        await api.loopDecide({
+          topicId, entityType: 'channel', entityId: item.channelId, toStatus: status,
+          reason: negativeKeyword ? `reject_neg:${negativeKeyword}` : null,
+        });
       } else {
         await new Promise((r) => setTimeout(r, 200));
       }
@@ -888,14 +893,17 @@ function InboxTab({ topicId }: { topicId: string }) {
     });
     try {
       if (!IS_MOCK) {
-        await api.loopDecide({ topicId, channelIds: [last.item.channelId], status: 'new' });
+        await api.loopDecide({
+          topicId, entityType: 'channel', entityId: last.item.channelId,
+          toStatus: 'new', reason: 'undo',
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  // Phím tắt j/k/s/r/x/u/Enter — bỏ qua khi con trỏ đang ở ô nhập liệu
+  // Phím tắt j/k/a/r/x/u/Enter — bỏ qua khi con trỏ đang ở ô nhập liệu
   useEffect(() => {
     const visible = items.filter((item) => !removed.has(item.channelId));
     const onKey = (e: KeyboardEvent) => {
@@ -910,7 +918,7 @@ function InboxTab({ topicId }: { topicId: string }) {
       if (!cur) return;
       if (e.key === 'j') { setSelectedIdx((i) => Math.min(i + 1, visible.length - 1)); e.preventDefault(); }
       else if (e.key === 'k') { setSelectedIdx((i) => Math.max(i - 1, 0)); e.preventDefault(); }
-      else if (e.key === 's') { void decide(cur, 'shortlisted'); e.preventDefault(); }
+      else if (e.key === 'a') { void decide(cur, 'active'); e.preventDefault(); }
       else if (e.key === 'r') { void decide(cur, 'rejected'); e.preventDefault(); }
       else if (e.key === 'x') {
         const kw = prompt('Negative keyword:', cur.foundVia.term ?? '');
@@ -1022,7 +1030,10 @@ function KeywordBoardTab({ topicId }: { topicId: string }) {
   const rejectKeyword = async (termKey: string, negative: boolean) => {
     try {
       if (!IS_MOCK) {
-        await api.decideKeywords({ topicId, termKeys: [termKey], status: 'rejected', negative });
+        await api.loopDecide({
+          topicId, entityType: 'keyword', entityId: termKey,
+          toStatus: 'rejected', reason: negative ? 'reject_neg' : null,
+        });
       }
       setKeywords((prev) => prev.map((k) => k.termKey === termKey ? { ...k, status: 'rejected' } : k));
     } catch (err) {
@@ -1033,8 +1044,8 @@ function KeywordBoardTab({ topicId }: { topicId: string }) {
   if (loading) return <p class="muted">Đang tải keyword…</p>;
   if (error) return <p class="error">{error}</p>;
 
-  const cols: KeywordStatus[] = ['pending', 'searched', 'exhausted', 'rejected'];
-  const colLabel: Record<string, string> = { pending: 'Chờ search', searched: 'Đã search', exhausted: 'Cạn kiệt', rejected: 'Đã từ chối' };
+  const cols: KeywordStatus[] = ['pending', 'active', 'paused', 'rejected'];
+  const colLabel: Record<string, string> = { pending: 'Chờ duyệt', active: 'Đang hoạt động', paused: 'Tạm dừng', rejected: 'Đã từ chối' };
 
   return (
     <div class="stack" style={{ gap: '1rem' }}>
@@ -1058,7 +1069,7 @@ function KeywordBoardTab({ topicId }: { topicId: string }) {
                     <li key={k.termKey} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: '0.85rem' }}>
                       <span style={{ flex: 1 }}>
                         {k.displayTerm}
-                        {k.status === 'searched' && <span class="muted"> · {k.yieldChannels} kênh</span>}
+                        {k.status === 'active' && <span class="muted"> · {k.yieldChannels} kênh</span>}
                       </span>
                       {col !== 'rejected' && (
                         <button class="btn secondary" style={{ fontSize: '0.7rem', padding: '2px 5px' }}
@@ -1076,11 +1087,11 @@ function KeywordBoardTab({ topicId }: { topicId: string }) {
   );
 }
 
-// ─── StudiedTab ───────────────────────────────────────────────────────────────
-type StudiedChannel = Awaited<ReturnType<typeof api.loopStudied>>['channels'][number];
+// ─── FollowTab ────────────────────────────────────────────────────────────────
+type FollowChannel = Awaited<ReturnType<typeof api.loopFollowList>>['channels'][number];
 
-function StudiedTab({ topicId }: { topicId: string }) {
-  const [channels, setChannels] = useState<StudiedChannel[]>([]);
+function FollowTab({ topicId }: { topicId: string }) {
+  const [channels, setChannels] = useState<FollowChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1088,15 +1099,15 @@ function StudiedTab({ topicId }: { topicId: string }) {
     setLoading(true);
     (IS_MOCK
       ? Promise.resolve({ channels: [] })
-      : api.loopStudied(topicId)
+      : api.loopFollowList(topicId)
     ).then((d) => { setChannels(d.channels); setError(null); })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [topicId]);
 
-  if (loading) return <p class="muted">Đang tải studied…</p>;
+  if (loading) return <p class="muted">Đang tải follow list…</p>;
   if (error) return <p class="error">{error}</p>;
-  if (channels.length === 0) return <p class="muted">Chưa có kênh nào được scan sâu.</p>;
+  if (channels.length === 0) return <p class="muted">Chưa có kênh nào trong Follow List.</p>;
 
   return (
     <ul class="list" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -1127,19 +1138,21 @@ function DeltaStrip({ delta }: { delta: ReportSummaryJson['delta'] }) {
   const rows = [
     { label: 'Kênh mới', prev: delta.newCandidatesPrev, curr: null },
     { label: 'Inbox', prev: delta.inboxTotalPrev, curr: null },
-    { label: 'Shortlisted', prev: delta.shortlistedTotalPrev, curr: null },
-    { label: 'Studied', prev: delta.studiedTotalPrev, curr: null },
+    // v13: đọc tên mới trước, fallback tên v2 trong report cũ.
+    { label: 'Active', prev: delta.activeTotalPrev ?? delta.shortlistedTotalPrev ?? null, curr: null },
+    { label: 'Paused', prev: delta.pausedTotalPrev ?? delta.studiedTotalPrev ?? null, curr: null },
     { label: 'Keyword pending', prev: delta.keywordsPendingPrev, curr: null },
   ].filter((r) => r.prev != null);
 
-  if (rows.length === 0 && delta.userDecisionsSinceLast.shortlisted === 0 && delta.userDecisionsSinceLast.rejected === 0) return null;
+  const approved = delta.userDecisionsSinceLast.active ?? delta.userDecisionsSinceLast.shortlisted ?? 0;
+  if (rows.length === 0 && approved === 0 && delta.userDecisionsSinceLast.rejected === 0) return null;
 
   return (
     <div style={{ background: 'var(--surface-alt, #1a1a2e)', borderRadius: 6, padding: '0.75rem 1rem', fontSize: '0.85rem', marginTop: '0.75rem' }}>
       <strong>So với {delta.vsDate ?? 'hôm qua'}:</strong>
       {rows.map((r) => <span key={r.label} class="muted" style={{ marginLeft: 8 }}>{r.label}: {r.prev}</span>)}
-      {delta.userDecisionsSinceLast.shortlisted > 0 && (
-        <span style={{ marginLeft: 8 }}>Bạn shortlist {delta.userDecisionsSinceLast.shortlisted}, reject {delta.userDecisionsSinceLast.rejected}</span>
+      {approved > 0 && (
+        <span style={{ marginLeft: 8 }}>Bạn duyệt {approved}, reject {delta.userDecisionsSinceLast.rejected}</span>
       )}
     </div>
   );
@@ -1352,7 +1365,7 @@ function LoopSettingsPanel() {
 }
 
 // ─── SpyLoopPage ──────────────────────────────────────────────────────────────
-type Tab = 'inbox' | 'keywords' | 'studied' | 'reports';
+type Tab = 'inbox' | 'keywords' | 'follow' | 'reports';
 
 export function SpyLoopPage({ topic }: { topic?: string }) {
   const [topics, setTopics] = useState<Topic[]>([]);
@@ -1399,7 +1412,7 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'inbox', label: 'Inbox' },
     { id: 'keywords', label: 'Keywords' },
-    { id: 'studied', label: 'Studied' },
+    { id: 'follow', label: 'Follow List' },
     { id: 'reports', label: 'Báo cáo' },
   ];
 
@@ -1452,7 +1465,7 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
 
           {activeTab === 'inbox' && <InboxTab topicId={currentTopicId} />}
           {activeTab === 'keywords' && <KeywordBoardTab topicId={currentTopicId} />}
-          {activeTab === 'studied' && <StudiedTab topicId={currentTopicId} />}
+          {activeTab === 'follow' && <FollowTab topicId={currentTopicId} />}
           {activeTab === 'reports' && <ReportsTab topicId={currentTopicId} />}
         </>
       )}

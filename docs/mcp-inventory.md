@@ -9,7 +9,7 @@ Mục tiêu: một chỗ xem **MCP nào đang sống**, **tool nào expose**, **
 | MCP server | Mount name (agent) | Status | Discovery | Tools exposed |
 |---|---|---|---|---|
 | Team MCP | `team` | **Live** | `GET /api/team/mcp` | 6 |
-| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 26 / 56 catalog |
+| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 33 / 58 catalog |
 | General Pack MCP | `general_pack` | **Live** (cần Spy feature on) | `GET /api/general-pack/mcp` | 10 |
 | External Writer Library MCP | `(planned)` | **Spec only** — chưa code | planned `/mcp/library` | 0 |
 | Writer Run / Training MCP | — | **Không có** | Writer v2 qua HTTP/UI | — |

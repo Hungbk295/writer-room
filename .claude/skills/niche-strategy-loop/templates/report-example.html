@@ -1,0 +1,589 @@
+<title>Kênh Finance-US: Chiến lược</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F5F7F4; --card:#FFFFFF; --ink:#18221F; --muted:#56635E; --line:#D9E0DC; --soft:#EBF0ED;
+  --accent:#0E6B5A; --accent-soft:#DDEFEA;
+  --t1:#A8660C; --t1-soft:#FBEFD9;
+  --t2:#0E6B5A; --t2-soft:#DDEFEA;
+  --t3:#B0412B; --t3-soft:#F9E3DD;
+  --warn:#8A5A00;
+  --display:"Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+    --accent:#5CC4AE; --accent-soft:#17332C;
+    --t1:#E8A94A; --t1-soft:#34270F;
+    --t2:#5CC4AE; --t2-soft:#17332C;
+    --t3:#EE8A74; --t3-soft:#3A1F18;
+    --warn:#E8B45A;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+  --accent:#5CC4AE; --accent-soft:#17332C;
+  --t1:#E8A94A; --t1-soft:#34270F;
+  --t2:#5CC4AE; --t2-soft:#17332C;
+  --t3:#EE8A74; --t3-soft:#3A1F18;
+  --warn:#E8B45A;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15.5px;line-height:1.6;padding-inline:20px;padding-block:0 64px}
+.wrap{max-width:1040px;margin:0 auto}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+h1,h2,h3{font-family:var(--display);font-stretch:85%;line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.01em}
+h2{font-size:clamp(22px,3vw,28px);font-weight:750}
+h3{font-size:18px;font-weight:700}
+p{margin:0;max-width:68ch}
+.num,td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+header.top{padding-block:40px 28px;border-bottom:1px solid var(--line);display:grid;gap:14px}
+header.top .lede{font-size:18px;color:var(--ink)}
+header.top .meta{font-size:13px;color:var(--muted)}
+
+section{padding-block:36px 8px;display:grid;gap:18px}
+.sec-head{display:grid;gap:6px}
+.sec-head p{color:var(--muted)}
+
+/* verdict strip */
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.verdict{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.verdict b{font-family:var(--display);font-stretch:85%;font-size:19px;line-height:1.25}
+.verdict p{color:var(--muted);font-size:14.5px}
+
+/* paystub positioning */
+.stub{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stub-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:14px 18px;background:var(--soft);border-bottom:1px dashed var(--line)}
+.stub-head span{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.stub-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.stub-cell{padding:16px 18px;border-right:1px dashed var(--line);border-bottom:1px dashed var(--line);display:grid;gap:4px;align-content:start}
+.stub-cell .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.stub-cell .v{font-weight:600}
+.stub-cell .n{font-size:14px;color:var(--muted)}
+.stub-foot{padding:14px 18px;font-size:15px}
+.stub-foot strong{font-family:var(--display);font-stretch:85%;font-size:20px}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:11px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--soft)}
+tr:last-child td{border-bottom:0}
+td q{font-style:italic;color:var(--muted)}
+td q::before,td q::after{content:'"'}
+
+/* type chips */
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.04em;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.chip.t1{background:var(--t1-soft);color:var(--t1)}
+.chip.t2{background:var(--t2-soft);color:var(--t2)}
+.chip.t3{background:var(--t3-soft);color:var(--t3)}
+.chip.neutral{background:var(--soft);color:var(--muted)}
+.chip.strong{background:var(--accent);color:var(--card)}
+
+/* type explainer */
+.types{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.type{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:10px;padding:18px;display:grid;gap:10px;align-content:start}
+.type.t1{--c:var(--t1)} .type.t2{--c:var(--t2)} .type.t3{--c:var(--t3)}
+.type ul{margin:0;padding-left:18px;font-size:14.5px;color:var(--muted);display:grid;gap:4px}
+.type .rule{font-family:var(--mono);font-size:12.5px;background:var(--soft);padding:8px 10px;border-radius:6px;color:var(--ink)}
+
+/* filter */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.filters button{font:inherit;font-size:14px;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.filters button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.filters .count{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:4px}
+
+/* title cards */
+.titles{display:grid;gap:12px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:18px}
+.tcard .main{display:grid;gap:10px;min-width:0}
+.tcard .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tcard .yt{font-family:var(--display);font-stretch:90%;font-size:19px;font-weight:700;line-height:1.3}
+.tcard .why{font-size:14.5px}
+.tcard .ev{font-size:13.5px;color:var(--muted);display:grid;gap:3px;margin:0;padding-left:16px}
+.tcard .side{display:grid;gap:10px;align-content:start;border-left:1px dashed var(--line);padding-left:16px}
+.tcard .side .k{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tcard .side .v{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+.tcard .side .v.big{font-size:22px;font-weight:500}
+@media (max-width:640px){
+  .tcard{grid-template-columns:1fr}
+  .tcard .side{border-left:0;border-top:1px dashed var(--line);padding-left:0;padding-top:12px;grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+
+/* names */
+.names{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.name{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.name .nm{font-family:var(--display);font-stretch:85%;font-size:26px;font-weight:800;line-height:1.1}
+.name p{font-size:14.5px;color:var(--muted)}
+.name.pick{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+
+/* calendar */
+.cal{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
+.week{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:12px;align-content:start}
+.slot{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14.5px}
+
+.callout{background:var(--accent-soft);border-radius:10px;padding:16px 18px;display:grid;gap:6px}
+.callout.warn{background:var(--t1-soft)}
+.callout p{max-width:none}
+ol.steps,ul.plain{margin:0;padding-left:20px;display:grid;gap:6px}
+footer{padding-block:40px 0;border-top:1px solid var(--line);margin-top:36px;color:var(--muted);font-size:13.5px;display:grid;gap:8px}
+footer p{max-width:none}
+@media (prefers-reduced-motion:no-preference){.filters button{transition:background .15s,color .15s}}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <span class="eyebrow">Chiến lược build kênh · US · tiếng Anh · 26/9/2026</span>
+  <h1>Tài chính cá nhân cho người lương bình thường, có phép tính thật</h1>
+  <p class="lede">Kênh faceless nhắm người Mỹ 27–40 tuổi, thu nhập hộ $45–90k. Mỗi video trả lời một câu hỏi về tiền mà họ đang tự hỏi, bằng con số tính cho đúng mức lương của họ.</p>
+  <p class="meta">Nguồn: Writer Room Spy MCP. 15 kênh follow, 100 lượt search (31 lượt họ A–D sáng 26/9 và 69 lượt chiều 26/9), comment của 27 video. VPH = view ÷ số giờ kể từ lúc đăng. Chi tiết: <span class="num">docs/plans/title-3-types-finance-us.md</span></p>
+</header>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">Kết luận</span>
+    <h2>Ba quyết định cần chốt</h2>
+  </div>
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="chip strong">Quyết định 1</span>
+      <b>Làm kiểu 1 và kiểu 2 là chính, kiểu 3 chỉ khi hợp tệp khán giả</b>
+      <p>Kênh nhỏ đang thắng ở kiểu 1 và 2 (Alexs Brooks 1.720 sub: 408 VPH; Estate Sense: 793 VPH). Ở kiểu 3, video thắng gần như toàn kênh lớn và báo đài. 8 video "mortgage 7%" của kênh nhỏ đều dưới 3.000 view.</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 2</span>
+      <b>Tệp đầu tiên: 27–40 tuổi, lương trung bình, đang thuê nhà hoặc mới có con</b>
+      <p>Đây là tệp của 2 ngách N2 và N3, có 6 painpoint đã đủ bằng chứng. Tệp 60+ (Social Security, Medicare) đang rất nóng nhưng để dành cho lần mở rộng sau.</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 3</span>
+      <b>Tên kênh hứa "phép tính cho người lương trung vị"</b>
+      <p>Đề xuất <b>Median Money</b>. "Paycheck Math" đã có kênh dùng. Cần kiểm tra handle trên YouTube trước khi tạo kênh.</p>
+    </div>
+  </div>
+</section>
+
+<section id="audience">
+  <div class="sec-head">
+    <span class="eyebrow">Định vị</span>
+    <h2>Khán giả và lời hứa của kênh</h2>
+  </div>
+  <div class="stub">
+    <div class="stub-head"><span>VIEWER PROFILE · TỆP 1</span><span>PAY PERIOD: 2026-Q4</span></div>
+    <div class="stub-body">
+      <div class="stub-cell"><span class="k">Tuổi</span><span class="v num">27–40</span><span class="n">Lõi 28–38. 22–26 xem Shorts, không phải tệp chính.</span></div>
+      <div class="stub-cell"><span class="k">Thu nhập hộ</span><span class="v num">$45k–$90k / năm</span><span class="n">Có 401(k) nhỏ, có tiết kiệm nhưng chưa thấy lãi kép.</span></div>
+      <div class="stub-cell"><span class="k">Hoàn cảnh</span><span class="v">Đang thuê nhà · mới có con · đi làm công ăn lương</span><span class="n">Quyết định lớn sắp tới: mua nhà, xe, gửi trẻ.</span></div>
+      <div class="stub-cell"><span class="k">Ngách</span><span class="v">N3 chi phí sống thực · N2 lãi kép & mốc triệu đô</span><span class="n">N3 kéo view nhanh, N2 giữ người xem lâu dài.</span></div>
+      <div class="stub-cell"><span class="k">Không nhắm</span><span class="v">60+, người giàu, trader</span><span class="n">N1 (giàu âm thầm), N4 (vĩ mô thuần) để sau.</span></div>
+      <div class="stub-cell"><span class="k">Định dạng</span><span class="v">Faceless, 10–16 phút</span><span class="n">Lời dẫn + bảng tính trên màn hình. Mỗi video cắt ra 1–2 Shorts.</span></div>
+    </div>
+    <div class="stub-foot"><strong>Lời hứa: "Your numbers, not a millionaire's."</strong> Khán giả không thiếu động lực làm giàu. Họ thiếu bằng chứng rằng lời khuyên áp dụng được với mức lương và chi phí của chính họ.</div>
+  </div>
+
+  <h3>Insight: 6 painpoint đã đủ bằng chứng</h3>
+  <p style="color:var(--muted)">Chuẩn bằng chứng cho mỗi painpoint: ≥ 10 comment, ≥ 3 video, ≥ 2 kênh, ≥ 3 câu nguyên văn. Cột cuối cho biết title nào trong trang này phục vụ painpoint đó.</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Mã</th><th>Painpoint</th><th>Câu viewer tự hỏi</th><th>Nguyên văn trong comment</th><th>Title phục vụ</th></tr></thead>
+      <tbody>
+        <tr><td class="num">N3-1</td><td>Giá thật bị giấu</td><td>Thứ này thật sự tốn bao nhiêu?</td><td><q>Apple just makes the bad math look really good.</q></td><td>3.1 · 3.3 · 2.2 · 2.3</td></tr>
+        <tr><td class="num">N3-2</td><td>Muốn tự kiểm chứng</td><td>Công thức này có đúng với hoàn cảnh của tôi không?</td><td><q>That is exactly why your own numbers matter more than ours</q></td><td>2.1 · 2.2 · mọi video có bảng tự nhập số</td></tr>
+        <tr><td class="num">N3-3</td><td>Đã cắt hết rồi</td><td>Làm đúng hết sao vẫn không đủ?</td><td><q>What do you do when you've cut, cut, cut and there's nothing left to cut?</q></td><td>1.2 · 1.3 · 2.3</td></tr>
+        <tr><td class="num">N2-1</td><td>Từ khủng hoảng sang bất tiện</td><td>Bao nhiêu tiền thì tôi hết sợ một hoá đơn bất ngờ?</td><td><q>The first $10k doesn't change your life overnight... it changes the way you think about money forever.</q></td><td>1.1</td></tr>
+        <tr><td class="num">N2-2</td><td>Nỗi sợ năm thứ 6</td><td>Chưa thấy kết quả nhiều năm, tôi có đi đúng không?</td><td><q>Compounding isn't hard. Waiting is hard.</q></td><td>3.5</td></tr>
+        <tr><td class="num">N2-4</td><td>"Không phải người như tôi"</td><td>Có đường nào cho người lương $20–40k không?</td><td><q>Make yourself a millionaire with 20k per year, THAT'S the challenge.</q></td><td>2.4 · 2.5</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="name">
+  <div class="sec-head">
+    <span class="eyebrow">Nhận diện</span>
+    <h2>Tên kênh</h2>
+    <p>Trong 15 kênh follow có 3 kiểu đặt tên. Kênh có median view cao nhất đều dùng tên thương hiệu (kiểu B), không dùng tên người.</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Kiểu tên</th><th>Ví dụ trong follow list</th><th class="num">Sub</th><th class="num">Median view</th><th>Nhận xét</th></tr></thead>
+      <tbody>
+        <tr><td>A · [Tên người] + Explains Money / Invests</td><td>Jack Explains Money · Nick Invests · Alicia Invests</td><td class="num">78k · 194k · 103k</td><td class="num">7.051 · 8.988 · 6.689</td><td>Dễ hiểu nhưng đã có nhiều bản sao (Andy Explains Money, Carl Invests).</td></tr>
+        <tr><td>B · Khái niệm + phương pháp</td><td>Casual Finance · Crayon Capital · Wealth Logic · Martik Finance</td><td class="num">380k · 264k · 93k · 101k</td><td class="num">1.169.913 · 202.982 · 10.828 · 31.983</td><td>Hứa một cách nhìn riêng. Hợp với lời hứa "phép tính thật".</td></tr>
+        <tr><td>C · Toà soạn / bàn tròn</td><td>The Tally Press · The Table With AO</td><td class="num">6k · 1,1 triệu</td><td class="num">23.638 · 27.918</td><td>Hợp với phỏng vấn và podcast, không hợp với kênh faceless dạng bảng tính.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="names">
+    <div class="name pick">
+      <span class="chip strong">Đề xuất</span>
+      <span class="nm">Median Money</span>
+      <p>Nói thẳng tệp khán giả: người có thu nhập trung vị. Đi cùng câu chốt "Your numbers, not a millionaire's." Không thấy kênh trùng tên trong 50 kết quả search.</p>
+    </div>
+    <div class="name">
+      <span class="chip neutral">Dự phòng</span>
+      <span class="nm">Take-Home Math</span>
+      <p>Dùng đúng cụm "take-home pay" viewer hay viết trong comment (N3-1). Không thấy kênh trùng tên.</p>
+    </div>
+    <div class="name">
+      <span class="chip neutral">Dự phòng</span>
+      <span class="nm">Normal Money Math</span>
+      <p>Rõ nghĩa nhưng dài và ít cá tính. Không thấy kênh trùng tên.</p>
+    </div>
+    <div class="name">
+      <span class="chip t3">Tránh</span>
+      <span class="nm">Paycheck Math</span>
+      <p>Đã có kênh tên "Paycheck Math" trong kết quả search.</p>
+    </div>
+  </div>
+  <p style="color:var(--muted);font-size:14px">Tìm bằng search video, nên chỉ phát hiện được kênh trùng tên nếu kênh đó có video. Trước khi tạo kênh cần kiểm tra handle @ trên YouTube.</p>
+</section>
+
+<section id="types">
+  <div class="sec-head">
+    <span class="eyebrow">Ba kiểu title</span>
+    <h2>Khi nào một title "ăn điểm"</h2>
+    <p>Làm lại y hệt một title cũ thì bị xem là trùng. Title chỉ ăn điểm khi rơi vào một trong ba trường hợp dưới đây.</p>
+  </div>
+  <div class="types">
+    <div class="type t1">
+      <span class="chip t1">Kiểu 1 · Đang nóng</span>
+      <h3>Title y hệt nhưng còn nóng</h3>
+      <ul>
+        <li>Có video cùng lõi title đăng dưới 14 ngày, view đang ổn.</li>
+        <li>Title này từng có video cũ nhiều view.</li>
+        <li>Giữ nguyên lõi title để khớp search. Chỉ đổi đuôi: đối tượng, con số hoặc năm.</li>
+      </ul>
+      <span class="rule">≤ 14 ngày · VPH ≥ 100 · video cũ ≥ 50k view · loại nếu &gt; 10 bản copy yếu</span>
+    </div>
+    <div class="type t2">
+      <span class="chip t2">Kiểu 2 · Họ bền</span>
+      <h3>Khoảng trống trong họ title bền</h3>
+      <ul>
+        <li>Khuôn title người xem nghe hoài không chán, không cần trend.</li>
+        <li>Giữ khuôn, đổi đối tượng sang biến thể chưa ai làm gần đây.</li>
+        <li>Phân biệt khoảng trống thật với chỗ nhiều kênh đã làm mà không có view.</li>
+      </ul>
+      <span class="rule">≥ 3 video cũ thắng từ ≥ 3 kênh · loại nếu ≥ 3 bản gần đây đều &lt; 1.000 view</span>
+    </div>
+    <div class="type t3">
+      <span class="chip t3">Kiểu 3 · Sự kiện</span>
+      <h3>Title bám sự kiện tài chính</h3>
+      <ul>
+        <li>Gắn với sự kiện hoặc hiện tượng đang nổi trên thị trường.</li>
+        <li>Dịch sự kiện ra số tiền cụ thể trong túi khán giả.</li>
+        <li>Đăng trong 72 giờ. Hết nóng rất nhanh.</li>
+      </ul>
+      <span class="rule">≥ 3 video từ ≥ 3 kênh trong 7 ngày · VPH ≥ 100 · phải hợp tệp khán giả</span>
+    </div>
+  </div>
+</section>
+
+<section id="titles">
+  <div class="sec-head">
+    <span class="eyebrow">Danh sách title</span>
+    <h2>Title đề xuất, lý do và bằng chứng</h2>
+    <p>Mọi con số lấy từ search qua Spy ngày 26/9/2026. "Hạn" là ngày dự kiến title hết lợi thế.</p>
+  </div>
+  <div class="filters" role="group" aria-label="Lọc theo kiểu title">
+    <button type="button" id="f-all" data-f="all" aria-pressed="true">Tất cả <span class="count">15</span></button>
+    <button type="button" id="f-t1" data-f="t1" aria-pressed="false">Kiểu 1 <span class="count">3</span></button>
+    <button type="button" id="f-t2" data-f="t2" aria-pressed="false">Kiểu 2 <span class="count">8</span></button>
+    <button type="button" id="f-t3" data-f="t3" aria-pressed="false">Kiểu 3 <span class="count">5</span></button>
+  </div>
+
+  <div class="titles" id="titleList">
+
+    <!-- TYPE 1 -->
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.1 · Kiểu 1</span><span class="chip strong">Mạnh</span><span class="chip neutral">N2-1</span></div>
+        <div class="yt">Net Worth By Age in 2026 — Where the Median American Actually Stands</div>
+        <p class="why">Lõi "Net Worth By Age" đang có một video rất nóng, và khuôn này từng thắng nhiều lần. Chỉ có 2–3 bản copy, đều yếu. Góc "median" khớp tên kênh và trả lời câu "so với mọi người mình đang ở đâu".</p>
+        <ul class="ev">
+          <li>Đang nóng: George Kamel · <a href="https://www.youtube.com/watch?v=3YO74NMPUKQ">Net Worths Are COOKED In 2026</a> · 5 ngày · 288.718 view</li>
+          <li>Video cũ: Humphrey Yang · <a href="https://www.youtube.com/watch?v=GOkKfPb9BS4">Average Net Worth By Age</a> 977k · Finance Unfolded · <a href="https://www.youtube.com/watch?v=vy-zrfjNmX8">by age</a> 2,1 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">2.388</div></div><div><div class="k">Bản copy 14 ngày</div><div class="v">~2 yếu</div></div><div><div class="k">Hạn</div><div class="v">~5/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.2 · Kiểu 1</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-3</span></div>
+        <div class="yt">Americans Can't Afford Groceries Anymore — The Monthly Math for a Family of 4</div>
+        <p class="why">Hai kênh cùng đăng lõi này trong tuần và đều ổn, trong đó có một kênh nhỏ trong follow list. Video cũ trên 500k view. Thêm "Family of 4" để có con số cụ thể và khác bản gốc.</p>
+        <ul class="ev">
+          <li>Đang nóng: Unexpected America · <a href="https://www.youtube.com/watch?v=4allEKXwbqw">Americans Can't Afford September Grocery Bills</a> · 3 ngày · 924 VPH</li>
+          <li>Kênh nhỏ: Alexs Brooks (1.720 sub) · <a href="https://www.youtube.com/watch?v=uECZVX6Bn4k">…Groceries Anymore — The Math Doesn't Work</a> · 6 ngày · 408 VPH</li>
+          <li>Video cũ: Zac Rios · <a href="https://www.youtube.com/watch?v=FOJM3MmKYI0">People Can't AFFORD To Buy Groceries</a> 528k</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">924</div></div><div><div class="k">Video thắng mới</div><div class="v">5</div></div><div><div class="k">Hạn</div><div class="v">~7/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.3 · Kiểu 1</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N3-3</span></div>
+        <div class="yt">$100K a Year and Still Broke — Where the Money Actually Goes (The Real Math)</div>
+        <p class="why">Lõi "still broke with good income" đang nóng và từng có video trên 1 triệu view. Rủi ro: khuôn "You Got a Raise. Why Are You Still Broke?" đã bị copy ít nhất 6 lần, bản nào cũng dưới 25 view. Phải đi góc khác: bóc tách từng khoản chi.</p>
+        <ul class="ev">
+          <li>Đang nóng: Awf The Record · <a href="https://www.youtube.com/watch?v=k05Wgp5XIcU">Why You Still Feel Broke Even When You Make Good Money</a> · 2 ngày · 752 VPH</li>
+          <li>Video cũ: CNBC · <a href="https://www.youtube.com/watch?v=qtDIBJiuei4">Why Even High Earners Are Living Paycheck To Paycheck</a> 1,06 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">752</div></div><div><div class="k">Bản copy yếu</div><div class="v">≥ 6</div></div><div><div class="k">Hạn</div><div class="v">~8/10</div></div></div>
+    </article>
+
+    <!-- TYPE 2 -->
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.1 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-2</span></div>
+        <div class="yt">How Much Rent Can You Actually Afford? (By Salary, 2026)</div>
+        <p class="why">Khuôn "(By Salary)" có 5 video trên 850k view ở 4 kênh, gần đây chỉ 2 kênh làm lại. Chưa ai làm bản cho tiền thuê nhà, trong khi tệp chính đang đi thuê.</p>
+        <ul class="ev">
+          <li>Graham Stephan · <a href="https://www.youtube.com/watch?v=RTyIAG8k_8Q">How Much Home You Can ACTUALLY Afford (By Salary)</a> 2,03 triệu</li>
+          <li>Humphrey Yang · <a href="https://www.youtube.com/watch?v=mO1eBfJmhR4">How Much Car Can You Really Afford? (By Salary)</a> 2,99 triệu · <a href="https://www.youtube.com/watch?v=4MKw7Ad7ZtU">Housing</a> 1,45 triệu</li>
+          <li>Gần đây: Jack Explains Money · <a href="https://www.youtube.com/watch?v=or4yq_9bAmc">How Much Car Can you Actually Afford</a> 17,7k, gấp 2,5 lần median của kênh</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">5</div></div><div><div class="k">Bản gần đây</div><div class="v">2</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2 t3">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.1b · Kiểu 2 + 3</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-2</span></div>
+        <div class="yt">How Much House Can You Actually Afford at 7% Rates? (By Salary)</div>
+        <p class="why">Ghép khuôn bền "(By Salary)" với sự kiện lãi mortgage lên 7%. Nhờ khuôn bền, video vẫn có người xem sau khi tin tức nguội.</p>
+        <ul class="ev">
+          <li>Sự kiện: WSJ · <a href="https://www.youtube.com/watch?v=lsOD1CHkWrY">Mortgage Rates Hit 7%</a> · 2 ngày · 2.682 VPH</li>
+          <li>Rủi ro: 8 video "rent vs buy 7%" của kênh nhỏ trong 45 ngày đều dưới 3.000 view. Cần khuôn "(By Salary)" để khác những video này.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH sự kiện</div><div class="v big">2.682</div></div><div><div class="k">Bản ế gần đây</div><div class="v">8</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.2 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-1</span></div>
+        <div class="yt">Term vs Whole Life Insurance — The Math Nobody Shows You</div>
+        <p class="why">Khuôn "[A] vs [B]: The Math Nobody Shows You" đang thắng với kênh nhỏ (Estate Sense). Trong 45 ngày chỉ có 1 video về term vs whole life, 18 view, trong khi bản cũ gần 1 triệu view.</p>
+        <ul class="ev">
+          <li>Khuôn đang thắng: Estate Sense · <a href="https://www.youtube.com/watch?v=2wozeVLOCxI">New Car vs Used Car: The Math Nobody Shows You</a> · 793 VPH · <a href="https://www.youtube.com/watch?v=IF8Dky4YCk0">Buying vs Leasing</a> · 236 VPH</li>
+          <li>Video cũ: Marko WhiteBoard Finance · <a href="https://www.youtube.com/watch?v=ZFLAsu97C9M">Term Vs. Whole Life Insurance</a> 979k · Ramsey · <a href="https://www.youtube.com/watch?v=mPRTp6XrScM">Why Is Term Better</a> 942k</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Khuôn gần đây</div><div class="v big">793</div></div><div><div class="k">Bản gần đây</div><div class="v">1</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.2b · Kiểu 2</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N3-2</span></div>
+        <div class="yt">Solar Panels vs Paying the Utility — The Break-Even Year (The Real Math)</div>
+        <p class="why">6 video cũ thắng, không có video thắng mới. Các bản gần đây đều là kênh kỹ thuật. Có thể ghép với tin hoá đơn điện tăng.</p>
+        <ul class="ev">
+          <li>Video cũ: Shelby Church · <a href="https://www.youtube.com/watch?v=dySSgfd8FgQ">Solar Panels After 1 Year: Are They Worth It?</a> 2,4 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">6</div></div><div><div class="k">Thắng mới</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.2c · Kiểu 2</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N3-1</span></div>
+        <div class="yt">Is Costco Actually Saving You Money? The Break-Even Spend (The Real Math)</div>
+        <p class="why">6 video cũ thắng, không có video thắng mới. Nhu cầu lớn nhất nằm ở Shorts (5/6 video thắng là Shorts), nên làm video dài rồi cắt ra Shorts.</p>
+        <ul class="ev">
+          <li>Video cũ: The Food Theorists · <a href="https://www.youtube.com/watch?v=96K9MBvGDeA">Costco DOESN'T Save You Money!</a> 6,5 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">6</div></div><div><div class="k">Thắng mới</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.3 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-3</span></div>
+        <div class="yt">Millions of Millennials Can't Afford Kids Anymore — The Math Doesn't Work</div>
+        <p class="why">Khuôn "Millions of [nhóm] Can't Afford [X] Anymore" đang thắng với kênh rất nhỏ (Alexs Brooks). Biến thể "kids / childcare" có video cũ 762k mà chưa có video thắng mới. Có thể làm thêm bản Daycare, bản mạnh nhất trong lượt kiểm chứng trước.</p>
+        <ul class="ev">
+          <li>Video cũ: Ashley Embers · <a href="https://www.youtube.com/watch?v=7dY7KA_OPVo">Millennials can't afford their own lives, let alone children</a> 762k</li>
+          <li>Khuôn đang thắng: Alexs Brooks · <a href="https://www.youtube.com/watch?v=-BDlFXw_-AM">Millions of Middle-Class Americans Can't Afford Rent Anymore</a> 339 VPH</li>
+          <li>Bản kèm theo: <i>Daycare Now Costs More Than Rent — How Are Parents Paying for It?</i></li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ</div><div class="v big">762k</div></div><div><div class="k">Thắng mới</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.4 · Kiểu 2</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N2-4</span></div>
+        <div class="yt">How Much Should You Have Invested — By Salary, Not Age</div>
+        <p class="why">"By Age" là khuôn rất bền (3,49 triệu view) nhưng đã bị làm nhiều: 4 video gần đây đều dưới 320 view. Đổi sang "By Salary" để khác các bản đó và trả lời thẳng câu "có đường nào cho người lương thấp không".</p>
+        <ul class="ev">
+          <li>Video cũ: Ramsey · <a href="https://www.youtube.com/watch?v=hPHwU3m-Msg">How Much You Need To Invest (By Age) To Retire A Millionaire</a> 3,49 triệu</li>
+          <li>Gần đây: Humphrey Yang · <a href="https://www.youtube.com/watch?v=3db5MyGIUBE">Average 401K Balance By Age</a> 163 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ</div><div class="v big">3,49tr</div></div><div><div class="k">Bản ế gần đây</div><div class="v">4</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.5 · Kiểu 2</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N2-4 · bắt đầu muộn</span></div>
+        <div class="yt">Started at 35 With $200 a Month — Can You Still Retire a Millionaire? (The Real Math)</div>
+        <p class="why">Khuôn "$X a month → millionaire" rất bền, nhưng các bản của kênh nhỏ đều ế. Ghép thêm painpoint "bắt đầu muộn" để khác. Thành bại phụ thuộc thumbnail.</p>
+        <ul class="ev">
+          <li>Video cũ: Ramsey · <a href="https://www.youtube.com/watch?v=PJLx4CMqbII">How $100 a Month Can Make You a Millionaire</a> 5,08 triệu</li>
+          <li>Gần đây: The Table With AO · <a href="https://www.youtube.com/watch?v=EtULg8kl-b8">7-Figure Portfolio With Only $200/Month</a> 305k · 533 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ</div><div class="v big">5,08tr</div></div><div><div class="k">Bản kênh nhỏ</div><div class="v">Ế</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <!-- TYPE 3 -->
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.1 · Kiểu 3</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-1</span></div>
+        <div class="yt">The Fed Just Raised Rates — What It Costs a $70K Household (The Real Math)</div>
+        <p class="why">Fed tăng lãi lần đầu từ 2023 (16/9), sau đó lãi mortgage lên 7% (24/9), nên sự kiện vẫn đang tiếp diễn. Có hơn 7 video thắng từ 7 kênh trong 10 ngày. Góc của kênh là dịch tin này ra số tiền của một hộ $70k.</p>
+        <ul class="ev">
+          <li>Ramsey · <a href="https://www.youtube.com/watch?v=1W8G5cNi9g4">What Others Won't Tell You About The Fed Rate Hike</a> 1.931 VPH · Wayne Turner · <a href="https://www.youtube.com/watch?v=-f50-I2IGCM">The FED Just Created A Big Housing Problem</a> 1.428 VPH</li>
+          <li>Graham Stephan · <a href="https://www.youtube.com/watch?v=gEe80Le2ZRU">BREAKING: The FED Just RAISED Interest Rates</a> 3.643 VPH · Wealth Logic · <a href="https://www.youtube.com/watch?v=RELkcuIyXec">Do These 4 Things</a> 698 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Kênh trong cụm</div><div class="v big">7+</div></div><div><div class="k">VPH cao nhất</div><div class="v">3.643</div></div><div><div class="k">Hạn</div><div class="v">~30/9</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.2 · Kiểu 3</span><span class="chip strong">Mạnh</span><span class="chip neutral">N3-1</span></div>
+        <div class="yt">Gas Just Hit a Record — What It Really Costs the Average Household Per Month</div>
+        <p class="why">Giá xăng và diesel lập kỷ lục, xe tải dọa đình công ngày 1/10. Nhiều video trong cụm là tin tức hoặc bình luận chính trị. Kênh nên giữ trung lập và chỉ nói con số trong ngân sách gia đình.</p>
+        <ul class="ev">
+          <li>Scotty Kilmer · <a href="https://www.youtube.com/watch?v=PHPzlVU92s4">Beat Record Gas Prices</a> 2.750 VPH · Michael Bordenaro · <a href="https://www.youtube.com/watch?v=s6vc8LnM0bs">Truckers and Farmers Going BANKRUPT</a> 2.147 VPH</li>
+          <li>ABC News · <a href="https://www.youtube.com/watch?v=HwSIJjCot_Y">Americans struggling with the record rise in gas prices</a> 1.242 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Kênh trong cụm</div><div class="v big">9</div></div><div><div class="k">VPH cao nhất</div><div class="v">2.750</div></div><div><div class="k">Hạn</div><div class="v">~2/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.3 · Kiểu 3</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N3-1</span></div>
+        <div class="yt">America Just Hit $40 Trillion in Debt — What It Means for Your Paycheck, Mortgage and 401(k)</div>
+        <p class="why">Lợi suất trái phiếu 10 năm tăng vọt và nợ công chạm $40 nghìn tỷ. Casual Finance, một kênh faceless trong follow list, có 2 video trên 1 triệu view về đề tài này. Chủ đề vĩ mô nên phải dịch được ra 3 khoản tiền cá nhân.</p>
+        <ul class="ev">
+          <li>Tom Bilyeu · <a href="https://www.youtube.com/watch?v=yVoCNl451p0">10 YR Treasury Yield is Going Vertical</a> · 1 ngày · 2.741 VPH · Ross Givens · <a href="https://www.youtube.com/watch?v=trFcLKxTgeA">The Bond Market Is Getting CRUSHED</a> 1.040 VPH</li>
+          <li>Casual Finance · <a href="https://www.youtube.com/watch?v=xtqbRt94TTw">To Save the Economy… We're About to Break It</a> 1,03 triệu view · How Money Works · <a href="https://www.youtube.com/watch?v=QmWyQ-BCD8E">Debt Default</a> 6.620 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Kênh trong cụm</div><div class="v big">5+</div></div><div><div class="k">VPH cao nhất</div><div class="v">6.620</div></div><div><div class="k">Hạn</div><div class="v">~3/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.4 · Kiểu 3</span><span class="chip neutral">Trung bình</span><span class="chip neutral">N2-2</span></div>
+        <div class="yt">Stocks Are Falling — Should You Keep Investing $500 a Month? (The Year-6 Math)</div>
+        <p class="why">Nỗi lo thị trường sập đang lan rộng. Video này dùng tin đó để trả lời nỗi sợ năm thứ 6 của N2: có nên tiếp tục đầu tư đều đặn không.</p>
+        <ul class="ev">
+          <li>Meet Kevin · <a href="https://www.youtube.com/watch?v=ec4kWqJ1GPU">The Black Swan FLASH Market Crash Risk</a> · 1 ngày · 5.278 VPH · Nolan Matthias · <a href="https://www.youtube.com/watch?v=deeMYKK3-98">The Crash That Will Change A Generation</a> 2.792 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Kênh trong cụm</div><div class="v big">10</div></div><div><div class="k">VPH cao nhất</div><div class="v">5.278</div></div><div><div class="k">Hạn</div><div class="v">Theo tin</div></div></div>
+    </article>
+  </div>
+
+  <div class="callout warn">
+    <p><b>Không làm lúc này:</b> Social Security COLA 2027 và Medicare 2027. Cả hai đang rất nóng (≥ 6 kênh, tới 4.056 VPH) nhưng khán giả 60+, lệch tệp. Không thành cụm: layoffs, nợ sinh viên, nợ thẻ, vàng, bảo hiểm nhà, thuế quan, đóng cửa chính phủ.</p>
+  </div>
+</section>
+
+<section id="plan">
+  <div class="sec-head">
+    <span class="eyebrow">Lịch ra video</span>
+    <h2>2 tuần đầu: 3 video dài mỗi tuần, mỗi kiểu 1 video</h2>
+    <p>Nếu tuần đó không có sự kiện hợp tệp, thay slot kiểu 3 bằng một title kiểu 2. Mỗi video dài cắt ra 1–2 Shorts, mỗi Shorts giữ một con số.</p>
+  </div>
+  <div class="cal">
+    <div class="week">
+      <h3>Tuần 1 · 27/9–3/10</h3>
+      <div class="slot"><span class="chip t3">Kiểu 3</span><span>3.1 Fed hike: What It Costs a $70K Household <span class="num" style="color:var(--muted)">(đăng trước 30/9)</span></span></div>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>1.1 Net Worth By Age in 2026</span></div>
+      <div class="slot"><span class="chip t2">Kiểu 2</span><span>2.1 How Much Rent Can You Actually Afford (By Salary)</span></div>
+    </div>
+    <div class="week">
+      <h3>Tuần 2 · 4–10/10</h3>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>1.2 Groceries: Family of 4 Math <span class="num" style="color:var(--muted)">(trước 7/10)</span></span></div>
+      <div class="slot"><span class="chip t2">Kiểu 2</span><span>2.3 Millennials Can't Afford Kids</span></div>
+      <div class="slot"><span class="chip t3">Kiểu 3</span><span>Chạy lại radar sự kiện rồi mới chốt. Nếu không có sự kiện hợp tệp, làm 2.2 Term vs Whole Life.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="rules">
+  <div class="sec-head">
+    <span class="eyebrow">Quy tắc</span>
+    <h2>Viết title và làm video</h2>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Quy tắc</th><th>Vì sao</th></tr></thead>
+      <tbody>
+        <tr><td>Mỗi title có <b>một con số cụ thể</b> ($70K, Family of 4, $200 a Month)</td><td>7/9 công thức thắng trong follow list có một con số cụ thể.</td></tr>
+        <tr><td>Nói về <b>người Mỹ bình thường</b>, không nói về người giàu</td><td>Painpoint N2-4: "Câu chuyện này không phải người như tôi".</td></tr>
+        <tr><td>Hứa <b>phép tính thật</b>: "The Real Math", "The Math Nobody Shows You", "Break-Even"</td><td>Khuôn đang thắng với kênh nhỏ (Wealth Logic, Estate Sense). Painpoint N3-2.</td></tr>
+        <tr><td>Kiểu 1: giữ nguyên lõi title, chỉ đổi đuôi (đối tượng, con số hoặc năm)</td><td>Lõi khớp search. Đuôi khác giúp không bị xem là trùng.</td></tr>
+        <tr><td>Trước khi làm kiểu 2, kiểm tra xem biến thể đó có "đông mà ế" không</td><td>Rent vs buy 7%, HSA, "invested by age" đều nhiều bản mà không có view.</td></tr>
+        <tr><td>Kiểu 3: đăng trong 72 giờ và giữ trung lập chính trị</td><td>Cụm xăng/Fed có nhiều kênh chính trị, dễ kéo về comment cãi nhau.</td></tr>
+        <tr><td>Mỗi video có một bảng "tự nhập số của bạn"</td><td>N3-2. Comment hay bắt lỗi khi giả định không rõ.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="measure">
+  <div class="sec-head">
+    <span class="eyebrow">Đo lường</span>
+    <h2>Cách biết chiến lược đúng hay sai</h2>
+  </div>
+  <ol class="steps">
+    <li><b>VPH 48 giờ</b> của từng video so với median của chính kênh. Theo dõi bằng Spy daily sau khi thêm kênh của mình vào Spy.</li>
+    <li>Sau 10 video, so trung bình VPH theo từng kiểu. Kiểu nào có 3 video liên tiếp dưới 0,5 lần median thì giảm tỉ lệ.</li>
+    <li>Đọc 100 comment mỗi video để bổ sung painpoint. Chỉ chuyển painpoint sang "confirmed" khi đủ chuẩn bằng chứng.</li>
+    <li>Mở rộng sang tệp mới (22–26 qua Shorts, hoặc 55+) khi kênh có 10 video dài đạt ≥ 1x median.</li>
+  </ol>
+</section>
+
+<footer>
+  <p><b>Giới hạn:</b> API search không trùng 100% với kết quả YouTube search thật và không có số lượng search. VPH ở đây là VPH trọn đời, không phải VPH 48 giờ. 8 lượt search rơi sang yt-dlp vì Spy không đổi key khi key hiện tại hết quota, nên các lượt đó thiếu ngày đăng. Tên kênh mới chỉ đối chiếu với kết quả search video.</p>
+  <p>Tài liệu liên quan trong repo: <span class="num">docs/plans/title-3-types-finance-us.md</span> · <span class="num">title-validation-finance-us.md</span> · <span class="num">strategy-keyword-title-finance-us.md</span> · <span class="num">pilot-finance-us.md</span></p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var btns=[].slice.call(document.querySelectorAll('.filters button'));
+  var cards=[].slice.call(document.querySelectorAll('#titleList .tcard'));
+  function apply(f){
+    btns.forEach(function(b){b.setAttribute('aria-pressed', String(b.dataset.f===f));});
+    cards.forEach(function(c){c.hidden = !(f==='all' || c.dataset.t.split(' ').indexOf(f)>-1);});
+    try{localStorage.setItem('titleFilter',f);}catch(e){}
+  }
+  btns.forEach(function(b){b.addEventListener('click',function(){apply(b.dataset.f);});});
+  var saved='all';
+  try{saved=localStorage.getItem('titleFilter')||'all';}catch(e){}
+  if(!btns.some(function(b){return b.dataset.f===saved;})) saved='all';
+  apply(saved);
+})();
+</script>

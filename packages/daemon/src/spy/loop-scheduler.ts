@@ -12,7 +12,7 @@
  */
 import type { SpyService } from '@writer-room/spy';
 import { quotaDay } from '@writer-room/spy';
-import type { SpyLoopAdapter, TickResult } from './loop-contract.ts';
+import type { LoopMode, SetupStep, SpyLoopAdapter, TickResult } from './loop-contract.ts';
 import { loadSpyLoopConfig } from './loop-config.ts';
 import { sendTelegramReport } from './report-telegram.ts';
 
@@ -70,6 +70,39 @@ export function isPastLocalHHMM(hourStr: string, timezone: string, now: Date = n
 /** Tính quotaDay dựa vào Pacific time (import từ @writer-room/spy). */
 function currentQuotaDay(now: Date = new Date()): string {
   return quotaDay(now);
+}
+
+// ─── weekly_at ───────────────────────────────────────────────────────────────
+
+/** 'CN 16:00' | 'T7 16:00' — CN = Chủ nhật (0), T2..T7 = 1..6. */
+const WEEKDAY_TOKEN: Record<string, number> = {
+  CN: 0, T2: 1, T3: 2, T4: 3, T5: 4, T6: 5, T7: 6,
+};
+
+/**
+ * Parse `weekly_at` của topic settings ('CN 16:00'). Fallback CN 16:00 khi
+ * chuỗi lạ — một thứ 7 quên gõ không được làm weekly chạy mỗi ngày.
+ */
+export function parseWeeklyAt(s: string): { weekday: number; hhmm: string } {
+  const m = /^\s*(CN|T[2-7])\s+(\d{1,2}:\d{2})/i.exec(s);
+  if (m) return { weekday: WEEKDAY_TOKEN[m[1]!.toUpperCase()] ?? 0, hhmm: m[2]! };
+  return { weekday: 0, hhmm: '16:00' };
+}
+
+/** Thứ hiện tại trong timezone (0=CN). */
+function localWeekdayIndex(timezone: string, now: Date): number {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(now);
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(name);
+}
+
+/**
+ * Giờ due của một nhịp trong ngày hôm nay — null khi nhịp đó không due hôm nay
+ * (weekly chỉ due đúng thứ cấu hình).
+ */
+function dueToday(mode: LoopMode, settings: { dailyAt: string; weeklyAt: string }, timezone: string, now: Date): string | null {
+  if (mode === 'daily') return settings.dailyAt;
+  const { weekday, hhmm } = parseWeeklyAt(settings.weeklyAt);
+  return localWeekdayIndex(timezone, now) === weekday ? hhmm : null;
 }
 
 // ─── LoopScheduler ───────────────────────────────────────────────────────────
@@ -133,7 +166,12 @@ export class LoopScheduler {
 
   // ─── Tick ───────────────────────────────────────────────────────────────────
 
-  /** Kiểm tra xem có cần catch-up tick ngay khi khởi động không. */
+  /**
+   * Kiểm tra xem có cần catch-up tick ngay khi khởi động không — theo TỪNG
+   * nhịp (v3): daily due mỗi ngày sau `daily_at` của topic, weekly chỉ đúng
+   * thứ + giờ trong `weekly_at`. Mỗi nhịp có idempotency riêng (topic,day,mode)
+   * nên hai nhịp cùng ngày không đè nhau.
+   */
   private async tryTickNow(): Promise<void> {
     const cfg = await loadSpyLoopConfig(this.dataDir).catch(() => null);
     if (!cfg?.enabled) return;
@@ -141,29 +179,44 @@ export class LoopScheduler {
     const now = this.now();
     const todayQuotaDay = currentQuotaDay(now);
 
-    // Chưa tới giờ tick hôm nay → để timer lo, không catch-up.
-    if (!isPastLocalHHMM(cfg.tickHourLocal, cfg.timezone, now)) return;
-
     // Lấy danh sách topic active
     const topics = await this.loop.listTopics().catch(() => [] as Awaited<ReturnType<SpyLoopAdapter['listTopics']>>);
     for (const topic of topics) {
       if (topic.status !== 'active') continue;
 
-      // Đã chạy trong quota-day này rồi → bỏ qua. Lại là so chuỗi quota-day với
-      // chuỗi quota-day (`loop_ticks.quota_day`), không phải timestamp.
+      const settings = await this.loop.topicSettings(topic.topicId).catch(() => null);
       const statuses = await this.loop.status(topic.topicId).catch(() => []);
-      const lastTick = statuses[0]?.lastTick;
-      if (lastTick && lastTick.quotaDay >= todayQuotaDay) continue;
+      const lastTickByMode = statuses[0]?.lastTickByMode ?? {};
 
-      // Catch-up
-      await this.runTick(topic.topicId);
+      for (const mode of ['daily', 'weekly'] as const) {
+        // Giờ due đọc từ settings của topic (settings_json); không có thì lùi
+        // về cfg.tickHourLocal cho daily — topic chưa khai vẫn chạy như cũ.
+        const due = dueToday(
+          mode,
+          settings ?? { dailyAt: cfg.tickHourLocal, weeklyAt: 'CN 16:00' },
+          cfg.timezone,
+          now,
+        );
+        if (due === null) continue;
+        if (!isPastLocalHHMM(due, cfg.timezone, now)) continue;
+
+        // Đã chạy nhịp này trong quota-day này rồi → bỏ qua. So chuỗi
+        // quota-day, không phải timestamp. Nếu store chưa lọc mode được thì
+        // UNIQUE(topic,day,mode) ở createLoopTick vẫn chặn chạy trùng — tick
+        // thừa chỉ tốn một lần kiểm tra.
+        const lastTick = lastTickByMode[mode] ?? null;
+        if (lastTick && lastTick.quotaDay >= todayQuotaDay) continue;
+
+        // Catch-up / đúng giờ
+        await this.runTick(topic.topicId, { mode });
+      }
     }
   }
 
   private scheduleNextTick(): void {
     if (this.disposed) return;
 
-    void loadSpyLoopConfig(this.dataDir).then((cfg) => {
+    void loadSpyLoopConfig(this.dataDir).then(async (cfg) => {
       if (!cfg.enabled) {
         // Lịch check lại sau 1h
         this.tickTimer = setTimeout(() => this.scheduleNextTick(), 3_600_000);
@@ -171,8 +224,12 @@ export class LoopScheduler {
       }
 
       const now = this.now();
-      const rawMs = msUntilLocalHHMM(cfg.tickHourLocal, cfg.timezone, now);
-      // Cap 1h để re-evaluate sau wake từ sleep
+      // Due sớm nhất giữa daily (mỗi ngày) và weekly (đúng thứ) — cap 1h để
+      // re-evaluate sau wake từ sleep, nhịp nào tới trước thì tryTickNow lo.
+      const rawMs = Math.min(
+        msUntilLocalHHMM(cfg.tickHourLocal, cfg.timezone, now),
+        msUntilLocalHHMM('16:00', cfg.timezone, now),
+      );
       const delayMs = Math.min(rawMs, 3_600_000);
 
       this.tickTimer = setTimeout(() => {
@@ -189,16 +246,19 @@ export class LoopScheduler {
   /**
    * Chỉ chạy tick THẬT. Dry-run không đi qua đây: nó không tốn quota, không cần
    * lock, và route gọi thẳng `loop.planTick()`.
+   *
+   * `mode` v3: scheduler truyền 'daily' | 'weekly'; route tick manual có thể
+   * truyền 'setup' + `setupStep`. Bỏ `mode` = tick legacy v5.
    */
-  async runTick(topicId: string): Promise<TickResult | null> {
+  async runTick(topicId: string, opts: { mode?: LoopMode; setupStep?: SetupStep } = {}): Promise<TickResult | null> {
     if (this.running.has(topicId)) {
       console.warn(`[loop-scheduler] tick đang chạy cho topic ${topicId}, bỏ qua`);
       return null;
     }
     this.running.add(topicId);
     try {
-      console.log(`[loop-scheduler] runTick topicId=${topicId}`);
-      const result = await this.loop.tick({ topicId });
+      console.log(`[loop-scheduler] runTick topicId=${topicId} mode=${opts.mode ?? 'legacy'}`);
+      const result = await this.loop.tick({ topicId, mode: opts.mode, setupStep: opts.setupStep });
       if (result.status === 'done') {
         void this.announceTickDone(topicId, result);
       }

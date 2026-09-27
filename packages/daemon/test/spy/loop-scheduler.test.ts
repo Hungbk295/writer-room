@@ -4,8 +4,8 @@
 import { describe, expect, mock, test, beforeEach, afterEach } from 'bun:test';
 import { LoopScheduler, isPastLocalHHMM, msUntilLocalHHMM } from '../../src/spy/loop-scheduler.ts';
 import type { SpyLoopAdapter, TickResult, TopicConfig, LoopStatus } from '../../src/spy/loop-contract.ts';
-import type { SpyService } from '@writer-room/spy';
-import { quotaDay } from '@writer-room/spy';
+import type { SpyService, TopicSettings } from '@writer-room/spy';
+import { DEFAULT_TOPIC_SETTINGS, quotaDay } from '@writer-room/spy';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,8 +35,8 @@ function makeStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     lastTick: null,
     nextTickAt: null,
     inboxTotal: 0,
-    shortlistedTotal: 0,
-    studiedTotal: 0,
+    activeTotal: 0,
+    pausedTotal: 0,
     keywordsPending: 0,
     quota: {
       searchUsed: 0,
@@ -74,12 +74,15 @@ function makeLoopAdapter(options: {
   topics?: TopicConfig[];
   statuses?: LoopStatus[];
   tickResult?: TickResult;
+  /** Override một phần TopicSettings — scheduler đọc dailyAt/weeklyAt từ đây. */
+  settings?: Partial<TopicSettings>;
 } = {}): SpyLoopAdapter {
   return {
     listTopics: mock(async () => options.topics ?? []),
     getTopic: mock(async (id: string) => options.topics?.find((t) => t.topicId === id) ?? null),
     upsertTopic: mock(async (cfg) => makeTopic({ ...cfg, status: cfg.status ?? 'active' })),
     status: mock(async (_id?: string) => options.statuses ?? []),
+    topicSettings: mock(async (_id: string) => ({ ...DEFAULT_TOPIC_SETTINGS, ...options.settings })),
     inbox: mock(async () => ({ items: [], total: 0, nextCursor: null })),
     decide: mock(async () => ({ updated: 0 })),
     listKeywords: mock(async () => []),
@@ -178,6 +181,9 @@ describe('LoopScheduler', () => {
     const loop = makeLoopAdapter({
       topics: [makeTopic()],
       statuses: [makeStatus({ lastTick: null })],
+      // v3: giờ daily đọc từ settings của topic (tickHourLocal chỉ là fallback
+      // khi không đọc được settings) — due 00:30 phải nằm ở dailyAt.
+      settings: { dailyAt: '00:30' },
     });
     scheduler = new LoopScheduler({
       loop,
@@ -369,5 +375,76 @@ describe('LoopScheduler', () => {
     resolveTickFn();
     await tickPromise;
     expect(scheduler.isRunning('finance-vi')).toBe(false);
+  });
+
+  test('v3: daily tick truyền mode=daily, weekly chỉ chạy đúng thứ của weekly_at', async () => {
+    // 2026-08-20 = Thứ Năm; 2026-08-23 = Chủ nhật (CN). Settings mặc định
+    // weeklyAt='CN 16:00' → weekly chỉ due ngày CN.
+    await writeFile(
+      join(root, 'config', 'spy-loop.json'),
+      JSON.stringify({ enabled: true, tickHourLocal: '00:30', digestHourLocal: '08:00', timezone: 'Asia/Ho_Chi_Minh' }),
+    );
+    const loop = makeLoopAdapter({
+      topics: [makeTopic()], statuses: [makeStatus()],
+      settings: { dailyAt: '00:30' },
+    });
+    scheduler = new LoopScheduler({
+      loop,
+      spy: {} as unknown as SpyService,
+      dataDir: root,
+      // 21-08 (Thứ Sáu) 01:10 VN — qua daily 00:30, KHÔNG phải CN.
+      now: () => new Date('2026-08-20T18:10:00.000Z'),
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 150));
+    const fridayCalls = (loop.tick as ReturnType<typeof mock>).mock.calls;
+    expect(fridayCalls.length).toBe(1);
+    expect(fridayCalls[0]![0].mode).toBe('daily');
+    scheduler.dispose();
+
+    // CN 23-08 17:00 VN = 10:00Z — qua cả daily (mặc định 15:30 từ settings)
+    // lẫn weekly (CN 16:00) → đúng 2 tick, mode khác nhau.
+    const loop2 = makeLoopAdapter({ topics: [makeTopic()], statuses: [makeStatus()] });
+    scheduler = new LoopScheduler({
+      loop: loop2,
+      spy: {} as unknown as SpyService,
+      dataDir: root,
+      now: () => new Date('2026-08-23T10:00:00.000Z'),
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 150));
+    const sundayModes = (loop2.tick as ReturnType<typeof mock>).mock.calls.map((c) => c[0].mode);
+    expect(sundayModes.sort()).toEqual(['daily', 'weekly']);
+  });
+
+  test('v3: bỏ qua nhịp đã tick trong quota-day (lastTickByMode), nhịp kia vẫn chạy', async () => {
+    await writeFile(
+      join(root, 'config', 'spy-loop.json'),
+      JSON.stringify({ enabled: true, tickHourLocal: '00:30', digestHourLocal: '08:00', timezone: 'Asia/Ho_Chi_Minh' }),
+    );
+    // CN 23-08: daily đã chạy (quotaDay hôm nay), weekly chưa → chỉ weekly due.
+    const todayQd = quotaDay(new Date('2026-08-23T10:00:00.000Z'));
+    const loop = makeLoopAdapter({
+      topics: [makeTopic()],
+      statuses: [makeStatus({
+        lastTickByMode: {
+          daily: {
+            tickId: 'tick-daily', quotaDay: todayQd, status: 'done',
+            step: 'report', startedAt: '2026-08-23T08:31:00.000Z',
+            finishedAt: '2026-08-23T08:40:00.000Z', error: null,
+          },
+        },
+      })],
+    });
+    scheduler = new LoopScheduler({
+      loop,
+      spy: {} as unknown as SpyService,
+      dataDir: root,
+      now: () => new Date('2026-08-23T10:00:00.000Z'),
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 150));
+    const modes = (loop.tick as ReturnType<typeof mock>).mock.calls.map((c) => c[0].mode);
+    expect(modes).toEqual(['weekly']);
   });
 });

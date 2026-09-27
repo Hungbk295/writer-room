@@ -23,8 +23,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_read_transcript',
   'spy_read_video_material',
   'spy_video_download_audio',
-  // M0: existing intelligence, deliberately read-only. Keep discovery,
-  // watchlist updates, and all other mutations off this local MCP surface.
+  // M0: existing intelligence + read-only analytics.
   'spy_channel_videos',
   'spy_channel_outliers',
   'spy_channel_profile',
@@ -35,6 +34,15 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_corpus_channels',
   'spy_channel_momentum',
   'spy_competitors_list',
+  // M1: discovery + quota — needed by niche-scout orchestration.
+  // Watchlist mutations (candidates_decide, loop_decide, loop_tick) stay excluded.
+  'spy_discover_videos',
+  'spy_discover_channels',
+  'spy_expand_graph',
+  'spy_candidates_list',
+  'spy_scan_candidates',
+  'spy_transcript_fetch',
+  'spy_quota_status',
   // News radar: press/news channels digest, independent of Channel Watch.
   'spy_news_pull',
   'spy_news_ack',
@@ -62,7 +70,10 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       top_n: { type: 'integer', minimum: 1, maximum: 20, default: 5 },
       scan_limit: { type: 'integer', minimum: 1, maximum: 500, default: 60 },
       rank_by: { type: 'string', enum: ['velocity', 'views'], default: 'velocity' },
-      min_duration_sec: { type: 'integer', minimum: 0, maximum: 7200, default: 60, description: 'Thời lượng video tối thiểu tính bằng giây' },
+      // Mặc định 0 = không lọc thời lượng (khớp schema.ts/cli.ts/http.ts) — 60
+      // trước đây tự ý loại Shorts (≤60s) khỏi MỌI lần gọi spy_channel_start
+      // không truyền tham số, kể cả khi người gọi không hề muốn lọc.
+      min_duration_sec: { type: 'integer', minimum: 0, maximum: 7200, default: 0, description: 'Thời lượng video tối thiểu tính bằng giây — 0 = không lọc, gồm cả Shorts' },
       max_duration_sec: { type: 'integer', minimum: 0, maximum: 72000, description: 'Thời lượng video tối đa tính bằng giây' },
       published_after: { type: 'string', description: 'Chỉ lấy video đăng sau mốc ISO 8601 / YYYY-MM-DD' },
       published_before: { type: 'string', description: 'Chỉ lấy video đăng trước mốc ISO 8601 / YYYY-MM-DD' },
@@ -128,6 +139,26 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
         exclusiveMinimum: 0,
         default: 24,
         description: 'Áp dụng khi refresh=if_stale — tuổi tối đa (giờ) của kết quả cache trước khi gọi lại API.',
+      },
+      published_after: {
+        type: 'string',
+        description: 'ISO 8601 — chỉ lấy video đăng sau mốc này. Bỏ qua cache (luôn gọi API mới). Chỉ áp dụng khi dùng Data API — yt-dlp fallback bỏ qua tham số này.',
+      },
+      published_before: {
+        type: 'string',
+        description: 'ISO 8601 — chỉ lấy video đăng trước mốc này. Cùng ràng buộc với published_after.',
+      },
+      order: {
+        type: 'string',
+        enum: ['relevance', 'date', 'viewCount'],
+        default: 'relevance',
+        description: 'Thứ tự sắp xếp kết quả. Khác relevance thì bỏ qua cache, luôn gọi API mới.',
+      },
+      video_duration: {
+        type: 'string',
+        enum: ['any', 'short', 'medium', 'long'],
+        default: 'any',
+        description: "Bộ đếm thời lượng CỦA YOUTUBE — 'short' = dưới 4 phút, KHÔNG đồng nghĩa 'là Shorts' (Shorts thật ≤60s/≤3 phút). Dùng để thu hẹp trước, vẫn cần tự lọc lại theo duration_sec của kết quả để chắc chắn là Short. Khác 'any' thì bỏ qua cache, luôn gọi API mới.",
       },
     },
     required: ['query'],
@@ -315,7 +346,7 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
     type: 'object',
     properties: {
       topic_id: { type: 'string', minLength: 1 },
-      status: { type: 'string', enum: ['new', 'shortlisted', 'rejected', 'studied'] },
+      status: { type: 'string', enum: ['new', 'active', 'paused', 'rejected', 'own'] },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
       cursor: { type: 'integer', minimum: 0 },
     },

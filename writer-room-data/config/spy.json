@@ -1,0 +1,15 @@
+{
+  "youtubeDataApiKey": "AIzaSyAsODzXmH6phEvXI-5lOIvrvZ9DpTkZ4Yg",
+  "youtubeDataApiKeys": [
+    "AIzaSyAsODzXmH6phEvXI-5lOIvrvZ9DpTkZ4Yg",
+    "AIzaSyDXrE9E5STsiFkQMp0qD5tp2vJH_ltCjmw",
+    "AIzaSyDZ02D-R5MWlWeHatkEB32HabMOoGQWDNw"
+  ],
+  "concurrency": 3,
+  "sampling": {
+    "mode": "spread",
+    "frameCount": 20,
+    "intervalSec": 1,
+    "dhashThreshold": 8
+  }
+}

@@ -43,8 +43,8 @@ export const MOCK_LOOP_STATUS: LoopStatus = {
   },
   nextTickAt: '2026-08-21T08:30:00Z',
   inboxTotal: 43,
-  shortlistedTotal: 12,
-  studiedTotal: 3,
+  activeTotal: 12,
+  pausedTotal: 3,
   keywordsPending: 7,
   quota: {
     searchUsed: 18,
@@ -175,11 +175,11 @@ export const MOCK_INBOX_ITEMS: InboxItem[] = [
 ];
 
 export const MOCK_KEYWORDS: Keyword[] = [
-  { topicId: 'finance-vi', termKey: 'tu-do-tai-chinh', displayTerm: 'tự do tài chính', relation: 'seed', status: 'searched', yieldChannels: 12, lastSearchedAt: '2026-08-20T08:31:00Z', addedAt: '2026-08-20T00:00:00Z', addedBy: 'user' },
-  { topicId: 'finance-vi', termKey: 'lai-kep', displayTerm: 'lãi kép', relation: 'seed', status: 'searched', yieldChannels: 7, lastSearchedAt: '2026-08-20T08:32:00Z', addedAt: '2026-08-20T00:00:00Z', addedBy: 'user' },
+  { topicId: 'finance-vi', termKey: 'tu-do-tai-chinh', displayTerm: 'tự do tài chính', relation: 'seed', status: 'active', yieldChannels: 12, lastSearchedAt: '2026-08-20T08:31:00Z', addedAt: '2026-08-20T00:00:00Z', addedBy: 'user' },
+  { topicId: 'finance-vi', termKey: 'lai-kep', displayTerm: 'lãi kép', relation: 'seed', status: 'active', yieldChannels: 7, lastSearchedAt: '2026-08-20T08:32:00Z', addedAt: '2026-08-20T00:00:00Z', addedBy: 'user' },
   { topicId: 'finance-vi', termKey: 'bay-tieu-dung', displayTerm: 'bẫy tiêu dùng', relation: 'harvested_title', status: 'pending', yieldChannels: 0, lastSearchedAt: null, addedAt: '2026-08-20T08:47:00Z', addedBy: 'loop' },
   { topicId: 'finance-vi', termKey: 'no-tot-no-xau', displayTerm: 'nợ tốt nợ xấu', relation: 'harvested_title', status: 'pending', yieldChannels: 0, lastSearchedAt: null, addedAt: '2026-08-20T08:47:00Z', addedBy: 'loop' },
-  { topicId: 'finance-vi', termKey: 'kiem-tien-online', displayTerm: 'kiếm tiền online', relation: 'seed', status: 'exhausted', yieldChannels: 1, lastSearchedAt: '2026-08-19T08:00:00Z', addedAt: '2026-08-19T00:00:00Z', addedBy: 'user' },
+  { topicId: 'finance-vi', termKey: 'kiem-tien-online', displayTerm: 'kiếm tiền online', relation: 'seed', status: 'paused', yieldChannels: 1, lastSearchedAt: '2026-08-19T08:00:00Z', addedAt: '2026-08-19T00:00:00Z', addedBy: 'user' },
   { topicId: 'finance-vi', termKey: 'forex-signal', displayTerm: 'forex signal', relation: 'seed', status: 'rejected', yieldChannels: 0, lastSearchedAt: null, addedAt: '2026-08-20T00:00:00Z', addedBy: 'user' },
 ];
 
@@ -193,7 +193,7 @@ export const MOCK_REPORT_MARKDOWN = `📊 Spy Loop — Tài chính cá nhân VI 
 **Tick:** done · 08:30 → 08:47 (17 phút)
 **Quota:** 18/20 search · 612/10000 unit
 
-**Kênh mới:** 41 → auto-shortlist 6 · chờ duyệt 19 · auto-reject 16
+**Kênh mới:** 41 → chờ duyệt 19 · auto-reject (lang) 16
 **Inbox hiện tại:** 43 kênh
 
 🔄 **So với hôm qua:** kênh mới 23 → 41 · Inbox 31 → 43 · Keyword pending 5 → 7
@@ -203,7 +203,7 @@ export const MOCK_REPORT_MARKDOWN = `📊 Spy Loop — Tài chính cá nhân VI 
    → https://www.youtube.com/@tienkhon
 
 🔑 **Keyword mới (2):** "bẫy tiêu dùng", "nợ tốt nợ xấu"
-⚠ **Keyword exhausted:** "kiếm tiền online" (92% reject, 1 kênh)
+⚠ **Keyword paused:** "kiếm tiền online" (92% reject, 1 kênh)
 
 👉 Duyệt: http://127.0.0.1:4187/#/spy/loop?topic=finance-vi
 `;
@@ -216,21 +216,21 @@ export const MOCK_REPORT_SUMMARY: ReportSummaryJson = {
   topicLabel: 'Tài chính cá nhân VI',
   tick: { tickId: 'tick-001', status: 'done', startedAt: '2026-08-20T08:30:00Z', finishedAt: '2026-08-20T08:47:12Z', durationSec: 1032, error: null, dryRun: false },
   quota: { searchUsed: 18, searchBudget: 20, searchRemainingDay: 82, generalUsed: 612, generalLimit: 10000 },
-  funnel: { expanded: 12, searched: 3, newCandidates: 41, autoShortlisted: 6, pendingReview: 19, autoRejected: 16, scanned: 0, keywordsHarvested: 2 },
+  funnel: { expanded: 12, searched: 3, newCandidates: 41, autoShortlisted: 0, pendingReview: 19, autoRejected: 16, scanned: 0, keywordsHarvested: 2 },
   inboxTotal: 43,
   topLearn: [
     { channelId: 'UC_mock_tien_khon', title: 'Tiền Khôn', url: 'https://www.youtube.com/@tienkhon', subscriberCount: 84200, ageMonths: 11, medianViews: 123000, medianViewsVsOwn: 3.1, ownChannelTitle: 'Sói Tài Chính', facelessScore: null, fitScore: 82, learnValueScore: 87, foundVia: { relation: 'search_video', term: 'lãi kép' }, status: 'new', decidedBy: null, why: ['median view 3.1× Sói Tài Chính', '84k sub/11 tháng', 'faceless? 91% (đoán từ chữ, chưa có kết luận vision)'] },
   ],
   newKeywords: ['bẫy tiêu dùng', 'nợ tốt nợ xấu'],
-  exhaustedKeywords: [{ term: 'kiếm tiền online', rejectRate: 0.92, yieldChannels: 1 }],
+  pausedKeywords: [{ term: 'kiếm tiền online', rejectRate: 0.92, yieldChannels: 1 }],
   scannedChannels: [],
   delta: {
     vsReportId: 'rpt-000', vsDate: '2026-08-19',
-    newCandidatesPrev: 23, inboxTotalPrev: 31, shortlistedTotalPrev: 8, studiedTotalPrev: 3, keywordsPendingPrev: 5,
+    newCandidatesPrev: 23, inboxTotalPrev: 31, activeTotalPrev: 8, pausedTotalPrev: 3, keywordsPendingPrev: 5,
     firstSeenToday: ['UC_mock_tien_khon', 'UC_mock_co_may'],
-    movedToShortlistToday: [],
-    userDecisionsSinceLast: { shortlisted: 4, rejected: 9 },
-    newlyExhausted: ['kiếm tiền online'],
+    movedToActiveToday: [],
+    userDecisionsSinceLast: { active: 4, rejected: 9 },
+    newlyPaused: ['kiếm tiền online'],
   },
   warnings: [],
   links: { dashboard: 'http://127.0.0.1:4187/#/spy/loop?topic=finance-vi', mcpTool: 'spy_loop_report' },

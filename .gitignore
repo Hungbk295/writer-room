@@ -3,6 +3,10 @@ node_modules/
 dist/
 build/
 scratch/
+__pycache__/
+*.pyc
+*.pyo
+
 
 # Run data — evidence gốc, không commit
 writer-room-data/
@@ -25,3 +29,11 @@ binaries/
 .agents/mcp_config.json
 .agents/skills/
 .grok/config.toml
+
+# Secrets & Service Accounts
+!service_account.json.example
+*.pem
+*.key
+.env*
+!.env.example
+

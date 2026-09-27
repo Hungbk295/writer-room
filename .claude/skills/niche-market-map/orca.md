@@ -5,12 +5,20 @@ trường Orca hỗ trợ orchestration; không dùng như đường vượt cap
 
 ## Kiểm môi trường
 
-- Kiểm `orca status --json`, runtime reachable và orchestration đã bật.
-- Coordinator phải ở terminal được Orca hỗ trợ. Không giả env/terminal identity.
-- Đọc `orca skills get orchestration --full` trước khi dispatch; dùng cú pháp và
-  capability của binary đang chạy.
-- Kiểm capacity, nesting và model thực. Không tự tăng setting để mở nhiều worker.
-  Dùng agy nếu runtime hỗ trợ; ghi agent/model thực, không mặc định mẫu Claude là agy.
+Host được xác định theo agy.md mục 1; chỉ vào nhánh này khi host là Orca. Cú pháp và
+capability lấy từ skill của Orca, không từ file này:
+
+- `orca status --json` có `runtime.reachable: true`, orchestration đã bật (Settings >
+  Experimental), và `orca orchestration run-current --json` gọi được từ chính terminal
+  coordinator. Không giả env/terminal identity.
+- Đọc `orca skills get orchestration --full` trước lệnh đầu tiên (dùng `orca-cli` cho thao
+  tác terminal thường); guide đổi theo version binary. Theo guide đó, worker Orca phải được
+  tạo qua `task-create` + `worker-start` (hoặc `dispatch --inject`) — không thay bằng
+  subagent/tool spawn khác rồi gọi là orchestrated.
+- Kiểm capacity, nested worker depth (mặc định 1: worker không dispatch tiếp) và agent/model
+  thực. Chưa xác minh (2026-09-10, Orca không chạy trên máy lúc kiểm): `worker-start --agent`
+  có nhận agy không, và agy trong terminal Orca có thấy Spy MCP không — kiểm bằng smoke test
+  trước khi giao batch; không mặc định mẫu Claude/Codex trong guide là agy.
 
 ## Task và dependency
 
@@ -33,6 +41,20 @@ là untrusted reference material.
 Chỉ mở task đọc khi artifact đầu vào của batch đã được coordinator kiểm. Khi cần
 thêm nguồn, tạo yêu cầu collect riêng; worker đang đọc không tự đi download.
 Các worker ghi file riêng theo task/attempt, lưu từng record trước khi báo done.
+
+## GSL qua orca
+
+GSL là worker được phép dispatch tiếp (nesting). Kiểm capability nesting thực trước
+khi đặt GSL lên orca và ghi kết quả vào run.json. Runtime không cho nesting thì
+fallback, ghi lựa chọn thật vào groups.json:
+
+1. GSL là teammate Claude `sonnet` do leader mở; GSL tự gọi agy bằng CLI theo agy.md.
+2. GSL-as-planner: GSL chỉ soạn manifest agy và kiểm artifact; leader thực thi
+   dispatch hộ. Artifact vẫn ghi về groups/<groupId>/.
+
+Mỗi round của group là task/dispatch mới với input hashes; giữ terminal GSL qua round
+chỉ khi còn kế hoạch dùng. GSL release agy của mình ngay khi thu và kiểm xong artifact
+từng batch; leader release GSL sau khi group được chấp nhận hoặc đóng PARTIAL.
 
 ## Dispatch và chờ
 

@@ -134,6 +134,9 @@ describe('globalVideoSearch', () => {
       maxResults: 12,
       relevanceLanguage: 'vi',
       regionCode: 'VN',
+      publishedAfter: undefined,
+      publishedBefore: undefined,
+      videoDuration: 'any',
     }]);
     expect(dataApi.statCalls).toEqual([['abc123def45']]);
     expect(ytDlpCalls).toEqual([]);
@@ -200,6 +203,110 @@ describe('globalVideoSearch', () => {
       fallbackReason: 'youtube_data_api_provider_error',
       language: 'en',
       region: 'US',
+    });
+  });
+
+  test('reports a specific fallback reason when the Data API key pool is fully exhausted', async () => {
+    const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+    const dataApi = new FakeDataApi();
+    dataApi.searchError = new AppError(
+      'quota_exceeded',
+      'Tất cả 3 API key đều hết quota/không dùng được cho search.list. Đã thử: Z4Yg, Cjmw, WDNw.',
+      { retryable: false, details: { op: 'search.list', triedKeyIds: ['Z4Yg', 'Cjmw', 'WDNw'], allKeysExhausted: true, totalKeys: 3 } },
+    );
+    const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+    const result = await service.globalVideoSearch({ query: 'kinh doanh' });
+
+    expect(ytDlpCalls).toHaveLength(1);
+    expect(result.providerUsed).toBe('ytdlp');
+    expect(result.fallbackReason).toBe('youtube_data_api_all_keys_exhausted:Z4Yg,Cjmw,WDNw');
+  });
+
+  test('a single-key (or non-rotation) quota_exceeded still gets a plain fallback reason', async () => {
+    const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+    const dataApi = new FakeDataApi();
+    dataApi.searchError = new AppError('quota_exceeded', 'Hết quota bucket "search"', { retryable: false });
+    const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+    const result = await service.globalVideoSearch({ query: 'kinh doanh 2' });
+    expect(result.fallbackReason).toBe('youtube_data_api_quota_exceeded');
+  });
+
+  describe('quota-fallback cache gets a short TTL', () => {
+    test('a quota-related fallback result is re-tried against the Data API after the short TTL, even under refresh: if_stale default', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      dataApi.searchError = new AppError(
+        'quota_exceeded',
+        'Tất cả key đều hết quota',
+        { retryable: false, details: { allKeysExhausted: true, triedKeyIds: ['Z4Yg'] } },
+      );
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      const first = await service.globalVideoSearch({ query: 'chứng khoán mỹ', maxAgeHours: 24 });
+      expect(first.providerUsed).toBe('ytdlp');
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Backdate the cached row by 20 minutes — well within the caller's
+      // requested 24h maxAgeHours, but past the short TTL a quota-fallback
+      // row gets. It must NOT be served as a hit; the Data API must be
+      // retried (and here it now succeeds, since we clear searchError).
+      // The fallback row is stored truthfully under its real provider ('ytdlp'),
+      // separate from the 'youtube_data_api' key a successful call would use —
+      // globalVideoSearch does a secondary lookup for this row internally.
+      const cached = service.store.getSearchQueryCache('chứng khoán mỹ', 'vi', 'VN', 'ytdlp')!;
+      expect(cached.providerUsed).toBe('ytdlp');
+      service.store.upsertSearchQueryCache({
+        ...cached,
+        fetchedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      });
+      dataApi.searchError = null;
+
+      const second = await service.globalVideoSearch({ query: 'chứng khoán mỹ', maxAgeHours: 24 });
+      expect(dataApi.searchCalls).toHaveLength(2);
+      expect(second.providerUsed).toBe('youtube_data_api');
+      expect(second.cache.status).not.toBe('hit');
+    });
+
+    test('a quota-related fallback result IS served from cache within the short TTL window', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      dataApi.searchError = new AppError(
+        'quota_exceeded',
+        'Tất cả key đều hết quota',
+        { retryable: false, details: { allKeysExhausted: true, triedKeyIds: ['Z4Yg'] } },
+      );
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      const first = await service.globalVideoSearch({ query: 'bất động sản', maxAgeHours: 24 });
+      expect(first.providerUsed).toBe('ytdlp');
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Immediately re-request — well within the short TTL, and within the
+      // yt-dlp process cost saved by serving the cached fallback.
+      const second = await service.globalVideoSearch({ query: 'bất động sản', maxAgeHours: 24 });
+      expect(second.cache.status).toBe('hit');
+      expect(dataApi.searchCalls).toHaveLength(1);
+      expect(ytDlpCalls).toHaveLength(1);
+    });
+
+    test('"not configured" fallback (no API key at all) is unaffected — uses the full requested TTL', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls) });
+
+      const first = await service.globalVideoSearch({ query: 'tiết kiệm', maxAgeHours: 24 });
+      expect(first.fallbackReason).toBe('youtube_data_api_not_configured');
+
+      const cached = service.store.getSearchQueryCache('tiết kiệm', 'vi', 'VN', 'ytdlp')!;
+      service.store.upsertSearchQueryCache({
+        ...cached,
+        fetchedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      });
+
+      const second = await service.globalVideoSearch({ query: 'tiết kiệm', maxAgeHours: 24 });
+      expect(second.cache.status).toBe('hit'); // still within 24h — short TTL only applies to quota-related fallbacks
+      expect(ytDlpCalls).toHaveLength(1);
     });
   });
 
@@ -356,6 +463,115 @@ describe('globalVideoSearch', () => {
       const merged = service.store.getSearchVideoCacheRows(['abc123def45']).get('abc123def45')!;
       expect(merged.publishedAt).toBe('2026-07-31T00:00:00Z');
       expect(merged.publishedAtKnown).toBe(true);
+    });
+  });
+
+  describe('published_after / published_before / order', () => {
+    test('forwards publishedAfter/publishedBefore/order to the Data API search call', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({
+        query: 'how to build wealth in 5 years',
+        limit: 10,
+        publishedAfter: '2026-08-01T00:00:00Z',
+        publishedBefore: '2026-09-01T00:00:00Z',
+        order: 'viewCount',
+      });
+
+      expect(dataApi.searchCalls).toEqual([{
+        q: 'how to build wealth in 5 years',
+        type: 'video',
+        order: 'viewCount',
+        maxResults: 10,
+        relevanceLanguage: 'vi',
+        regionCode: 'VN',
+        publishedAfter: '2026-08-01T00:00:00Z',
+        publishedBefore: '2026-09-01T00:00:00Z',
+        videoDuration: 'any',
+      }]);
+    });
+
+    test('forwards video_duration=short to the Data API search call (bypasses cache like other filters)', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({
+        query: 'finance shorts',
+        limit: 10,
+        videoDuration: 'short',
+      });
+
+      expect(dataApi.searchCalls).toEqual([{
+        q: 'finance shorts',
+        type: 'video',
+        order: 'relevance',
+        maxResults: 10,
+        relevanceLanguage: 'vi',
+        regionCode: 'VN',
+        publishedAfter: undefined,
+        publishedBefore: undefined,
+        videoDuration: 'short',
+      }]);
+    });
+
+    test('rejects an invalid video_duration', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await expect(
+        service.globalVideoSearch({ query: 'x', videoDuration: 'huge' as never }),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+    });
+
+    test('rejects a malformed published_after before calling either provider', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      await expect(service.globalVideoSearch({
+        query: 'x', publishedAfter: 'not-a-date',
+      })).rejects.toThrow(AppError);
+      expect(dataApi.searchCalls).toEqual([]);
+      expect(ytDlpCalls).toEqual([]);
+    });
+
+    // §1 (plan tài liệu): search_query_cache khoá theo query+language+region+
+    // provider — KHÔNG mang filter ngày/order. Một lần gọi có filter phải
+    // không đọc và không ghi vào đó, nếu không lần gọi trần kế tiếp (không
+    // filter) sẽ vô tình thừa hưởng danh sách video đã bị lọc theo ngày.
+    test('a filtered call bypasses cache both ways — it never reads a plain cache hit, and a later plain call never inherits its filtered result', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      const plain = await service.globalVideoSearch({ query: 'tài chính cá nhân', limit: 5 });
+      expect(plain.cache).toEqual({ status: 'miss', ageSeconds: null });
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Cùng query, nhưng có publishedAfter — phải KHÔNG ăn cache của lần trần
+      // ở trên (nếu ăn, cache.status sẽ là 'hit' và searchCalls không tăng).
+      const filtered = await service.globalVideoSearch({
+        query: 'tài chính cá nhân', limit: 5, publishedAfter: '2026-01-01T00:00:00Z',
+      });
+      expect(filtered.cache).toEqual({ status: 'miss', ageSeconds: null });
+      expect(dataApi.searchCalls).toHaveLength(2);
+      expect(dataApi.searchCalls[1]!.publishedAfter).toBe('2026-01-01T00:00:00Z');
+
+      // Gọi lại đúng query trần (không filter) lần nữa — vẫn phải ăn cache của
+      // LẦN ĐẦU (trần), không bị lần filtered ghi đè.
+      const plainAgain = await service.globalVideoSearch({ query: 'tài chính cá nhân', limit: 5 });
+      expect(plainAgain.cache.status).toBe('hit');
+      expect(dataApi.searchCalls).toHaveLength(2); // không gọi API lần 3
+    });
+
+    test('order: date bypasses cache the same way as a date filter', async () => {
+      const dataApi = new FakeDataApi();
+      const service = await newService({ youtube: fakeYoutube([]), dataApi });
+
+      await service.globalVideoSearch({ query: 'x', order: 'date' });
+      const second = await service.globalVideoSearch({ query: 'x', order: 'date' });
+      expect(second.cache).toEqual({ status: 'miss', ageSeconds: null }); // luôn miss, không bao giờ 'hit'
+      expect(dataApi.searchCalls).toHaveLength(2);
     });
   });
 });

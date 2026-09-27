@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spy Pipeline v3 Lean</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2dfd8;--acc:#1f5f8b;--stop:#b4471f;--code:#f1eee8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--fg:#ebe9e4;--mut:#9a978f;--line:#34322e;--acc:#7ab3dc;--stop:#e8875f;--code:#23221f}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:980px;margin:auto}
+h1{font-size:26px;margin:0 0 4px}h2{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.mut{color:var(--mut)}code,pre{background:var(--code);font:13px ui-monospace,Menlo,monospace}code{padding:1px 4px;border-radius:3px}
+pre{padding:12px;overflow-x:auto;border-radius:6px}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--code)}
+.stop{color:var(--stop);font-weight:700}.tag{font-size:12px;padding:1px 6px;border-radius:3px;border:1px solid var(--line)}
+</style>
+</head>
+<body><main>
+<h1>Spy Research Pipeline v3 — Lean</h1>
+<p class="mut">SDD 008-rev · 2026-09-25 · Thay thế phạm vi của <code>spy-research-pipeline-v2.html</code> · Trạng thái: ĐÃ TRIỂN KHAI (chưa commit)</p>
+<p style="border:1px solid var(--stop);padding:8px 12px;border-radius:6px"><b>Đã có bản kế tiếp:</b> <code>spy-research-pipeline-v3.1.html</code> bổ sung tầng Ngách &amp; Painpoint, pha INIT và Niche review. Daily/weekly/DB v13 trong tài liệu này vẫn là nền; phần Setup tìm kênh bằng seed keyword trở thành chế độ dự phòng.</p>
+
+<h2>0 · Kết luận</h2>
+<p><b>Quyết định:</b> thu v2 (3 sổ, 16 bảng mới, 8 ADR) về <b>2 sổ + 2 nhịp chạy</b>: <b>Keyword List</b> và <b>Follow List</b>, nuôi bằng <b>Daily check</b> (quét kênh follow, không search) và <b>Weekly outlier</b> (search keyword, bắt video/kênh nổ). Mọi thay đổi vào sổ đều dừng ở <b>inbox chờ người duyệt</b>.</p>
+<table>
+<tr><th>Tôn chỉ</th><th>Hiện thực hoá</th><th>Cách kiểm chứng</th></tr>
+<tr><td>1. Flow đơn giản, có điểm dừng HITL</td><td>3 flow, 4 điểm dừng. Máy chỉ <i>đề xuất</i> (status <code>new</code>/<code>pending</code>/suggestion); chỉ người chuyển sang <code>active</code>/<code>rejected</code>/<code>paused</code>.</td><td>Mọi dòng trong <code>decisions</code> có <code>to_status IN (active,rejected,paused)</code> đều có <code>actor='human'</code>.</td></tr>
+<tr><td>2. Tập trung keyword, follow list, daily + weekly outlier</td><td>Cắt toàn bộ tầng insight, luồng, chẩn đoán niche, regime Pettitt, heat board materialize.</td><td>Không có bảng nào ngoài danh sách §4.</td></tr>
+<tr><td>3. DB đơn giản, field thực chiến</td><td>Mở rộng 5 bảng có sẵn + <b>3 bảng mới</b>. Mỗi field trả lời một câu hỏi người dùng sẽ hỏi trên dashboard.</td><td>§4 — mỗi cột có cột "trả lời câu hỏi gì".</td></tr>
+</table>
+
+<h2>1 · Cắt khỏi phạm vi (so với v2)</h2>
+<table>
+<tr><th>Hạng mục v2</th><th>Xử lý</th><th>Lý do</th></tr>
+<tr><td>Audience Insight DB (rs_voc, rs_jtbd, clusters, micro_niches, insights, backtests, hypotheses, comment_triage)</td><td>Cắt</td><td>Không thuộc tôn chỉ 2. Skill <code>comment-insight</code> vẫn chạy tay, ngoài pipeline.</td></tr>
+<tr><td>rs_streams, rs_stream_adjacency, rs_niche_diagnostics</td><td>Cắt</td><td>Bước gom luồng cần 15 phút người + 3 bảng; chưa phục vụ daily/weekly.</td></tr>
+<tr><td>rs_channel_regimes (Pettitt)</td><td>Thay bằng <b>baseline cuốn chiếu</b>: median view của 30 video dài gần nhất</td><td>Cửa sổ cuốn chiếu tự bám theo chế độ mới của kênh; không cần thống kê đứt gãy.</td></tr>
+<tr><td>rs_heat_board materialize</td><td>Cắt — tính từ <code>video_daily_views</code> khi đọc</td><td>Lịch sử đã nằm ở bảng snapshot.</td></tr>
+<tr><td>rs_quarantine</td><td>Cắt — dùng <code>status='rejected'</code> + <code>decided_reason='lang_mismatch'</code> (đã có)</td><td>Một nơi, không sổ song song.</td></tr>
+<tr><td>Giáng cấp kênh tự động</td><td>Đổi thành <b>gợi ý</b> (<code>suggestion</code>), người xác nhận</td><td>Tôn chỉ 1.</td></tr>
+<tr><td>Search mỗi ngày (runner hiện tại)</td><td>Chuyển sang <b>weekly</b></td><td>L10: hiệu suất đường keyword 3,4%.</td></tr>
+</table>
+<p>Giữ từ v2: L1 (keyword phải có origin dữ liệu thật), L3 (cổng ngôn ngữ tại intake), L6 (trend chỉ từ snapshot kép), L7 (sàn median quyết định, max/median &gt; 50 là xổ số), ADR-7 (sửa hardcode ngôn ngữ).</p>
+
+<h2>2 · Ba flow, bốn điểm dừng</h2>
+<pre>
+SETUP (1 lần/topic)
+  S1 HUMAN  tạo topic: market, language, region + 3–5 seed keyword (+ seed channel tuỳ chọn)
+  S2 CODE   search seed kw → gom kênh → cổng ngôn ngữ → quét 30 video/kênh → baseline, outlier
+            → topic_channels(status=new)
+  <span class="stop">⏸ STOP 1</span>  người duyệt inbox kênh (thumbnail, median, video tốt nhất, bội số) → active | rejected
+  S3 CODE   n-gram 2–3 từ title của kênh active, xuất hiện ở ≥3 kênh → topic_keywords(status=pending)
+  <span class="stop">⏸ STOP 2</span>  người duyệt keyword → active | rejected            ⇒ setup_status=done
+
+DAILY (tự chạy, giờ cấu hình; KHÔNG gọi search)
+  D1 CODE   pre-flight quota; fail → báo Telegram, không ghi dữ liệu
+  D2 CODE   mỗi kênh active: 15 video mới nhất (metadata) → upsert topic_videos + 1 snapshot/ngày
+  D3 CODE   tính views_gained_24h, outlier_score = views / baseline_median; cập nhật baseline kênh
+  D4 CODE   gợi ý (không đổi status): kênh im lặng ≥60 ngày → suggestion='pause_silent'
+  D5 CODE   báo cáo ngày: video mới, top 10 tăng view, top outlier, gợi ý → daily_reports + Telegram
+  <span class="stop">⏸ STOP 3</span>  người đọc báo cáo; nếu muốn thì xử lý gợi ý (không chặn tick sau)
+
+WEEKLY OUTLIER (1 lần/tuần, giờ cấu hình)
+  W1 CODE   search ≤12 keyword active (xoay vòng theo last_checked_at), region/lang, 28 ngày gần nhất
+            → ghi sức khoẻ keyword (n_results, n_followed, median view)
+  W2 CODE   outlier TRONG follow: video 7 ngày qua có outlier_score ≥ 3
+  W3 CODE   outlier NGOÀI follow: kênh chưa có trong list, có video hit; quét nhanh ≤10 kênh
+            → bội số ≥3 và không xổ số → topic_channels(status=new, discovered_via=weekly_outlier)
+  W4 CODE   n-gram chung của ≥2 video outlier → topic_keywords(status=pending, origin=outlier_title)
+  W5 CODE   báo cáo tuần → daily_reports(mode=weekly) + Telegram
+  <span class="stop">⏸ STOP 4</span>  người duyệt inbox: kênh mới, keyword mới, gợi ý pause
+</pre>
+<p><b>Luật bất biến:</b> code chỉ được ghi <code>new</code>, <code>pending</code>, <code>rejected</code> (duy nhất cho <code>lang_mismatch</code>) và <code>suggestion</code>. Chuyển sang <code>active</code> / <code>paused</code> / <code>rejected</code> vì lý do khác chỉ qua endpoint duyệt, <code>actor='human'</code>.</p>
+
+<h2>3 · Ngưỡng — <code>topics.settings_json</code>, mặc định</h2>
+<table>
+<tr><th>Khoá</th><th>Mặc định</th><th>Ý nghĩa</th></tr>
+<tr><td>outlier_multiple</td><td>3</td><td>views / baseline_median để gọi là outlier</td></tr>
+<tr><td>lottery_ratio</td><td>50</td><td>max/median &gt; 50 ⇒ kênh xổ số, không đề xuất</td></tr>
+<tr><td>min_duration_sec</td><td>300</td><td>Video dưới ngưỡng không tính baseline/outlier (loại Shorts)</td></tr>
+<tr><td>baseline_window</td><td>30</td><td>Số video dài gần nhất tính median</td></tr>
+<tr><td>baseline_min_n</td><td>10</td><td>Ít hơn ⇒ baseline "chưa tin cậy", không tính outlier</td></tr>
+<tr><td>dead_median</td><td>500</td><td>Median dưới ngưỡng ⇒ gắn nhãn dead, không đề xuất</td></tr>
+<tr><td>silent_days</td><td>60</td><td>Không đăng ⇒ gợi ý pause</td></tr>
+<tr><td>daily_scan_per_channel</td><td>15</td><td>Video mới nhất quét mỗi ngày</td></tr>
+<tr><td>weekly_keyword_budget</td><td>12</td><td>Số search call/tuần</td></tr>
+<tr><td>weekly_new_channel_scan</td><td>10</td><td>Số kênh ngoài follow quét nhanh/tuần</td></tr>
+<tr><td>ngram_min_channels</td><td>3</td><td>n-gram phải xuất hiện ở ≥ N kênh (setup)</td></tr>
+<tr><td>daily_at / weekly_at</td><td>15:30 / CN 16:00</td><td>Giờ chạy (Asia/Ho_Chi_Minh)</td></tr>
+</table>
+
+<h2>4 · Database — 5 bảng mở rộng + 3 bảng mới</h2>
+<p class="mut">Không xoá cột cũ (runner/test đang dùng); flow mới chỉ đọc/ghi các cột dưới đây. Đổi CHECK enum = rebuild bảng trong migration v13.</p>
+
+<h3>4.1 <code>topics</code> (mở rộng)</h3>
+<table><tr><th>Cột mới</th><th>Trả lời câu hỏi</th></tr>
+<tr><td>region TEXT</td><td>Search ở thị trường nào (US, VN)</td></tr>
+<tr><td>settings_json TEXT DEFAULT '{}'</td><td>Ngưỡng §3 của topic này</td></tr>
+<tr><td>setup_status: none | awaiting_channels | awaiting_keywords | done</td><td>Topic đang kẹt ở điểm dừng nào</td></tr>
+</table>
+
+<h3>4.2 <code>topic_keywords</code> = Keyword List</h3>
+<table><tr><th>Cột</th><th>Trả lời câu hỏi</th></tr>
+<tr><td>status: pending | active | paused | rejected <span class="tag">rebuild</span></td><td>Keyword đang được theo dõi không (map: searched→active, exhausted→paused)</td></tr>
+<tr><td>origin: seed | title_ngram | outlier_title | user</td><td>Keyword từ đâu ra (L1)</td></tr>
+<tr><td>evidence_json (có sẵn)</td><td>Bằng chứng: n_channels, video mẫu</td></tr>
+<tr><td>last_checked_at, last_n_results, last_n_followed, last_median_views</td><td>Lần search gần nhất: bao nhiêu kết quả, bao nhiêu từ kênh follow, view trung vị</td></tr>
+<tr><td>decided_at, decided_reason</td><td>Ai/khi nào/vì sao duyệt</td></tr>
+</table>
+
+<h3>4.3 <code>topic_channels</code> = Follow List</h3>
+<table><tr><th>Cột</th><th>Trả lời câu hỏi</th></tr>
+<tr><td>status: new | active | paused | rejected | own <span class="tag">rebuild</span></td><td>Kênh có đang được follow (map: studied→active; shortlisted do user→active, do loop_auto→new)</td></tr>
+<tr><td>title, handle, subscriber_count</td><td>Kênh nào (denormalize để dashboard khỏi join)</td></tr>
+<tr><td>discovered_via: seed | keyword_search | weekly_outlier | user · discovered_from</td><td>Tìm thấy bằng đường nào, keyword nào</td></tr>
+<tr><td>baseline_median_views, baseline_n, max_views, baseline_at</td><td>Sàn của kênh là bao nhiêu, có đáng tin, có xổ số không</td></tr>
+<tr><td>last_published_at, last_checked_at</td><td>Kênh còn sống không, daily đã quét chưa</td></tr>
+<tr><td>suggestion, suggestion_at</td><td>Máy đang đề xuất gì cho người (pause_silent)</td></tr>
+<tr><td>thumbnails_json, decided_by/at/reason (có sẵn)</td><td>Duyệt bằng mắt, truy vết quyết định</td></tr>
+</table>
+
+<h3>4.4 <code>loop_ticks</code>, <code>daily_reports</code></h3>
+<p>Thêm <code>mode TEXT CHECK(mode IN ('setup','daily','weekly'))</code>; <code>loop_ticks</code> đổi UNIQUE thành <code>(topic_id, quota_day, mode)</code> <span class="tag">rebuild</span>; báo cáo UNIQUE thành <code>(topic_id, report_date, mode)</code>.</p>
+
+<h3>4.5 Bảng mới</h3>
+<pre>
+-- Mỗi video mà topic đang theo dõi (1 dòng / topic / video). Giá trị "latest_*" là bản sao để dashboard đọc nhanh.
+CREATE TABLE topic_videos (
+  topic_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  published_at TEXT,
+  duration_sec REAL,
+  thumbnail_url TEXT,
+  source TEXT NOT NULL,            -- setup | daily_scan | weekly_search
+  found_by_keyword TEXT,           -- term_key khi source=weekly_search
+  first_seen_at TEXT NOT NULL,
+  latest_views INTEGER, latest_likes INTEGER, latest_comments INTEGER, latest_at TEXT,
+  views_gained_24h INTEGER,        -- NULL khi chưa có 2 snapshot (L6)
+  outlier_score REAL,              -- latest_views / baseline_median; NULL khi baseline chưa tin cậy
+  PRIMARY KEY (topic_id, video_id)
+);
+CREATE INDEX idx_topic_videos_channel ON topic_videos(topic_id, channel_id, published_at DESC);
+CREATE INDEX idx_topic_videos_outlier ON topic_videos(topic_id, outlier_score DESC);
+
+-- Snapshot view, append-only, tối đa 1 dòng / video / ngày.
+CREATE TABLE video_daily_views (
+  topic_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  day TEXT NOT NULL,               -- YYYY-MM-DD (quota_day)
+  views INTEGER NOT NULL, likes INTEGER, comments INTEGER,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY (topic_id, video_id, day)
+);
+
+-- Nhật ký mọi đổi trạng thái kênh/keyword — bằng chứng cho tôn chỉ 1.
+CREATE TABLE decisions (
+  id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL CHECK(actor IN ('human','loop')),
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('channel','keyword')),
+  entity_id TEXT NOT NULL,
+  from_status TEXT, to_status TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  tick_id TEXT
+);
+CREATE INDEX idx_decisions_entity ON decisions(topic_id, entity_type, entity_id, at DESC);
+</pre>
+
+<h3>4.6 Di trú TSV → DB (một lần)</h3>
+<table><tr><th>Nguồn</th><th>Đích</th></tr>
+<tr><td>—</td><td>tạo topic <code>pov-finance</code> (market us, language en, region US)</td></tr>
+<tr><td>loop/follow_list.tsv (18)</td><td>topic_channels status=active</td></tr>
+<tr><td>loop/inbox_channels.tsv (101)</td><td>topic_channels status=new/rejected; thiếu channel_id → bỏ qua, liệt kê trong báo cáo di trú</td></tr>
+<tr><td>loop/snapshots.tsv (214)</td><td>video_daily_views + topic_videos</td></tr>
+<tr><td>state/keyword_index.tsv (243)</td><td>topic_keywords; thiếu origin → rejected(reason=no_origin)</td></tr>
+</table>
+<p>Đối chiếu ngược: đếm dòng + tổng cột số giữa TSV và DB khớp 100% (đọc số thô, không qua locale).</p>
+
+<h2>5 · Chia việc cho 2 Devin</h2>
+<table>
+<tr><th>Pha</th><th>Devin A — Data (9ab6943d)</th><th>Devin B — Flow (8f9a7efb)</th></tr>
+<tr><td>P1 (song song)</td><td>Migration v13 (§4) + store methods + test migrate từ DB v12 thật</td><td>ADR-7: sửa <code>ytdlp.ts:172</code>, <code>niche.ts:209</code> đọc ngôn ngữ/region theo topic. Hàm thuần: baseline median, outlier_score, views_gained_24h, n-gram harvest + unit test</td></tr>
+<tr><td>P2</td><td>Script di trú TSV + đối chiếu ngược</td><td>Runner tách mode <code>daily</code> (D1–D5), bỏ search khỏi daily; scheduler daily</td></tr>
+<tr><td>P3</td><td>Endpoint duyệt: inbox kênh/keyword, decide (ghi <code>decisions</code>, actor=human)</td><td>Mode <code>weekly</code> (W1–W5) + <code>setup</code> (S2, S3) + scheduler tuần</td></tr>
+<tr><td>P4</td><td colspan="2">Claude: review tích hợp, chạy E2E trên <code>pov-finance</code>, rồi thiết kế bộ API dashboard (§7)</td></tr>
+</table>
+
+<h2>6 · Tiêu chí chấp nhận</h2>
+<ol>
+<li>Không có bảng <code>rs_*</code> nào; tổng bảng mới = 3.</li>
+<li>Test: gọi daily/weekly/setup trên DB mẫu → không dòng nào của <code>topic_channels</code>/<code>topic_keywords</code> chuyển sang <code>active</code> hoặc <code>paused</code>; mọi dòng <code>decisions</code> với <code>actor='loop'</code> chỉ có <code>to_status ∈ {new, pending, rejected}</code>, và rejected chỉ kèm <code>lang_mismatch</code>.</li>
+<li>Daily: 0 search call (đo từ <code>loop_ticks.search_calls_used</code>); mỗi kênh active có <code>last_checked_at</code> = hôm nay; <code>views_gained_24h</code> NULL khi video chỉ có 1 snapshot.</li>
+<li>Weekly: search call ≤ <code>weekly_keyword_budget</code>; mọi kênh mới có <code>discovered_via</code> + <code>discovered_from</code>; không kênh nào có <code>baseline_median &lt; dead_median</code> hoặc <code>max/median &gt; lottery_ratio</code> ở status <code>new</code> do weekly tạo.</li>
+<li>Setup: <code>setup_status</code> dừng đúng ở <code>awaiting_channels</code> và <code>awaiting_keywords</code> cho tới khi có quyết định người.</li>
+<li>Topic <code>bay-tra-gop</code> (vi) vẫn chạy được như cũ sau ADR-7 (không đảo cứng ngôn ngữ).</li>
+<li>Di trú: đối chiếu ngược khớp 100%.</li>
+<li><code>bun test</code> toàn repo xanh; typecheck xanh.</li>
+</ol>
+
+<h2>7 · Bộ API dashboard (thiết kế sau P3)</h2>
+<p class="mut">Sẽ chốt sau khi schema chạy thật. Hướng: REST read-only dưới <code>/api/spy/dash/*</code>, mọi endpoint nhận <code>topic_id</code>, <code>from</code>/<code>to</code>, phân trang, trả JSON phẳng để vẽ biểu đồ trực tiếp — overview KPI, keywords, channels, videos, time-series view, outliers tuần, inbox, decisions, ticks/quota.</p>
+
+<h2>8 · Quyết định cần JC xác nhận</h2>
+<ol>
+<li>Cắt tầng Insight khỏi pipeline (chạy tay qua skill).</li>
+<li>Baseline cuốn chiếu 30 video thay cho Pettitt/regime.</li>
+<li>Không có giáng cấp tự động — chỉ gợi ý.</li>
+<li>Daily không search; search chỉ chạy weekly.</li>
+</ol>
+</main></body></html>
