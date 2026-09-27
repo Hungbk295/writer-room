@@ -38,10 +38,24 @@ export class ResearchTokenRegistry {
     writeFileSync(this.path, JSON.stringify({ actors: this.grants }, null, 2), { encoding: 'utf8', mode: 0o600 });
   }
 
-  /** Returns the existing grant for the same role+subject, or mints a new token. */
+  /**
+   * Returns the grant for role+subject, minting a token only when absent.
+   * If an existing worker grant carries a different profile (e.g. the file was
+   * provisioned before the subject↔profile contract settled), the profile is
+   * healed in place — the token is kept so already-distributed credentials
+   * stay valid — and the correction is logged. A registry row is never deleted
+   * here; revocation stays an explicit `revoke()`.
+   */
   ensure(grant: { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile: string }): ActorGrant {
     const found = this.grants.find((g) => g.role === grant.role && g.subject === grant.subject);
-    if (found) return found;
+    if (found) {
+      if (grant.role === 'worker' && found.role === 'worker' && found.profile !== grant.profile) {
+        console.warn(`[research-mcp] actor ${grant.subject}: profile '${found.profile}' → '${grant.profile}' (token kept)`);
+        found.profile = grant.profile;
+        this.save();
+      }
+      return found;
+    }
     const created = { ...grant, token: randomBytes(24).toString('hex') } as ActorGrant;
     this.grants.push(created);
     this.save();

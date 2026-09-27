@@ -620,8 +620,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // daemon-issued tokens; it must not mint its own credential file.
   const researchTokens = new ResearchTokenRegistry(join(root, 'config', 'hermes-actors.json'));
   const researchOperator = researchTokens.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
-  const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher' });
-  const writerWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-writer', profile: 'wr-writer' });
+  // Profiles match dev-1's provisioned identities: queue names are 'research'
+  // and 'writer' (claim/bind use these), subjects are hermes:wr-*.
+  const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  const writerWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-writer', profile: 'writer' });
   const researchMcp = new McpResearchServer(researchStore, researchTokens);
   await researchMcp.start();
   writeFileSync(
@@ -630,8 +632,8 @@ export async function createHttpApp(): Promise<HttpApp> {
       url: `http://127.0.0.1:${daemonPort}/api/research/mcp`,
       actors: [
         { role: 'operator', subject: researchOperator.subject, token: researchOperator.token },
-        { role: 'worker', subject: researchWorker.subject, profile: 'wr-researcher', token: researchWorker.token },
-        { role: 'worker', subject: writerWorker.subject, profile: 'wr-writer', token: writerWorker.token },
+        { role: 'worker', subject: researchWorker.subject, profile: 'research', token: researchWorker.token },
+        { role: 'worker', subject: writerWorker.subject, profile: 'writer', token: writerWorker.token },
       ],
     }, null, 2),
     { encoding: 'utf8', mode: 0o600 },

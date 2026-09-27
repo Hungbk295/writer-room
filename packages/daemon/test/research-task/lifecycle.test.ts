@@ -138,6 +138,24 @@ test('hard gate: spyRunIds verified against source-of-truth; artifact drift bloc
   } finally { store.close(); }
 });
 
+test('token registry: ensure heals a stale profile but keeps the issued token', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-tokens-'));
+  writeFileSync(join(root, 'actors.json'), JSON.stringify({ actors: [
+    { role: 'operator', subject: 'hermes:wr-operator', token: 'op-token-aaaaaaaaaaaaaaaa' },
+    { role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher', token: 'wk-token-bbbbbbbbbbbbbbbb' },
+  ] }));
+  const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect((healed as { profile?: string }).profile).toBe('research');
+  expect(healed.token).toBe('wk-token-bbbbbbbbbbbbbbbb');
+  const op = registry.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
+  expect(op.token).toBe('op-token-aaaaaaaaaaaaaaaa');
+  // Reloading sees the healed state; resolve maps the kept token to the new profile.
+  const reopened = new ResearchTokenRegistry(join(root, 'actors.json'));
+  expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect(reopened.resolve('nope')).toBeNull();
+});
+
 const rpc = async (server: McpResearchServer, token: string, method: string, params: unknown = {}) => {
   const res = await server.handleFetch(new Request('http://x/mcp', {
     method: 'POST',
