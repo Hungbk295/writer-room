@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ResearchTaskStore } from '../../src/research-task/store.ts';
@@ -66,7 +66,7 @@ test('cancel ack releases outstanding reservation; budget not double-counted on 
     const cancelled = store.transition(worker, 't1', { commandId: 'cxa', expectedVersion: cancelReq.version, action: 'cancel_ack' });
     expect(cancelled.phase).toBe('cancelled');
     expect(cancelled.budget.reservedSearch).toBe(0);
-    writeFileSync(join(root, 'artifacts', 'late.txt'), 'x');
+    writeFileSync(join(root, 'artifacts', 't1', 'late.txt'), 'x');
   } finally { store.close(); }
 });
 
@@ -126,14 +126,14 @@ test('hard gate: spyRunIds verified against source-of-truth; artifact drift bloc
     // A video not present in the run's manifest is rejected.
     expect(() => store.completeRound(worker, 't1', { commandId: 'bad3', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-real'], videos: [{ videoId: 'v-ghost', spyRunId: 'spy-real' }] })).toThrow(/v-ghost/);
     const done = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-real'], videos: [{ videoId: 'v1', spyRunId: 'spy-real' }] });
-    writeFileSync(join(root, 'artifacts', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-real'] }));
-    writeFileSync(join(root, 'artifacts', 'report.md'), 'report');
-    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: done.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 'manifest.json') });
-    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 'report.md') });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-real'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: done.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
     // Tamper the report after registration → completion must fail.
-    writeFileSync(join(root, 'artifacts', 'report.md'), 'tampered');
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'tampered');
     expect(() => store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version })).toThrow(/drifted/);
-    writeFileSync(join(root, 'artifacts', 'report.md'), 'report');
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
     expect(store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version }).phase).toBe('completed');
   } finally { store.close(); }
 });
@@ -238,10 +238,10 @@ test('MCP: token scopes the actor; tools/list and tools/call are both filtered',
     expect(claimed.task.phase).toBe('running');
     const reserved = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_round_reserve', arguments: { commandId: 'r1', taskId: 't1', expectedVersion: claimed.task.version, roundIndex: 1, planHash: 'h', searchCost: 1 } })).result.content[0].text);
     const roundDone = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_round_complete', arguments: { commandId: 'rc1', taskId: 't1', expectedVersion: reserved.task.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [{ videoId: 'v1', spyRunId: 'spy-1' }] } })).result.content[0].text);
-    writeFileSync(join(root, 'artifacts', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
-    writeFileSync(join(root, 'artifacts', 'report.md'), 'report');
-    const a1 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a1', taskId: 't1', expectedVersion: roundDone.task.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 'manifest.json') } })).result.content[0].text);
-    const a2 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a2', taskId: 't1', expectedVersion: a1.artifact.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 'report.md') } })).result.content[0].text);
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a1', taskId: 't1', expectedVersion: roundDone.task.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') } })).result.content[0].text);
+    const a2 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a2', taskId: 't1', expectedVersion: a1.artifact.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') } })).result.content[0].text);
     const done = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_task_complete', arguments: { commandId: 'done', taskId: 't1', expectedVersion: a2.artifact.version } })).result.content[0].text);
     expect(done.task.phase).toBe('completed');
   } finally { store.close(); }
@@ -351,5 +351,29 @@ test('quota: outstanding reservations across OTHER tasks count against real Spy 
       .toThrow(/quota depleted/i);
     const ok = store.reserve(worker, 'tb', { commandId: 'rb2', expectedVersion: claimB.version, roundIndex: 1, planHash: 'h', searchCost: 2 });
     expect(ok.budget.reservedSearch).toBe(2);
+  } finally { store.close(); }
+});
+
+test('daemon projects artifactDir on get/claim; registerArtifact enforces the per-task dir', () => {
+  const { root, store, owner, worker, future, task } = setup();
+  try {
+    // The projection is the daemon-issued canonical path — a worker never
+    // guesses WRITER_ROOM_DATA_DIR or its own cwd.
+    expect(task.artifactDir).toBe(realpathSync(join(root, 'artifacts', 't1')));
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    expect(claimed.artifactDir).toBe(task.artifactDir);
+    const reserved = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    // A file inside the projected dir registers fine.
+    writeFileSync(join(task.artifactDir, 'note.md'), 'ok');
+    const reg = store.registerArtifact(worker, 't1', { commandId: 'a', expectedVersion: reserved.version, roundIndex: 1, type: 'other', path: join(task.artifactDir, 'note.md') });
+    expect(reg.sha256).toHaveLength(64);
+    // Root-level artifact dir (sibling of the task dir) is now out of scope.
+    writeFileSync(join(root, 'artifacts', 'loose.md'), 'x');
+    expect(() => store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: reg.version, roundIndex: 1, type: 'other', path: join(root, 'artifacts', 'loose.md') })).toThrow(/outside task dir/);
+    // Another task's dir is out of scope too.
+    const other = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {} });
+    writeFileSync(join(other.artifactDir, 'their.md'), 'x');
+    expect(() => store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: reg.version, roundIndex: 1, type: 'other', path: join(other.artifactDir, 'their.md') })).toThrow(/outside task dir/);
   } finally { store.close(); }
 });

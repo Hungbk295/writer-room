@@ -235,7 +235,7 @@ export class McpResearchServer {
           required: ['commandId', 'taskId', 'expectedVersion', 'roundIndex', 'actualSearch', 'spyRunIds'] },
         handler: (a, args) => ({ outcome: 'settled', task: store.completeRound(a, taskId(args), { ...mutArgs(args), roundIndex: reqInt(args, 'roundIndex'), actualSearch: reqInt(args, 'actualSearch'), spyRunIds: strList(args, 'spyRunIds'), videos: videoList(args) }) }) },
       { name: 'research_artifact_register', role: 'worker',
-        description: 'Đăng ký artifact (manifest/report/checkpoint/other) — file phải nằm trong artifact root do daemon cấp; ghi sha256/size/type.',
+        description: 'Đăng ký artifact (manifest/report/checkpoint/other) — file phải nằm trong task.artifactDir (canonical path daemon trả về qua get/claim); ghi sha256/size/type.',
         inputSchema: { type: 'object', properties: { ...MUTATION_PROPS, roundIndex: { type: 'integer' }, type: { type: 'string', enum: ['manifest','report','checkpoint','other'] }, path: { type: 'string' } }, required: ['commandId', 'taskId', 'expectedVersion', 'roundIndex', 'type', 'path'] },
         handler: (a, args) => ({ outcome: 'applied', artifact: store.registerArtifact(a, taskId(args), { ...mutArgs(args), roundIndex: reqInt(args, 'roundIndex'), type: reqStr(args, 'type') as 'manifest'|'report'|'checkpoint'|'other', path: reqStr(args, 'path') }) }) },
       { name: 'research_task_ack', role: 'worker',

@@ -1,0 +1,23 @@
+{
+  "spyRunId": "spyrun-seed-1",
+  "status": "completed",
+  "kind": "channel",
+  "canonicalSource": "https://youtube.com/@fixture",
+  "createdAt": "2026-09-28T00:00:00Z",
+  "completedAt": "2026-09-28T00:01:00Z",
+  "videoCount": 1,
+  "videos": [
+    {
+      "videoSnapshotId": "vs-seed-1",
+      "youtubeVideoId": "VIDSEED01",
+      "title": "Fixture video 1",
+      "channelTitle": "FixtureChannel",
+      "rank": 1,
+      "publishedAt": null,
+      "durationSec": 300,
+      "viewCount": 1000,
+      "transcriptStatus": "none",
+      "transcriptSegments": 0
+    }
+  ]
+}

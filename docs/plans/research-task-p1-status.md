@@ -46,6 +46,11 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   TRƯỚC khi ack và chỉ advance cursor sau ack; crash giữa send→ack để row
   undelivered = "unknown — reconcile theo receipt, không auto-resend". Không
   push, không LLM poll, không Telegram send — daemon chỉ là source of truth.
+- **Artifact dir projection**: mọi projection task (`get`/`claim`/`list`) trả
+  `artifactDir` = `<dataDir>/research/artifacts/<taskId>` (canonical, daemon
+  tạo khi `create`). Worker ghi artifact vào đúng dir đó;
+  `research_artifact_register` reject mọi path ngoài task dir (kể cả dir của
+  task khác). Worker không tự suy ra root từ env/cwd.
 - **Spy quota binding**: `searchCost` = số `search.list` call. `reserve()` gọi
   `spyQuota()` (wire `spy.quota.remaining('search')`) rồi trừ TỔNG
   `reserved_search` outstanding của mọi task → fail closed khi probe null,

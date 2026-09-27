@@ -1,7 +1,7 @@
 /** Durable ResearchTask domain. All writes are SQLite transactions; actor identity comes from the caller's credential. */
 import { Database } from 'bun:sqlite';
 import { mkdirSync, realpathSync, statSync, readFileSync } from 'node:fs';
-import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 export type Actor = { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile?: string } | { role: 'viewer'; subject: string };
@@ -80,7 +80,7 @@ export class ResearchTaskStore {
   }
   /** An operator-facing read path that does not require ownership — used by list(). */
   private view(row: any) {
-    return { ...row, input: JSON.parse(row.input_json), budget: { maxRounds: row.max_rounds, maxUniqueVideos: row.max_videos, maxSearchCost: row.max_search, spentSearch: row.spent_search, reservedSearch: row.reserved_search, uniqueVideos: (this.db.query('SELECT COUNT(*) n FROM research_videos WHERE task_id=?').get(row.id) as any).n }, leaseExpired: Boolean(row.lease_until && row.lease_until < iso()) };
+    return { ...row, artifactDir: join(this.artifactRoot, row.id), input: JSON.parse(row.input_json), budget: { maxRounds: row.max_rounds, maxUniqueVideos: row.max_videos, maxSearchCost: row.max_search, spentSearch: row.spent_search, reservedSearch: row.reserved_search, uniqueVideos: (this.db.query('SELECT COUNT(*) n FROM research_videos WHERE task_id=?').get(row.id) as any).n }, leaseExpired: Boolean(row.lease_until && row.lease_until < iso()) };
   }
   private event(id: string, type: string, payload: unknown) {
     this.db.query('INSERT INTO research_events(task_id,type,payload_json,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(payload),iso());
@@ -156,6 +156,7 @@ export class ResearchTaskStore {
     asInt(budget.maxRounds,'maxRounds',1); asInt(budget.maxUniqueVideos,'maxUniqueVideos',1); asInt(budget.maxSearchCost,'maxSearchCost',0);
     return this.command(id,arg.commandId,'create',{actor:actor.subject,...arg,taskId:id,budget},()=>{
       const at=iso(); this.db.query('INSERT INTO research_tasks(id,owner_id,mode,input_json,phase,max_rounds,max_videos,max_search,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,actor.subject,asString(arg.mode,'mode'),JSON.stringify(arg.input),'created',budget.maxRounds,budget.maxUniqueVideos,budget.maxSearchCost,at,at);
+      mkdirSync(join(this.artifactRoot, id), { recursive: true }); // per-task artifact dir, daemon-owned
       this.event(id,'created',{ownerId:actor.subject,budget}); return this.get(actor,id);
     });
   }
@@ -259,7 +260,7 @@ export class ResearchTaskStore {
   }
   registerArtifact(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number;roundIndex:number;type:'manifest'|'report'|'checkpoint'|'other';path:string}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');
-    return this.command(id,arg.commandId,'artifact',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);if(arg.roundIndex<1||arg.roundIndex>row.round_index)fail('INVALID','roundIndex invalid');const path=realpathSync(resolve(arg.path));const rel=relative(this.artifactRoot,path);if(rel.startsWith('..')||isAbsolute(rel)||!rel)fail('FORBIDDEN','artifact outside root');const stat=statSync(path);if(!stat.isFile())fail('INVALID','artifact must be file');const bytes=readFileSync(path);if(bytes.length>10_000_000)fail('INVALID','artifact too large');const hash=sha(bytes);const artifactId=randomUUID();this.db.query('INSERT INTO research_artifacts VALUES(?,?,?,?,?,?,?,?)').run(artifactId,id,arg.roundIndex,arg.type,path,hash,bytes.length,'registered');this.bump(id,arg.expectedVersion,{});this.event(id,'artifact_registered',{artifactId,type:arg.type,sha256:hash});return {artifactId,sha256:hash,size:bytes.length,version:row.version+1};});
+    return this.command(id,arg.commandId,'artifact',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);if(arg.roundIndex<1||arg.roundIndex>row.round_index)fail('INVALID','roundIndex invalid');const path=realpathSync(resolve(arg.path));const rel=relative(join(this.artifactRoot,id),path);if(rel.startsWith('..')||isAbsolute(rel)||!rel)fail('FORBIDDEN','artifact outside task dir');const stat=statSync(path);if(!stat.isFile())fail('INVALID','artifact must be file');const bytes=readFileSync(path);if(bytes.length>10_000_000)fail('INVALID','artifact too large');const hash=sha(bytes);const artifactId=randomUUID();this.db.query('INSERT INTO research_artifacts VALUES(?,?,?,?,?,?,?,?)').run(artifactId,id,arg.roundIndex,arg.type,path,hash,bytes.length,'registered');this.bump(id,arg.expectedVersion,{});this.event(id,'artifact_registered',{artifactId,type:arg.type,sha256:hash});return {artifactId,sha256:hash,size:bytes.length,version:row.version+1};});
   }
   completeTask(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');
