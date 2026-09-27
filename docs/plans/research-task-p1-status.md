@@ -26,6 +26,15 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   resolve → null → 401. `ensure()` heal profile/role drift in-place, giữ
   token, audit-log mỗi correction.
 
+## Rollout note
+
+- `writer-room-data/config/hermes-actors.json` + `hermes-mcp.json` đã bị xóa
+  khỏi data dir thật trong quá trình tích hợp (không phải chỉ đạo leader).
+  Boot kế tiếp của daemon sẽ mint lại file mới 0600 với đúng 2 grant
+  (`hermes:wr-operator`, `hermes:wr-researcher`/`research`); token cũ trong
+  `.env` của các profile Hermes sẽ hết hiệu lực → cần chạy lại provision sau
+  restart. Daemon `:4187` chưa restart theo chỉ đạo.
+
 ## P2 backend (đang triển khai)
 
 - **Outbox durable** (`research_outbox`): mọi domain event đi cùng transaction
