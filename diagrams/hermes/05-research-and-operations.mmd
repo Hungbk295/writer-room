@@ -1,0 +1,14 @@
+graph TD
+ A["P3: radar tin tức: sự kiện + transcript"] --> C["Ghép nguồn với insight viewer / painpoint"]
+ B["Channel Watch: faceless + video mới + VPH"] --> C
+ C --> D["Gợi ý title; kèm lệnh Spy / run ID làm bằng chứng"]
+ D --> E["Người dùng chọn đề tài; /viet để vào P1"]
+ F["/research keyword"] --> G["Kênh B: claude -p + niche-market-map trong writer-room"]
+ G --> H["File research; Hermes gửi tóm tắt; lưu session_id"]
+ H --> E
+ I["/phanbien title"] --> J["writer_brief_analyze postId dự kiến; analyst Grok"]
+ J --> K["Kết luận + lý do; người dùng quyết định"]
+ K --> E
+ L["/jobs hoặc dashboard local P4"] --> M["Đọc jobs.json lấy runId / projectId"]
+ M --> N["Đọc trạng thái thật từ Writer / DNA Spy; kết nối lại sau restart"]
+ N --> O["Hiển thị stage, đang chờ ai, link app; P4 thêm thời gian / chi phí"]

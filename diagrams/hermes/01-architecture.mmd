@@ -1,0 +1,13 @@
+graph TD
+ U["Người dùng: Telegram / dashboard P4"] --> H["Hermes: cron, hỏi duyệt, điều phối"]
+ H <--> J["jobs.json: jobId, runId, projectId, đang chờ ai"]
+ H -->|"HTTP + bearer token / localhost:4187"| W["Writer MCP /api/writer/mcp"]
+ H -->|"HTTP + bearer token / localhost:4187"| S["Spy MCP /api/spy/mcp"]
+ H -->|"MCP stdio"| D["DNA Spy hermes/server.ts"]
+ W --> A["Writer daemon: pipeline, gates, sandbox"]
+ A --> C["Claude Code theo stage"]
+ D -->|"Đọc _control.json: cổng + token"| B["Control bridge localhost: cổng ngẫu nhiên"]
+ B --> K["DNA Spy sidecar: cook store + CookJobManager"]
+ K --> E["Claude Code / images / TTS / render"]
+ H -->|"Kênh B: chỉ việc ngoài pipeline"| R["claude -p trong repo; session_id / resume"]
+ S --> Y["YouTube qua yt-dlp; radar + Channel Watch độc lập"]

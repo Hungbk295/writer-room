@@ -1,0 +1,17 @@
+graph TD
+ A["P2: cook_start projectId, opts"] --> B["cook.prepare: workspace theo cấu hình app"]
+ B --> C["Claude Code: makeup rồi board"]
+ C --> D["cook.importStage qua store; normalizeBoardScenes"]
+ D --> E{"cook.lint đạt?"}
+ E -->|"Không"| F["Báo lỗi; sửa stage rồi import lại"]
+ F --> C
+ E -->|"Có"| G["cook.run images"]
+ E -->|"Có"| H["cook.run TTS"]
+ G --> I["Đợi cả images và TTS; kiểm tra lỗi"]
+ H --> I
+ I --> J["cook.run render; cook_report: video, frame lỗi, thời lượng"]
+ J --> K["Telegram báo xong; người dùng xem trong DNA Spy"]
+ K --> L{"Người dùng quyết định"}
+ L -->|"ok"| M["Ghi nhận đã duyệt; chưa có bước publish trong plan"]
+ L -->|"Làm lại ảnh frame N"| G
+ L -->|"Hủy"| N["cook.cancel; dừng job; báo trạng thái"]

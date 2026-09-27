@@ -1,5 +1,10 @@
 # Hermes × Writer Room: radar tin tức lên Telegram
 
+Tích hợp điều phối mới theo flow Telegram → Hermes (GPT Codex / ChatGPT OAuth)
+→ MCP trực tiếp của Writer Room và DNA Spy nằm ở
+[`makemoney/hermes/`](../../../hermes/README.md), dùng profile `content-production`.
+Luồng mới không sử dụng `hermes-workspace`.
+
 Mỗi sáng Hermes gọi Writer Room Spy MCP để lấy video mới của các kênh tin tức, tóm tắt từ transcript, rồi gửi một bản tin lên Telegram.
 
 Kế hoạch tổng thể (kiến trúc, các phase tiếp theo): [`docs/plans/hermes-orchestrator-plan.md`](../../docs/plans/hermes-orchestrator-plan.md).
