@@ -9,7 +9,7 @@ Mục tiêu: một chỗ xem **MCP nào đang sống**, **tool nào expose**, **
 | MCP server | Mount name (agent) | Status | Discovery | Tools exposed |
 |---|---|---|---|---|
 | Team MCP | `team` | **Live** | `GET /api/team/mcp` | 6 |
-| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 23 / 53 catalog |
+| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 33 / 58 catalog |
 | General Pack MCP | `general_pack` | **Live** (cần Spy feature on) | `GET /api/general-pack/mcp` | 10 |
 | External Writer Library MCP | `(planned)` | **Spec only** — chưa code | planned `/mcp/library` | 0 |
 | Writer Run / Training MCP | — | **Không có** | Writer v2 qua HTTP/UI | — |
@@ -86,6 +86,8 @@ Feature gate: `WRITER_ROOM_SPY_ENABLED=0` tắt cả Spy MCP và General Pack MC
 | `spy_corpus_channels` | (none) | `min_videos`, `min_avg_views`, `limit` |
 | `spy_channel_momentum` | `channel_id` | `window_days` 1–365 |
 | `spy_competitors_list` | `owner_channel_id` **or** `channel_id` | |
+| `spy_news_pull` | `channels` (1–10: `@handle`, `UC…`, URL youtube.com) | `max_per_channel` 1–20, `since_hours` 1–168, `max_transcript_chars`, `include_delivered`. Radar tin tức, độc lập với Channel Watch: video mới chưa gửi + transcript; lưu `<data>/spy/news-radar/videos/<id>.json`. Scope `spy.start` (gọi yt-dlp). Client mẫu: `integrations/hermes/` |
+| `spy_news_ack` | `items[]` `{ video_id, summary? }` | Đánh dấu đã gửi và lưu bản tóm tắt; video đã ack không bị pull lại |
 
 #### Spy Loop (read-only)
 

@@ -43,6 +43,9 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_scan_candidates',
   'spy_transcript_fetch',
   'spy_quota_status',
+  // News radar: press/news channels digest, independent of Channel Watch.
+  'spy_news_pull',
+  'spy_news_ack',
   // Spy Loop read tools (P0 — agy-2). Write tools (spy_loop_decide, spy_loop_tick)
   // deliberately excluded: they require scope spy.loop.write which is not in SCOPES.
   'spy_topics_list',
@@ -288,6 +291,37 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       window_days: { type: 'integer', minimum: 1, maximum: 365 },
     },
     required: ['channel_id'],
+  },
+  spy_news_pull: {
+    type: 'object',
+    properties: {
+      channels: {
+        type: 'array', minItems: 1, maxItems: 10, items: { type: 'string', minLength: 1 },
+        description: 'Kênh tin tức: @handle, UC id hoặc URL youtube.com/@handle',
+      },
+      max_per_channel: { type: 'integer', minimum: 1, maximum: 20, description: 'Số video mới tối đa mỗi kênh, mặc định 5' },
+      since_hours: { type: 'integer', minimum: 1, maximum: 168, description: 'Chỉ lấy video đăng trong N giờ qua, mặc định 36' },
+      max_transcript_chars: { type: 'integer', minimum: 1000, maximum: 50000, description: 'Cắt transcript trả về, mặc định 12000' },
+      include_delivered: { type: 'boolean', description: 'Lấy cả video đã ack (chạy lại để thử)' },
+    },
+    required: ['channels'],
+  },
+  spy_news_ack: {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array', minItems: 1, maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            video_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{11}$' },
+            summary: { type: 'string', maxLength: 8000, description: 'Bản tóm tắt đã gửi, lưu lại để dùng về sau' },
+          },
+          required: ['video_id'],
+        },
+      },
+    },
+    required: ['items'],
   },
   spy_competitors_list: {
     type: 'object',

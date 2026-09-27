@@ -33,6 +33,7 @@ import { LoopRunner } from './loop/runner.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
 import { PublicObservationService } from './channel-intelligence/observations.ts';
+import { NewsRadarService } from './news-radar.ts';
 import type {
   FollowChannelInput,
   FollowChannelResult,
@@ -84,6 +85,7 @@ export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
 export * from './dash/types.ts';
 export * from './dash/registry.ts';
 export * from './dash/activity.ts';
+export * from './news-radar.ts';
 
 
 export interface SpyServiceOptions {
@@ -312,6 +314,8 @@ export class SpyService {
   readonly roles: SpyRoleService;
   /** C3 yt-dlp-only public observation/VPH boundary. */
   readonly publicObservations: PublicObservationService;
+  /** News/press channels digest; independent of Channel Watch. */
+  readonly news: NewsRadarService;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
@@ -339,6 +343,7 @@ export class SpyService {
     // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
     this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
     this.publicObservations = new PublicObservationService(this.store, this.youtube);
+    this.news = new NewsRadarService(join(this.dataRoot, 'news-radar'), this.youtube);
     this.media = opts.media ?? new FfmpegAdapter();
     if (opts.dataApi) {
       this.dataApi = opts.dataApi;

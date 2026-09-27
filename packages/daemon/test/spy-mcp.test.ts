@@ -87,9 +87,9 @@ describe('Spy MCP server', () => {
       'spy_channel_videos', 'spy_competitors_list', 'spy_corpus_channels', 'spy_corpus_videos',
       'spy_discover_channels', 'spy_discover_videos', 'spy_expand_graph',
       'spy_find_videos', 'spy_get_status', 'spy_global_video_search', 'spy_loop_inbox', 'spy_loop_report',
-      'spy_loop_status', 'spy_quota_status', 'spy_read_transcript', 'spy_read_video_material',
-      'spy_run_manifest', 'spy_scan_candidates', 'spy_title_patterns', 'spy_topics_list',
-      'spy_transcript_fetch', 'spy_video_comments',
+      'spy_loop_status', 'spy_news_ack', 'spy_news_pull', 'spy_quota_status', 'spy_read_transcript',
+      'spy_read_video_material', 'spy_run_manifest', 'spy_scan_candidates', 'spy_title_patterns',
+      'spy_topics_list', 'spy_transcript_fetch', 'spy_video_comments',
       'spy_video_download_audio', 'spy_video_metrics', 'spy_video_start', 'spy_wait',
     ]);
     // Mutation tools must never appear in the allowlist. (Discovery/acquisition
