@@ -86,7 +86,7 @@ Thời lượng chỉ là ước tính triển khai, phụ thuộc P0 và phạm
 
 1. Hermes version được pin và kết quả proof cross-profile handoff. Đây là blocker P1 integration, không phải lý do trì hoãn thiết kế domain store.
 2. Chọn SQLite trong daemon hay store hiện có cho ResearchTask sau khi kiểm tra transaction/backup pattern; yêu cầu invariant và migration ở §4 không đổi.
-3. Scope đích: chỉ research + Writer Room, hay bao gồm DNA Spy/cook và publish ngoài app. Plan này chưa gộp DNA Spy vì cần contract và owner riêng.
+3. ~~Scope đích~~ — **ĐÃ CHỐT 28/9**: gồm DNA Spy/cook; contract và phasing ở [`hermes-dnaspy-cook-runtime.md`](./hermes-dnaspy-cook-runtime.md). Publish ngoài app vẫn mở.
 4. Writer W2/W3 có thực sự cần thay daemon-managed Claude stage hay chỉ cần Hermes làm Operator/Research. Quyết định này xác định phần việc lớn nhất sau P3.
 
 ## Nguồn đối chiếu
