@@ -32,7 +32,40 @@
 - Backfill lần đầu: 2026-09-08, dựng lại từ `writer-room-data/spy/spy.sqlite`
   (49 run, 13 ngày, từ 2026-08-07 đến 2026-09-07).
 - Phần **Đúc kết** của các ngày backfill đang trống — chỉ bạn mới biết hồi đó rút ra
-  được gì. Điền dần, hoặc bỏ qua và chỉ đúc kết từ hôm nay trở đi.
+  được gì. Điều dần, hoặc bỏ qua và chỉ đúc kết từ hôm nay trở đi.
+
+---
+
+# 2026-09-27 — Faceless History (EN/US), strategy loop `faceless-history-us/20260927-0956`
+
+## Đúc kết
+
+- Niche "dark history" head-term thuộc kênh có-mặt-người (Bailey Sarian chiếm 26/50
+  SERP một query); cửa faceless thật nằm ở hai lane: **deaths/punishments** và
+  **dark/scary places**. Serial-killers bị TV catalog (FilmRise/Absolute Crime/Real
+  Crime) chiếm — loại khỏi scope.
+- Format "How Every X Died" **không tự kéo view** (lift 0,4–0,77x ở 3 kênh lớn) — thắng
+  nhờ đối tượng X mới. Emperor/President/Pharaoh/Dictator đã bão hoà (clone <1k);
+  trống trong mẫu: King of England, Pope, Tsar.
+- Đối chứng quan trọng: Grim Painter hit 450k rồi 3 video sau 239–686 view — kênh nhỏ
+  trúng 1 hit KHÔNG bằng có format sống (Unseen Diary, GoExtinct cùng pattern).
+- Comment niche này có 2 tín hiệu đặc trưng: **ghét AI-voice** ("Thanks for not using
+  Ai" 511 likes) và **accuracy police** (sửa canon/phát âm công khai). Human-voiced là
+  điểm bán, không phải chi tiết.
+- Halloween là đỉnh mùa đã chứng minh (1,7–2,2tr tháng 10/2025) — cửa sổ đăng là
+  3–5 tuần TRƯỚC mùa, không phải 72h như niche news.
+- Kỹ thuật: run chạm trần 1.300 video sau 4 vòng (search 16×50 + 14×25 + 12 kênh ×35)
+  — lần sau giảm scan_limit kênh xuống ~25 hoặc cắt bớt query family để chừa chỗ cho
+  R-EVENT/R-GAP. Filter `filter_comments.py` tune cho finance → recall ~15–20% trên
+  niche history, cần đọc tay bù.
+
+## Nhật ký
+
+- 09:56 · setup · 30 search / 12 channel scan / 10 video comment · run dir
+  `writer-room-data/research/strategy/faceless-history-us/20260927-0956/`
+- Vòng 1 R-MAP: 16 query limit 50, 4 slice song song · Vòng 2 R-NICHE: 12 kênh
+  scan_limit 35 · Vòng 3 R-PAIN: 10 video comment · Vòng 4 R-FAMILY: 14 query limit 25
+- Output: `report.md` + `report.html` (CONDITIONAL PASS) trong run dir
 
 ---
 

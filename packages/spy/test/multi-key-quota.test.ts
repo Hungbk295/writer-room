@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { QuotaLedger, KeyPool, keyId, QUOTA_LIMITS } from '../src/quota.ts';
 import { SpyStore } from '../src/store.ts';
+import { AppError } from '../src/errors.ts';
+import { QuotaCountingDataApi } from '../src/adapters/quota-counting-data-api.ts';
+import type { YouTubeDataApiPort, SearchHit } from '../src/adapters/data-api.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -266,6 +269,193 @@ describe('Multi-key quota rotation', () => {
   // -----------------------------------------------------------------------
   // Store per-key methods
   // -----------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------
+  // QuotaLedger.markKeyExhausted — force a key to 0 remaining for today
+  // -----------------------------------------------------------------------
+
+  test('markKeyExhausted — forces remaining to 0 regardless of the client-side counter', async () => {
+    await setup();
+    try {
+      const ledger = new QuotaLedger(store);
+      const kid = keyId('keyAAAA');
+
+      // Client-side counter thinks there are 8 searches left.
+      for (let i = 0; i < 92; i++) ledger.consumeForKey(kid, 'search.list');
+      expect(ledger.remainingForKey(kid, 'search')).toBe(8);
+
+      // Google actually already 403'd this key for real — mark it exhausted.
+      ledger.markKeyExhausted(kid, 'search');
+      expect(ledger.remainingForKey(kid, 'search')).toBe(0);
+      expect(ledger.canAffordForKey(kid, 'search.list')).toBe(false);
+    } finally {
+      await teardown();
+    }
+  });
+
+  test('markKeyExhausted — is a no-op (never goes negative) when already at/over limit', async () => {
+    await setup();
+    try {
+      const ledger = new QuotaLedger(store);
+      const kid = keyId('keyAAAA');
+      for (let i = 0; i < 100; i++) ledger.consumeForKey(kid, 'search.list');
+      ledger.markKeyExhausted(kid, 'search');
+      expect(ledger.remainingForKey(kid, 'search')).toBe(0);
+    } finally {
+      await teardown();
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // QuotaCountingDataApi.search — rotation-on-real-quota-error (the bug)
+  //
+  // Repro: client-side counter says key1 still has headroom (8 remaining),
+  // but Google's REAL quota for key1 is already exhausted. Before the fix,
+  // the 403 from key1 propagated straight up and the caller fell back to
+  // yt-dlp without ever trying key2/key3. The fix must retry the SAME
+  // request on the next key with remaining quota and mark key1 exhausted.
+  // -----------------------------------------------------------------------
+
+  describe('QuotaCountingDataApi — key rotation on real Google quota errors', () => {
+    class KeySensitiveFakeApi implements YouTubeDataApiPort {
+      currentKey = '';
+      /** keyIds (last 4 chars) that 403 with a real quota error on this API. */
+      quotaExhaustedKeys = new Set<string>();
+      /** keyIds that 403 with an invalid-key error. */
+      invalidKeys = new Set<string>();
+      searchAttempts: string[] = [];
+
+      async search(_input: unknown): Promise<{ hits: SearchHit[]; nextPageToken: string | null }> {
+        const kid = keyId(this.currentKey);
+        this.searchAttempts.push(kid);
+        if (this.quotaExhaustedKeys.has(kid)) {
+          throw new AppError('quota_exceeded', `Key ...${kid} thật sự hết quota (403 quotaExceeded)`, { retryable: false });
+        }
+        if (this.invalidKeys.has(kid)) {
+          throw new AppError('unauthorized', `Key ...${kid} sai (403 keyInvalid)`, { retryable: false });
+        }
+        return { hits: [], nextPageToken: null };
+      }
+
+      async fetchVideoStatistics() { return new Map(); }
+      async fetchChannelStatistics() { return new Map(); }
+    }
+
+    function buildRig(keys: string[]) {
+      const store2 = store; // shared per-test store from outer setup/teardown
+      const ledger = new QuotaLedger(store2);
+      const pool = new KeyPool(keys);
+      ledger.setKeyPool(pool);
+      const fake = new KeySensitiveFakeApi();
+      const counting = new QuotaCountingDataApi(fake, ledger, () => true);
+      counting.setKeyPool(pool, (key) => { fake.currentKey = key; });
+      return { ledger, pool, fake, counting };
+    }
+
+    test('key1 403s (real quota) while client counter still says remaining → succeeds on key2, key1 marked exhausted', async () => {
+      await setup();
+      try {
+        const keys = ['AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAZ4Yg', 'AIzaSyBBBBBBBBBBBBBBBBBBBBBBBBBBBBCjmw', 'AIzaSyCCCCCCCCCCCCCCCCCCCCCCCCCCCCWDNw'];
+        const { ledger, fake, counting, pool } = buildRig(keys);
+        const kid1 = keyId(keys[0]!);
+        const kid2 = keyId(keys[1]!);
+
+        // Client-side ledger still thinks key1 has 8 search calls left.
+        for (let i = 0; i < 92; i++) ledger.consumeForKey(kid1, 'search.list');
+        expect(ledger.remainingForKey(kid1, 'search')).toBe(8);
+
+        fake.quotaExhaustedKeys.add(kid1);
+
+        const result = await counting.search({ q: 'x', type: 'video' });
+        expect(result).toEqual({ hits: [], nextPageToken: null });
+
+        // Rotated: attempted key1 first (still had client-side headroom), then key2.
+        expect(fake.searchAttempts).toEqual([kid1, kid2]);
+        // key1 is now marked exhausted for the rest of today regardless of the
+        // client-side counter that was wrong.
+        expect(ledger.remainingForKey(kid1, 'search')).toBe(0);
+        expect(pool.currentKeyId).toBe(kid2);
+      } finally {
+        await teardown();
+      }
+    });
+
+    test('all keys exhausted (real quota errors) → throws quota_exceeded with allKeysExhausted + triedKeyIds', async () => {
+      await setup();
+      try {
+        const keys = ['AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAZ4Yg', 'AIzaSyBBBBBBBBBBBBBBBBBBBBBBBBBBBBCjmw'];
+        const { fake, counting } = buildRig(keys);
+        fake.quotaExhaustedKeys.add(keyId(keys[0]!));
+        fake.quotaExhaustedKeys.add(keyId(keys[1]!));
+
+        await expect(counting.search({ q: 'x', type: 'video' })).rejects.toMatchObject({
+          code: 'quota_exceeded',
+          details: expect.objectContaining({
+            allKeysExhausted: true,
+            triedKeyIds: [keyId(keys[0]!), keyId(keys[1]!)],
+          }),
+        });
+        expect(fake.searchAttempts).toEqual([keyId(keys[0]!), keyId(keys[1]!)]);
+      } finally {
+        await teardown();
+      }
+    });
+
+    test('invalid key (keyInvalid) is skipped like a quota error and reported, but distinct code upstream', async () => {
+      await setup();
+      try {
+        const keys = ['AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAZ4Yg', 'AIzaSyBBBBBBBBBBBBBBBBBBBBBBBBBBBBCjmw'];
+        const { fake, counting, pool } = buildRig(keys);
+        fake.invalidKeys.add(keyId(keys[0]!));
+
+        const result = await counting.search({ q: 'x', type: 'video' });
+        expect(result).toEqual({ hits: [], nextPageToken: null });
+        expect(fake.searchAttempts).toEqual([keyId(keys[0]!), keyId(keys[1]!)]);
+        expect(pool.currentKeyId).toBe(keyId(keys[1]!));
+      } finally {
+        await teardown();
+      }
+    });
+
+    test('a non-key-level error (e.g. 503/network) is NOT retried against another key', async () => {
+      await setup();
+      try {
+        const keys = ['AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAZ4Yg', 'AIzaSyBBBBBBBBBBBBBBBBBBBBBBBBBBBBCjmw'];
+        const { fake, counting, ledger } = buildRig(keys);
+        const kid1 = keyId(keys[0]!);
+
+        fake.search = async () => {
+          fake.searchAttempts.push(keyId(fake.currentKey));
+          throw new AppError('provider_error', 'YouTube Data API 503', { retryable: true });
+        };
+
+        await expect(counting.search({ q: 'x', type: 'video' })).rejects.toMatchObject({ code: 'provider_error' });
+        // Only the first (current) key was tried — no rotation for a non-key-level error.
+        expect(fake.searchAttempts).toEqual([kid1]);
+        // key1 must NOT be marked exhausted by an unrelated transport error — the
+        // client-side ledger only reflects the one (optimistic, pre-request) charge.
+        expect(ledger.remainingForKey(kid1, 'search')).toBe(99);
+      } finally {
+        await teardown();
+      }
+    });
+
+    test('single-key mode (no pool) — no rotation possible, error propagates as-is', async () => {
+      await setup();
+      try {
+        const ledger = new QuotaLedger(store);
+        const fake = new KeySensitiveFakeApi();
+        fake.currentKey = 'onlyKey';
+        fake.quotaExhaustedKeys.add(keyId('onlyKey'));
+        const counting = new QuotaCountingDataApi(fake, ledger, () => true);
+
+        await expect(counting.search({ q: 'x', type: 'video' })).rejects.toMatchObject({ code: 'quota_exceeded' });
+        expect(fake.searchAttempts).toEqual([keyId('onlyKey')]);
+      } finally {
+        await teardown();
+      }
+    });
+  });
 
   test('store — addQuotaUsagePerKey updates both per-key and aggregate', async () => {
     await setup();

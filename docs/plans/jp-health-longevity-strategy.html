@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kênh Sức khoẻ Cao tuổi Nhật Bản: Chiến lược (Bản mở rộng & Bằng chứng)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F5F7F4; --card:#FFFFFF; --ink:#18221F; --muted:#56635E; --line:#D9E0DC; --soft:#EBF0ED;
+  --accent:#0E6B5A; --accent-soft:#DDEFEA;
+  --t1:#A8660C; --t1-soft:#FBEFD9;
+  --t2:#0E6B5A; --t2-soft:#DDEFEA;
+  --t3:#B0412B; --t3-soft:#F9E3DD;
+  --warn:#8A5A00;
+  --display:"Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+    --accent:#5CC4AE; --accent-soft:#17332C;
+    --t1:#E8A94A; --t1-soft:#34270F;
+    --t2:#5CC4AE; --t2-soft:#17332C;
+    --t3:#EE8A74; --t3-soft:#3A1F18;
+    --warn:#E8B45A;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+  --accent:#5CC4AE; --accent-soft:#17332C;
+  --t1:#E8A94A; --t1-soft:#34270F;
+  --t2:#5CC4AE; --t2-soft:#17332C;
+  --t3:#EE8A74; --t3-soft:#3A1F18;
+  --warn:#E8B45A;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15.5px;line-height:1.6;padding-inline:20px;padding-block:0 64px}
+.wrap{max-width:1040px;margin:0 auto}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+h1,h2,h3{font-family:var(--display);font-stretch:85%;line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.01em}
+h2{font-size:clamp(22px,3vw,28px);font-weight:750}
+h3{font-size:18px;font-weight:700}
+p{margin:0;max-width:68ch}
+.num,td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+header.top{padding-block:40px 28px;border-bottom:1px solid var(--line);display:grid;gap:14px}
+header.top .lede{font-size:18px;color:var(--ink)}
+header.top .meta{font-size:13px;color:var(--muted)}
+
+section{padding-block:36px 8px;display:grid;gap:18px}
+.sec-head{display:grid;gap:6px}
+.sec-head p{color:var(--muted)}
+
+/* verdict strip */
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.verdict{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.verdict b{font-family:var(--display);font-stretch:85%;font-size:19px;line-height:1.25}
+.verdict p{color:var(--muted);font-size:14.5px}
+
+/* paystub positioning */
+.stub{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stub-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:14px 18px;background:var(--soft);border-bottom:1px dashed var(--line)}
+.stub-head span{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.stub-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.stub-cell{padding:16px 18px;border-right:1px dashed var(--line);border-bottom:1px dashed var(--line);display:grid;gap:4px;align-content:start}
+.stub-cell .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.stub-cell .v{font-weight:600}
+.stub-cell .n{font-size:14px;color:var(--muted)}
+.stub-foot{padding:14px 18px;font-size:15px}
+.stub-foot strong{font-family:var(--display);font-stretch:85%;font-size:20px}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:11px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--soft)}
+tr:last-child td{border-bottom:0}
+td q{font-style:italic;color:var(--muted)}
+td q::before,td q::after{content:'"'}
+
+/* type chips */
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.04em;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.chip.t1{background:var(--t1-soft);color:var(--t1)}
+.chip.t2{background:var(--t2-soft);color:var(--t2)}
+.chip.t3{background:var(--t3-soft);color:var(--t3)}
+.chip.neutral{background:var(--soft);color:var(--muted)}
+.chip.strong{background:var(--accent);color:var(--card)}
+
+/* type explainer */
+.types{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.type{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:10px;padding:18px;display:grid;gap:10px;align-content:start}
+.type.t1{--c:var(--t1)} .type.t2{--c:var(--t2)} .type.t3{--c:var(--t3)}
+.type ul{margin:0;padding-left:18px;font-size:14.5px;color:var(--muted);display:grid;gap:4px}
+.type .rule{font-family:var(--mono);font-size:12.5px;background:var(--soft);padding:8px 10px;border-radius:6px;color:var(--ink)}
+
+/* filter */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.filters button{font:inherit;font-size:14px;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.filters button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.filters .count{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:4px}
+
+/* title cards */
+.titles{display:grid;gap:12px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:18px}
+.tcard .main{display:grid;gap:10px;min-width:0}
+.tcard .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tcard .yt{font-family:var(--display);font-stretch:90%;font-size:19px;font-weight:700;line-height:1.3}
+.tcard .why{font-size:14.5px}
+.tcard .ev{font-size:13.5px;color:var(--muted);display:grid;gap:3px;margin:0;padding-left:16px}
+.tcard .side{display:grid;gap:10px;align-content:start;border-left:1px dashed var(--line);padding-left:16px}
+.tcard .side .k{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tcard .side .v{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+.tcard .side .v.big{font-size:22px;font-weight:500}
+@media (max-width:640px){
+  .tcard{grid-template-columns:1fr}
+  .tcard .side{border-left:0;border-top:1px dashed var(--line);padding-left:0;padding-top:12px;grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+
+/* names */
+.names{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.name{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.name .nm{font-family:var(--display);font-stretch:85%;font-size:26px;font-weight:800;line-height:1.1}
+.name p{font-size:14.5px;color:var(--muted)}
+.name.pick{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+
+/* calendar */
+.cal{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
+.week{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:12px;align-content:start}
+.slot{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14.5px}
+
+.callout{background:var(--accent-soft);border-radius:10px;padding:16px 18px;display:grid;gap:6px}
+.callout.warn{background:var(--t1-soft)}
+.callout p{max-width:none}
+ol.steps,ul.plain{margin:0;padding-left:20px;display:grid;gap:6px}
+footer{padding-block:40px 0;border-top:1px solid var(--line);margin-top:36px;color:var(--muted);font-size:13.5px;display:grid;gap:8px}
+footer p{max-width:none}
+@media (prefers-reduced-motion:no-preference){.filters button{transition:background .15s,color .15s}}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <span class="eyebrow">Chiến lược build kênh · JP · tiếng Nhật · 27/9/2026 (Bản mở rộng & Bằng chứng)</span>
+  <h1>健康雑学 / 長寿の秘訣 (Kiến thức sức khoẻ / Bí quyết sống thọ tuổi 60+)</h1>
+  <p class="lede">Kênh nhắm tới người Nhật 60–80 tuổi, khao khát sống thọ, chủ động phòng ngừa bệnh tật. Mỗi video giải quyết nỗi lo về sự suy giảm sức khoẻ cụ thể, sử dụng góc nhìn phản trực giác và bí quyết sống 100 tuổi.</p>
+  <p class="meta">Nguồn: Writer Room Spy MCP. 30 lượt search (đã nâng trần), 744 video duy nhất. VPH = view ÷ số giờ kể từ lúc đăng. Cập nhật theo luật bổ sung (có dịch thuật và bằng chứng).</p>
+</header>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">Kết luận</span>
+    <h2>Ba quyết định cần chốt</h2>
+  </div>
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="chip strong">Quyết định 1</span>
+      <b>Đánh thẳng vào nỗi đau y tế thiết thực, có tính "cấm đoán"</b>
+      <p>Các kênh bác sĩ như 予防医学ch (Kênh Y tế dự phòng) đang thu hút hàng triệu view. Đặc biệt, format cấm đoán "60代やめておけ" (Tuổi 60 nên từ bỏ) đang cực hot (VPH > 1400). Cần lồng ghép kiến thức thực tế vào vỏ bọc này.</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 2</span>
+      <b>Khai thác sức hút của "Hình mẫu 100 tuổi"</b>
+      <p>Chuyên mục "100歳 朝ごはん" (Bữa sáng của người 100 tuổi) đang đạt mức 7-9 triệu view, chứng tỏ khán giả khao khát hình mẫu có thực hơn là lời khuyên lý thuyết từ bác sĩ.</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 3</span>
+      <b>Lựa chọn tên kênh: "100年すこやかチャンネル" (Kênh Khoẻ mạnh 100 năm)</b>
+      <p>Không dùng chữ "シニア健康ラボ" (Phòng thí nghiệm sức khoẻ người cao tuổi) vì đã bão hoà. Tên này vừa truyền tải được khát vọng sống thọ, vừa hoàn toàn trống trên tìm kiếm YouTube.</p>
+    </div>
+  </div>
+</section>
+
+<section id="evidence">
+  <div class="sec-head">
+    <span class="eyebrow">Xác thực Dữ liệu</span>
+    <h2>Bằng chứng Kênh và Video (Bắt buộc)</h2>
+  </div>
+  
+  <h3>Bằng chứng Kênh</h3>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Vai trò</th><th>Kênh</th><th>Trạng thái/Ghi chú</th></tr></thead>
+      <tbody>
+        <tr><td>Kênh dẫn dắt (Họ bền)</td><td>予防医学ch (Kênh Y tế dự phòng)</td><td>Sở hữu khuôn "知らないと必ず損する" (Nếu không biết chắc chắn sẽ hối hận)</td></tr>
+        <tr><td>Kênh tạo format (Sự kiện/Đời sống)</td><td>通勤タイムス (Thời báo Đi làm)</td><td>Tạo ra series "100歳 朝ごはん" (Bữa sáng người 100 tuổi) với hàng loạt video triệu view</td></tr>
+        <tr><td>Kênh Đang nóng (Lõi cấm đoán)</td><td>本要約チャンネル (Kênh Tóm tắt sách)</td><td>Kéo VPH khủng nhờ format "60代 やめておけ" (Tuổi 60 nên từ bỏ)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Bằng chứng Video (Đã lưu cache Spy)</h3>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Kiểu/Ngách</th><th>Video ID</th><th>Tiêu đề</th><th>Lượt xem</th><th>VPH</th></tr></thead>
+      <tbody>
+        <tr><td>Kiểu 1 (Đang nóng)</td><td class="num">3rzmHi3bACs</td><td>【人生をしゃぶり尽くせ】「60代70代になったら、できる限り早いうちに、この７つだけはやめておけ... (Tuổi 60, 70 hãy bỏ ngay 7 điều này...) [Kênh: 本要約チャンネル (Kênh Tóm tắt sách)]</td><td class="num">49,790</td><td class="num">1,451</td></tr>
+        <tr><td>Kiểu 2 (Khoảng trống)</td><td class="num">dPWg6Ia7bSU</td><td>102歳の現役美容部員！長寿・健康・美容を支える伝説の朝ごはん... (Nhân viên tư vấn sắc đẹp 102 tuổi! Bữa sáng huyền thoại...) [Kênh: 通勤タイムス (Thời báo Đi làm)]</td><td class="num">9,567,240</td><td>L</td></tr>
+        <tr><td>Kiểu 3 (Sự kiện)</td><td class="num">uExXLkDhv5k</td><td>【超大改正】高額療養費2026年8月から激変！... (Sửa đổi lớn: Chi phí y tế cao thay đổi từ 8/2026!) [Kênh: オタク会計士ch (Kênh Kế toán viên Otaku)]</td><td class="num">224,353</td><td>L</td></tr>
+        <tr><td>Painpoint N2-2 (Thận)</td><td class="num">uq8Dy9NbKN4</td><td>腎臓を傷める大敵／テレビじゃ言えない／2000万人が慢性腎臓病... (Kẻ thù lớn làm tổn thương thận / Bệnh thận mạn tính) [Kênh: PIVOT 公式チャンネル (Kênh chính thức PIVOT)]</td><td class="num">3,471,469</td><td>L</td></tr>
+        <tr><td>Phản trực giác</td><td class="num">EZcn0q0Z88g</td><td>歩くほど老化するウォーキングの間違い (Sai lầm khi đi bộ khiến bạn càng đi càng lão hoá) [Kênh: Okチャンネル (Kênh Ok)]</td><td class="num">1,558,859</td><td>L</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="audience">
+  <div class="sec-head">
+    <span class="eyebrow">Định vị</span>
+    <h2>Khán giả và lời hứa của kênh</h2>
+  </div>
+  
+  <h3>Insight: Painpoint từ bình luận (Comments)</h3>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Mã</th><th>Nguyên văn (Tiếng Nhật) & Bản dịch (Tiếng Việt)</th><th>Phân tích</th></tr></thead>
+      <tbody>
+        <tr><td class="num">N2-1</td><td><q>何が難しいかというと睡眠です。運動も食事も意識付けでなんとかなりますが睡眠だけは制御できません。</q><br>(Khó nhất là giấc ngủ. Vận động hay ăn uống thì có ý thức là làm được, nhưng riêng giấc ngủ thì không thể kiểm soát được.)</td><td>Phù hợp video "寝れない時 横になる" (Nằm khi không ngủ được) giải toả áp lực.</td></tr>
+        <tr><td class="num">N2-2</td><td><q>腎臓稼働率が50%を切っているので竹輪などの練り物はリン酸塩が怖くて食べられません</q><br>(Chức năng thận của tôi dưới 50% nên tôi sợ chất phosphate trong các món chả cá như chikuwa, không dám ăn.)</td><td>Khoảng trống "食べ物 長生き" (Thực phẩm sống thọ) kết hợp nỗi sợ thực phẩm rẻ tiền.</td></tr>
+        <tr><td class="num">N2-3</td><td><q>95才のお姑さん、急に耳が遠くなり耳鼻科で...1cmほどの石の耳垢が出て来ました😂 今は耳の聞こえがとても良く</q><br>(Mẹ chồng 95 tuổi đột nhiên lãng tai, đi khám tai mũi họng... lấy ra được cục ráy tai như hòn đá dài 1cm 😂 Giờ bà nghe rất rõ)</td><td>Cơ hội làm video y khoa chưa ai làm.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="types">
+  <div class="sec-head">
+    <span class="eyebrow">Ba kiểu title</span>
+    <h2>Phân loại title ăn điểm</h2>
+  </div>
+  <div class="types">
+    <div class="type t1">
+      <span class="chip t1">Kiểu 1 · Đang nóng</span>
+      <h3>絶対やってはいけない (Tuyệt đối không được làm)</h3>
+      <ul>
+        <li>Khuôn này đang cực hot trên thị trường Nhật.</li>
+        <li>Chỉ ra những thói quen sai lầm hàng ngày tưởng chừng vô hại.</li>
+      </ul>
+      <span class="rule">Đổi đối tượng: "7 điều phải bỏ ở tuổi 60", "5 cách đi bộ rút ngắn tuổi thọ".</span>
+    </div>
+    <div class="type t2">
+      <span class="chip t2">Kiểu 2 · Họ bền</span>
+      <h3>100歳 朝ごはん (Bữa sáng của người 100 tuổi)</h3>
+      <ul>
+        <li>Format phân tích thói quen/bữa ăn của người 100 tuổi mang lại 7-9 triệu view.</li>
+        <li>Khuôn "知らないと必ず損する" (Nếu không biết chắc chắn sẽ hối hận).</li>
+      </ul>
+      <span class="rule">Kết hợp hình mẫu 100 tuổi với painpoint để làm mới.</span>
+    </div>
+    <div class="type t3">
+      <span class="chip t3">Kiểu 3 · Sự kiện</span>
+      <h3>医療費負担増 (Tăng gánh nặng chi phí y tế)</h3>
+      <ul>
+        <li>Sự kiện lớn: Tăng trần chi phí y tế cho người già từ 8/2026.</li>
+      </ul>
+      <span class="rule">Đưa yếu tố "Tiền/Viện phí 2026" vào title kết hợp với chống lão hoá.</span>
+    </div>
+  </div>
+</section>
+
+<section id="titles">
+  <div class="sec-head">
+    <span class="eyebrow">Danh sách title</span>
+    <h2>Title đề xuất, lý do và bằng chứng</h2>
+  </div>
+  
+  <div class="titles" id="titleList">
+    <!-- T1 -->
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">Kiểu 1</span><span class="chip strong">Cực Mạnh</span></div>
+        <div class="yt">60代70代になったら、この７つだけは今すぐやめておけ（寿命が縮む悪習慣）<br>(Đến tuổi 60, 70, hãy bỏ ngay 7 thói quen này nếu không muốn giảm tuổi thọ)</div>
+        <p class="why">Lõi "やめておけ" (Từ bỏ) đang làm bão. Đánh vào tâm lý sợ sai lầm của người cao tuổi.</p>
+        <ul class="ev">
+          <li>Video ID 3rzmHi3bACs · 1451 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH Đang nóng</div><div class="v big">1.451</div></div></div>
+    </article>
+
+    <!-- T2-1 -->
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">Kiểu 2</span><span class="chip strong">Khoảng trống lớn</span></div>
+        <div class="yt">100歳は絶対に食べない！老化を加速させ腎臓を破壊する「危険な朝ごはん」<br>(Người 100 tuổi tuyệt đối không ăn! "Bữa sáng nguy hiểm" tăng tốc lão hoá, phá huỷ thận)</div>
+        <p class="why">Gắn với format "Bữa sáng người 100 tuổi" cực kỳ bền vững, ghép với painpoint N2-2 (sợ phụ gia phá thận).</p>
+        <ul class="ev">
+          <li>Video ID dPWg6Ia7bSU · 9.56M view</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Lượt xem khuôn</div><div class="v big">9.56M</div></div></div>
+    </article>
+
+    <!-- T2-2 -->
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">Kiểu 2</span><span class="chip neutral">Khoảng trống</span></div>
+        <div class="yt">知らないと必ず損する、高齢者の「耳垢」と難聴の残酷な真実<br>(Sự thật tàn nhẫn về "ráy tai" người già và suy giảm thính lực, không biết sẽ hối hận)</div>
+        <p class="why">Painpoint N2-3 rất rõ rệt nhưng chưa kênh y khoa phân tích. Khuôn "知らないと必ず損する" (Nếu không biết sẽ hối hận) bảo chứng CTR.</p>
+        <ul class="ev">
+          <li>Khuôn bền từ 予防医学ch (Kênh Y tế dự phòng)</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Độ trống ngách</div><div class="v big">Rất cao</div></div></div>
+    </article>
+    
+    <!-- T1-2 (Counter intuitive) -->
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">Kiểu 1</span><span class="chip strong">Mạnh</span></div>
+        <div class="yt">【危険】歩くほど老化する！60代以上の寿命を縮める危険な歩き方5選<br>(Nguy hiểm: Càng đi bộ càng lão hoá! 5 cách đi bộ rút ngắn tuổi thọ tuổi 60+)</div>
+        <p class="why">Cách tiếp cận phản trực giác. Đi bộ làm sai lại gây đau lưng, teo cơ.</p>
+        <ul class="ev">
+          <li>Video ID EZcn0q0Z88g · 1.55M view</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ (ngách)</div><div class="v big">1.55M</div></div></div>
+    </article>
+
+    <!-- T3 -->
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">Kiểu 3</span><span class="chip strong">Mạnh</span><span class="chip neutral">Sự kiện 2026</span></div>
+        <div class="yt">2026年医療費激変！薬に頼らない老化予防と家計防衛<br>(Viện phí thay đổi đột ngột 2026! Cách chống lão hoá không dùng thuốc để bảo vệ gia sản)</div>
+        <p class="why">Sự kiện tăng mức trần chi phí y tế vào 8/2026 khiến người già hoang mang.</p>
+        <ul class="ev">
+          <li>Video ID uExXLkDhv5k · 224k view</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Độ nóng sự kiện</div><div class="v big">Cao</div></div></div>
+    </article>
+
+  </div>
+</section>
+
+<section id="plan">
+  <div class="sec-head">
+    <span class="eyebrow">Lịch ra video</span>
+    <h2>Đề xuất lịch xuất bản</h2>
+  </div>
+  <div class="cal">
+    <div class="week">
+      <h3>Tuần 1</h3>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>60代70代になったら、この７つだけは今すぐやめておけ<br>(Đến tuổi 60, 70, hãy bỏ ngay 7 thói quen này nếu không muốn giảm tuổi thọ)</span></div>
+      <div class="slot"><span class="chip t2">Kiểu 2</span><span>100歳は絶対に食べない！老化を加速させる「危険な朝ごはん」<br>(Người 100 tuổi tuyệt đối không ăn! "Bữa sáng nguy hiểm" tăng tốc lão hoá)</span></div>
+    </div>
+    <div class="week">
+      <h3>Tuần 2</h3>
+      <div class="slot"><span class="chip t3">Kiểu 3</span><span>2026年医療費激変！薬に頼らない老化予防と家計防衛<br>(Viện phí thay đổi đột ngột 2026! Cách chống lão hoá không dùng thuốc)</span></div>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>【危険】歩くほど老化する！60代以上の寿命を縮める危険な歩き方<br>(Nguy hiểm: Càng đi bộ càng lão hoá! 5 cách đi bộ rút ngắn tuổi thọ)</span></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p><b>Giới hạn & Nguồn dữ liệu:</b> Báo cáo dựa trên API Spy MCP chạy ngày 27/9/2026. Số liệu view là trọn đời, VPH lấy từ lúc đăng tới thời điểm quét. Dữ liệu bao gồm vòng MỞ RỘNG với 30 lượt search tổng cộng và trần video là 2.050 (Thực tế phân tích 744 video duy nhất). Mọi thành phần tiếng Nhật đều kèm bản dịch tiếng Việt theo luật kỹ năng.</p>
+</footer>
+</div>
+</body>
+</html>

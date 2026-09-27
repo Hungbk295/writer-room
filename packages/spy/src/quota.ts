@@ -263,6 +263,27 @@ export class QuotaLedger {
     };
   }
 
+  /**
+   * Đánh dấu một key ĐÃ HẾT QUOTA THẬT (Google vừa trả 403 quota) cho phần
+   * còn lại của quota-day hôm nay — bất kể bộ đếm phía client đang nói còn
+   * bao nhiêu. Việc này khiến `remainingForKey`/`canAffordForKey` trả 0 ngay
+   * lập tức nên `pickAvailableKey` bỏ qua key này ở lần gọi kế tiếp, thay vì
+   * lại chọn đúng key vừa 403 vì client-side counter chưa kịp phản ánh.
+   *
+   * Ghi thẳng vào store (SQLite) nên sống sót qua restart daemon — không chỉ
+   * là cờ trong bộ nhớ.
+   */
+  markKeyExhausted(kid: string, bucket: QuotaBucket, now: Date = new Date()): void {
+    const day = quotaDay(now);
+    const usage = this.store.getQuotaUsagePerKey(kid, bucket, day);
+    const limit = QUOTA_LIMITS[bucket];
+    const deficit = limit - usage.units;
+    if (deficit > 0) {
+      // calls=0: đây là một điều chỉnh sổ sách, không phải một request thật.
+      this.store.addQuotaUsagePerKey(kid, bucket, day, deficit, 0);
+    }
+  }
+
   /** Trạng thái quota chi tiết cho tất cả key đang có trong DB hôm nay. */
   statusPerKey(apiKeys: string[], now: Date = new Date()): {
     quotaDay: string;

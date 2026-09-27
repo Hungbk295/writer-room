@@ -206,6 +206,110 @@ describe('globalVideoSearch', () => {
     });
   });
 
+  test('reports a specific fallback reason when the Data API key pool is fully exhausted', async () => {
+    const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+    const dataApi = new FakeDataApi();
+    dataApi.searchError = new AppError(
+      'quota_exceeded',
+      'Tất cả 3 API key đều hết quota/không dùng được cho search.list. Đã thử: Z4Yg, Cjmw, WDNw.',
+      { retryable: false, details: { op: 'search.list', triedKeyIds: ['Z4Yg', 'Cjmw', 'WDNw'], allKeysExhausted: true, totalKeys: 3 } },
+    );
+    const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+    const result = await service.globalVideoSearch({ query: 'kinh doanh' });
+
+    expect(ytDlpCalls).toHaveLength(1);
+    expect(result.providerUsed).toBe('ytdlp');
+    expect(result.fallbackReason).toBe('youtube_data_api_all_keys_exhausted:Z4Yg,Cjmw,WDNw');
+  });
+
+  test('a single-key (or non-rotation) quota_exceeded still gets a plain fallback reason', async () => {
+    const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+    const dataApi = new FakeDataApi();
+    dataApi.searchError = new AppError('quota_exceeded', 'Hết quota bucket "search"', { retryable: false });
+    const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+    const result = await service.globalVideoSearch({ query: 'kinh doanh 2' });
+    expect(result.fallbackReason).toBe('youtube_data_api_quota_exceeded');
+  });
+
+  describe('quota-fallback cache gets a short TTL', () => {
+    test('a quota-related fallback result is re-tried against the Data API after the short TTL, even under refresh: if_stale default', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      dataApi.searchError = new AppError(
+        'quota_exceeded',
+        'Tất cả key đều hết quota',
+        { retryable: false, details: { allKeysExhausted: true, triedKeyIds: ['Z4Yg'] } },
+      );
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      const first = await service.globalVideoSearch({ query: 'chứng khoán mỹ', maxAgeHours: 24 });
+      expect(first.providerUsed).toBe('ytdlp');
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Backdate the cached row by 20 minutes — well within the caller's
+      // requested 24h maxAgeHours, but past the short TTL a quota-fallback
+      // row gets. It must NOT be served as a hit; the Data API must be
+      // retried (and here it now succeeds, since we clear searchError).
+      // The fallback row is stored truthfully under its real provider ('ytdlp'),
+      // separate from the 'youtube_data_api' key a successful call would use —
+      // globalVideoSearch does a secondary lookup for this row internally.
+      const cached = service.store.getSearchQueryCache('chứng khoán mỹ', 'vi', 'VN', 'ytdlp')!;
+      expect(cached.providerUsed).toBe('ytdlp');
+      service.store.upsertSearchQueryCache({
+        ...cached,
+        fetchedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      });
+      dataApi.searchError = null;
+
+      const second = await service.globalVideoSearch({ query: 'chứng khoán mỹ', maxAgeHours: 24 });
+      expect(dataApi.searchCalls).toHaveLength(2);
+      expect(second.providerUsed).toBe('youtube_data_api');
+      expect(second.cache.status).not.toBe('hit');
+    });
+
+    test('a quota-related fallback result IS served from cache within the short TTL window', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const dataApi = new FakeDataApi();
+      dataApi.searchError = new AppError(
+        'quota_exceeded',
+        'Tất cả key đều hết quota',
+        { retryable: false, details: { allKeysExhausted: true, triedKeyIds: ['Z4Yg'] } },
+      );
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls), dataApi });
+
+      const first = await service.globalVideoSearch({ query: 'bất động sản', maxAgeHours: 24 });
+      expect(first.providerUsed).toBe('ytdlp');
+      expect(dataApi.searchCalls).toHaveLength(1);
+
+      // Immediately re-request — well within the short TTL, and within the
+      // yt-dlp process cost saved by serving the cached fallback.
+      const second = await service.globalVideoSearch({ query: 'bất động sản', maxAgeHours: 24 });
+      expect(second.cache.status).toBe('hit');
+      expect(dataApi.searchCalls).toHaveLength(1);
+      expect(ytDlpCalls).toHaveLength(1);
+    });
+
+    test('"not configured" fallback (no API key at all) is unaffected — uses the full requested TTL', async () => {
+      const ytDlpCalls: Array<{ query: string; limit: number }> = [];
+      const service = await newService({ youtube: fakeYoutube(ytDlpCalls) });
+
+      const first = await service.globalVideoSearch({ query: 'tiết kiệm', maxAgeHours: 24 });
+      expect(first.fallbackReason).toBe('youtube_data_api_not_configured');
+
+      const cached = service.store.getSearchQueryCache('tiết kiệm', 'vi', 'VN', 'ytdlp')!;
+      service.store.upsertSearchQueryCache({
+        ...cached,
+        fetchedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      });
+
+      const second = await service.globalVideoSearch({ query: 'tiết kiệm', maxAgeHours: 24 });
+      expect(second.cache.status).toBe('hit'); // still within 24h — short TTL only applies to quota-related fallbacks
+      expect(ytDlpCalls).toHaveLength(1);
+    });
+  });
+
   test('rejects invalid tool input before either provider is called', async () => {
     const ytDlpCalls: Array<{ query: string; limit: number }> = [];
     const dataApi = new FakeDataApi();

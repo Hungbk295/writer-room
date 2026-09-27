@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { AppError } from './errors.ts';
 import { ArtifactStore } from './artifacts.ts';
-import { SpyStore, type SearchVideoCacheRow, type VideoCommentRecord } from './store.ts';
+import { SpyStore, type SearchQueryCacheRow, type SearchVideoCacheRow, type VideoCommentRecord } from './store.ts';
 import { OperationManager } from './operations.ts';
 import { AcquisitionService } from './acquisition.ts';
 import { ProfileService } from './profile/index.ts';
@@ -175,6 +175,28 @@ export interface GlobalVideoSearchResult {
     durationSec: number;
     publishedAt: string | null;
   }>;
+}
+
+/**
+ * `fallbackReason` cho yt-dlp fallback trong `globalVideoSearch`.
+ *
+ * Trước đây MỌI lỗi Data API (kể cả "tất cả key trong pool đều hết quota")
+ * đều gộp chung thành `youtube_data_api_${error.code}` — với code
+ * `quota_exceeded` thì kết quả là `youtube_data_api_quota_exceeded`, không
+ * nói được đây là do rotate hết cả pool (đáng để cấu hình thêm key/đợi qua
+ * ngày) hay do chính THAM SỐ của request (vd single-key legacy) hết quota.
+ * `QuotaCountingDataApi.withRotation` đính `details.allKeysExhausted` +
+ * `details.triedKeyIds` khi nó thật sự đã thử hết mọi key trong pool — dùng
+ * ngay thông tin đó thay vì đoán lại từ error code.
+ */
+function globalVideoSearchFallbackReason(error: unknown): string {
+  if (!(error instanceof AppError)) return 'youtube_data_api_provider_failure';
+  const details = error.details as { allKeysExhausted?: boolean; triedKeyIds?: string[] } | undefined;
+  if (details?.allKeysExhausted) {
+    const keys = details.triedKeyIds?.length ? `:${details.triedKeyIds.join(',')}` : '';
+    return `youtube_data_api_all_keys_exhausted${keys}`;
+  }
+  return `youtube_data_api_${error.code}`;
 }
 
 /** Cache key normalization: whitespace/case only — must stay provider-agnostic. */
@@ -1149,7 +1171,45 @@ export class SpyService {
 
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
-    const cached = this.store.getSearchQueryCache(queryNorm, language, region, providerBranch);
+    const primaryCached = this.store.getSearchQueryCache(queryNorm, language, region, providerBranch);
+
+    /**
+     * Một dòng cache đến từ yt-dlp fallback VÌ Data API vừa lỗi (quota/key,
+     * không phải "chưa cấu hình") được ghi dưới khoá `provider_used='ytdlp'`
+     * (phản ánh ĐÚNG kết quả thật) — khác với `providerBranch` ('youtube_data_api')
+     * dùng để tra ở trên khi Data API đang được cấu hình, nên trước đây dòng
+     * đó là MỒ CÔI: không bao giờ được đọc lại trong khi dataApiAvailable vẫn
+     * true, mọi lần gọi lặp lại trong lúc key/pool đang gặp sự cố đều phải
+     * gọi lại provider (fail lại, fallback lại) — không có gì được cache.
+     *
+     * Tra thêm dòng 'ytdlp' này, nhưng chỉ CHẤP NHẬN nó trong một cửa sổ TTL
+     * NGẮN — nó phản ánh một sự cố tạm thời (quota key hết/key sai), Data API
+     * rất có thể đã dùng lại được ở lần gọi kế tiếp (rotate sang key khác còn
+     * quota, hoặc key vừa 403 đã sang quota-day mới). Phục vụ nó cho cả
+     * `refresh:'if_stale'` (mặc định) trong suốt maxAgeHours (thường 24h) sẽ
+     * khoá agent vào yt-dlp (thiếu publishedAt) lâu hơn cần thiết.
+     * `refresh:'never'` vẫn giữ nguyên ngữ nghĩa "đừng quan tâm tuổi cache".
+     * `youtube_data_api_not_configured` (không phải sự cố, là trạng thái ổn
+     * định) không bị giới hạn TTL này — nó vốn dĩ chỉ ghi/đọc dưới khoá
+     * 'ytdlp' vì providerBranch cũng là 'ytdlp' khi ấy, không cần lookup phụ.
+     */
+    const QUOTA_FALLBACK_CACHE_TTL_MS = 15 * 60_000;
+    const isQuotaFallbackRow = (row: SearchQueryCacheRow | null): row is SearchQueryCacheRow => Boolean(
+      row
+      && row.providerUsed === 'ytdlp'
+      && row.fallbackReason
+      && row.fallbackReason !== 'youtube_data_api_not_configured'
+      && row.fallbackReason.startsWith('youtube_data_api_'),
+    );
+    let cached = primaryCached;
+    if (!cached && providerBranch === 'youtube_data_api') {
+      const fallbackCached = this.store.getSearchQueryCache(queryNorm, language, region, 'ytdlp');
+      const fallbackAgeMs = fallbackCached ? nowMs - Date.parse(fallbackCached.fetchedAt) : null;
+      const fallbackUsable = isQuotaFallbackRow(fallbackCached)
+        && (refresh === 'never' || (fallbackAgeMs !== null && fallbackAgeMs <= QUOTA_FALLBACK_CACHE_TTL_MS));
+      if (fallbackUsable) cached = fallbackCached;
+    }
+
     const cacheAgeMs = cached ? nowMs - Date.parse(cached.fetchedAt) : null;
     const cacheAgeSeconds = cacheAgeMs === null ? null : Math.round(cacheAgeMs / 1000);
 
@@ -1244,9 +1304,7 @@ export class SpyService {
         if (error instanceof AppError && error.code === 'invalid_input') throw error;
         live = await this.globalVideoSearchWithYtDlp(
           base,
-          error instanceof AppError
-            ? `youtube_data_api_${error.code}`
-            : 'youtube_data_api_provider_failure',
+          globalVideoSearchFallbackReason(error),
           cache,
         );
       }
@@ -1255,6 +1313,10 @@ export class SpyService {
     }
 
     if (!hasCustomFilter) {
+      // provider_used ở đây LUÔN là kết quả THẬT (live.providerUsed), không
+      // phải providerBranch — xem lookup phụ ở trên (fallbackCached) cho lý
+      // do dòng 'ytdlp' ghi khi providerBranch='youtube_data_api' vẫn cần
+      // đọc lại được trong cửa sổ TTL ngắn.
       this.store.upsertSearchQueryCache({
         queryNorm,
         language,

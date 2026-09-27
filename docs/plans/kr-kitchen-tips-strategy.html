@@ -1,0 +1,833 @@
+<title>Kênh KR Kitchen-Tips: Chiến lược</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F5F7F4; --card:#FFFFFF; --ink:#18221F; --muted:#56635E; --line:#D9E0DC; --soft:#EBF0ED;
+  --accent:#0E6B5A; --accent-soft:#DDEFEA;
+  --t1:#A8660C; --t1-soft:#FBEFD9;
+  --t2:#0E6B5A; --t2-soft:#DDEFEA;
+  --t3:#B0412B; --t3-soft:#F9E3DD;
+  --warn:#8A5A00;
+  --display:"Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+    --accent:#5CC4AE; --accent-soft:#17332C;
+    --t1:#E8A94A; --t1-soft:#34270F;
+    --t2:#5CC4AE; --t2-soft:#17332C;
+    --t3:#EE8A74; --t3-soft:#3A1F18;
+    --warn:#E8B45A;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#111715; --card:#18201D; --ink:#E4ECE8; --muted:#9BAAA4; --line:#2C3833; --soft:#1E2824;
+  --accent:#5CC4AE; --accent-soft:#17332C;
+  --t1:#E8A94A; --t1-soft:#34270F;
+  --t2:#5CC4AE; --t2-soft:#17332C;
+  --t3:#EE8A74; --t3-soft:#3A1F18;
+  --warn:#E8B45A;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15.5px;line-height:1.6;padding-inline:20px;padding-block:0 64px}
+.wrap{max-width:1040px;margin:0 auto}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+h1,h2,h3{font-family:var(--display);font-stretch:85%;line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(30px,5vw,46px);font-weight:800;letter-spacing:-.01em}
+h2{font-size:clamp(22px,3vw,28px);font-weight:750}
+h3{font-size:18px;font-weight:700}
+p{margin:0;max-width:68ch}
+.num,td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+header.top{padding-block:40px 28px;border-bottom:1px solid var(--line);display:grid;gap:14px}
+header.top .lede{font-size:18px;color:var(--ink)}
+header.top .meta{font-size:13px;color:var(--muted)}
+
+section{padding-block:36px 8px;display:grid;gap:18px}
+.sec-head{display:grid;gap:6px}
+.sec-head p{color:var(--muted)}
+
+/* verdict strip */
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.verdict{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.verdict b{font-family:var(--display);font-stretch:85%;font-size:19px;line-height:1.25}
+.verdict p{color:var(--muted);font-size:14.5px}
+
+/* paystub positioning */
+.stub{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stub-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;padding:14px 18px;background:var(--soft);border-bottom:1px dashed var(--line)}
+.stub-head span{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.stub-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.stub-cell{padding:16px 18px;border-right:1px dashed var(--line);border-bottom:1px dashed var(--line);display:grid;gap:4px;align-content:start}
+.stub-cell .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.stub-cell .v{font-weight:600}
+.stub-cell .n{font-size:14px;color:var(--muted)}
+.stub-foot{padding:14px 18px;font-size:15px}
+.stub-foot strong{font-family:var(--display);font-stretch:85%;font-size:20px}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:11px 14px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--soft)}
+tr:last-child td{border-bottom:0}
+td q{font-style:italic;color:var(--muted)}
+td q::before,td q::after{content:'"'}
+
+/* type chips */
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.04em;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.chip.t1{background:var(--t1-soft);color:var(--t1)}
+.chip.t2{background:var(--t2-soft);color:var(--t2)}
+.chip.t3{background:var(--t3-soft);color:var(--t3)}
+.chip.neutral{background:var(--soft);color:var(--muted)}
+.chip.strong{background:var(--accent);color:var(--card)}
+
+/* type explainer */
+.types{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.type{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:10px;padding:18px;display:grid;gap:10px;align-content:start}
+.type.t1{--c:var(--t1)} .type.t2{--c:var(--t2)} .type.t3{--c:var(--t3)}
+.type ul{margin:0;padding-left:18px;font-size:14.5px;color:var(--muted);display:grid;gap:4px}
+.type .rule{font-family:var(--mono);font-size:12.5px;background:var(--soft);padding:8px 10px;border-radius:6px;color:var(--ink)}
+
+/* filter */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.filters button{font:inherit;font-size:14px;background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:6px 14px;cursor:pointer}
+.filters button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.filters .count{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:4px}
+
+/* title cards */
+.titles{display:grid;gap:12px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:18px}
+.tcard .main{display:grid;gap:10px;min-width:0}
+.tcard .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tcard .yt{font-family:var(--display);font-stretch:90%;font-size:19px;font-weight:700;line-height:1.3}
+.tcard .vi{font-size:14px;color:var(--muted);font-style:italic}
+.tcard .why{font-size:14.5px}
+.tcard .ev{font-size:13.5px;color:var(--muted);display:grid;gap:3px;margin:0;padding-left:16px}
+.tcard .side{display:grid;gap:10px;align-content:start;border-left:1px dashed var(--line);padding-left:16px}
+.tcard .side .k{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tcard .side .v{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums}
+.tcard .side .v.big{font-size:22px;font-weight:500}
+@media (max-width:640px){
+  .tcard{grid-template-columns:1fr}
+  .tcard .side{border-left:0;border-top:1px dashed var(--line);padding-left:0;padding-top:12px;grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+
+/* names */
+.names{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.name{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:8px;align-content:start}
+.name .nm{font-family:var(--display);font-stretch:85%;font-size:26px;font-weight:800;line-height:1.1}
+.name p{font-size:14.5px;color:var(--muted)}
+.name.pick{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+
+/* calendar */
+.cal{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
+.week{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:12px;align-content:start}
+.slot{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14.5px}
+
+.callout{background:var(--accent-soft);border-radius:10px;padding:16px 18px;display:grid;gap:6px}
+.callout.warn{background:var(--t1-soft)}
+.callout p{max-width:none}
+ol.steps,ul.plain{margin:0;padding-left:20px;display:grid;gap:6px}
+footer{padding-block:40px 0;border-top:1px solid var(--line);margin-top:36px;color:var(--muted);font-size:13.5px;display:grid;gap:8px}
+footer p{max-width:none}
+@media (prefers-reduced-motion:no-preference){.filters button{transition:background .15s,color .15s}}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <span class="eyebrow">Chiến lược build kênh · Hàn Quốc · tiếng Hàn · 27/9/2026</span>
+  <h1>Bảo quản thực phẩm &amp; nội trợ kiểu "có gì dùng đấy", không bán hàng</h1>
+  <p class="lede">Kênh faceless nhắm 주부 (nội trợ) Hàn 35–60 tuổi — tệp đang mệt vì các video "공구 용기" (hộp đựng bán theo nhóm). Mỗi video dạy cách giữ đồ ăn lâu bằng thứ đã có sẵn trong bếp, giọng kể bình thường, hơi lười mà chắc tay.</p>
+  <p class="meta">Nguồn: Writer Room Spy MCP. 12 vòng research, 86 lượt search (Data API), 2.057 video duy nhất, ~768 comment trên 21 video. Trần video đã nâng 1.300→2.050 theo lệnh JC giữa run (thực thu 2.057, +7 do lô cuối). VPH = view ÷ số giờ kể từ lúc đăng (trọn đời). Chi tiết: <span class="num">writer-room-data/research/strategy/kr-kitchen-tips-KR/20260927-0119/report.md</span></p>
+</header>
+
+<section>
+  <div class="sec-head">
+    <span class="eyebrow">Kết luận</span>
+    <h2>Ba quyết định cần chốt</h2>
+  </div>
+  <div class="verdicts">
+    <div class="verdict">
+      <span class="chip strong">Quyết định 1</span>
+      <b>Định vị "현실 살림" — chống lại sóng 공구 bán hộp đựng</b>
+      <p>Comment nhiều like nhất toàn khen video "봉투 그대로 보관" (giữ nguyên bao gốc): 12.889♥ trên 푸디젠, 7.780♥ + 2.232♥ + 1.732♥ trên 망구미. Đây là khoảng trống positioning hiếm: kênh lớn đều gắn 공구, kênh mới không bán hàng sẽ ăn niềm tin.</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 2</span>
+      <b>Ba ngách: 보관·소분 (bảo quản·chia nhỏ — lõi) + 장보기-decode (giải mã khi đi chợ — nóng nhất) + 선물세트 활용 (tận dụng hộp quà — gap lớn nhất)</b>
+      <p>Họ [재료] 보관법 (cách bảo quản [nguyên liệu]) nhiều biến thể trống 60 ngày (냉동밥 — cơm đông lạnh, 해동 — rã đông, 김치 — kimchi, 자취생 — người sống một mình, 서랍형 냉동고 — tủ đông ngăn kéo). Cụm "마트에서 확인" (kiểm tra ngay ở siêu thị) bùng nổ ở phần mở rộng — ≥9 RW từ 5+ kênh (tới 6.322 VPH), khớp hành trình 장보기→보관→활용 (đi chợ → bảo quản → tận dụng). Gap KR-đặc thù: 스팸·참치캔 활용 (tận dụng thịt hộp·cá ngừ hộp) có 49 OW từ ~42 kênh mà 0 video ≤90 ngày. Sóng 김장 (mùa làm kimchi cuối năm) đã bắt đầu sớm (배추 절이기 — ướp muối cải thảo — 2.128 VPH).</p>
+    </div>
+    <div class="verdict">
+      <span class="chip strong">Quyết định 3</span>
+      <b>Tên kênh bám quy trình "장본 후" (sau khi đi chợ)</b>
+      <p>Đề xuất <b>장본후</b> (sau khi đi chợ) — search không thấy kênh trùng và khớp đúng khuôn title đang thắng ("장본 후 소분" — chia nhỏ sau khi đi chợ). Dự phòng: 알뜰냉장고 (tủ lạnh tiết kiệm). Tránh 꿀냉장고 — đụng show JTBC — và 살림보관소 (namespace 살림X quá đông). Cần kiểm handle @ trước khi tạo.</p>
+    </div>
+  </div>
+</section>
+
+<section id="audience">
+  <div class="sec-head">
+    <span class="eyebrow">Định vị</span>
+    <h2>Khán giả và lời hứa của kênh</h2>
+  </div>
+  <div class="stub">
+    <div class="stub-head"><span>VIEWER PROFILE · TỆP LÕI</span><span>SUY LUẬN TỪ COMMENT · 2026-09</span></div>
+    <div class="stub-body">
+      <div class="stub-cell"><span class="k">Tệp lõi</span><span class="v num">주부 35–60 (nội trợ)</span><span class="n">Tự nhận "주부 19년차" (19 năm làm nội trợ), "40대 중반" (giữa độ 40), "50을 바라는 나이" (gần 50 tuổi). Xem video dài, muốn voice-over.</span></div>
+      <div class="stub-cell"><span class="k">Tệp B</span><span class="v num">시니어 60–70 (người lớn tuổi)</span><span class="n">Ăn nội dung 명절 (lễ Tết)·식비 (tiền ăn)·건강 (sức khoẻ). Kênh senior đang nóng: 100세 다이어리 1.636 VPH, 백세뷰티 1.486 VPH.</span></div>
+      <div class="stub-cell"><span class="k">Tệp C</span><span class="v num">요린이·1–2인 가구 25–39</span><span class="n">요린이 = người mới nấu; 1–2인 가구 = hộ 1–2 người. Trên 임젊음/최소살리미. Hỏi chi tiết cách làm, dụng cụ, chi phí.</span></div>
+      <div class="stub-cell"><span class="k">Hoàn cảnh</span><span class="v">Đi chợ/mart (코스트코 — Costco) → về chia nhỏ → quên hạn → đổ thừa</span><span class="n">Painpoint lặp: "유통기한 언젠지 모르게 되고 그럼 버리고" (không nhớ hạn dùng rồi lại phải vứt).</span></div>
+      <div class="stub-cell"><span class="k">Không nhắm</span><span class="v">Tệp tìm recipe thuần, tệp mê haul đồ đắt</span><span class="n">랜덤토랑 18M là recipe, không phải positioning của kênh.</span></div>
+      <div class="stub-cell"><span class="k">Định dạng</span><span class="v">Faceless có voice-over, 8–15 phút + Shorts cắt</span><span class="n">PP2: "자막만 넣으면 글읽기 귀차늠" (chỉ gắn phụ đề thì lười đọc) — text-only thua voice.</span></div>
+    </div>
+    <div class="stub-foot"><strong>Lời hứa: "있는 그대로, 오래 먹는 법" (cách ăn được lâu bằng đồ đang có).</strong> Khán giả không thiếu mẹo. Họ thiếu ai đó nói thật cách nào đáng làm trong bếp Hàn bình thường — và không cố bán họ một bộ hộp 20만원 (200 nghìn won).</div>
+  </div>
+
+  <h3>Insight: painpoint rút từ ~768 comment trên 21 video</h3>
+  <p style="color:var(--muted)">Chuẩn confirmed: ≥ 10 comment · ≥ 3 video · ≥ 2 kênh · ≥ 3 câu nguyên văn. Tổng mẫu ~768 comment trên 21 video (vòng 3: 12 video; vòng 10 — mở rộng: 9 video thắng mới). Shorts gần như không có comment nên mẫu nghiêng về video dài — đúng tệp lõi.</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Mã</th><th>Painpoint</th><th>Câu viewer tự hỏi</th><th>Nguyên văn trong comment</th><th>Title phục vụ</th></tr></thead>
+      <tbody>
+        <tr><td class="num">PP1</td><td>Chán video bán hộp/dụng cụ (공구 — bán mua chung)</td><td>Có cách nào không cần mua thêm đồ không?</td><td><q>요즘 유튜버들 죄다 냉동용기 공구 엄청 심하게 하는데 현실적이어서 좋네여</q> (dịch: dạo này YouTuber nào cũng bán hộp đông lạnh quá đà, cái này thực tế nên thích) · <q>통에 들어가는 순간 박물관이 되버림</q> (dịch: hễ bỏ vào hộp là thành đồ trưng bày)</td><td>2 · 5 · 6 · mọi video "봉투 그대로" (nguyên bao gốc)</td></tr>
+        <tr><td class="num">PP2</td><td>"Tôi lười, có làm nổi không"</td><td>Cách này có dành cho người bình thường không?</td><td><q>괜히 멋부린답시고 각잡고 하는거보다 무심하게 툭툭.. 이게 현실적인 소분</q> (12.889♥ · dịch: thay vì làm màu cho ra trò, cứ thản nhiên từng thứ — đây mới là chia nhỏ thực tế) · <q>해야지 어떡해</q> (dịch: phải làm thôi biết sao giờ)</td><td>Tone toàn kênh · 2 · 10</td></tr>
+        <tr><td class="num">PP3</td><td>소분한 다음 뭐 해먹지 (chia nhỏ xong rồi nấu gì) — thiếu khâu "dùng sau khi bảo quản"</td><td>Chia nhỏ xong rồi nấu gì, rã đông sao?</td><td><q>아롱사태 소분한건 어찌 드시는지</q> (dịch: thịt 아롱사태 chia nhỏ rồi ăn kiểu gì) · <q>다시 해동해서 먹을 때 고기가 질기진 않는지</q> (dịch: rã đông xong ăn thịt có bị dai không)</td><td>6 · 10 · 11 (데우기 — khâu hâm lại)</td></tr>
+        <tr><td class="num">PP4</td><td>Sợ đồ ăn hỏng, sợ đổ thừa</td><td>Làm sao không phải vứt đồ ăn nữa?</td><td><q>유통기한 언젠지도 모르게되고 그럼버리고</q> (dịch: chẳng nhớ hạn dùng lúc nào rồi lại phải vứt) · <q>molds growing on my mushrooms</q> (dịch: nấm tôi bị mốc)</td><td>1 · 3 · 7 · 11</td></tr>
+        <tr><td class="num">PP5</td><td>Đại dung lượng/소분 (chia nhỏ) có thật sự tiết kiệm?</td><td>Mua to rồi chia — lời hay lỗ?</td><td><q>비용은 어느정도 드는지 궁금합니다</q> (dịch: tò mò chi phí hết bao nhiêu) · <q>대가족 아니면 소량 구입이 편함</q> (dịch: không phải đại gia đình thì mua ít cho rảnh)</td><td>9 (số tiền trong title)</td></tr>
+        <tr><td class="num">PP6</td><td>랩·비닐 (màng bọc·túi nilon): tiện vs 환경/미세플라스틱 (môi trường/vi nhựa)</td><td>Dùng màng bọc/nilon tới đâu là vừa?</td><td><q>살림안해본사람이 환경오염 어쩌고</q> (3.810♥ · dịch: người chưa từng nội trợ đừng nói chuyện ô nhiễm) vs <q>미세플라스틱이 음식에 묻어서 방법 바꿨습니다</q> (dịch: vi nhựa dính vào đồ ăn nên tôi đổi cách rồi)</td><td>13 (nếu cụm còn nóng)</td></tr>
+        <tr><td class="num">PP7</td><td>Giấu đáp án để ép click affiliate/banner — phẫn nộ</td><td>Nói thẳng đi, sao bắt bấm link?</td><td><q>입술만 나불나불</q> (313♥ · dịch: mồm mép xào xáo suốt) · <q>핵심 재료를 알려 줘야지</q> (185♥ · dịch: phải nói ra nguyên liệu then chốt chứ) · <q>누르니 쿠팡으로 연결</q> (44♥ · dịch: bấm vào thì ra link Coupang) — video 감자 (khoai tây) 2,59M của 헤헤홈템</td><td>Quy tắc kênh: trả lời ngay trong video</td></tr>
+        <tr><td class="num">PP8</td><td>Viewer tự fact-check; mập mờ/sai thuật ngữ bị 신고 (báo cáo)</td><td>Cái này có đúng không?</td><td><q>의도가 불순하네</q> (66♥ · dịch: ý đồ xấu nhé — video 먹킷리스트 gợi nhầm 서울우유) · <q>소비기한으로 바꼈는디요</q> (dịch: luật đã đổi sang 소비기한 — hạn sử dụng — rồi mà) · nông dân 단호박 (bí đỏ) tự sửa cách chọn (18♥)</td><td>Quy tắc: chính xác tuyệt đối, đúng thuật ngữ 소비기한</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="name">
+  <div class="sec-head">
+    <span class="eyebrow">Nhận diện</span>
+    <h2>Tên kênh</h2>
+    <p>4 kiểu tên trong nhóm kênh thắng. Namespace 살림X (살림 = việc nội trợ) đông nhất nhưng median view cao lại nằm ở kênh tên riêng có persona (푸디젠, 망구미) và kênh "quy trình" (정리마켓).</p>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Kiểu tên</th><th>Ví dụ</th><th class="num">View tiêu biểu</th><th>Nhận xét</th></tr></thead>
+      <tbody>
+        <tr><td>A · 살림+X / X+살림 (살림 = việc nội trợ)</td><td>살림로그 · 뚝딱 살림 · 이로운살림 · 살림박스 · 살림노트 · 살림팩토리</td><td class="num">1,3–5,8 triệu</td><td>Dễ đoán chủ đề nhưng cực đông — khó nổi, dễ bị nhầm kênh.</td></tr>
+        <tr><td>B · 꿀+명사 / 정보샵 (꿀팁 = mẹo hay)</td><td>진짜꿀팁 · 꿀정보샷 · 꿀갤러리 · 꿀맛 레시피 · 인생꿀팁</td><td class="num">0,5–10,9 triệu</td><td>Ăn theo từ khoá "꿀팁" (mẹo hay); hợp compilation, kém cá tính.</td></tr>
+        <tr><td>C · Tên riêng / nickname</td><td>푸디젠 Foodie Jen · 헤이두 · 망구미 · 임젊음 · 꽁주부</td><td class="num">2,7–13,8 triệu</td><td>Cao nhất — nhờ persona giọng "귀찮지만 야무진" (lười nhưng chắc tay) (PP2). Khó tìm qua search, ăn theo nhân vật.</td></tr>
+        <tr><td>D · Danh từ quy trình</td><td>정리마켓 (chợ sắp xếp) · 제철음식연구소 (viện đồ ăn theo mùa) · 집밥 (cơm nhà) korean home cooking</td><td class="num">3,7–10,2 triệu</td><td>Gợi "nơi chốt việc nhà bếp"; vừa brand vừa keyword.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="names">
+    <div class="name pick">
+      <span class="chip strong">Đề xuất</span>
+      <span class="nm">장본후</span>
+      <p>"Sau khi đi chợ" — đúng khuôn thắng "장본 후 소분" (chia nhỏ sau khi đi chợ — 최소살리미 328k, 220 VPH). Search video không thấy kênh trùng tên. Lưu ý: đọc hơi giống tên người; phải kiểm handle @ và thử phát âm trước khi chốt.</p>
+    </div>
+    <div class="name">
+      <span class="chip neutral">Dự phòng</span>
+      <span class="nm">알뜰냉장고</span>
+      <p>"Tủ lạnh tiết kiệm" — khớp positioning 알뜰 (tiết kiệm)/현실 (thực tế), không thấy kênh trùng trong 25 kết quả search.</p>
+    </div>
+    <div class="name">
+      <span class="chip neutral">Dự phòng</span>
+      <span class="nm">소분주부</span>
+      <p>(nội trợ chia nhỏ) — sạch nhưng khoá kênh vào 소분 (chia nhỏ), hẹp nếu sau này mở sang 정리/청소 (sắp xếp/dọn dẹp).</p>
+    </div>
+    <div class="name">
+      <span class="chip t3">Tránh</span>
+      <span class="nm">꿀냉장고 · 살림보관소</span>
+      <p>꿀냉장고 (tủ lạnh mẹo hay) đụng show "냉장고를 부탁해" (Please Take Care of My Refrigerator — JTBC) — search toàn clip show. 살림보관소 (kho nội trợ) nằm trong namespace 살림X đã quá đông.</p>
+    </div>
+  </div>
+  <p style="color:var(--muted);font-size:14px">Kiểm trùng chỉ qua search video — kênh chưa đăng video sẽ không lộ. Trước khi tạo kênh phải kiểm handle @ trên YouTube.</p>
+</section>
+
+<section id="types">
+  <div class="sec-head">
+    <span class="eyebrow">Ba kiểu title</span>
+    <h2>Khi nào một title "ăn điểm" ở thị trường này</h2>
+    <p>Làm lại y hệt title cũ bị xem là trùng. Title chỉ ăn điểm khi rơi vào một trong ba trường hợp. Ngưỡng giữ VPH ≥ 100 cho hot/RW (median video dài thị trường ≈ 335k view, nên 100 là sàn hợp lý, không cao).</p>
+  </div>
+  <div class="types">
+    <div class="type t1">
+      <span class="chip t1">Kiểu 1 · Đang nóng</span>
+      <h3>Title y hệt nhưng còn nóng</h3>
+      <ul>
+        <li>Có video cùng lõi đăng ≤ 14 ngày, VPH ≥ 100, và video cũ cùng lõi ≥ 50k view.</li>
+        <li>Giữ lõi title để khớp search; chỉ đổi đuôi: đối tượng, con số, hoặc phạm vi món.</li>
+        <li>KR hiện nay: lõi "명절 남은" (còn thừa sau lễ), "남은 X 버리지 마세요" (đừng vứt X thừa), "식재료 오래 보관 N가지" (N cách giữ nguyên liệu lâu), "다이소 꿀템" (đồ hay Daiso).</li>
+      </ul>
+      <span class="rule">≤ 14 ngày · VPH ≥ 100 · video cũ ≥ 50k · loại nếu &gt; 10 bản copy yếu</span>
+    </div>
+    <div class="type t2">
+      <span class="chip t2">Kiểu 2 · Họ bền</span>
+      <h3>Khoảng trống trong họ title bền</h3>
+      <ul>
+        <li>Họ [재료] 보관법·해동·소분 (bảo quản · rã đông · chia nhỏ [nguyên liệu]) có 15–45 OW/query nhưng nhiều biến thể trống hẳn 60 ngày.</li>
+        <li>Trống thật ≠ "đông mà ế": top-25 của các họ này có 0 video ≤60 ngày (kể cả video ế).</li>
+        <li>Giữ khuôn 보관법 (cách bảo quản), đổi đối tượng: 냉동밥 (cơm đông lạnh), 해동 (rã đông), 김치 (kimchi), 자취생 (người sống một mình), 소분 후 활용 (tận dụng sau chia nhỏ).</li>
+      </ul>
+      <span class="rule">≥ 3 OW từ ≥ 3 kênh · 0 video ≤60 ngày trong top-25 · loại nếu ≥ 3 bản gần đây &lt; 1.000 view</span>
+    </div>
+    <div class="type t3">
+      <span class="chip t3">Kiểu 3 · Sự kiện</span>
+      <h3>Title bám nhịp mùa vụ / tin tức</h3>
+      <ul>
+        <li>Cụm "명절 남은 음식" (đồ ăn thừa sau lễ) đang chạy đúng hôm nay (Chuseok 25–26/9): ≥6 kênh, VPH tới 1.773.</li>
+        <li>Sóng kế tiếp đo được trước: 김장 (mùa làm kimchi cuối năm, 11–12/12). Chuẩn bị sớm thay vì đuổi khi đã đông.</li>
+        <li>Đăng trong 72h khi sự kiện đang nóng; ghép con số cá nhân (N가지 — N cách, N만원 — N won).</li>
+      </ul>
+      <span class="rule">≥ 3 video từ ≥ 3 kênh trong 7 ngày · VPH ≥ 100 · hợp tệp khán giả</span>
+    </div>
+  </div>
+</section>
+
+<section id="titles">
+  <div class="sec-head">
+    <span class="eyebrow">Danh sách title</span>
+    <h2>Title đề xuất, lý do và bằng chứng</h2>
+    <p>Mọi con số lấy từ search qua Spy ngày 27/9/2026, đối chiếu được với search_video_cache. Title giữ tiếng Hàn (ngôn ngữ thị trường) kèm dịch tiếng Việt. "Hạn" là thời điểm dự kiến hết lợi thế.</p>
+  </div>
+  <div class="filters" role="group" aria-label="Lọc theo kiểu title">
+    <button type="button" data-f="all" aria-pressed="true">Tất cả <span class="count">19</span></button>
+    <button type="button" data-f="t1" aria-pressed="false">Kiểu 1 <span class="count">6</span></button>
+    <button type="button" data-f="t2" aria-pressed="false">Kiểu 2 <span class="count">10</span></button>
+    <button type="button" data-f="t3" aria-pressed="false">Kiểu 3 <span class="count">3</span></button>
+  </div>
+
+  <div class="titles" id="titleList">
+
+    <!-- TYPE 1 -->
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.1 · Kiểu 1</span><span class="chip strong">Mạnh · gấp</span><span class="chip neutral">PP4 · PP3</span></div>
+        <div class="yt">추석 남은 전·나물·밥, 이렇게 보관하고 데우세요</div>
+        <p class="vi">Đồ ăn Tết Trung Thu còn thừa — bảo quản và hâm lại đúng cách (전·나물·밥)</p>
+        <p class="why">Lõi "명절 남은 음식/전" (đồ ăn/bánh jeon thừa sau lễ) đang nóng ở ≥6 kênh trong 9 ngày qua. Đuôi khác biệt: gom cả 3 nhóm thức ăn thừa điển hình + thêm khâu "데우기" (hâm lại) — đúng PP3 mà các bản nóng hiện tại chưa gom đủ.</p>
+        <ul class="ev">
+          <li>Đang nóng: 꿀정보샷 · <a href="https://www.youtube.com/watch?v=IICGpl8wFOI">남은 전 데울 때 기름 두르지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(khi hâm 전 thừa, đừng cho thêm dầu)</span> · 2,8 ngày · 1.430 VPH · <a href="https://www.youtube.com/watch?v=kje7vhNXvq0">전 미리 부칠 때</a> <span class="num" style="color:var(--muted);font-size:12px">(khi chiên 전 trước)</span> · 1.773 VPH</li>
+          <li>Cùng cụm: KBS Entertain · <a href="https://www.youtube.com/watch?v=5lvBZrET0Xk">명절 남은 음식의 대반전</a> <span class="num" style="color:var(--muted);font-size:12px">(cú lật ngược cho đồ ăn 명절 thừa)</span> · 628 VPH (0,7d) · 득템 · <a href="https://www.youtube.com/watch?v=sWRNz8G3oQM">추석 남은 음식 버리지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(đừng vứt đồ ăn 추석 thừa)</span> · 465 VPH (0,5d) · 만복보감 116 VPH · 힐링공감 240 VPH</li>
+          <li>Video cũ: 제철음식연구소 · <a href="https://www.youtube.com/watch?v=LtSKLhV37Ws">바삭한 전 만들기</a> <span class="num" style="color:var(--muted);font-size:12px">(cách làm 전 giòn)</span> 10,2 triệu · 정미야밥먹자 · <a href="https://www.youtube.com/watch?v=E2wcoNgr3Z4">불지 않는 잡채</a> <span class="num" style="color:var(--muted);font-size:12px">(잡채 không bị nở)</span> 5,8 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">1.773</div></div><div><div class="k">Kênh trong cụm</div><div class="v">≥ 6</div></div><div><div class="k">Hạn</div><div class="v">~4/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.2 · Kiểu 1</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP1 · PP4</span></div>
+        <div class="yt">장본 후 바로 해두는 식재료 보관 12가지 — 한 달은 갑니다</div>
+        <p class="vi">12 cách bảo quản thực phẩm làm ngay sau khi đi chợ — dùng được cả tháng</p>
+        <p class="why">Hai lõi đang nóng ghép lại: "식재료 오래 보관 N가지" (N cách giữ nguyên liệu lâu — compilation) và "장본 후 바로" (làm ngay sau khi đi chợ — quy trình). Đuôi "한 달은 갑니다" (dùng được cả tháng) thay "오래갑니다" (để được lâu) để không trùng bản đang chạy và tăng con số cụ thể.</p>
+        <ul class="ev">
+          <li>Đang nóng: 맛있는 인생여행 · <a href="https://www.youtube.com/watch?v=2Npn0njrxTk">냉장고 속 식재료, 이렇게 하면 더 오래갑니다! 10가지</a> <span class="num" style="color:var(--muted);font-size:12px">(nguyên liệu trong tủ lạnh — làm thế này giữ được lâu hơn, 10 mẹo)</span> · 1,9 ngày · 1.254 VPH (Short)</li>
+          <li>Cùng cụm: 땡큐손머치 · <a href="https://www.youtube.com/watch?v=h3nkyJnDUk4">식재료 오래 보관하는 똑똑한 보관법 14가지</a> <span class="num" style="color:var(--muted);font-size:12px">(14 cách bảo quản khôn ngoan giữ nguyên liệu lâu)</span> · 306 VPH · 최소살리미 · <a href="https://www.youtube.com/watch?v=2LDr3aNLlU8">코스트코 18만원 장보고 소분 정리</a> <span class="num" style="color:var(--muted);font-size:12px">(đi Costco 18만원 rồi chia nhỏ gọn gàng)</span> · 220 VPH</li>
+          <li>Video cũ: 푸디젠 · <a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách chia nhỏ nguyên liệu Costco)</span> 13,8 triệu · 꿀주부 · <a href="https://www.youtube.com/watch?v=h_CIhXs9QA8">살림 초보 식재료 보관법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách bảo quản nguyên liệu cho người mới nội trợ)</span> 6,1 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">1.254</div></div><div><div class="k">Bản copy 14 ngày</div><div class="v">~3</div></div><div><div class="k">Hạn</div><div class="v">~11/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.3 · Kiểu 1</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP4 · tệp 시니어</span></div>
+        <div class="yt">남은 소주·남은 명절 음식 절대 버리지 마세요 — 활용 총정리</div>
+        <p class="vi">Tuyệt đối đừng vứt rượu sochu thừa và đồ ăn ngày lễ còn lại — cách tận dụng tổng hợp</p>
+        <p class="why">Khuôn cảnh báo "남은 X 절대 버리지 마세요" (tuyệt đối đừng vứt X thừa) đang bùng ở tệp 시니어 (người lớn tuổi) trong 48h qua. Dễ quay, khớp painpoint "sợ đổ thừa", và câu chữ gần như copy sẵn từ title đang thắng.</p>
+        <ul class="ev">
+          <li>Đang nóng: 백세뷰티 · <a href="https://www.youtube.com/watch?v=a5OhOds5DiE">남은 소주 절대 버리지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(tuyệt đối đừng đổ soju thừa)</span> · 0,3 ngày · 1.486 VPH · 득템 · <a href="https://www.youtube.com/watch?v=sWRNz8G3oQM">추석 남은 음식 버리지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(đừng vứt đồ ăn 추석 thừa)</span> · 465 VPH</li>
+          <li>Video cũ cùng khuôn cảnh báo: 하루비타민 · <a href="https://www.youtube.com/watch?v=YOXUDQbDKA8">두부 절대 포장지째 보관하지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(tuyệt đối đừng để đậu phụ nguyên bao vào tủ)</span> 4,0 triệu · 수부해TV · <a href="https://www.youtube.com/watch?v=4gOxyTymK4I">새우젓 냉장고에서 당장 꺼내세요</a> <span class="num" style="color:var(--muted);font-size:12px">(lấy ngay 새우젓 — tôm muối — ra khỏi tủ lạnh)</span> 7,6 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">1.486</div></div><div><div class="k">Tuổi bản mới nhất</div><div class="v">0,3 ngày</div></div><div><div class="k">Hạn</div><div class="v">~5/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.4 · Kiểu 1</span><span class="chip neutral">Trung bình</span><span class="chip neutral">PP1 — định khung cẩn thận</span></div>
+        <div class="yt">다이소 주방 꿀템, 써보니 진짜 편한 것만 골랐습니다</div>
+        <p class="vi">Đồ Daiso cho bếp — chỉ chọn món thử rồi thấy tiện thật</p>
+        <p class="why">Họ "다이소 꿀템" (đồ hay Daiso) có 5 video thắng mới. Nhưng PP1 cảnh báo: phải khung là "đồ rẻ đã thử" (다이소 = 1–5천원 tức 1–5 nghìn won), không phải haul/공구 (mua chung) — nếu không sẽ chạm đúng điều khán giả đang ghét.</p>
+        <ul class="ev">
+          <li>Đang nóng: 리뷰팁 · <a href="https://www.youtube.com/watch?v=qBX1JrUQObU">출시 후 대박 터진 다이소 추천 주방꿀템 9가지</a> <span class="num" style="color:var(--muted);font-size:12px">(9 đồ bếp Daiso đáng mua đang cháy hàng)</span> · 9,3 ngày · 1.099 VPH · 소온풀 346 VPH · 리빙핵 299 VPH</li>
+          <li>Video cũ: 리뷰팁 · <a href="https://www.youtube.com/watch?v=VVShUFiNskc">다이소 인기 주방살림템 9가지</a> <span class="num" style="color:var(--muted);font-size:12px">(9 đồ nội trợ Daiso đang hot)</span> 4,8 triệu · 살림팩토리 · <a href="https://www.youtube.com/watch?v=wHCHScoRl4k">다이소에서 품절된 7가지</a> <span class="num" style="color:var(--muted);font-size:12px">(7 món đã cháy hàng ở Daiso)</span> 5,7 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">1.099</div></div><div><div class="k">Thắng mới</div><div class="v">5</div></div><div><div class="k">Hạn</div><div class="v">~15/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.5 · Kiểu 1</span><span class="chip strong">Mạnh · cụm nóng nhất</span><span class="chip neutral">PP8 — phải chính xác</span></div>
+        <div class="yt">마트 가기 전 꼭 확인하세요 — 이것만 보면 안 속습니다</div>
+        <p class="vi">Trước khi đi siêu thị hãy kiểm tra — chỉ cần nhìn đúng chỗ này là không bị lừa</p>
+        <p class="why">Cụm "마트에서 확인/장보기" (kiểm tra ở siêu thị / đi chợ) là cụm nóng nhất phần mở rộng: ≥9 video RW từ 5+ kênh trong 7 ngày (양념 구별법 — cách phân biệt gia vị · 호갱 방지 — tránh bị chặt chém · chọn nguyên liệu). Mở rộng kênh sang khâu "đi chợ" — cùng tệp 주부 (nội trợ), khớp tên 장본후. Lưu ý PP8: nội dung decode nhãn phải chính xác tuyệt đối.</p>
+        <ul class="ev">
+          <li>Đang nóng: 백세인생창고 · <a href="https://www.youtube.com/watch?v=slFVYh2EOJI">의사들이 마트에서 꼭 확인하는 양념 구별법 10가지</a> <span class="num" style="color:var(--muted);font-size:12px">(10 cách bác sĩ phân biệt gia vị khi đi siêu thị)</span> · 0,4 ngày · 6.322 VPH · 오늘살림 · <a href="https://www.youtube.com/watch?v=jUQ5XAjOA9o">마트에서 이건 내려놓으세요</a> <span class="num" style="color:var(--muted);font-size:12px">(ở siêu thị gặp thứ này hãy đặt xuống)</span> · 1.537 VPH · 집나간아들 · <a href="https://www.youtube.com/watch?v=koSaRJJ_O_A">단호박 맛있는지 여기만 보면 압니다</a> <span class="num" style="color:var(--muted);font-size:12px">(bí đỏ ngon hay không chỉ cần nhìn đúng chỗ này)</span> · 4.804 VPH · 인생꿀팁 · <a href="https://www.youtube.com/watch?v=lY6Cke6nIk0">마트 가기 전 필독! 양념 구별법</a> <span class="num" style="color:var(--muted);font-size:12px">(đọc trước khi đi siêu thị: cách phân biệt gia vị)</span> · 393 VPH · 먹킷리스트 · <a href="https://www.youtube.com/watch?v=7DbUrguCZ2w">마트에서 앞면에 적힌 이 글자에 속았습니다</a> <span class="num" style="color:var(--muted);font-size:12px">(bị lừa bởi chữ in trên mặt trước bao bì ở siêu thị)</span> · 361 VPH</li>
+          <li>Video cũ: 먹킷리스트 · <a href="https://www.youtube.com/watch?v=DNrWG3Mrv2M">마트 소금은 반드시 이걸 확인</a> <span class="num" style="color:var(--muted);font-size:12px">(mua muối ở siêu thị nhất định phải kiểm tra điều này)</span> 3,1 triệu · <a href="https://www.youtube.com/watch?v=YttznP0V85U">코스트코 가격표 비밀</a> <span class="num" style="color:var(--muted);font-size:12px">(bí mật bảng giá Costco)</span> 2,1 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">6.322</div></div><div><div class="k">Kênh trong cụm</div><div class="v">5+</div></div><div><div class="k">Hạn</div><div class="v">~11/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t1">
+      <div class="main">
+        <div class="row"><span class="chip t1">1.6 · Kiểu 1</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP4 · PP8</span></div>
+        <div class="yt">냉장 vs 실온 — 양념·조미료 보관 한방에 정리</div>
+        <p class="vi">Bảo quản lạnh hay để ngoài — bảng tổng hợp một lần cho gia vị/조미료</p>
+        <p class="why">Họ "양념/조미료 보관법" (cách bảo quản gia vị/đồ nêm) vừa nổ: 꿀팁쏙쏙 3.500 VPH trong 3,9 ngày + 오늘의기준 202 VPH. Đuôi "한방에 정리" (gom một lần xong) = format bảng đối chiếu (lạnh/thường) — khác bản đang chạy nhưng cùng nhu cầu. Khớp PP4 (sợ hỏng) và PP8 (bảng rõ ràng = tin cậy).</p>
+        <ul class="ev">
+          <li>Đang nóng: 꿀팁쏙쏙 · <a href="https://www.youtube.com/watch?v=Uz5VQd7zRpM">주부 9단도 틀리는 양념 보관법! 지금 확인하세요</a> <span class="num" style="color:var(--muted);font-size:12px">(ngay cả nội trợ cửu đẳng cũng sai: cách bảo quản gia vị)</span> · 3,9 ngày · 3.500 VPH · 오늘의 기준 · <a href="https://www.youtube.com/watch?v=u6_PKaGsnWA">올바른 양념 보관법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách bảo quản gia vị đúng)</span> · 202 VPH</li>
+          <li>Video cũ: 야무진 · <a href="https://www.youtube.com/watch?v=q5bDvMjsu8Y">의외로 잘 모르는 양념 보관법 5가지</a> <span class="num" style="color:var(--muted);font-size:12px">(5 cách bảo quản gia vị ít người biết)</span> 841k · 아주의 살림 이야기 · <a href="https://www.youtube.com/watch?v=ZZtiNWUZB_g">냉장보관 vs 실온보관 한방에 정리</a> <span class="num" style="color:var(--muted);font-size:12px">(để lạnh vs để thường — gom một lần xong)</span> 560k</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">3.500</div></div><div><div class="k">Bản copy 14 ngày</div><div class="v">2</div></div><div><div class="k">Hạn</div><div class="v">~15/10</div></div></div>
+    </article>
+
+    <!-- TYPE 2 -->
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.1 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP4 · PP3</span></div>
+        <div class="yt">냉동밥도 갓 지은 밥처럼 — 밥 소분·해동 한 번에 끝내기</div>
+        <p class="vi">Cơm đông lạnh vẫn ngon như cơm mới nấu — chia nhỏ và rã đông một lần xong</p>
+        <p class="why">Họ "냉동밥/밥 소분" (cơm đông lạnh / chia nhỏ cơm) có 3 video cũ trên 2 triệu view từ 3 kênh, mà top-25 từ khoá không có nổi một video nào trong 60 ngày. Trống thật, không phải "đông mà ế" (0 bản ế gần đây).</p>
+        <ul class="ev">
+          <li>Video cũ: 생활작가 · <a href="https://www.youtube.com/watch?v=T0HYSK4EsGY">밥 냉동보관 꿀팁, 해동까지</a> <span class="num" style="color:var(--muted);font-size:12px">(mẹo đông lạnh cơm, kèm cả cách rã đông)</span> 3,2 triệu · 맘스테이블 · <a href="https://www.youtube.com/watch?v=eVmYEUZV8gM">냉동밥 사지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(đừng mua cơm đông lạnh)</span> 3,1 triệu · 제철음식연구소 · <a href="https://www.youtube.com/watch?v=j4I63t-fCRQ">갓지은 밥처럼 만드는 냉동보관법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách đông lạnh để cơm ngon như vừa nấu)</span> 2,1 triệu</li>
+          <li>Khoảng trống: query "밥 소분 냉동" · "냉동밥" — 0 video ≤60 ngày trong top-25.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">3 kênh</div></div><div><div class="k">Bản ≤60 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.2 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP3</span></div>
+        <div class="yt">냉동 고기·생선 해동, 세균 걱정 없이 하는 법</div>
+        <p class="vi">Rã đông thịt cá đông lạnh không lo vi khuẩn — cách đúng</p>
+        <p class="why">해동 (rã đông) là khâu sau 보관 (bảo quản) mà cả họ trống 60 ngày, dù video cũ tới 8,2 triệu view. Ghép sẵn với PP3: bảo quản xong phải dạy cách dùng.</p>
+        <ul class="ev">
+          <li>Video cũ: 은수저 · <a href="https://www.youtube.com/watch?v=pR72bs8pBiY">삼겹살을 가장 완벽하게 해동하는 방법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách rã đông thịt ba chỉ hoàn hảo nhất)</span> 8,2 triệu · 집나간아들 · <a href="https://www.youtube.com/watch?v=Ng3KmnEsuS8">냉동고기 잘못 해동하면 세균</a> <span class="num" style="color:var(--muted);font-size:12px">(rã đông thịt sai cách thành ổ vi khuẩn)</span> 1,9 triệu · 건강밥상톡톡 · <a href="https://www.youtube.com/watch?v=CfRDpkwYh4A">냉동생선 해동, 찬물에 하지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(rã đông cá đông lạnh đừng ngâm nước lạnh)</span> 1,1 triệu</li>
+          <li>Khoảng trống: query "해동 방법" — 0 video ≤60 ngày trong top-25.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">3 kênh</div></div><div><div class="k">Bản ≤60 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.3 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">PP4 · mùa 김장</span></div>
+        <div class="yt">김치 안 쉬고 곰팡이 없이 오래 두는 보관법</div>
+        <p class="vi">Bảo quản kimchi lâu không bị chua, không mốc</p>
+        <p class="why">김치 보관 (bảo quản kimchi) là nhu cầu quốc dân: 3 video cũ triệu view, 0 bản mới 60 ngày. Đăng cuối 10–11/2026 đón mùa 김장 (làm kimchi cuối năm) — đi trước sóng thay vì đuổi theo.</p>
+        <ul class="ev">
+          <li>Video cũ: 왜튜브 · <a href="https://www.youtube.com/watch?v=KuaQ6fnsjJM">김치를 저렇게 보관하면 안 되는ㄷ</a> <span class="num" style="color:var(--muted);font-size:12px">(đừng bảo quản kimchi theo kiểu đó)</span> 6,6 triệu · 살림노트 · <a href="https://www.youtube.com/watch?v=jbe8EKg-JO0">곰팡이 걱정없이 김치 오래 보관</a> <span class="num" style="color:var(--muted);font-size:12px">(bảo quản kimchi lâu không lo mốc)</span> 2,4 triệu · 시니어정보통 · <a href="https://www.youtube.com/watch?v=ExiSHAmx9hw">김장김치 이렇게 담그면 다 무릅니다</a> <span class="num" style="color:var(--muted);font-size:12px">(làm kimchi 김장 kiểu này sẽ bị nhũn hết)</span> 1,1 triệu</li>
+          <li>Khoảng trống: "김치 보관법" · "김치 안 쉬는 보관법" · "김장 김치 보관" — 0 video ≤60 ngày.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">3 kênh</div></div><div><div class="k">Bản ≤60 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Đăng ~20/10–15/11</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.4 · Kiểu 2</span><span class="chip strong">Mạnh</span><span class="chip neutral">Tệp C · PP5</span></div>
+        <div class="yt">자취생·1인 가구 식재료 보관법 — 적게 사고 오래 쓰기</div>
+        <p class="vi">Cách bảo quản thực phẩm cho người sống một mình — mua ít mà dùng lâu</p>
+        <p class="why">Video cũ của tệp này 5–6,5 triệu view nhưng 60 ngày qua không ai làm. Đối tượng "자취생/1인 가구" (người sống một mình / hộ 1 người) trong title mở tệp C (trẻ, sống một mình) mà kênh lõi 주부 (nội trợ) không đụng tới.</p>
+        <ul class="ev">
+          <li>Video cũ: 푸디젠 · <a href="https://www.youtube.com/watch?v=GCybZPCXIpU">알아두면 좋은 나만의 식재료 보관팁</a> <span class="num" style="color:var(--muted);font-size:12px">(mẹo bảo quản nguyên liệu của riêng tôi đáng ghi nhớ)</span> 5,3 triệu · 꿀맛 레시피 · <a href="https://www.youtube.com/watch?v=eA7-4X7Q5wc">버터는 이렇게 보관하세요</a> <span class="num" style="color:var(--muted);font-size:12px">(bơ nên bảo quản thế này)</span> 6,5 triệu</li>
+          <li>Khoảng trống: "자취생 식재료 보관" — 0 video ≤60 ngày trong top-25. Comment tệp C hỏi nhiều về chi phí (PP5) → đưa con số tiết kiệm vào title/thumbnail.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">2–3 kênh</div></div><div><div class="k">Bản ≤60 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.5 · Kiểu 2</span><span class="chip neutral">Trung bình</span><span class="chip neutral">PP5 · PP1</span></div>
+        <div class="yt">코스트코 18만원 장본 후 소분 정리 — 2인 가구 기준</div>
+        <p class="vi">Đi Costco 180.000 won về chia nhỏ thế này — chuẩn hộ 2 người</p>
+        <p class="why">Khuôn "N만원 장본 후 소분" (chia nhỏ sau khi đi chợ N won) vừa có video thắng mới (최소살리미 220 VPH) và nền video cũ khổng lồ. Số tiền + số người trong title trả lời thẳng PP5 "có lời không".</p>
+        <ul class="ev">
+          <li>Thắng mới: 최소살리미 · <a href="https://www.youtube.com/watch?v=2LDr3aNLlU8">코스트코 18만원 장보고 소분 정리</a> <span class="num" style="color:var(--muted);font-size:12px">(đi Costco 18만원 rồi chia nhỏ gọn gàng)</span> · 62 ngày · 220 VPH · 임젊음 · <a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분</a> <span class="num" style="color:var(--muted);font-size:12px">(nhà 2 người chia nhỏ thịt Costco cho cả tháng)</span> 2,7 triệu · 1.884 VPH</li>
+          <li>Video cũ: 푸디젠 · <a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách chia nhỏ nguyên liệu Costco)</span> 13,8 triệu · <a href="https://www.youtube.com/watch?v=Dvf0EYZ0uYc">코스트코 음식보관</a> <span class="num" style="color:var(--muted);font-size:12px">(bảo quản đồ ăn Costco)</span> 5,4 triệu · 단단홈 · <a href="https://www.youtube.com/watch?v=8R5ZjaZg-lc">5인가족 코스트코 정리</a> <span class="num" style="color:var(--muted);font-size:12px">(nhà 5 người sắp đồ Costco)</span> 4,0 triệu</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Khuôn gần đây</div><div class="v big">220–1.884</div></div><div><div class="k">Đối thủ nặng</div><div class="v">푸디젠</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.6 · Kiểu 2</span><span class="chip neutral">Trung bình · cần format riêng</span><span class="chip neutral">PP3</span></div>
+        <div class="yt">소분해 둔 고기로 일주일 반찬 — 꺼내서 바로 요리</div>
+        <p class="vi">Một tuần món ăn từ thịt đã chia nhỏ — lấy ra là nấu được ngay</p>
+        <p class="why">Đóng vòng PP3: comment hỏi nhiều nhất là "소분한건 어찌 드시는지" (chia xong rồi ăn kiểu gì). Query "냉동고기 요리" (món nấu từ thịt đông) 0 video mới 60 ngày dù video cũ 18 triệu view — nhu cầu chờ, nhưng nghiêng recipe nên cần format "냉동고기 → 반찬" (thịt đông → món nhắm) riêng chứ không làm recipe thuần.</p>
+        <ul class="ev">
+          <li>Video cũ (recipe-adjacent): 랜덤토랑 · <a href="https://www.youtube.com/watch?v=eU6VoHNUTlM">라면만큼 쉬운 레시피</a> <span class="num" style="color:var(--muted);font-size:12px">(công thức dễ như nấu mì gói)</span> 18,4 triệu · 레시피 읽어주는 여자 · <a href="https://www.youtube.com/watch?v=6L6x_7_dl6I">정호영 셰프 레시피</a> <span class="num" style="color:var(--muted);font-size:12px">(công thức của chef Jung Ho-young)</span> 15,5 triệu</li>
+          <li>Comment demand: 임젊음 — "아롱사태 소분한건 어찌 드시는지" (dịch: thịt 아롱사태 chia nhỏ rồi ăn kiểu gì) · "해동해서 먹을 때 고기가 질기진 않는지" (dịch: rã đông xong ăn thịt có bị dai không) — nhiều người hỏi.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">18,4tr</div></div><div><div class="k">Bản ≤60 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.7 · Kiểu 2</span><span class="chip strong">Mạnh · mới từ vòng mở rộng</span><span class="chip neutral">PP3 · PP4</span></div>
+        <div class="yt">2주간 냉파 대장정 — 냉동고에 쌓아둔 것부터 다 먹기</div>
+        <p class="vi">Thử thách "냉파" 2 tuần — ăn hết những gì đang chất đống trong ngăn đông</p>
+        <p class="why">Keyword mở rộng "냉장고 파먹기" (phá tủ lạnh — ăn hết đồ có sẵn, viết tắt 냉파) cho thấy họ bền có kênh nhỏ vừa thắng — đúng dạng kênh mình nhắm. Format "challenge nhiều ngày" (대장정 — hành trình dài) là từ vựng mới trong tập, khớp PP3: dùng hết đồ đã 소분 (chia nhỏ).</p>
+        <ul class="ev">
+          <li>Thắng mới (kênh nhỏ): 집밥 연진이 · <a href="https://www.youtube.com/watch?v=PpX3pfJc7Cw">냉동고에 쌓아둔 것들, 오늘 다 꺼냅니다 — 2주간 냉파 대장정</a> <span class="num" style="color:var(--muted);font-size:12px">(lôi hết đồ chất đống trong ngăn đông — hành trình 냉파 2 tuần)</span> · 44.871 view · 15,8 ngày · 118 VPH</li>
+          <li>Video cũ: 프티_홈 · <a href="https://www.youtube.com/watch?v=0o7pZfHomVI">냉장고 파먹기 냉동실 정리 필수템</a> <span class="num" style="color:var(--muted);font-size:12px">(đồ cần có để dọn ngăn đông kiểu 냉파)</span> 230k · 엄마씨 · <a href="https://www.youtube.com/watch?v=TJEQn06b1jo">냉장고파먹기 김치날치알밥</a> <span class="num" style="color:var(--muted);font-size:12px">(cơm trộn kimchi trứng cá chuồn kiểu 냉파)</span> 172k · 살림구조대 · <a href="https://www.youtube.com/watch?v=xUlDsUQUslI">주말 냉장고 파먹기</a> <span class="num" style="color:var(--muted);font-size:12px">(cuối tuần phá tủ lạnh)</span> 118k</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">RW kênh nhỏ</div><div class="v big">118 VPH</div></div><div><div class="k">Video cũ thắng</div><div class="v">3 kênh</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.8 · Kiểu 2</span><span class="chip strong">Mạnh · mới từ vòng mở rộng</span><span class="chip neutral">PP3</span></div>
+        <div class="yt">일주일 반찬 한 번에 — 냉동 반찬 밀프랩</div>
+        <p class="vi">Một tuần món ăn làm một lần — meal-prep món nhắm đông lạnh</p>
+        <p class="why">Họ "냉동 반찬/주간 밀프랩" (món nhắm đông lạnh / meal-prep cả tuần) có 9 OW từ 8 kênh khác nhau mà top-9 query trống hẳn 90 ngày — khoảng trống thật ở đúng khâu "활용" (tận dụng) sau khi bảo quản (PP3). Cầu nối tự nhiên giữa kênh 보관 (bảo quản) và tệp 직장인/바쁜 주부 (dân văn phòng / nội trợ bận).</p>
+        <ul class="ev">
+          <li>Video cũ: 망구미 · <a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법</a> <span class="num" style="color:var(--muted);font-size:12px">(cách sắp ngăn đông thật sự)</span> 4,9 triệu · 퇴근후살림 · <a href="https://www.youtube.com/watch?v=l2B-bvBQL4c">의외로 잘 모르는 식재료 냉동 소분법 3가지</a> <span class="num" style="color:var(--muted);font-size:12px">(3 cách chia nhỏ đông lạnh ít người biết)</span> 4,2 triệu</li>
+          <li>Cùng họ: 간단한끼 요오리 · <a href="https://www.youtube.com/watch?v=PQ9TLyJowBg">주간밀프랩 냉동비빔밥</a> <span class="num" style="color:var(--muted);font-size:12px">(meal-prep cả tuần: 비빔밥 đông lạnh)</span> 1,3 triệu · 유유한시간 · <a href="https://www.youtube.com/watch?v=hEvTUhTnHq0">평생 써먹은 명품반찬 Top3</a> <span class="num" style="color:var(--muted);font-size:12px">(top 3 món nhắm dùng được cả đời)</span> 1,1 triệu — 0 video ≤90 ngày trong top-9.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">8 kênh</div></div><div><div class="k">Bản ≤90 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.9 · Kiểu 2</span><span class="chip strong">Mạnh · gap lớn nhất run</span><span class="chip neutral">PP3 · PP5</span></div>
+        <div class="yt">명절 선물세트 스팸·참치캔, 쟁여두지 말고 이렇게 활용하세요</div>
+        <p class="vi">Đừng chất đống hộp quà 스팸·참치 sau 명절 — dùng theo cách này</p>
+        <p class="why">Khoảng trống KR-đặc thù lớn nhất của run: "스팸 활용" (tận dụng thịt hộp 스팸) có 25 video cũ thắng từ 21 kênh (리틀식탁 12 triệu · 후딱 8,4 triệu · 승우아빠 8,1 triệu), "참치캔 활용" (tận dụng cá ngừ hộp) 24 video từ 21 kênh (요레시피 32 triệu · 빼미네 7,0 triệu · 김밥실 4,0 triệu "명절만 되면 몇통씩 쟁여둬요" — cứ đến lễ là lại tích mấy hộp) — cả hai họ 0 video ≤90 ngày trong tập mẫu. Nhà Hàn nào sau 명절 (lễ) cũng có hộp quà chất đống → đúng timing + đóng vòng PP3 (dùng hết đồ đã có).</p>
+        <ul class="ev">
+          <li>Video cũ (스팸 — thịt hộp): 리틀식탁 · <a href="https://www.youtube.com/watch?v=APHvK7_R7oc">밥도둑 류수영 스팸순두부찌개</a> (canh 순두부 스팸 "hút cơm") 12,1 triệu · 2025-05 · 후딱 레시피 · <a href="https://www.youtube.com/watch?v=93X2Jrq0cw0">스팸을 이렇게 했더니 매일 찾아요</a> (làm 스팸 thế này cả nhà ngày nào cũng đòi) 8,4 triệu · 2025-08 · 승우아빠 · <a href="https://www.youtube.com/watch?v=NhGSdRgqaZ0">세상 간단한 스팸요리 8가지</a> (8 món 스팸 đơn giản nhất) 8,1 triệu · 2019-10</li>
+          <li>Video cũ (참치캔 — cá ngừ hộp): 요레시피 · <a href="https://www.youtube.com/watch?v=MWJumz6syok">밥도둑 극락 캔참치 레시피</a> (công thức cá ngừ hộp "thiên đường hút cơm") 32,4 triệu · 2025-10 · 빼미네식탁 · <a href="https://www.youtube.com/watch?v=CrGU1WK8f90">참치 주먹밥 계란말이</a> (cơm nắm 참치 + trứng cuộn) 7,0 triệu · 2025-09 · 김밥실 · <a href="https://www.youtube.com/watch?v=Je8AIrq-1xI">명절만 되면 이거 몇통씩 쟁여둬요</a> (cứ 명절 là tôi lại tích mấy hộp này) 4,0 triệu · 2025-08 — 0 video ≤90 ngày cả hai cụm.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">49 video</div></div><div><div class="k">Bản ≤90 ngày</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Nóng sau 명절</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t2">
+      <div class="main">
+        <div class="row"><span class="chip t2">2.10 · Kiểu 2</span><span class="chip neutral">Trung bình · mới từ mở rộng</span><span class="chip neutral">PP4 · PP3</span></div>
+        <div class="yt">서랍형 냉동고 정리 — 안 보이는 건 안 먹게 됩니다</div>
+        <p class="vi">Sắp tủ đông kiểu ngăn kéo — cái không nhìn thấy là cái không được ăn</p>
+        <p class="why">Họ "서랍형 냉동고 정리" (sắp tủ đông kiểu ngăn kéo) có 18 video cũ từ 17 kênh (심플혜영 1,4M · 온더홈 1,4M · 홈멍멍 721k), 0 video mới; comment 냉파 của vòng 10 nêu đúng pain: "서랍형 잘 안보이니까 쳐박게 됩니당" — pain cụ thể theo loại tủ rất phổ biến ở KR.</p>
+        <ul class="ev">
+          <li>Video cũ: 심플혜영 TV · <a href="https://www.youtube.com/watch?v=-ZEpqJ6abRw">냉동실 정리 꿀팁 — 평생 써먹는 정리습관</a> (mẹo sắp ngăn đông — thói quen dùng cả đời) 1,44 triệu · 2023-08 · 온더홈 · <a href="https://www.youtube.com/watch?v=0TpiBWRmvb0">엄마도 찐으로 감탄한 냉장고 정리 꿀템 두 가지</a> (2 món đồ sắp tủ lạnh khiến mẹ cũng phải thán phục) 1,35 triệu · 2025-07 · 홈멍멍 · <a href="https://www.youtube.com/watch?v=ZE021fA5Xds">답안나오는 냉동실정리 이렇게 해보세요</a> (ngăn đông bí bách — hãy làm thế này) 721k · 2023-07</li>
+          <li>Pain nguyên văn: <q>서랍형 잘 안보이니까 쳐박게 됩니당</q> (dịch: ngăn kéo khó nhìn nên cứ nhồi nhét vào) · <q>안사기 프로젝트</q> (dịch: dự án không mua nữa) — comment 냉파, vòng 10.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Video cũ thắng</div><div class="v big">18 video</div></div><div><div class="k">Bản mới</div><div class="v">0</div></div><div><div class="k">Hạn</div><div class="v">Không</div></div></div>
+    </article>
+
+    <!-- TYPE 3 -->
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.1 · Kiểu 3</span><span class="chip strong">Mạnh · 72h</span><span class="chip neutral">PP4</span></div>
+        <div class="yt">명절 남은 음식 버리지 마세요: 냉장·냉동 보관 총정리</div>
+        <p class="vi">Đừng vứt đồ ăn thừa sau lễ: tổng hợp cách bảo quản lạnh và đông</p>
+        <p class="why">Sự kiện đang ở đỉnh hôm nay (ngày sau Chuseok — lễ Tết Trung Thu Hàn): ≥6 kênh đăng trong 9 ngày, VPH 116–1.773, và đài KBS đã vào cuộc 0,7 ngày trước (628 VPH) — dấu hiệu chủ đề mainstream. Đăng trong 72h.</p>
+        <ul class="ev">
+          <li>꿀정보샷 · <a href="https://www.youtube.com/watch?v=IICGpl8wFOI">남은 전 데울 때</a> <span class="num" style="color:var(--muted);font-size:12px">(khi hâm 전 thừa, đừng cho thêm dầu)</span> 1.430 VPH · <a href="https://www.youtube.com/watch?v=kje7vhNXvq0">전 미리 부칠 때</a> <span class="num" style="color:var(--muted);font-size:12px">(khi chiên 전 trước)</span> 1.773 VPH · KBS · <a href="https://www.youtube.com/watch?v=5lvBZrET0Xk">명절 남은 음식 대반전</a> <span class="num" style="color:var(--muted);font-size:12px">(cú lật ngược cho đồ ăn 명절 thừa)</span> 628 VPH</li>
+          <li>득템 · <a href="https://www.youtube.com/watch?v=sWRNz8G3oQM">추석 남은 음식 버리지 마세요</a> <span class="num" style="color:var(--muted);font-size:12px">(đừng vứt đồ ăn 추석 thừa)</span> 465 VPH · 중년상식백과 · <a href="https://www.youtube.com/watch?v=TGw5nPvZwdg">추석 사과·배·감 보관</a> <span class="num" style="color:var(--muted);font-size:12px">(bảo quản táo, lê, hồng sau 추석)</span> 466 VPH · 만복보감 116 VPH · 힐링공감 240 VPH</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">Kênh trong cụm</div><div class="v big">6+</div></div><div><div class="k">VPH cao nhất</div><div class="v">1.773</div></div><div><div class="k">Hạn</div><div class="v">~2–4/10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.2 · Kiểu 3</span><span class="chip strong">Sóng đã bắt đầu</span><span class="chip neutral">PP4 · mùa</span></div>
+        <div class="yt">배추 절이기·김장 준비 — 소금 말고 이것부터 확인하세요</div>
+        <p class="vi">Ướp muối cải thảo & chuẩn bị kimjang — đừng chỉ nhìn muối, hãy kiểm tra điều này trước</p>
+        <p class="why">Phát hiện mới từ vòng mở rộng: sóng 김장 (làm kimchi cuối năm) đã bắt đầu từ cuối 9, không phải 11–12/12 như dự báo ban đầu — "배추 절이기" (ướp muối cải thảo) có 2 video thắng đang chạy (노후꽃길 2.128 VPH / 4,5 ngày · 김대석 셰프TV 2.021 VPH). Phải sản xuất và đăng sớm đầu 10 để bắt sóng đợt 1.</p>
+        <ul class="ev">
+          <li>Đang nóng: 노후꽃길 · <a href="https://www.youtube.com/watch?v=wtaSz6OJadk">가을 배추 절이는 비결, 절대 소금만 넣는 게 아닙니다</a> (bí quyết ướp muối cải thảo mùa thu — tuyệt đối không chỉ cho muối) · 227k · 2026-09-22 · 2.128 VPH · 김대석 셰프TV · <a href="https://www.youtube.com/watch?v=MH55B-12gDs">배추김치에 "이것" 넣고 담그면 김치박사 됩니다</a> (cho "thứ này" vào kimchi cải thảo thì thành tiến sĩ kimchi) · 1,5 triệu · 2026-08-26 · 2.021 VPH</li>
+          <li>Video cũ chứng minh nhu cầu mùa vụ: 시니어정보통 · <a href="https://www.youtube.com/watch?v=ExiSHAmx9hw">김장김치 이렇게 담그면 다 무릅니다</a> <span class="num" style="color:var(--muted);font-size:12px">(làm kimchi 김장 kiểu này sẽ bị nhũn hết)</span> 1,1 triệu · 왜튜브 김치 6,6 triệu · 배추/양배추 보관 họ OW 18–20, 0 recent.</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH đang nóng</div><div class="v big">2.128</div></div><div><div class="k">Đối thủ mới</div><div class="v">Đã có — phải vào sớm</div></div><div><div class="k">Hạn</div><div class="v">Đợt 1 ~giữa 10</div></div></div>
+    </article>
+
+    <article class="tcard" data-t="t3">
+      <div class="main">
+        <div class="row"><span class="chip t3">3.3 · Kiểu 3</span><span class="chip neutral">Chờ xác nhận</span><span class="chip neutral">PP6</span></div>
+        <div class="yt">랩·비닐 어디까지 써도 되나 — 미세플라스틱 걱정 없는 현실 보관 기준</div>
+        <p class="vi">Màng bọc/túi nilon dùng tới đâu là vừa — chuẩn bảo quản thực tế không lo vi nhựa</p>
+        <p class="why">Chủ đề 미세플라스틱 (vi nhựa) đang nóng (건강인생지혜 1.024 VPH, 2,7 ngày) và chính comment kênh 살림 (nội trợ) đang cãi nhau về rác nhựa vs thực dụng (comment 3.810♥). Title đặt kênh ở vị trí "chuẩn thực tế" — dung hoà hai phía.</p>
+        <ul class="ev">
+          <li>건강인생지혜 · <a href="https://www.youtube.com/watch?v=D4wudp8Pn3E">미세플라스틱 폭탄 12가지</a> <span class="num" style="color:var(--muted);font-size:12px">(12 "quả bom" vi nhựa đang ăn hằng ngày)</span> · 2,7 ngày · 1.024 VPH</li>
+          <li>Tranh luận nóng trong comment: fFgZ4A69OZI (3.810♥) · gidqp_5wAm0 — 환경 vs 현실. Chỉ làm nếu cụm 미세플라스틱 còn nóng khi đăng; nếu nguội, biến thành kiểu 2 "보관 도구, cái nào thật sự cần".</li>
+        </ul>
+      </div>
+      <div class="side"><div><div class="k">VPH sự kiện</div><div class="v big">1.024</div></div><div><div class="k">Trạng thái</div><div class="v">Theo dõi</div></div><div><div class="k">Hạn</div><div class="v">Theo tin</div></div></div>
+    </article>
+  </div>
+
+  <div class="callout warn">
+    <p><b>Không làm lúc này:</b> (1) Compilation clip nước ngoài kiểu 알면쓸모있다 — view cao (5.537 VPH) nhưng comment phàn nàn "중국거" (dịch: đồ Trung Quốc), "한국에는 이런 거 없어요" (dịch: ở Hàn không có mấy thứ này); đó chính là lý do kênh mới phải dùng đồ thật trong nhà Hàn. (2) Haul/공구 용기 (hộp đựng bán mua chung) đắt tiền — chạm PP1. (3) Recipe thuần (랜덤토랑 18M) — lệch positioning. (4) Nội dung chỉ cho 시니어 (người lớn tuổi) — tệp đang nóng nhưng lệch lõi; chỉ mượn khuôn title. (5) 정리/청소 (sắp xếp/dọn dẹp) nội thất rộng (구축아파트 인테리어 8,6M) — khác job-to-be-done. (6) Khung "음식물 쓰레기 줄이기" (giảm rác thải thực phẩm — kiểm ở vòng mở rộng): top-9 toàn clip chính quyền/PSA — ý tưởng "đừng vứt" phải đóng khung tiết kiệm "버리지 마세요" (đừng vứt đi), không phải khung môi trường. (7) "명절 선물세트 추천" (gợi ý hộp quà lễ) kiểu shopping-guide — intent khác kênh; kênh mình chỉ làm "활용/처리" (tận dụng/xử lý). (8) <b>Tuyệt đối không giấu đáp án sau banner/link affiliate</b> (PP7 — mới từ vòng 10): video 감자 (khoai tây) 2,59M view của 헤헤홈템 "thắng" bằng rage-bait, comment nhiều like nhất là giận dữ muốn 신고 (báo cáo). (9) Nội dung sai thuật ngữ/gợi nhầm thương hiệu (PP8): viewer KR tự fact-check, video 먹킷리스트 bị tố 허위사실유포 (phát tán thông tin sai) vì gợi nhầm 서울우유.</p>
+  </div>
+</section>
+
+<section id="plan">
+  <div class="sec-head">
+    <span class="eyebrow">Lịch ra video</span>
+    <h2>2 tuần đầu: 3 video dài mỗi tuần, mỗi kiểu ít nhất 1 slot</h2>
+    <p>Tuần 1 bắt buộc có slot sự kiện trong 72h. Mỗi video dài cắt 1–2 Shorts giữ một mẹo đơn lẻ (kênh thắng KR trong tập này ăn cả hai format: 134/186 video là Shorts).</p>
+  </div>
+  <div class="cal">
+    <div class="week">
+      <h3>Tuần 1 · 27/9–3/10</h3>
+      <div class="slot"><span class="chip t3">Kiểu 3</span><span>3.1 명절 남은 음식 보관 총정리 (tổng hợp bảo quản đồ ăn thừa sau lễ) <span class="num" style="color:var(--muted)">(đăng ≤29/9, trong 72h)</span></span></div>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>1.2 장본 후 식재료 보관 12가지 (12 cách bảo quản sau khi đi chợ)</span></div>
+      <div class="slot"><span class="chip t1">Kiểu 1</span><span>1.5 마트 가기 전 꼭 확인 (kiểm tra trước khi đi siêu thị) <span class="num" style="color:var(--muted)">(cụm nóng nhất — ưu tiên hơn 2.1)</span></span></div>
+    </div>
+    <div class="week">
+      <h3>Tuần 2 · 4–10/10</h3>
+      <div class="slot"><span class="chip t2">Kiểu 2</span><span>2.9 스팸·참치캔 선물세트 활용 (tận dụng hộp quà thịt hộp·cá ngừ) <span class="num" style="color:var(--muted)">(hậu-명절 đúng lúc, gap lớn nhất)</span></span></div>
+      <div class="slot"><span class="chip t2">Kiểu 2</span><span>2.1 냉동밥 소분·해동 (chia nhỏ·rã đông cơm đông lạnh) <span class="num" style="color:var(--muted)">(hoặc 1.6 양념 한방에 정리 nếu cụm còn nóng)</span></span></div>
+      <div class="slot"><span class="chip t3">Kiểu 3</span><span>3.2 배추 절이기·김장 준비 (ướp muối cải thảo·chuẩn bị kimchi) <span class="num" style="color:var(--muted)">— sóng đã bắt đầu (2.128 VPH), đăng sớm đầu 10</span></span></div>
+    </div>
+  </div>
+</section>
+
+<section id="rules">
+  <div class="sec-head">
+    <span class="eyebrow">Quy tắc</span>
+    <h2>Viết title và làm video cho thị trường KR</h2>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Quy tắc</th><th>Vì sao</th></tr></thead>
+      <tbody>
+        <tr><td>Mỗi title có <b>một con số cụ thể</b>: N가지 (N cách) · N만원 (N won) · 한달/2주 (cả tháng/2 tuần)</td><td>Mọi khuôn thắng trong tập đều gắn số (보관법 14가지 · 18만원 · 한달먹는방법 — cách ăn cả tháng).</td></tr>
+        <tr><td>Dùng họ cảnh báo <b>"버리지 마세요 (đừng vứt) / 절대 ~하지 마세요 (tuyệt đối đừng…)"</b> khi hợp</td><td>2–3 kênh đang thắng bằng khuôn này (백세뷰티 1.486 VPH · 득템 465 · 수부해TV 7,6M).</td></tr>
+        <tr><td>Nói <b>"현실적 · 돈 안 써도 · 있는 그대로 · 봉투 그대로"</b> (thực tế · không tốn tiền · y nguyên · nguyên bao)</td><td>PP1: khán giả thưởng cho kênh chống 공구 (bán mua chung); comment 12.889♥ ca hô "현실적인 소분" (chia nhỏ thực tế).</td></tr>
+        <tr><td><b>Bắt buộc voice-over</b>, giọng bình thường hơi "귀찮은" (lười), không 각잡힌 (khó chịu, làm màu)</td><td>PP2: "자막만 넣으면 글읽기 귀차늠" (chỉ gắn phụ đề thì lười đọc); 푸디젠 nổ nhờ 말투 (giọng nói), không nhờ trình bày đẹp.</td></tr>
+        <tr><td>Đóng vòng <b>보관 → 해동 → 활용</b> (bảo quản → rã đông → tận dụng) giữa các video</td><td>PP3: câu hỏi lặp nhất là "소분한 다음 어찌 먹는지" (chia xong thì ăn sao) — mỗi video 보관 dẫn tới video 활용.</td></tr>
+        <tr><td>Chỉ dùng <b>đồ thật trong nhà bếp Hàn</b> (다이소 — Daiso, 이케아 — IKEA, 지퍼백 — túi zip, 고무줄 — dây thun)</td><td>Điểm yếu đã chứng minh của kênh compilation nước ngoài; là khác biệt cốt lõi.</td></tr>
+        <tr><td>Kiểm "đông mà ế" trước mọi title kiểu 2</td><td>Run này các họ trống là trống thật (0 bản ≤60d), nhưng quy tắc phải giữ cho các vòng sau.</td></tr>
+        <tr><td>Mượn quyền uy: <b>"전문가는 이렇게 · 시어머님 · 사장님 · N년 경력"</b> (chuyên gia làm thế này · mẹ chồng · chủ tiệm · N năm kinh nghiệm)</td><td><i>(mở rộng)</i> Khuôn expert-framing lặp ở ≥4 video thắng: 감자 (khoai tây) 1.236 · 버섯 (nấm) 892 · 단호박 (bí đỏ) 4.804 · 생선 (cá) 132 VPH.</td></tr>
+        <tr><td>Khuôn "마트에서 확인 / 이건 내려놓으세요" (kiểm tra ở siêu thị / cái này thì đặt xuống) cho slot 장보기 (đi chợ)</td><td><i>(mở rộng)</i> Cụm decode-nhãn nóng nhất run: ≥9 RW từ 5+ kênh trong 7 ngày (tới 6.322 VPH).</td></tr>
+        <tr><td><b>Trả lời thẳng, không giấu "핵심 재료" (nguyên liệu then chốt) sau link</b></td><td><i>(mở rộng)</i> PP7: video rage-bait 감자 bị phẫn nộ (313♥ "입술만 나불나불" — mồm mép xào xáo suốt); lòng trung thực = khác biệt kênh.</td></tr>
+        <tr><td>Đúng thuật ngữ <b>소비기한</b> (hạn sử dụng thực — luật đã đổi), không gợi nhầm brand</td><td><i>(mở rộng)</i> PP8: viewer tự sửa sai trong comment và kêu gọi 신고 (báo cáo); sai với brand lớn = rủi ro thật.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="measure">
+  <div class="sec-head">
+    <span class="eyebrow">Đo lường</span>
+    <h2>Cách biết chiến lược đúng hay sai</h2>
+  </div>
+  <ol class="steps">
+    <li><b>VPH 48 giờ</b> từng video so với median kênh mình (sau khi có 5 video); tham chiếu RW thị trường: 100–300 là đạt, ≥500 là thắng.</li>
+    <li>Sau 8–10 video, so VPH trung bình theo kiểu; kiểu nào 3 video liên tiếp &lt; 50 VPH thì giảm tỉ lệ.</li>
+    <li>Đọc 50–100 comment/video để nâng PP3 (소분 후 활용 — tận dụng sau chia nhỏ) và PP5 (비용 — chi phí) từ "theo dõi" lên confirmed — hai painpoint này quyết định series tiếp theo.</li>
+    <li>Nếu 2/3 video đầu ≥100 VPH: giữ lịch; nếu slot kiểu 3 (명절 — lễ) dưới 50 VPH thì tuần 2 bỏ sự kiện, làm thêm kiểu 2.</li>
+    <li>Mở rộng tệp 시니어 (người lớn tuổi) hoặc 자취생 (người sống một mình) chỉ khi ≥10 video dài đạt ngưỡng.</li>
+  </ol>
+</section>
+
+<section id="evidence">
+  <div class="sec-head">
+    <span class="eyebrow">Bằng chứng</span>
+    <h2>Bằng chứng kênh &amp; video — đối chiếu 100% với Spy cache</h2>
+  </div>
+  <p>Mọi video ID dưới đây tồn tại trong <code>search_video_cache</code> của run (2.057 video · 86 query · 12 vòng). Cache không trả <code>channelId</code> hay số subscriber, nên ô "video tiêu biểu" dùng link video làm đại diện kênh. Chỉ số view/VPH là giá trị tại thời điểm crawl (26–27/9).</p>
+  <h3 style="margin:22px 0 10px;font-size:15px">Bảng kênh</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Kênh</th><th>Video tiêu biểu (link đại diện)</th><th>View</th><th>Ngày đăng</th><th>VPH</th><th>Video thắng trong mẫu*</th><th>Ngách</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td>푸디젠 Foodie Jen</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883</td><td class="num">8/12</td><td>소분·보관법</td><td>Đối thủ lớn nhất ngách chia nhỏ</td></tr>
+      <tr><td>진짜꿀팁 Realtips</td><td><a href="https://www.youtube.com/watch?v=vr8sldVM1iw">알아두면 쓸모있는 생활 꿀팁 10가지 #살림팁 #꿀팁 #생활꿀팁</a> <span style="color:var(--muted)">(10 mẹo sống đáng biết)</span></td><td class="num">1.6tr</td><td class="num">2026-07-19</td><td class="num">979</td><td class="num">10/37</td><td>꿀팁 compilation (tổng hợp mẹo)</td><td>Đối thủ compilation</td></tr>
+      <tr><td>먹킷리스트</td><td><a href="https://www.youtube.com/watch?v=iDIFmWQg3WI">마트에서 산 고추장 사실 가짜 고추장이었습니다. 진짜 고추장고르는법 '이것' 꼭 확인하세요!!</a> <span style="color:var(--muted)">(tương ớt mua ở siêu thị hoá ra là hàng giả — nhất định phải kiểm tra "thứ này")</span></td><td class="num">9.6tr</td><td class="num">2025-04-29</td><td class="num">777</td><td class="num">6/17</td><td>마트 decode (đọc nhãn siêu thị)</td><td>Đối thủ cụm đi chợ · bài học PP8</td></tr>
+      <tr><td>꿀정보샷</td><td><a href="https://www.youtube.com/watch?v=kje7vhNXvq0">전 미리 부칠 때 밀가루 절대 쓰지 마세요 🥘 하루 지나도 계란옷 안 벗겨지는 반찬가게 비법 (추석 명절 모둠전 미</a> <span style="color:var(--muted)">(chiên 전 trước tuyệt đối đừng dùng bột — bí quyết tiệm 반찬)</span></td><td class="num">350k</td><td class="num">2026-09-18</td><td class="num">1,773</td><td class="num">3/3</td><td>명절·보관법 Shorts</td><td>Đối thủ tốc độ sự kiện</td></tr>
+      <tr><td>꿀팁쏙쏙</td><td><a href="https://www.youtube.com/watch?v=Uz5VQd7zRpM">주부 9단도 틀리는 양념 보관법! 지금 확인하세요 #살림노하우 #주방꿀팁 #양념보관법</a> <span style="color:var(--muted)">(ngay cả nội trợ cửu đẳng cũng sai: cách bảo quản gia vị)</span></td><td class="num">326k</td><td class="num">2026-09-22</td><td class="num">3,500</td><td class="num">1/1</td><td>양념 보관 (bảo quản gia vị)</td><td>Đối thủ — 3.500 VPH mới nổi</td></tr>
+      <tr><td>백세인생창고</td><td><a href="https://www.youtube.com/watch?v=slFVYh2EOJI">"무심코 산 양념이 몸을 망칩니다" 의사들이 마트에서 꼭 확인하는 '명품 양념 구별법 10가지'</a> <span style="color:var(--muted)">(10 cách bác sĩ phân biệt gia vị "hàng xịn" khi đi siêu thị)</span></td><td class="num">57k</td><td class="num">2026-09-26</td><td class="num">6,322</td><td class="num">1/1</td><td>마트 구별법 (phân biệt ở siêu thị)</td><td>Đối thủ — VPH cao nhất run 6.322</td></tr>
+      <tr><td>헤헤홈템</td><td><a href="https://www.youtube.com/watch?v=8LFCDY5dKo8">30년 감자 농사 시어머님 감자 보관 꿀팁</a> <span style="color:var(--muted)">(mẹo bảo quản khoai tây của mẹ chồng 30 năm trồng khoai)</span></td><td class="num">2.6tr</td><td class="num">2026-07-01</td><td class="num">1,236</td><td class="num">2/2</td><td>보관법 shorts</td><td>Ví dụ phản PP7 (rage-bait affiliate) — tránh</td></tr>
+      <tr><td>임젊음</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884</td><td class="num">2/2</td><td>소분 vlog (chia nhỏ)</td><td>Học theo — kênh nhỏ thắng lớn 2,7tr</td></tr>
+      <tr><td>최소살리미</td><td><a href="https://www.youtube.com/watch?v=2LDr3aNLlU8">코스트코 18만원 장보고 소분 정리 쉽게하기</a> <span style="color:var(--muted)">(đi Costco 18만원 rồi chia nhỏ gọn gàng)</span></td><td class="num">328k</td><td class="num">2026-07-26</td><td class="num">220</td><td class="num">1/5</td><td>장본 후 소분 (chia nhỏ sau đi chợ)</td><td>Học theo — đúng khuôn tên 장본후</td></tr>
+      <tr><td>집밥 연진이</td><td><a href="https://www.youtube.com/watch?v=PpX3pfJc7Cw">냉동고에 쌓아둔 것들, 오늘 다 꺼냅니다 🔥 2주간 냉파 대장정</a> <span style="color:var(--muted)">(lôi hết đồ chất đống trong ngăn đông — hành trình 냉파 2 tuần)</span></td><td class="num">44k</td><td class="num">2026-09-10</td><td class="num">118</td><td class="num">1/8</td><td>냉파 challenge (phá tủ lạnh)</td><td>Học theo — kênh nhỏ 44k view thắng</td></tr>
+      <tr><td>뚝딱 살림</td><td><a href="https://www.youtube.com/watch?v=EwQzLTlokWI">월500씩 모으는 워킹맘의 살림 압살법(월화수목 배달0회, 외식 0회)</a> <span style="color:var(--muted)">(bí quyết nội trợ của mẹ đi làm tiết kiệm 500k won/tháng)</span></td><td class="num">1.3tr</td><td class="num">2026-09-06</td><td class="num">2,618</td><td class="num">1/3</td><td>알뜰 워킹맘 (nội trợ tiết kiệm)</td><td>Học theo — persona working-mom 2.618 VPH</td></tr>
+      <tr><td>헤이두 Hejdoo</td><td><a href="https://www.youtube.com/watch?v=kxLvBz8yFJs">돈 안 써도 효과 확실한 살림 꿀팁 20가지🌿 | 알아두면 평생 써먹는 정리 아이디어💡 / Zero Cost Hom</a> <span style="color:var(--muted)">(20 mẹo nội trợ hiệu quả không tốn tiền)</span></td><td class="num">303k</td><td class="num">2026-09-18</td><td class="num">1,507</td><td class="num">4/12</td><td>살림 꿀팁 dạng dài</td><td>Học theo — kênh nhỏ video dài 1.508 VPH</td></tr>
+      <tr><td>노후꽃길</td><td><a href="https://www.youtube.com/watch?v=wtaSz6OJadk">가을 배추 절이는 비결, 절대 소금만 넣는 게 아닙니다!</a> <span style="color:var(--muted)">(bí quyết ướp muối cải thảo mùa thu — không chỉ cho muối)</span></td><td class="num">227k</td><td class="num">2026-09-22</td><td class="num">2,128</td><td class="num">2/3</td><td>김장·시니어 (kimchi cuối năm)</td><td>Đối thủ sóng 김장 — 2.128 VPH</td></tr>
+      <tr><td>김대석 셰프TV</td><td><a href="https://www.youtube.com/watch?v=MH55B-12gDs">배추김치에 "이것" 넣고 담그면 김치박사 됩니다</a> <span style="color:var(--muted)">(cho "thứ này" vào kimchi cải thảo thì thành tiến sĩ kimchi)</span></td><td class="num">1.5tr</td><td class="num">2026-08-26</td><td class="num">2,021</td><td class="num">1/5</td><td>김장·chef (kimchi cuối năm)</td><td>Đối thủ sóng 김장 — 2.021 VPH</td></tr>
+      <tr><td>요레시피</td><td><a href="https://www.youtube.com/watch?v=MWJumz6syok">⭐3210만⭐요즘 난리난 밥도둑 극락 캔참치 레시피</a> <span style="color:var(--muted)">(công thức cá ngừ hộp "thiên đường" đang gây sốt 32tr view)</span></td><td class="num">32.4tr</td><td class="num">2025-10-28</td><td class="num">4,055</td><td class="num">2/2</td><td>참치캔 활용 (tận dụng cá ngừ hộp)</td><td>Đối thủ OW 32tr — gap đang trống</td></tr>
+      <tr><td>리틀식탁 Little Table</td><td><a href="https://www.youtube.com/watch?v=APHvK7_R7oc">밥도둑 류수영 스팸순두부찌개</a> <span style="color:var(--muted)">(canh 순두부 스팸 "hút cơm" của 류수영)</span></td><td class="num">12.1tr</td><td class="num">2025-05-03</td><td class="num">983</td><td class="num">3/5</td><td>스팸 활용 (tận dụng thịt hộp)</td><td>Đối thủ OW 12tr — gap đang trống</td></tr>
+      <tr><td>망구미</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">277</td><td class="num">3/7</td><td>냉동실 정리 (sắp ngăn đông)</td><td>Đối thủ · nguồn comment PP1/PP4/PP6</td></tr>
+      <tr><td>알면쓸모있다</td><td><a href="https://www.youtube.com/watch?v=2qS0MRB2VNA">삶의 질을 높여주는 신박한 생활 꿀팁 모음!</a> <span style="color:var(--muted)">(tuyển tập mẹo sống lạ nâng tầm chất sống)</span></td><td class="num">619k</td><td class="num">2026-09-22</td><td class="num">5,537</td><td class="num">2/2</td><td>compilation nước ngoài</td><td>Ví dụ phản — khán giả ghét clip TQ</td></tr>
+      <tr><td>의정부시어린이·사회복지급식관리지원센터</td><td><a href="https://www.youtube.com/watch?v=IkaMkOGyLcc">음식물 쓰레기 줄이기 애니메이션(미래에서 온 내 친구)</a> <span style="color:var(--muted)">(hoạt hình giảm rác thải thực phẩm (PSA nhà nước))</span></td><td class="num">273k</td><td class="num">2022-07-14</td><td class="num">7</td><td class="num">0/1</td><td>음식물 쓰레기 (rác thải) PSA</td><td>Bằng chứng ngách chết — toàn clip nhà nước</td></tr>
+    </tbody></table></div>
+  <p style="font-size:12.5px;color:var(--muted)">* "Video thắng trong mẫu" = số video của kênh trong tập 2.057 có VPH lifetime ≥ 100 / tổng video của kênh trong mẫu. Spy không cung cấp số subscriber.</p>
+  <h3 style="margin:26px 0 10px;font-size:15px">Bảng video theo keyword — best video của từng query (86 query)</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Vòng</th><th>Keyword</th><th>Video bằng chứng</th><th>Kênh</th><th>View</th><th>Ngày đăng</th><th>VPH</th></tr></thead>
+    <tbody>
+      <tr><td class="num">R1</td><td>냉동 보관법 (cách bảo quản đông lạnh)</td><td><a href="https://www.youtube.com/watch?v=l2B-bvBQL4c">의외로 잘 모르는 식재료 냉동 소분법 3가지🥚🧈🥯</a> <span style="color:var(--muted)">(3 cách chia nhỏ đông lạnh ít người biết — 4,2tr)</span></td><td>퇴근후살림</td><td class="num">4.2tr</td><td class="num">2025-07-24</td><td class="num">410.5</td></tr>
+      <tr><td class="num">R1</td><td>냉장고 정리 (sắp xếp tủ lạnh)</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td>망구미</td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">276.6</td></tr>
+      <tr><td class="num">R1</td><td>대파 보관법 (cách bảo quản hành lá)</td><td><a href="https://www.youtube.com/watch?v=dvCAIKuA7EI">대파에 '이것' 뿌리면 한 달 뒤에도 싱싱 #대파보관법 #대파저장법 #인기급상승</a> <span style="color:var(--muted)">(rắc "thứ này" lên hành lá — cả tháng sau vẫn tươi)</span></td><td>시니어 백세보약</td><td class="num">943k</td><td class="num">2026-04-13</td><td class="num">237.1</td></tr>
+      <tr><td class="num">R1</td><td>마늘 보관법 (cách bảo quản tỏi)</td><td><a href="https://www.youtube.com/watch?v=eFQ4w1fzPG8">마늘 냉동실에 넣지 마세요! 1년 넘게 끄떡없는 보관법</a> <span style="color:var(--muted)">(đừng cho tỏi vào ngăn đông — cách bảo quản qua 1 năm)</span></td><td>하루가든든</td><td class="num">2.1tr</td><td class="num">2026-06-10</td><td class="num">798.9</td></tr>
+      <tr><td class="num">R1</td><td>살림 꿀팁 (mẹo hay nội trợ)</td><td><a href="https://www.youtube.com/watch?v=kxLvBz8yFJs">돈 안 써도 효과 확실한 살림 꿀팁 20가지🌿 | 알아두면 평생 써먹는 정리 아이디어💡 / Zero Cost Hom</a> <span style="color:var(--muted)">(20 mẹo nội trợ hiệu quả không tốn tiền)</span></td><td>헤이두 Hejdoo</td><td class="num">303k</td><td class="num">2026-09-18</td><td class="num">1,508.2</td></tr>
+      <tr><td class="num">R1</td><td>생활 꿀팁 (mẹo hay cuộc sống)</td><td><a href="https://www.youtube.com/watch?v=2qS0MRB2VNA">삶의 질을 높여주는 신박한 생활 꿀팁 모음!</a> <span style="color:var(--muted)">(tuyển tập mẹo sống lạ nâng tầm chất sống)</span></td><td>알면쓸모있다</td><td class="num">619k</td><td class="num">2026-09-22</td><td class="num">5,537.4</td></tr>
+      <tr><td class="num">R1</td><td>식재료 보관법 (cách bảo quản nguyên liệu)</td><td><a href="https://www.youtube.com/watch?v=2Npn0njrxTk">냉장고 속 식재료, 이렇게 하면 더 오래갑니다! 🥬 10가지 보관 꿀팁</a> <span style="color:var(--muted)">(nguyên liệu trong tủ lạnh — làm thế này giữ được lâu hơn, 10 mẹo)</span></td><td>맛있는 인생여행</td><td class="num">56k</td><td class="num">2026-09-24</td><td class="num">1,257.7</td></tr>
+      <tr><td class="num">R1</td><td>식재료 소분법 (cách chia nhỏ nguyên liệu)</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td></tr>
+      <tr><td class="num">R1</td><td>양파 보관법 (cách bảo quản hành tây)</td><td><a href="https://www.youtube.com/watch?v=4IAeI2qinxA">양파가 썩어서 버릴 일 없는 1년내내 싱싱하게 보관하는 특별한 3가지 방법! 가락시장 사장님공개</a> <span style="color:var(--muted)">(3 cách giữ hành tây tươi cả năm — chủ chợ tiết lộ)</span></td><td>울아들 _행복을 위한 빛나는 지혜</td><td class="num">487k</td><td class="num">2026-05-12</td><td class="num">147.7</td></tr>
+      <tr><td class="num">R1</td><td>주방 꿀팁 (mẹo hay nhà bếp)</td><td><a href="https://www.youtube.com/watch?v=I-NWmjaym5Y">일본에서 난리난 주방 꿀팁</a> <span style="color:var(--muted)">(mẹo nhà bếp đang gây sốt ở Nhật)</span></td><td>머사르</td><td class="num">247k</td><td class="num">2026-09-23</td><td class="num">2,838.6</td></tr>
+      <tr><td class="num">R1</td><td>채소 보관법 (cách bảo quản rau củ)</td><td><a href="https://www.youtube.com/watch?v=1P9Vc0IpmgA">200원 다이소 꿀템!다이소 쇼핑백으로 냉장고 야채칸 정리해보세요🛍️#살림#꿀팁#정리</a> <span style="color:var(--muted)">(đồ Daiso 200 won: sắp ngăn rau tủ lạnh bằng túi Daiso)</span></td><td>하루살림</td><td class="num">1.8tr</td><td class="num">2025-05-15</td><td class="num">154.2</td></tr>
+      <tr><td class="num">R1</td><td>코스트코 소분법 (cách chia nhỏ đồ Costco)</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td>임젊음</td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884.1</td></tr>
+      <tr><td class="num">R2</td><td>계란 보관법 (cách bảo quản trứng)</td><td><a href="https://www.youtube.com/watch?v=mXZU5SYdVcI">계란 정리 보관은 이렇게 해보세요 #shorts</a> <span style="color:var(--muted)">(sắp trứng vào tủ hãy làm thế này)</span></td><td>봉TV</td><td class="num">3.2tr</td><td class="num">2025-02-01</td><td class="num">223.3</td></tr>
+      <tr><td class="num">R2</td><td>고기 소분법 (cách chia nhỏ thịt)</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td>임젊음</td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884.1</td></tr>
+      <tr><td class="num">R2</td><td>과일 보관법 (cách bảo quản trái cây)</td><td><a href="https://www.youtube.com/watch?v=TGw5nPvZwdg">추석 사과·배·감 같이 보관해도 될까?｜명절 과일 보관법 7가지  #중년상식백과 #좋은글 #공감글귀  #60대 #명</a> <span style="color:var(--muted)">(bảo quản táo, lê, hồng sau 추석 — 7 mẹo)</span></td><td>중년상식백과</td><td class="num">83k</td><td class="num">2026-09-19</td><td class="num">466.2</td></tr>
+      <tr><td class="num">R2</td><td>김치 보관법 (cách bảo quản kimchi)</td><td><a href="https://www.youtube.com/watch?v=jbe8EKg-JO0">곰팡이 걱정없이 김치 오래 보관하는 비법! 김치 비닐 덮으면 곰팡이 생겨요!  #건강정보</a> <span style="color:var(--muted)">(bảo quản kimchi lâu không lo mốc)</span></td><td>살림노트</td><td class="num">2.4tr</td><td class="num">2025-10-30</td><td class="num">307.7</td></tr>
+      <tr><td class="num">R2</td><td>냉동실 정리 (sắp xếp ngăn đông)</td><td><a href="https://www.youtube.com/watch?v=M8WNUmM2XhA">나의 최애 냉장고 냉동실 정리 용기 3가지</a> <span style="color:var(--muted)">(3 loại hộp sắp ngăn đông tôi thích nhất)</span></td><td>꽁주부</td><td class="num">222k</td><td class="num">2026-08-27</td><td class="num">307.7</td></tr>
+      <tr><td class="num">R2</td><td>다이소 주방 꿀템 (đồ hay nhà bếp Daiso)</td><td><a href="https://www.youtube.com/watch?v=qBX1JrUQObU">출시 후 대박 터진 다이소 추천 주방꿀템 9가지</a> <span style="color:var(--muted)">(9 đồ bếp Daiso đáng mua đang cháy hàng)</span></td><td>리뷰팁</td><td class="num">246k</td><td class="num">2026-09-17</td><td class="num">1,098.8</td></tr>
+      <tr><td class="num">R2</td><td>두부 보관법 (cách bảo quản đậu phụ)</td><td><a href="https://www.youtube.com/watch?v=MbHwMTComds">두부가 훨씬 맛있어집니다｜알아두면 좋은 두부 보관·조리법 7가지</a> <span style="color:var(--muted)">(đậu phụ ngon hơn hẳn — 7 cách bảo quản·chế biến đáng biết)</span></td><td>땡큐손머치 스튜디오</td><td class="num">60k</td><td class="num">2026-09-24</td><td class="num">1,082.2</td></tr>
+      <tr><td class="num">R2</td><td>명절 음식 보관법 (cách bảo quản đồ ăn ngày lễ)</td><td><a href="https://www.youtube.com/watch?v=sJ07Zs57gxo">저장의 달인이 알려주는 음식 보관법</a> <span style="color:var(--muted)">(bậc thầy bảo quản chỉ cách giữ đồ ăn)</span></td><td>정리마켓</td><td class="num">5tr</td><td class="num">2025-07-22</td><td class="num">480.7</td></tr>
+      <tr><td class="num">R2</td><td>빵 보관법 (cách bảo quản bánh mì)</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td>망구미</td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">276.6</td></tr>
+      <tr><td class="num">R2</td><td>식비 줄이기 (giảm tiền ăn)</td><td><a href="https://www.youtube.com/watch?v=MGEweLe1MDM">게으른 자취인을 위한 현실 식비절약법</a> <span style="color:var(--muted)">(cách tiết kiệm tiền ăn thực tế cho người sống một mình lười)</span></td><td>소요 soyo</td><td class="num">3.4tr</td><td class="num">2025-12-28</td><td class="num">512.8</td></tr>
+      <tr><td class="num">R2</td><td>장본 후 소분 (chia nhỏ sau khi đi chợ)</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td></tr>
+      <tr><td class="num">R2</td><td>전 보관법 (cách bảo quản bánh jeon)</td><td><a href="https://www.youtube.com/watch?v=kje7vhNXvq0">전 미리 부칠 때 밀가루 절대 쓰지 마세요 🥘 하루 지나도 계란옷 안 벗겨지는 반찬가게 비법 (추석 명절 모둠전 미</a> <span style="color:var(--muted)">(chiên 전 trước tuyệt đối đừng dùng bột — bí quyết tiệm 반찬)</span></td><td>꿀정보샷</td><td class="num">350k</td><td class="num">2026-09-18</td><td class="num">1,772.8</td></tr>
+      <tr><td class="num">R4</td><td>김장 김치 보관 (bảo quản kimchi kimjang)</td><td><a href="https://www.youtube.com/watch?v=KuaQ6fnsjJM">김치를 저렇게 보관하면 안 되는ㄷ…😅</a> <span style="color:var(--muted)">(đừng bảo quản kimchi theo kiểu đó — 6,6tr)</span></td><td>왜튜브</td><td class="num">6.6tr</td><td class="num">2024-04-01</td><td class="num">303.7</td></tr>
+      <tr><td class="num">R4</td><td>남은 음식 활용 (tận dụng đồ ăn thừa)</td><td><a href="https://www.youtube.com/watch?v=6kMpNgcnnLk">남은 명절 음식, 이렇게 바꾸면 대박 TOP 7#명절음식 #명절음식활용 #남은음식 #명절요리 #명절음식재활용</a> <span style="color:var(--muted)">(top 7 cách biến đồ ăn lễ thừa thành món mới)</span></td><td>힐링 공감 ASMR</td><td class="num">1k</td><td class="num">2026-09-26</td><td class="num">240.2</td></tr>
+      <tr><td class="num">R4</td><td>명절 남은 음식 (đồ ăn thừa sau lễ)</td><td><a href="https://www.youtube.com/watch?v=5lvBZrET0Xk">[#편셰프의점메추] 명절 남은 음식의 대반전!🤩 이대로만 만들면 새로운 요리로 뚝딱?!🍽️ㅣKBS방송</a> <span style="color:var(--muted)">(cú lật ngược cho đồ ăn lễ thừa — KBS)</span></td><td>KBS Entertain</td><td class="num">10k</td><td class="num">2026-09-26</td><td class="num">627.5</td></tr>
+      <tr><td class="num">R4</td><td>반찬 보관법 (cách bảo quản món nhắm)</td><td><a href="https://www.youtube.com/watch?v=4gOxyTymK4I">새우젓 냉장고에서 당장 꺼내세요!</a> <span style="color:var(--muted)">(lấy ngay 새우젓 (tôm muối) ra khỏi tủ lạnh — 7,6tr)</span></td><td>수부해TV subuhae</td><td class="num">7.6tr</td><td class="num">2025-09-25</td><td class="num">863.0</td></tr>
+      <tr><td class="num">R4</td><td>밥 소분 냉동 (chia nhỏ·đông lạnh cơm)</td><td><a href="https://www.youtube.com/watch?v=zRIKTnClAcg">냉동밥 만들기 (Q&amp;A)</a> <span style="color:var(--muted)">(cách làm cơm đông lạnh (Q&A))</span></td><td>두콩 dukong</td><td class="num">1tr</td><td class="num">2026-05-15</td><td class="num">316.6</td></tr>
+      <tr><td class="num">R4</td><td>식재료 오래 보관 (bảo quản nguyên liệu lâu)</td><td><a href="https://www.youtube.com/watch?v=2Npn0njrxTk">냉장고 속 식재료, 이렇게 하면 더 오래갑니다! 🥬 10가지 보관 꿀팁</a> <span style="color:var(--muted)">(nguyên liệu trong tủ lạnh — làm thế này giữ được lâu hơn, 10 mẹo)</span></td><td>맛있는 인생여행</td><td class="num">56k</td><td class="num">2026-09-24</td><td class="num">1,254.0</td></tr>
+      <tr><td class="num">R4</td><td>자취생 식재료 보관 (bảo quản nguyên liệu cho người sống một mình)</td><td><a href="https://www.youtube.com/watch?v=GCybZPCXIpU">알아두면 좋은 나만의 식재료 보관팁</a> <span style="color:var(--muted)">(mẹo bảo quản nguyên liệu của riêng tôi đáng ghi nhớ)</span></td><td>푸디젠 Foodie Jen</td><td class="num">5.3tr</td><td class="num">2025-08-25</td><td class="num">556.8</td></tr>
+      <tr><td class="num">R4</td><td>해동 방법 (cách rã đông)</td><td><a href="https://www.youtube.com/watch?v=pR72bs8pBiY">7. 삼겹살을 가장 완벽하게 해동하는 방법 #shorts</a> <span style="color:var(--muted)">(cách rã đông thịt ba chỉ hoàn hảo nhất — 8,2tr)</span></td><td>은수저</td><td class="num">8.2tr</td><td class="num">2025-03-24</td><td class="num">620.7</td></tr>
+      <tr><td class="num">R5</td><td>김치 안 쉬는 보관법 (cách bảo quản kimchi không bị chua)</td><td><a href="https://www.youtube.com/watch?v=jbe8EKg-JO0">곰팡이 걱정없이 김치 오래 보관하는 비법! 김치 비닐 덮으면 곰팡이 생겨요!  #건강정보</a> <span style="color:var(--muted)">(bảo quản kimchi lâu không lo mốc)</span></td><td>살림노트</td><td class="num">2.4tr</td><td class="num">2025-10-30</td><td class="num">307.7</td></tr>
+      <tr><td class="num">R5</td><td>꿀냉장고 (tủ lạnh mẹo hay)</td><td><a href="https://www.youtube.com/watch?v=zsOtYi2j3-E">[냉장고를 부탁해] ＂설마 저를 어떻게 하겠어요~?＂ 현빈의 고급 꿀 몰래 가져온 손예진🤣 | 냉장고를 부탁해 88</a> <span style="color:var(--muted)">(clip show "냉장고를 부탁해" (Hãy chăm sóc tủ lạnh) — JTBC)</span></td><td>JTBC Entertainment</td><td class="num">235k</td><td class="num">2026-09-13</td><td class="num">741.7</td></tr>
+      <tr><td class="num">R5</td><td>냉동고기 요리 (món từ thịt đông lạnh)</td><td><a href="https://www.youtube.com/watch?v=6L6x_7_dl6I">정호영 셰프님 감사합니다...</a> <span style="color:var(--muted)">(công thức của chef 정호영 — 15,5tr)</span></td><td>레시피 읽어주는 여자</td><td class="num">15.5tr</td><td class="num">2025-05-23</td><td class="num">1,314.1</td></tr>
+      <tr><td class="num">R5</td><td>소분주부 (nội trợ chia nhỏ)</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td></tr>
+      <tr><td class="num">R5</td><td>알뜰살림 (nội trợ tiết kiệm)</td><td><a href="https://www.youtube.com/watch?v=EwQzLTlokWI">월500씩 모으는 워킹맘의 살림 압살법(월화수목 배달0회, 외식 0회)</a> <span style="color:var(--muted)">(bí quyết nội trợ của mẹ đi làm tiết kiệm 500k won/tháng)</span></td><td>뚝딱 살림</td><td class="num">1.3tr</td><td class="num">2026-09-06</td><td class="num">2,618.1</td></tr>
+      <tr><td class="num">R5</td><td>장보고 바로 보관 (bảo quản ngay sau khi đi chợ)</td><td><a href="https://www.youtube.com/watch?v=8R5ZjaZg-lc">5인가족 삼남매엄마의 코스트코 장바구니 정리하는 법#코스트코#costco</a> <span style="color:var(--muted)">(nhà 5 người sắp đồ Costco)</span></td><td>단단홈</td><td class="num">4tr</td><td class="num">2025-10-20</td><td class="num">481.8</td></tr>
+      <tr><td class="num">R5</td><td>장본후 (sau khi đi chợ)</td><td><a href="https://www.youtube.com/watch?v=YyYodwdNQbw">청와대의 변화! (김세의 숨통 끊는 은현장)｜풀버전 (09.21)</a> <span style="color:var(--muted)">(clip talkshow chính trị — nhiễu, không liên quan)</span></td><td>[팟빵] 최욱의 매불쇼</td><td class="num">1.3tr</td><td class="num">2026-09-21</td><td class="num">10,054.5</td></tr>
+      <tr><td class="num">R5</td><td>채소 한달 보관 (bảo quản rau cả tháng)</td><td><a href="https://www.youtube.com/watch?v=p1T1WBQ1nKc">😎10분컷 초간단 우삼겹야채찜 #다이어트 #다이어트식단 #초간단요리</a> <span style="color:var(--muted)">(hấp rau thịt bò 10 phút — nhiễu recipe)</span></td><td>밈초이💛습관저장소</td><td class="num">4tr</td><td class="num">2025-06-16</td><td class="num">352.9</td></tr>
+      <tr><td class="num">R6</td><td>그대로살림 (nội trợ y nguyên)</td><td><a href="https://www.youtube.com/watch?v=Ef7XY9ug6OM">식당 주방장만 몰래 쓰는 맛의 한 끗 #요리꿀팁 #살림팁</a> <span style="color:var(--muted)">(bí quyết vị chỉ đầu bếp nhà hàng mới dùng)</span></td><td>인생꿀팁</td><td class="num">101k</td><td class="num">2026-09-24</td><td class="num">1,891.3</td></tr>
+      <tr><td class="num">R6</td><td>살림보관소 (kho bảo quản nội trợ)</td><td><a href="https://www.youtube.com/watch?v=wHCHScoRl4k">다이소에서 품절된 7가지! #살림스타그램 #다이소 #살림초보 #살림남 #꿀템 #정리정돈 #인테리어 #주부9단</a> <span style="color:var(--muted)">(7 món đã cháy hàng ở Daiso — 5,7tr)</span></td><td>살림팩토리</td><td class="num">5.7tr</td><td class="num">2025-09-16</td><td class="num">629.8</td></tr>
+      <tr><td class="num">R6</td><td>알뜰 냉장고 (tủ lạnh tiết kiệm)</td><td><a href="https://www.youtube.com/watch?v=itYwQVyuCcc">채소값 확 아끼는 최고의 방법! 한고은 냉장고 속 숨겨진 비밀템은? #shorts</a> <span style="color:var(--muted)">(cách giảm hẳn tiền rau — món bí mật trong tủ lạnh 한고은)</span></td><td>안나픽</td><td class="num">65k</td><td class="num">2026-09-23</td><td class="num">798.6</td></tr>
+      <tr><td class="num">R6</td><td>있는 그대로 살림 (nội trợ dùng đồ sẵn có)</td><td><a href="https://www.youtube.com/watch?v=CT75TJpSH0o">비싼 보약 사 먹고 땅을 치고 후회합니다! 식비 반토막 내는 기적의 식단</a> <span style="color:var(--muted)">(tiếc vì mua thuốc bổ đắt tiền — thực đơn giảm nửa tiền ăn)</span></td><td>100세 다이어리</td><td class="num">27k</td><td class="num">2026-09-26</td><td class="num">1,636.5</td></tr>
+      <tr><td class="num">R7</td><td>냉동 반찬 (món nhắm đông lạnh)</td><td><a href="https://www.youtube.com/watch?v=l2B-bvBQL4c">의외로 잘 모르는 식재료 냉동 소분법 3가지🥚🧈🥯</a> <span style="color:var(--muted)">(3 cách chia nhỏ đông lạnh ít người biết — 4,2tr)</span></td><td>퇴근후살림</td><td class="num">4.2tr</td><td class="num">2025-07-24</td><td class="num">410.5</td></tr>
+      <tr><td class="num">R7</td><td>냉장고 파먹기 (phá tủ lạnh — ăn hết đồ có sẵn)</td><td><a href="https://www.youtube.com/watch?v=PpX3pfJc7Cw">냉동고에 쌓아둔 것들, 오늘 다 꺼냅니다 🔥 2주간 냉파 대장정</a> <span style="color:var(--muted)">(lôi hết đồ chất đống trong ngăn đông — hành trình 냉파 2 tuần)</span></td><td>집밥 연진이</td><td class="num">44k</td><td class="num">2026-09-10</td><td class="num">118.3</td></tr>
+      <tr><td class="num">R7</td><td>음식물 쓰레기 줄이기 (giảm rác thải thực phẩm)</td><td><a href="https://www.youtube.com/watch?v=IkaMkOGyLcc">음식물 쓰레기 줄이기 애니메이션(미래에서 온 내 친구)</a> <span style="color:var(--muted)">(hoạt hình giảm rác thải thực phẩm (PSA nhà nước))</span></td><td>의정부시어린이·사회복지급식관리지원센터</td><td class="num">273k</td><td class="num">2022-07-14</td><td class="num">7.4</td></tr>
+      <tr><td class="num">R7</td><td>자취 꿀팁 (mẹo sống một mình)</td><td><a href="https://www.youtube.com/watch?v=3VXQp2vmN48">🔥이건 진짜 매일 씀! 자취 꿀템 3가지</a> <span style="color:var(--muted)">(3 đồ sống một mình dùng mỗi ngày)</span></td><td>살림써봄</td><td class="num">7.7tr</td><td class="num">2025-04-25</td><td class="num">619.3</td></tr>
+      <tr><td class="num">R8</td><td>가을 제철 음식 (món theo mùa thu)</td><td><a href="https://www.youtube.com/watch?v=54EsGzsoB7M">가을 환절기, 몸에 좋은 9월 제철 음식 완벽 정리 #제철음식 #제철채소 #제철수산물 #제철요리</a> <span style="color:var(--muted)">(tổng hợp thực phẩm theo mùa tháng 9 tốt cho sức khoẻ)</span></td><td>오늘의 기준</td><td class="num">49k</td><td class="num">2026-09-01</td><td class="num">81.8</td></tr>
+      <tr><td class="num">R8</td><td>감자 보관법 (cách bảo quản khoai tây)</td><td><a href="https://www.youtube.com/watch?v=8LFCDY5dKo8">30년 감자 농사 시어머님 감자 보관 꿀팁</a> <span style="color:var(--muted)">(mẹo bảo quản khoai tây của mẹ chồng 30 năm trồng khoai)</span></td><td>헤헤홈템</td><td class="num">2.6tr</td><td class="num">2026-07-01</td><td class="num">1,235.8</td></tr>
+      <tr><td class="num">R8</td><td>고구마 보관법 (cách bảo quản khoai lang)</td><td><a href="https://www.youtube.com/watch?v=g9I4IKB6EQo">고구마 신문지에 이것 무조건 넣어 보관하세요! 냉장보관보다 더 신선한 1년 보관비법 #건강정보</a> <span style="color:var(--muted)">(bảo quản khoai lang với giấy báo + "thứ này" — tươi cả năm)</span></td><td>살림노트</td><td class="num">6.1tr</td><td class="num">2025-10-14</td><td class="num">727.8</td></tr>
+      <tr><td class="num">R8</td><td>김치냉장고 정리 (sắp xếp tủ kimchi)</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td>망구미</td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">276.6</td></tr>
+      <tr><td class="num">R8</td><td>냉장고 털기 (dọn sạch tủ lạnh)</td><td><a href="https://www.youtube.com/watch?v=R-MlWoEad8Q">37. 냉장고로 삼시세끼</a> <span style="color:var(--muted)">(ba bữa một ngày từ đồ trong tủ lạnh)</span></td><td>고기남자</td><td class="num">15.6tr</td><td class="num">2024-09-13</td><td class="num">872.3</td></tr>
+      <tr><td class="num">R8</td><td>명절 선물세트 활용 (tận dụng hộp quà lễ)</td><td><a href="https://www.youtube.com/watch?v=N9-qK1bTk1w">❌광고없음❌ 김호영의 추석 선물 추천🎁</a> <span style="color:var(--muted)">(gợi ý quà Trung Thu của 김호영 (không quảng cáo) — intent khác)</span></td><td>투머치 김호영</td><td class="num">744k</td><td class="num">2026-09-18</td><td class="num">3,698.1</td></tr>
+      <tr><td class="num">R8</td><td>밑반찬 만들기 (làm món nhắm dự trữ)</td><td><a href="https://www.youtube.com/watch?v=72rODLH79UE">끓이지 말고 볶아보세요 #황태채볶음 #밑반찬 #레시피</a> <span style="color:var(--muted)">(đừng nấu, hãy xào — món nhắm 황태채 (khô cá tuyết))</span></td><td>쿡톡 (빛 &amp; 소금)</td><td class="num">6tr</td><td class="num">2025-09-27</td><td class="num">684.3</td></tr>
+      <tr><td class="num">R8</td><td>버섯 보관법 (cách bảo quản nấm)</td><td><a href="https://www.youtube.com/watch?v=TaKFcApssnI">느타리버섯 데쳐서 얼리지 마세요 🍄 버섯가게 사장님은 이렇게 보관합니다 #보관법 #꿀팁</a> <span style="color:var(--muted)">(đừng chần nấm 느타리 rồi đông — chủ tiệm nấm bảo quản thế này)</span></td><td>꿀정보샷</td><td class="num">269k</td><td class="num">2026-09-14</td><td class="num">891.9</td></tr>
+      <tr><td class="num">R8</td><td>장보기 리스트 (danh sách đi chợ)</td><td><a href="https://www.youtube.com/watch?v=DNrWG3Mrv2M">장보기 전에 이번 꿀팁을 미리 알았다면 절대 안 샀을 겁니다. 마트에서 파는 소금은 반드시 이걸 확인해야합니다.</a> <span style="color:var(--muted)">(biết mẹo này trước khi đi chợ thì đã không mua — mua muối phải kiểm tra điều này)</span></td><td>먹킷리스트</td><td class="num">3.1tr</td><td class="num">2026-03-24</td><td class="num">695.4</td></tr>
+      <tr><td class="num">R8</td><td>콩나물 보관법 (cách bảo quản giá đỗ)</td><td><a href="https://www.youtube.com/watch?v=OP1-APVBABo">[1분건강] 1년도 거뜬한 콩나물 보관법! #shorts</a> <span style="color:var(--muted)">(cách bảo quản giá đỗ cả năm — clip 1 phút)</span></td><td>바른건강</td><td class="num">876k</td><td class="num">2024-05-27</td><td class="num">42.8</td></tr>
+      <tr><td class="num">R9</td><td>깻잎 보관법 (cách bảo quản lá tía tô)</td><td><a href="https://www.youtube.com/watch?v=1IF7lgXsG9k">깻잎은 쌀때 냉동실에 잔뜩 얼리세요! 1년 내내 보약 반찬됩니다. 맛집도 모르는 비법가루 공개</a> <span style="color:var(--muted)">(đông lạnh lá tía tô khi ăn kèm cơm — món nhắm bổ cả năm)</span></td><td>울아들 _행복을 위한 빛나는 지혜</td><td class="num">1.4tr</td><td class="num">2026-08-31</td><td class="num">2,147.4</td></tr>
+      <tr><td class="num">R9</td><td>떡 보관법 (cách bảo quản bánh gạo)</td><td><a href="https://www.youtube.com/watch?v=QR9cq4Wiz4A">🍡떡 설마 냉장고에 넣는 거 아니죠? ⬇️</a> <span style="color:var(--muted)">(bánh gạo chắc bạn không cho vào tủ lạnh chứ?)</span></td><td>은수네</td><td class="num">4.3tr</td><td class="num">2025-05-12</td><td class="num">352.4</td></tr>
+      <tr><td class="num">R9</td><td>마트 꿀팁 (mẹo hay siêu thị)</td><td><a href="https://www.youtube.com/watch?v=slFVYh2EOJI">"무심코 산 양념이 몸을 망칩니다" 의사들이 마트에서 꼭 확인하는 '명품 양념 구별법 10가지'</a> <span style="color:var(--muted)">(10 cách bác sĩ phân biệt gia vị "hàng xịn" khi đi siêu thị)</span></td><td>백세인생창고</td><td class="num">57k</td><td class="num">2026-09-26</td><td class="num">6,322.5</td></tr>
+      <tr><td class="num">R9</td><td>명절 과일 보관 (bảo quản trái cây sau lễ)</td><td><a href="https://www.youtube.com/watch?v=af92OZrmxis">평생 써먹는' 추석 과일보관' 살림 꿀팁 9가지</a> <span style="color:var(--muted)">(9 mẹo bảo quản trái cây sau Trung Thu dùng cả đời)</span></td><td>살림왕 석서방</td><td class="num">179k</td><td class="num">2026-09-21</td><td class="num">1,336.4</td></tr>
+      <tr><td class="num">R9</td><td>배추 보관법 (cách bảo quản cải thảo)</td><td><a href="https://www.youtube.com/watch?v=Rjfzpzj3bug">절대 모르면 안되는 알배추 레시피</a> <span style="color:var(--muted)">(công thức cải thảo cuộn (알배추) không thể không biết — nhiễu recipe)</span></td><td>1분다이어터 1mindiet</td><td class="num">3.1tr</td><td class="num">2024-06-30</td><td class="num">155.6</td></tr>
+      <tr><td class="num">R9</td><td>생선 보관법 (cách bảo quản cá)</td><td><a href="https://www.youtube.com/watch?v=4xAqyz7bo88">생선구이의 핵심은 이것입니다!창문 닫고 튀겨도 생선냄새1도 없어요</a> <span style="color:var(--muted)">(bí quyết chiên cá không mùi dù đóng cửa sổ)</span></td><td>오늘식탁  - Today Table</td><td class="num">3.5tr</td><td class="num">2025-05-12</td><td class="num">286.5</td></tr>
+      <tr><td class="num">R9</td><td>시금치 보관법 (cách bảo quản rau chân vịt)</td><td><a href="https://www.youtube.com/watch?v=T8snAayrN6c">얼어다?녹았다? 달다~ #시금치#보관법#</a> <span style="color:var(--muted)">(video bảo quản rau chân vịt (VPH thấp — weak copy))</span></td><td>쿡원자 - 요리 구원자 살림이야기</td><td class="num">824k</td><td class="num">2025-01-07</td><td class="num">54.7</td></tr>
+      <tr><td class="num">R9</td><td>애호박 보관법 (cách bảo quản bí ngòi)</td><td><a href="https://www.youtube.com/watch?v=06HsqyeBMGI">애호박은 이렇게 해서 매일 드세요👍👍몸무게 앞자리가 달라졌어요. 건강하고 간단한 애호박 요리 3가지 보관법 강쉪</a> <span style="color:var(--muted)">(3 món bí ngòi ăn mỗi ngày kèm bảo quản — nghiêng recipe)</span></td><td>강쉪</td><td class="num">467k</td><td class="num">2026-07-06</td><td class="num">236.0</td></tr>
+      <tr><td class="num">R9</td><td>양배추 보관법 (cách bảo quản bắp cải)</td><td><a href="https://www.youtube.com/watch?v=y-KmrFOCAWk">양배추와 두부를 이렇게 드세요! 배터지게 먹어도 살빠지는 맛있는 한끼가 완성돼요👍🏻</a> <span style="color:var(--muted)">(cách ăn bắp cải và đậu phụ no mà vẫn giảm cân — nghiêng recipe)</span></td><td>요리하는 장보고 Jangbogo</td><td class="num">2.9tr</td><td class="num">2025-04-15</td><td class="num">226.0</td></tr>
+      <tr><td class="num">R9</td><td>어묵 보관법 (cách bảo quản chả cá)</td><td><a href="https://www.youtube.com/watch?v=wyPm621Q0TE">반찬가게에서 가장 많이 팔림</a> <span style="color:var(--muted)">(món bán chạy nhất tiệm 반찬 — nghiêng recipe)</span></td><td>자취요리신 simple cooking</td><td class="num">7.4tr</td><td class="num">2024-07-07</td><td class="num">380.7</td></tr>
+      <tr><td class="num">R9</td><td>유통기한 지난 식품 (thực phẩm quá hạn dùng)</td><td><a href="https://www.youtube.com/watch?v=5Pc00uuC_r4">유통기한 지났다고 무조건 버리지 마세요! #생활꿀팁 #살림정보</a> <span style="color:var(--muted)">(quá hạn dùng cũng đừng vội vứt — 15 loại vẫn dùng được)</span></td><td>바바라핵팁</td><td class="num">6.6tr</td><td class="num">2026-07-13</td><td class="num">3,641.2</td></tr>
+      <tr><td class="num">R9</td><td>지퍼백 활용 (tận dụng túi zip)</td><td><a href="https://www.youtube.com/watch?v=lMFYNo8in4I">지퍼백을 가위로 자르면 놀라운 일이 생깁니다~ ^^ #봄집사</a> <span style="color:var(--muted)">(cắt túi zip ra thì chuyện bất ngờ xảy ra)</span></td><td>봄집사</td><td class="num">6.2tr</td><td class="num">2023-09-18</td><td class="num">234.9</td></tr>
+      <tr><td class="num">R11</td><td>냉파주부 (nội trợ 냉파 (ăn hết đồ tủ lạnh))</td><td><a href="https://www.youtube.com/watch?v=rcL6LOM7smE">안성재가 평양냉면을 대하는 자세</a> <span style="color:var(--muted)">(chef 안성재 nói về mì lạnh Pyeongyang — nhiễu tên kênh)</span></td><td>셰프 안성재 Chef Sung Anh</td><td class="num">10.3tr</td><td class="num">2025-02-15</td><td class="num">728.6</td></tr>
+      <tr><td class="num">R11</td><td>명절 선물세트 처리 (xử lý hộp quà sau lễ)</td><td><a href="https://www.youtube.com/watch?v=N9-qK1bTk1w">❌광고없음❌ 김호영의 추석 선물 추천🎁</a> <span style="color:var(--muted)">(gợi ý quà Trung Thu của 김호영 (không quảng cáo) — intent khác)</span></td><td>투머치 김호영</td><td class="num">744k</td><td class="num">2026-09-18</td><td class="num">3,696.4</td></tr>
+      <tr><td class="num">R11</td><td>배추 절이기 (ướp muối cải thảo)</td><td><a href="https://www.youtube.com/watch?v=wtaSz6OJadk">가을 배추 절이는 비결, 절대 소금만 넣는 게 아닙니다!</a> <span style="color:var(--muted)">(bí quyết ướp muối cải thảo mùa thu — không chỉ cho muối)</span></td><td>노후꽃길</td><td class="num">227k</td><td class="num">2026-09-22</td><td class="num">2,128.5</td></tr>
+      <tr><td class="num">R11</td><td>서랍형 냉동고 정리 (sắp tủ đông kiểu ngăn kéo)</td><td><a href="https://www.youtube.com/watch?v=0TpiBWRmvb0">엄마도 찐으로 감탄한 냉장고 정리 꿀템 두 가지</a> <span style="color:var(--muted)">(2 món đồ sắp tủ lạnh khiến mẹ cũng phải thán phục)</span></td><td>온더홈</td><td class="num">1.4tr</td><td class="num">2025-07-17</td><td class="num">129.3</td></tr>
+      <tr><td class="num">R11</td><td>유통기한 소비기한 차이 (khác biệt 유통기한·소비기한 (2 loại hạn dùng))</td><td><a href="https://www.youtube.com/watch?v=KEYA3FOBAHE">“유통기한 지나도, 먹어도 되는 식품 15가지” #유통기한 #소비기한 #냉장고정리 #절약팁 #똑똑한소비 #생활정보</a> <span style="color:var(--muted)">(15 thực phẩm quá hạn vẫn ăn được — VPH thấp)</span></td><td>배워서나주자</td><td class="num">56k</td><td class="num">2025-08-03</td><td class="num">5.6</td></tr>
+      <tr><td class="num">R11</td><td>장바구니연구소 (viện nghiên cứu giỏ hàng)</td><td><a href="https://www.youtube.com/watch?v=2aepSRO4RKs">[경제읽기] '전강후약' 코스피…추석 장바구니 물가 비상 / 연합뉴스TV (YonhapnewsTV)</a> <span style="color:var(--muted)">(bản tin giá cả giỏ hàng Trung Thu — Yonhap TV, nhiễu tên)</span></td><td>연합뉴스TV</td><td class="num">21k</td><td class="num">2026-09-23</td><td class="num">245.7</td></tr>
+      <tr><td class="num">R11</td><td>장보기 전 꼭 확인 (kiểm tra trước khi đi chợ)</td><td><a href="https://www.youtube.com/watch?v=DNrWG3Mrv2M">장보기 전에 이번 꿀팁을 미리 알았다면 절대 안 샀을 겁니다. 마트에서 파는 소금은 반드시 이걸 확인해야합니다.</a> <span style="color:var(--muted)">(biết mẹo này trước khi đi chợ thì đã không mua — mua muối phải kiểm tra điều này)</span></td><td>먹킷리스트</td><td class="num">3.1tr</td><td class="num">2026-03-24</td><td class="num">695.4</td></tr>
+      <tr><td class="num">R11</td><td>조미료 보관법 (cách bảo quản gia vị)</td><td><a href="https://www.youtube.com/watch?v=Uz5VQd7zRpM">주부 9단도 틀리는 양념 보관법! 지금 확인하세요 #살림노하우 #주방꿀팁 #양념보관법</a> <span style="color:var(--muted)">(ngay cả nội trợ cửu đẳng cũng sai: cách bảo quản gia vị)</span></td><td>꿀팁쏙쏙</td><td class="num">326k</td><td class="num">2026-09-22</td><td class="num">3,500.5</td></tr>
+      <tr><td class="num">R12</td><td>계란 유통기한 (hạn dùng của trứng)</td><td><a href="https://www.youtube.com/watch?v=KSuvu4rnFDY">지금 냉장고에 이런 계란 있다면 절대! 먹지 마세요!! 독을 먹는 겁니다!! (좋은 계란 고르는 법, 보관 방법, </a> <span style="color:var(--muted)">(trứng thế này trong tủ tuyệt đối đừng ăn — độc)</span></td><td>버미쌤</td><td class="num">577k</td><td class="num">2022-08-01</td><td class="num">15.9</td></tr>
+      <tr><td class="num">R12</td><td>냉장고 청소 (vệ sinh tủ lạnh)</td><td><a href="https://www.youtube.com/watch?v=ZrXZRlIVrgo">냉장고 후면 청소</a> <span style="color:var(--muted)">(vệ sinh mặt sau tủ lạnh)</span></td><td>제주가장(家長)</td><td class="num">7.1tr</td><td class="num">2025-08-05</td><td class="num">705.8</td></tr>
+      <tr><td class="num">R12</td><td>대파 냉동 (đông lạnh hành lá)</td><td><a href="https://www.youtube.com/watch?v=Au7hio6ZSGA">대파 냉장고 한달먹는방법  #대파보관법 #대파저장법 #인기급상승</a> <span style="color:var(--muted)">(cách để hành lá trong tủ dùng cả tháng)</span></td><td>배여사집밥  korean home meal</td><td class="num">1.6tr</td><td class="num">2024-01-24</td><td class="num">69.3</td></tr>
+      <tr><td class="num">R12</td><td>마트에서 확인 (kiểm tra ở siêu thị)</td><td><a href="https://www.youtube.com/watch?v=slFVYh2EOJI">"무심코 산 양념이 몸을 망칩니다" 의사들이 마트에서 꼭 확인하는 '명품 양념 구별법 10가지'</a> <span style="color:var(--muted)">(10 cách bác sĩ phân biệt gia vị "hàng xịn" khi đi siêu thị)</span></td><td>백세인생창고</td><td class="num">57k</td><td class="num">2026-09-26</td><td class="num">6,264.8</td></tr>
+      <tr><td class="num">R12</td><td>명절 남은 전 활용 (tận dụng bánh jeon thừa sau lễ)</td><td><a href="https://www.youtube.com/watch?v=fikJq_YuxLM">맨날 더 없냐고 물어보는 명절전 #추석전 #명절음식</a> <span style="color:var(--muted)">(bánh jeon lễ hội ngon tới mức cứ bị hỏi "còn không")</span></td><td>리니블</td><td class="num">2.5tr</td><td class="num">2025-10-02</td><td class="num">293.6</td></tr>
+      <tr><td class="num">R12</td><td>스팸 활용 (tận dụng thịt hộp 스팸)</td><td><a href="https://www.youtube.com/watch?v=APHvK7_R7oc">밥도둑 류수영 스팸순두부찌개</a> <span style="color:var(--muted)">(canh 순두부 스팸 "hút cơm" của 류수영)</span></td><td>리틀식탁 Little Table</td><td class="num">12.1tr</td><td class="num">2025-05-03</td><td class="num">982.7</td></tr>
+      <tr><td class="num">R12</td><td>조미료통 정리 (sắp xếp hũ gia vị)</td><td><a href="https://www.youtube.com/watch?v=p0DAGuJvgvg">다이소 신상정리템으로 센스있게 정리하기! 정리 활용 꿀팁👍🏻 #살림꿀템 #다이소 #다이소추천템</a> <span style="color:var(--muted)">(sắp xếp đẹp bằng đồ mới Daiso)</span></td><td>블루밍나나 Bloomingnana</td><td class="num">2tr</td><td class="num">2025-10-15</td><td class="num">244.7</td></tr>
+      <tr><td class="num">R12</td><td>참치캔 활용 (tận dụng cá ngừ hộp)</td><td><a href="https://www.youtube.com/watch?v=MWJumz6syok">⭐3210만⭐요즘 난리난 밥도둑 극락 캔참치 레시피</a> <span style="color:var(--muted)">(công thức cá ngừ hộp "thiên đường" đang gây sốt 32tr view)</span></td><td>요레시피</td><td class="num">32.4tr</td><td class="num">2025-10-28</td><td class="num">4,055.1</td></tr>
+    </tbody></table></div>
+  <h3 style="margin:26px 0 10px;font-size:15px">Bảng video theo kết luận (painpoint · title · tên kênh · ngách)</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Mục / kết luận</th><th>Video bằng chứng</th><th>Kênh</th><th>View</th><th>Ngày đăng</th><th>VPH</th><th>Ghi chú</th></tr></thead>
+    <tbody>
+      <tr><td>Ngách &amp; định vị "chống 공구, thực tế"</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td><td>Comment 12.889♥ ca hô "현실적인 소분" trên video 소분 lớn nhất</td></tr>
+      <tr><td>PP1 · chán video bán hộp</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td>망구미</td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">276.6</td><td>Comment "냉동용기 공구"·"박물관" trên video 망구미 4,9tr</td></tr>
+      <tr><td>PP2 · muốn cách thực tế, giọng bình thường</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td><td>Comment 12.889♥ cùng video 푸디젠</td></tr>
+      <tr><td>PP3 · 소분 후 활용 (chia xong nấu gì)</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td>임젊음</td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884.1</td><td>Comment hỏi "어찌 드시는지"·"질기진 않는지" trên 임젊음</td></tr>
+      <tr><td>PP4 · sợ đồ hỏng/đổ thừa</td><td><a href="https://www.youtube.com/watch?v=h_CIhXs9QA8">살림 초보를 위한 식재료 보관법, 손질 / 냉장고 정리 / 식재료 소분 냉장, 냉동 보관법 / How to stor</a> <span style="color:var(--muted)">(cách bảo quản nguyên liệu cho người mới nội trợ — 6,1tr)</span></td><td>꿀주부 Honeyjubu</td><td class="num">6.1tr</td><td class="num">2021-04-28</td><td class="num">128.2</td><td>Comment mốc nấm + "유통기한 언젠지도" trên 꿀주부·망구미</td></tr>
+      <tr><td>PP5 · chi phí 소분 có lời không</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td>임젊음</td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884.1</td><td>Comment "비용은 어느정도"·"대가족 아니면" trên 임젊음·푸디젠</td></tr>
+      <tr><td>PP6 · màng bọc vs vi nhựa</td><td><a href="https://www.youtube.com/watch?v=fFgZ4A69OZI">2인 가구 코스트코 한달치 고기 소분 얼마나 걸릴까? #costco</a> <span style="color:var(--muted)">(nhà 2 người chia nhỏ thịt Costco cả tháng — mất bao lâu?)</span></td><td>임젊음</td><td class="num">2.7tr</td><td class="num">2026-07-28</td><td class="num">1,884.1</td><td>Tranh luận 3.810♥ trên 임젊음 + gidqp_5wAm0</td></tr>
+      <tr><td>PP7 · giấu đáp án sau affiliate</td><td><a href="https://www.youtube.com/watch?v=8LFCDY5dKo8">30년 감자 농사 시어머님 감자 보관 꿀팁</a> <span style="color:var(--muted)">(mẹo bảo quản khoai tây của mẹ chồng 30 năm trồng khoai)</span></td><td>헤헤홈템</td><td class="num">2.6tr</td><td class="num">2026-07-01</td><td class="num">1,235.8</td><td>Comment giận dữ 313♥·185♥·44♥ trên video 감자 헤헤홈템</td></tr>
+      <tr><td>PP8 · viewer tự fact-check</td><td><a href="https://www.youtube.com/watch?v=7DbUrguCZ2w">마트에서 앞면에 적힌 이 글자에 완전히 속았습니다. 장보기 전에 꼭 외워야 하는 꿀팁!</a> <span style="color:var(--muted)">(bị lừa bởi chữ mặt trước bao bì ở siêu thị — phải thuộc trước khi đi chợ)</span></td><td>먹킷리스트</td><td class="num">366k</td><td class="num">2026-08-15</td><td class="num">360.7</td><td>Tố 허위사실유포 trên 먹킷리스트; sửa 소비기한 trên 5Pc00uuC_r4; nông dân sửa trên koSaRJJ_O_A</td></tr>
+      <tr><td>Title 1.1 · 명절 남은 음식</td><td><a href="https://www.youtube.com/watch?v=kje7vhNXvq0">전 미리 부칠 때 밀가루 절대 쓰지 마세요 🥘 하루 지나도 계란옷 안 벗겨지는 반찬가게 비법 (추석 명절 모둠전 미</a> <span style="color:var(--muted)">(chiên 전 trước tuyệt đối đừng dùng bột — bí quyết tiệm 반찬)</span></td><td>꿀정보샷</td><td class="num">350k</td><td class="num">2026-09-18</td><td class="num">1,772.8</td><td>꿀정보샷 1.773 VPH (RW) + OW 제철음식연구소 10,2tr</td></tr>
+      <tr><td>Title 1.2 · 장본 후 보관 12가지</td><td><a href="https://www.youtube.com/watch?v=2Npn0njrxTk">냉장고 속 식재료, 이렇게 하면 더 오래갑니다! 🥬 10가지 보관 꿀팁</a> <span style="color:var(--muted)">(nguyên liệu trong tủ lạnh — làm thế này giữ được lâu hơn, 10 mẹo)</span></td><td>맛있는 인생여행</td><td class="num">56k</td><td class="num">2026-09-24</td><td class="num">1,254.0</td><td>맛있는 인생여행 1.254 VPH (RW 2 ngày) + OW 푸디젠 13,8tr</td></tr>
+      <tr><td>Title 1.3 · 남은 X 버리지 마세요</td><td><a href="https://www.youtube.com/watch?v=a5OhOds5DiE">남은 소주 절대 버리지 마세요 🍶 살림 고수들만 몰래 쓰는 소주 활용 비법 10가지 ✨</a> <span style="color:var(--muted)">(tuyệt đối đừng đổ soju thừa — 10 cách tận dụng)</span></td><td>백세뷰티</td><td class="num">9k</td><td class="num">2026-09-26</td><td class="num">1,486.5</td><td>백세뷰티 1.486 VPH (0,3 ngày) + 득템 465 VPH</td></tr>
+      <tr><td>Title 1.4 · 다이소 꿀템</td><td><a href="https://www.youtube.com/watch?v=qBX1JrUQObU">출시 후 대박 터진 다이소 추천 주방꿀템 9가지</a> <span style="color:var(--muted)">(9 đồ bếp Daiso đáng mua đang cháy hàng)</span></td><td>리뷰팁</td><td class="num">246k</td><td class="num">2026-09-17</td><td class="num">1,098.8</td><td>리뷰팁 1.099 VPH (9 ngày) + OW 4,8tr/5,7tr</td></tr>
+      <tr><td>Title 1.5 · 마트 가기 전 확인</td><td><a href="https://www.youtube.com/watch?v=slFVYh2EOJI">"무심코 산 양념이 몸을 망칩니다" 의사들이 마트에서 꼭 확인하는 '명품 양념 구별법 10가지'</a> <span style="color:var(--muted)">(10 cách bác sĩ phân biệt gia vị "hàng xịn" khi đi siêu thị)</span></td><td>백세인생창고</td><td class="num">57k</td><td class="num">2026-09-26</td><td class="num">6,322.5</td><td>백세인생창고 6.322 VPH (0,4 ngày) + 8 RW khác ≤7 ngày</td></tr>
+      <tr><td>Title 1.6 · 양념 한방에 정리</td><td><a href="https://www.youtube.com/watch?v=Uz5VQd7zRpM">주부 9단도 틀리는 양념 보관법! 지금 확인하세요 #살림노하우 #주방꿀팁 #양념보관법</a> <span style="color:var(--muted)">(ngay cả nội trợ cửu đẳng cũng sai: cách bảo quản gia vị)</span></td><td>꿀팁쏙쏙</td><td class="num">326k</td><td class="num">2026-09-22</td><td class="num">3,500.5</td><td>꿀팁쏙쏙 3.500 VPH (3,9 ngày) + 오늘의기준 202 VPH</td></tr>
+      <tr><td>Title 2.1 · 냉동밥 소분·해동</td><td><a href="https://www.youtube.com/watch?v=T0HYSK4EsGY">밥 냉동보관 꿀팁🍚 맛있게 해동하는 방법까지 알려드릴께요 🙂</a> <span style="color:var(--muted)">(mẹo đông lạnh cơm kèm cách rã đông ngon)</span></td><td>생활작가</td><td class="num">3.2tr</td><td class="num">2023-05-24</td><td class="num">108.1</td><td>생활작가 3,2tr + 맘스테이블 3,1tr + 제철음식연구소 2,1tr; 0 video ≤60 ngày</td></tr>
+      <tr><td>Title 2.2 · 해동법</td><td><a href="https://www.youtube.com/watch?v=pR72bs8pBiY">7. 삼겹살을 가장 완벽하게 해동하는 방법 #shorts</a> <span style="color:var(--muted)">(cách rã đông thịt ba chỉ hoàn hảo nhất — 8,2tr)</span></td><td>은수저</td><td class="num">8.2tr</td><td class="num">2025-03-24</td><td class="num">620.7</td><td>은수저 8,2tr + 집나간아들 1,9tr; 0 video ≤60 ngày</td></tr>
+      <tr><td>Title 2.3 · 김치 보관</td><td><a href="https://www.youtube.com/watch?v=KuaQ6fnsjJM">김치를 저렇게 보관하면 안 되는ㄷ…😅</a> <span style="color:var(--muted)">(đừng bảo quản kimchi theo kiểu đó — 6,6tr)</span></td><td>왜튜브</td><td class="num">6.6tr</td><td class="num">2024-04-01</td><td class="num">303.7</td><td>왜튜브 6,6tr + 살림노트 2,4tr; 0 video ≤60 ngày</td></tr>
+      <tr><td>Title 2.4 · 자취생 보관법</td><td><a href="https://www.youtube.com/watch?v=GCybZPCXIpU">알아두면 좋은 나만의 식재료 보관팁</a> <span style="color:var(--muted)">(mẹo bảo quản nguyên liệu của riêng tôi đáng ghi nhớ)</span></td><td>푸디젠 Foodie Jen</td><td class="num">5.3tr</td><td class="num">2025-08-25</td><td class="num">556.8</td><td>푸디젠 5,3tr + 꿀맛레시피 6,5tr; 0 video ≤60 ngày</td></tr>
+      <tr><td>Title 2.5 · N만원 장본 후 소분</td><td><a href="https://www.youtube.com/watch?v=2LDr3aNLlU8">코스트코 18만원 장보고 소분 정리 쉽게하기</a> <span style="color:var(--muted)">(đi Costco 18만원 rồi chia nhỏ gọn gàng)</span></td><td>최소살리미</td><td class="num">328k</td><td class="num">2026-07-26</td><td class="num">219.8</td><td>최소살리미 220 VPH (62 ngày) + 임젊음 1.884 VPH</td></tr>
+      <tr><td>Title 2.6 · 냉동고기→반찬</td><td><a href="https://www.youtube.com/watch?v=eU6VoHNUTlM">라면만큼 쉬운 레시피</a> <span style="color:var(--muted)">(công thức dễ như nấu mì gói — 18,4tr)</span></td><td>랜덤토랑 Randomtaurant</td><td class="num">18.4tr</td><td class="num">2022-10-28</td><td class="num">537.5</td><td>랜덤토랑 18,4tr OW; comment demand trên 임젊음</td></tr>
+      <tr><td>Title 2.7 · 냉파 대장정</td><td><a href="https://www.youtube.com/watch?v=PpX3pfJc7Cw">냉동고에 쌓아둔 것들, 오늘 다 꺼냅니다 🔥 2주간 냉파 대장정</a> <span style="color:var(--muted)">(lôi hết đồ chất đống trong ngăn đông — hành trình 냉파 2 tuần)</span></td><td>집밥 연진이</td><td class="num">44k</td><td class="num">2026-09-10</td><td class="num">118.3</td><td>집밥 연진이 118 VPH — kênh nhỏ thắng + 3 OW 118–230k</td></tr>
+      <tr><td>Title 2.8 · 냉동 반찬 밀프랩</td><td><a href="https://www.youtube.com/watch?v=gidqp_5wAm0">진짜 냉동실 정리법 #냉동실정리 #냉동실정리법</a> <span style="color:var(--muted)">(cách sắp ngăn đông thật sự — 4,9tr view)</span></td><td>망구미</td><td class="num">4.9tr</td><td class="num">2024-09-16</td><td class="num">276.6</td><td>9 OW từ 8 kênh (망구미 4,9tr); top-9 query 0 video ≤90 ngày</td></tr>
+      <tr><td>Title 2.9 · 스팸·참치캔 활용</td><td><a href="https://www.youtube.com/watch?v=MWJumz6syok">⭐3210만⭐요즘 난리난 밥도둑 극락 캔참치 레시피</a> <span style="color:var(--muted)">(công thức cá ngừ hộp "thiên đường" đang gây sốt 32tr view)</span></td><td>요레시피</td><td class="num">32.4tr</td><td class="num">2025-10-28</td><td class="num">4,055.1</td><td>요레시피 32,4tr + 리틀식탁 12,1tr; 49 OW, 0 video ≤90 ngày</td></tr>
+      <tr><td>Title 2.10 · 서랍형 냉동고 정리</td><td><a href="https://www.youtube.com/watch?v=-ZEpqJ6abRw">냉동실 정리 꿀팁 / 평생 써먹는 정리습관</a> <span style="color:var(--muted)">(mẹo sắp ngăn đông — thói quen dùng cả đời)</span></td><td>심플혜영 TV</td><td class="num">1.4tr</td><td class="num">2023-08-26</td><td class="num">53.3</td><td>심플혜영 1,44tr + 온더홈 1,35tr; 18 OW, 0 video mới</td></tr>
+      <tr><td>Title 3.1 · 명절 남은 음식 sự kiện</td><td><a href="https://www.youtube.com/watch?v=5lvBZrET0Xk">[#편셰프의점메추] 명절 남은 음식의 대반전!🤩 이대로만 만들면 새로운 요리로 뚝딱?!🍽️ㅣKBS방송</a> <span style="color:var(--muted)">(cú lật ngược cho đồ ăn lễ thừa — KBS)</span></td><td>KBS Entertain</td><td class="num">10k</td><td class="num">2026-09-26</td><td class="num">627.5</td><td>KBS 628 VPH (0,7 ngày) + 꿀정보샷 2 video ≥1.430 VPH</td></tr>
+      <tr><td>Title 3.2 · 배추 절이기·김장</td><td><a href="https://www.youtube.com/watch?v=wtaSz6OJadk">가을 배추 절이는 비결, 절대 소금만 넣는 게 아닙니다!</a> <span style="color:var(--muted)">(bí quyết ướp muối cải thảo mùa thu — không chỉ cho muối)</span></td><td>노후꽃길</td><td class="num">227k</td><td class="num">2026-09-22</td><td class="num">2,128.5</td><td>노후꽃길 2.128 VPH (4,5d) + 김대석 셰프TV 2.021 VPH</td></tr>
+      <tr><td>Title 3.3 · 미세플라스틱</td><td><a href="https://www.youtube.com/watch?v=D4wudp8Pn3E">나도 모르게 먹고 있는 미세플라스틱 폭탄 12가지 #미세플라스틱 #건강습관</a> <span style="color:var(--muted)">(12 "quả bom" vi nhựa đang ăn hằng ngày)</span></td><td>건강인생지혜</td><td class="num">67k</td><td class="num">2026-09-24</td><td class="num">1,024.4</td><td>건강인생지혜 1.024 VPH (2,7 ngày) + tranh luận PP6</td></tr>
+      <tr><td>Tên kênh 장본후</td><td><a href="https://www.youtube.com/watch?v=2LDr3aNLlU8">코스트코 18만원 장보고 소분 정리 쉽게하기</a> <span style="color:var(--muted)">(đi Costco 18만원 rồi chia nhỏ gọn gàng)</span></td><td>최소살리미</td><td class="num">328k</td><td class="num">2026-07-26</td><td class="num">219.8</td><td>Khuôn "장본 후 소분" thắng (최소살리미); search video không thấy kênh trùng</td></tr>
+      <tr><td>Tên kênh 알뜰냉장고</td><td><a href="https://www.youtube.com/watch?v=EwQzLTlokWI">월500씩 모으는 워킹맘의 살림 압살법(월화수목 배달0회, 외식 0회)</a> <span style="color:var(--muted)">(bí quyết nội trợ của mẹ đi làm tiết kiệm 500k won/tháng)</span></td><td>뚝딱 살림</td><td class="num">1.3tr</td><td class="num">2026-09-06</td><td class="num">2,618.1</td><td>뚝딱 살림 알뜰 2.618 VPH — góc tiết kiệm có sức hút</td></tr>
+      <tr><td>Tên kênh 소분주부</td><td><a href="https://www.youtube.com/watch?v=0Jbr_v9lWSM">코스트코 식재료 소분법 Costco Food Storage Tips #식재료소분법 #식재료보관법 #음식소분 #코스트</a> <span style="color:var(--muted)">(cách chia nhỏ nguyên liệu Costco — 13,8tr view)</span></td><td>푸디젠 Foodie Jen</td><td class="num">13.8tr</td><td class="num">2024-12-13</td><td class="num">883.4</td><td>소분 là ngách lớn nhất (푸디젠 13,8tr); rủi ro: khoá hẹp phạm vi</td></tr>
+      <tr><td>Tránh 꿀냉장고</td><td><a href="https://www.youtube.com/watch?v=zsOtYi2j3-E">[냉장고를 부탁해] ＂설마 저를 어떻게 하겠어요~?＂ 현빈의 고급 꿀 몰래 가져온 손예진🤣 | 냉장고를 부탁해 88</a> <span style="color:var(--muted)">(clip show "냉장고를 부탁해" (Hãy chăm sóc tủ lạnh) — JTBC)</span></td><td>JTBC Entertainment</td><td class="num">235k</td><td class="num">2026-09-13</td><td class="num">741.7</td><td>Search toàn clip show 냉장고를 부탁해 (JTBC 741 VPH) — đụng brand TV</td></tr>
+      <tr><td>Ngách chết 음식물 쓰레기</td><td><a href="https://www.youtube.com/watch?v=IkaMkOGyLcc">음식물 쓰레기 줄이기 애니메이션(미래에서 온 내 친구)</a> <span style="color:var(--muted)">(hoạt hình giảm rác thải thực phẩm (PSA nhà nước))</span></td><td>의정부시어린이·사회복지급식관리지원센터</td><td class="num">273k</td><td class="num">2022-07-14</td><td class="num">7.4</td><td>Top-9 query toàn PSA chính quyền, VPH 7 — không phải ngách creator</td></tr>
+    </tbody></table></div>
+</section>
+
+<footer>
+  <p><b>Giới hạn &amp; nguồn:</b> Chỉ dùng Writer Room Spy MCP (86 search Data API + comment 21 video, ~768 comment). API search ≠ YouTube search thật và không có search volume. VPH là trọn đời (không phải 48h). Mẫu comment nghiêng video dài (Shorts hầu như không có comment); sóng 2 nghiêng video hot/rage-bait ở cụm 감자. 꿀주부 và một phần kênh có khán giả global → view không phản ánh thuần KR. Kiểm trùng tên kênh chỉ qua search video — kênh chưa đăng video không lộ; cần kiểm handle @ trực tiếp. Không query nào rơi yt-dlp trong run này (missingDate = 0). Trần video nâng 1.300→2.050 theo lệnh JC giữa run; thực thu 2.057 (+7 do lô query cuối) — ghi rõ, không che giấu.</p>
+  <p>File liên quan: <span class="num">writer-room-data/research/strategy/kr-kitchen-tips-KR/20260927-0119/report.md</span> · <span class="num">run.md</span> · <span class="num">round-1..12/</span></p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var btns=[].slice.call(document.querySelectorAll('.filters button'));
+  var cards=[].slice.call(document.querySelectorAll('#titleList .tcard'));
+  function apply(f){
+    btns.forEach(function(b){b.setAttribute('aria-pressed', String(b.dataset.f===f));});
+    cards.forEach(function(c){c.hidden = !(f==='all' || c.dataset.t.split(' ').indexOf(f)>-1);});
+    try{localStorage.setItem('titleFilter',f);}catch(e){}
+  }
+  btns.forEach(function(b){b.addEventListener('click',function(){apply(b.dataset.f);});});
+  var saved='all';
+  try{saved=localStorage.getItem('titleFilter')||'all';}catch(e){}
+  if(!btns.some(function(b){return b.dataset.f===saved;})) saved='all';
+  apply(saved);
+})();
+</script>
