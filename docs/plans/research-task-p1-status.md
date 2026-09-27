@@ -26,6 +26,19 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   resolve → null → 401. `ensure()` heal profile/role drift in-place, giữ
   token, audit-log mỗi correction.
 
+## P2 backend (đang triển khai)
+
+- **Outbox durable** (`research_outbox`): mọi domain event đi cùng transaction
+  vào outbox theo audience — `worker` = wake signal (bind/instruct/resume/
+  pause/cancel/unknown), `operator` = progress feed cho Telegram bridge.
+  `research_outbox_poll`/`research_outbox_ack` (cursor + delivery receipt,
+  ack idempotent, scoped: worker theo profile, operator theo owner). Không
+  push, không LLM poll, không Telegram send — daemon chỉ là source of truth.
+- **Spy quota binding**: `searchCost` = số `search.list` call. `reserve()` gọi
+  `spyQuota()` (wire `spy.quota.remaining('search')`): probe null → fail
+  closed `QUOTA`; remaining < cost → `QUOTA` reject để worker settle partial
+  report. Reservation (task budget) và actual usage (Spy ledger) tách biệt.
+
 ## Hard gate completion (structural/integrity — đã verify)
 
 `research_task_complete` chỉ `completed` khi: mọi round `completed`, không

@@ -14,14 +14,45 @@ const sha = (data: string | Buffer) => createHash('sha256').update(data).digest(
 const asString = (v: unknown, label: string) => typeof v === 'string' && v.trim() ? v.trim() : fail('INVALID', `${label} required`);
 const asInt = (v: unknown, label: string, min = 0) => Number.isSafeInteger(v) && (v as number) >= min ? v as number : fail('INVALID', `${label} must be integer >= ${min}`);
 
+/** Event types mirrored into `research_outbox` per audience.
+ *  worker = wake/assignment signal (claim-waiting Hermes profile);
+ *  operator = progress feed the Telegram bridge drains with receipts. */
+const OUTBOX_AUDIENCE: Record<string, ('worker' | 'operator')[]> = {
+  worker_bound: ['worker', 'operator'],
+  worker_orphaned: ['worker', 'operator'],
+  instruction_queued: ['worker'],
+  running: ['worker', 'operator'], // resume wake — claim itself emits 'claimed'
+  pause_requested: ['worker'],
+  cancel_requested: ['worker'],
+  unknown: ['worker', 'operator'],
+  claimed: ['operator'],
+  round_reserved: ['operator'],
+  round_completed: ['operator'],
+  instruction_applied: ['operator'],
+  paused: ['operator'],
+  cancelled: ['operator'],
+  blocked: ['operator'],
+  failed: ['operator'],
+  completed: ['operator'],
+};
+
 export class ResearchTaskStore {
   readonly db: Database;
   readonly artifactRoot: string;
   /** Source-of-truth lookup for a Spy run (wired to SpyService in the daemon):
    *  returns run status + the video ids it actually produced, or null. */
   private readonly spyRunInfo?: (spyRunId: string) => { status: string; videoIds: string[] } | null;
-  constructor(dbPath: string, artifactRoot: string, opts: { spyRunInfo?: (spyRunId: string) => { status: string; videoIds: string[] } | null } = {}) {
+  /** Real Spy quota probe (wired to `spy.quota.remaining('search')` in the
+   *  daemon). `searchCost` on a round is counted in search.list calls. When the
+   *  dep is wired and returns null the store fails CLOSED — a task must never
+   *  reserve quota it cannot confirm. */
+  private readonly spyQuota?: () => { searchRemaining: number } | null;
+  constructor(dbPath: string, artifactRoot: string, opts: {
+    spyRunInfo?: (spyRunId: string) => { status: string; videoIds: string[] } | null;
+    spyQuota?: () => { searchRemaining: number } | null;
+  } = {}) {
     this.spyRunInfo = opts.spyRunInfo;
+    this.spyQuota = opts.spyQuota;
     mkdirSync(dirname(dbPath), { recursive: true }); mkdirSync(artifactRoot, { recursive: true });
     this.artifactRoot = realpathSync(artifactRoot);
     this.db = new Database(dbPath, { create: true });
@@ -35,6 +66,8 @@ export class ResearchTaskStore {
       CREATE TABLE IF NOT EXISTS research_videos (task_id TEXT NOT NULL, video_id TEXT NOT NULL, spy_run_id TEXT NOT NULL, round_index INTEGER NOT NULL, PRIMARY KEY(task_id,video_id));
       CREATE TABLE IF NOT EXISTS research_spy_runs (task_id TEXT NOT NULL, spy_run_id TEXT NOT NULL, round_index INTEGER NOT NULL, PRIMARY KEY(task_id,spy_run_id));
       CREATE TABLE IF NOT EXISTS research_artifacts (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, round_index INTEGER NOT NULL, type TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, validation_state TEXT NOT NULL, UNIQUE(task_id,path));
+      CREATE TABLE IF NOT EXISTS research_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, audience TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT, receipt TEXT);
+      CREATE INDEX IF NOT EXISTS research_outbox_undelivered ON research_outbox(audience,id) WHERE delivered_at IS NULL;
     `);
   }
   close() { this.db.close(); }
@@ -49,7 +82,52 @@ export class ResearchTaskStore {
   private view(row: any) {
     return { ...row, input: JSON.parse(row.input_json), budget: { maxRounds: row.max_rounds, maxUniqueVideos: row.max_videos, maxSearchCost: row.max_search, spentSearch: row.spent_search, reservedSearch: row.reserved_search, uniqueVideos: (this.db.query('SELECT COUNT(*) n FROM research_videos WHERE task_id=?').get(row.id) as any).n }, leaseExpired: Boolean(row.lease_until && row.lease_until < iso()) };
   }
-  private event(id: string, type: string, payload: unknown) { this.db.query('INSERT INTO research_events(task_id,type,payload_json,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(payload),iso()); }
+  private event(id: string, type: string, payload: unknown) {
+    this.db.query('INSERT INTO research_events(task_id,type,payload_json,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(payload),iso());
+    // Durable outbox (P2): the same transaction also enqueues notifications.
+    // 'worker' audience = wake signal the Hermes worker polls after resume /
+    // assignment; 'operator' audience = Telegram-bridge progress feed. Delivery
+    // is confirmed via outboxAck (receipt) — never pushed, never LLM-polled.
+    for (const audience of OUTBOX_AUDIENCE[type] ?? []) {
+      this.db.query('INSERT INTO research_outbox(task_id,audience,kind,payload_json,created_at) VALUES(?,?,?,?,?)').run(id,audience,type,JSON.stringify(payload),iso());
+    }
+  }
+
+  /** Poll undelivered outbox rows. Worker sees 'worker' rows for tasks queued on
+   *  its profile; operator sees 'operator' rows for tasks it owns. */
+  outboxPoll(actor: Actor, arg: { audience: 'worker' | 'operator'; afterCursor?: number; limit?: number }) {
+    if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
+    const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
+    if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
+    if (audience === 'operator' && actor.role !== 'operator') fail('FORBIDDEN', 'operator audience requires operator token');
+    const limit = Math.min(asInt(arg.limit ?? 100, 'limit'), 500);
+    const cursor = asInt(arg.afterCursor ?? 0, 'afterCursor');
+    const scope = audience === 'worker' ? (actor as { profile?: string }).profile ?? '' : actor.subject;
+    const rows = audience === 'worker'
+      ? this.db.query("SELECT o.id,o.task_id,o.kind,o.payload_json,o.created_at FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='worker' AND o.delivered_at IS NULL AND o.id>? AND t.worker_profile=? ORDER BY o.id LIMIT ?").all(cursor, scope, limit)
+      : this.db.query("SELECT o.id,o.task_id,o.kind,o.payload_json,o.created_at FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='operator' AND o.delivered_at IS NULL AND o.id>? AND t.owner_id=? ORDER BY o.id LIMIT ?").all(cursor, scope, limit);
+    return (rows as any[]).map((r) => ({ cursor: r.id, taskId: r.task_id, kind: r.kind, payload: JSON.parse(r.payload_json), at: r.created_at }));
+  }
+
+  /** Delivery receipt: marks outbox rows ≤ throughCursor as delivered. Replay is
+   *  idempotent — already-delivered rows are skipped, so a Telegram bridge can
+   *  safely retry the same ack window. */
+  outboxAck(actor: Actor, arg: { audience: 'worker' | 'operator'; throughCursor: number; receipt?: string }) {
+    if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
+    const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
+    if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
+    if (audience === 'operator' && actor.role !== 'operator') fail('FORBIDDEN', 'operator audience requires operator token');
+    const through = asInt(arg.throughCursor, 'throughCursor', 1);
+    const receipt = typeof arg.receipt === 'string' && arg.receipt.trim() ? arg.receipt.trim() : null;
+    return this.db.transaction(() => {
+      const scope = audience === 'worker' ? (actor as { profile?: string }).profile ?? '' : actor.subject;
+      const rows = audience === 'worker'
+        ? this.db.query("SELECT o.id FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='worker' AND o.delivered_at IS NULL AND o.id<=? AND t.worker_profile=?").all(through, scope) as any[]
+        : this.db.query("SELECT o.id FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='operator' AND o.delivered_at IS NULL AND o.id<=? AND t.owner_id=?").all(through, scope) as any[];
+      for (const r of rows) this.db.query('UPDATE research_outbox SET delivered_at=?, receipt=? WHERE id=?').run(iso(), receipt, r.id);
+      return { delivered: rows.length, throughCursor: through, receipt };
+    })();
+  }
   private command<T>(id: string, key: string, operation: string, payload: unknown, fn: () => T): T {
     asString(key,'commandId'); const hash = sha(JSON.stringify([operation,payload]));
     return this.db.transaction(() => {
@@ -144,7 +222,12 @@ export class ResearchTaskStore {
   }
   reserve(actor:Actor,id:string,arg:{commandId:string;expectedVersion:number;roundIndex:number;planHash:string;searchCost:number}) {
     if(actor.role!=='worker') fail('FORBIDDEN','worker required');
-    return this.command(id,arg.commandId,'reserve',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);const round=asInt(arg.roundIndex,'roundIndex',1);const cost=asInt(arg.searchCost,'searchCost');if(round!==row.round_index+1||round>row.max_rounds)fail('BUDGET','round cap or sequence exceeded');if(row.spent_search+row.reserved_search+cost>row.max_search)fail('BUDGET','search quota exceeded');if(this.db.query('SELECT 1 FROM research_rounds WHERE task_id=? AND round_index=?').get(id,round))fail('CONFLICT','round exists');this.db.query('INSERT INTO research_rounds VALUES(?,?,?,?,?,?,?,?)').run(id,round,asString(arg.planHash,'planHash'),'reserved',cost,null,iso(),null);
+    return this.command(id,arg.commandId,'reserve',arg,()=>{const row=this.task(id);this.authorize(actor,row,true);const round=asInt(arg.roundIndex,'roundIndex',1);const cost=asInt(arg.searchCost,'searchCost');if(round!==row.round_index+1||round>row.max_rounds)fail('BUDGET','round cap or sequence exceeded');if(row.spent_search+row.reserved_search+cost>row.max_search)fail('BUDGET','search quota exceeded');
+      // Quota binding (P2): the task budget is a reservation ceiling — the REAL
+      // check is Spy source-of-truth remaining units. Probe offline → fail
+      // closed; depleted → reject the round so the worker can settle a partial
+      // report instead of spending quota it does not have.
+      if(this.spyQuota){const q=this.spyQuota()??fail('QUOTA','Spy quota source unavailable (fail closed)');if(q.searchRemaining<cost)fail('QUOTA',`Spy search quota depleted: ${q.searchRemaining} unit(s) left, round needs ${cost}`);}if(this.db.query('SELECT 1 FROM research_rounds WHERE task_id=? AND round_index=?').get(id,round))fail('CONFLICT','round exists');this.db.query('INSERT INTO research_rounds VALUES(?,?,?,?,?,?,?,?)').run(id,round,asString(arg.planHash,'planHash'),'reserved',cost,null,iso(),null);
       const changes:Record<string,unknown>={round_index:round,reserved_search:row.reserved_search+cost};
       const pending=row.pending_command?JSON.parse(row.pending_command) as {commandId:string;instruction:string}:null;
       if(pending)changes.pending_command=null;

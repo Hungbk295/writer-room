@@ -246,6 +246,14 @@ export class McpResearchServer {
           if (!['pause_ack','cancel_ack','block','fail'].includes(action)) throw new ToolInputError('action phải là pause_ack/cancel_ack/block/fail');
           return { outcome: 'applied', task: store.transition(a, taskId(args), { ...mutArgs(args), action, reason: optStr(args, 'reason') }) };
         } },
+      { name: 'research_outbox_poll', role: 'read',
+        description: 'Poll durable outbox rows (worker wake signals / operator progress feed) above a cursor. audience=worker needs a worker token on the task profile; audience=operator needs the owning operator token.',
+        inputSchema: { type: 'object', properties: { audience: { type: 'string', enum: ['worker', 'operator'] }, afterCursor: { type: 'integer' }, limit: { type: 'integer' } }, required: ['audience'] },
+        handler: (a, args) => ({ items: store.outboxPoll(a, { audience: reqStr(args, 'audience') as 'worker' | 'operator', afterCursor: optInt(args, 'afterCursor'), limit: optInt(args, 'limit') }) }) },
+      { name: 'research_outbox_ack', role: 'read',
+        description: 'Delivery receipt: mark outbox rows ≤ throughCursor delivered (idempotent). Same audience scoping as poll.',
+        inputSchema: { type: 'object', properties: { audience: { type: 'string', enum: ['worker', 'operator'] }, throughCursor: { type: 'integer' }, receipt: { type: 'string' } }, required: ['audience', 'throughCursor'] },
+        handler: (a, args) => store.outboxAck(a, { audience: reqStr(args, 'audience') as 'worker' | 'operator', throughCursor: reqInt(args, 'throughCursor'), receipt: optStr(args, 'receipt') }) },
       { name: 'research_task_complete', role: 'worker',
         description: 'Chốt task → completed. Gate: không còn reservation treo, mọi round completed, có ≥1 artifact manifest + 1 report, có ≥1 Spy run ref.',
         inputSchema: { type: 'object', properties: MUTATION_PROPS, required: ['commandId', 'taskId', 'expectedVersion'] },

@@ -246,3 +246,85 @@ test('MCP: token scopes the actor; tools/list and tools/call are both filtered',
     expect(done.task.phase).toBe('completed');
   } finally { store.close(); }
 });
+
+// ── P2: durable outbox (worker wake + operator/Telegram feed) ────────────────
+
+test('outbox: bind wakes worker queue; ack with receipt dedupes; survives reopen', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-outbox-'));
+  const dbPath = join(root, 'task.sqlite');
+  const artRoot = join(root, 'artifacts');
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  try {
+    const task = store.create(owner, { commandId: 'create', taskId: 't1', mode: 'keyword', input: {} });
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    // Worker queue sees the wake row for its profile.
+    const wake = store.outboxPoll(worker, { audience: 'worker' });
+    expect(wake.length).toBe(1);
+    expect(wake[0]!.kind).toBe('worker_bound');
+    expect(wake[0]!.taskId).toBe('t1');
+    // Operator feed sees the same bind event on its own audience cursor.
+    const feed = store.outboxPoll(owner, { audience: 'operator' });
+    expect(feed.some((r) => r.kind === 'worker_bound')).toBe(true);
+    // Cross-audience scoping: a worker cannot poll the operator feed.
+    expect(() => store.outboxPoll(worker, { audience: 'operator' })).toThrow();
+    expect(() => store.outboxPoll(owner, { audience: 'worker' })).toThrow();
+    // Ack with receipt → undelivered set drains; replaying the ack is a no-op.
+    const ack1 = store.outboxAck(worker, { audience: 'worker', throughCursor: wake[0]!.cursor, receipt: 'hermes-wake-1' });
+    expect(ack1.delivered).toBe(1);
+    expect(store.outboxPoll(worker, { audience: 'worker' })).toEqual([]);
+    const ack2 = store.outboxAck(worker, { audience: 'worker', throughCursor: wake[0]!.cursor, receipt: 'hermes-wake-1' });
+    expect(ack2.delivered).toBe(0);
+  } finally { store.close(); }
+  // Crash/restart: undelivered operator rows persist across reopen.
+  const reopened = new ResearchTaskStore(dbPath, artRoot);
+  try {
+    const feed = reopened.outboxPoll(owner, { audience: 'operator' });
+    expect(feed.length).toBeGreaterThan(0);
+    expect(feed[0]!.cursor).toBeGreaterThan(0);
+  } finally { reopened.close(); }
+});
+
+test('outbox: instruct/resume enqueue worker wake rows', () => {
+  const { store, owner, worker, future, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, workerSubject: 'w-1', profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    store.outboxAck(worker, { audience: 'worker', throughCursor: 999_999 }); // drain
+    store.instruct(owner, 't1', { commandId: 'i1', expectedVersion: claimed.version, instruction: 'focus keyword A' });
+    const wake = store.outboxPoll(worker, { audience: 'worker' });
+    expect(wake.map((r) => r.kind)).toEqual(['instruction_queued']);
+  } finally { store.close(); }
+});
+
+// ── P2: real Spy quota binding (fail closed / partial-report path) ───────────
+
+const setupQuota = (quota: { searchRemaining: number } | null) => {
+  const root = mkdtempSync(join(tmpdir(), 'research-quota-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyQuota: () => quota });
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  const task = store.create(owner, { commandId: 'create', taskId: 't1', mode: 'keyword', input: {} });
+  store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+  const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 3_600_000).toISOString() })!;
+  return { store, owner, worker, claimed };
+};
+
+test('quota: reserve fails closed when Spy quota probe unavailable', () => {
+  const { store, worker, claimed } = setupQuota(null);
+  try {
+    expect(() => store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 }))
+      .toThrow(/fail closed/i);
+  } finally { store.close(); }
+});
+
+test('quota: reserve rejects a round exceeding real Spy quota; smaller round still fits', () => {
+  const { store, worker, claimed } = setupQuota({ searchRemaining: 3 });
+  try {
+    expect(() => store.reserve(worker, 't1', { commandId: 'r-big', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 4 }))
+      .toThrow(/quota depleted/i);
+    const ok = store.reserve(worker, 't1', { commandId: 'r-ok', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 3 });
+    expect(ok.budget.reservedSearch).toBe(3);
+  } finally { store.close(); }
+});

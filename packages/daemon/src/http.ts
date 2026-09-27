@@ -615,6 +615,12 @@ export async function createHttpApp(): Promise<HttpApp> {
         return { status: m.status, videoIds: m.videos.map((v) => v.youtubeVideoId) };
       } catch { return null; }
     },
+    // Quota binding (P2): task searchCost units are search.list calls; the
+    // reserve path fails closed when this probe cannot read the real ledger.
+    spyQuota: () => {
+      try { return { searchRemaining: spy.quota.remaining('search') }; }
+      catch { return null; }
+    },
   });
   // Sole writer of config/hermes-actors.json — Hermes P0 provisioning reads the
   // daemon-issued tokens; it must not mint its own credential file.
