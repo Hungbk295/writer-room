@@ -1561,6 +1561,237 @@ export interface SpyLoopSettings {
   };
 }
 
+// ── Spy Dashboard read API (/api/spy/dash/*) + Keyword Run write API ────────
+// Contract: docs/plans/spy-dashboard-api.html (đọc, đã có) +
+// docs/plans/spy-keyword-run-board.html (write, backend đang build).
+// Field do lane backend bổ sung sau (outliers_*, prev_median_views, group_key,
+// videos_found) đều optional — UI phải render an toàn khi thiếu.
+
+export interface DashMeta {
+  topic_id?: string;
+  as_of: string;
+  total?: number;
+  limit?: number;
+  offset?: number;
+  from?: string;
+  to?: string;
+}
+
+export interface DashEnvelope<T> {
+  data: T;
+  meta: DashMeta;
+}
+
+export interface DashTopicRow {
+  topic_id: string;
+  label: string;
+  market: string;
+  language: string;
+  region: string | null;
+  status: string;
+  setup_status: string;
+  channels_active: number;
+  keywords_active: number;
+  videos_tracked: number;
+  inbox_pending: number;
+  last_daily_at: string | null;
+  last_daily_status: string | null;
+  last_weekly_at: string | null;
+  last_weekly_status: string | null;
+}
+
+export type DashKeywordSort =
+  | 'last_median_views'
+  | 'last_n_followed'
+  | 'last_checked_at'
+  | 'added_at'
+  | 'outliers_28d';
+
+export interface DashKeywordRow {
+  term_key: string;
+  display_term: string;
+  status: KeywordStatus;
+  origin: string | null;
+  added_by: string;
+  added_at: string;
+  decided_at: string | null;
+  decided_reason: string | null;
+  last_checked_at: string | null;
+  last_n_results: number | null;
+  last_n_followed: number | null;
+  pct_followed: number | null;
+  last_median_views: number | null;
+  /** Median lần chạy trước (từ keyword_checks) — trend. Backend mới. */
+  prev_median_views?: number | null;
+  channels_discovered: number;
+  /** Số video outlier 7/28 ngày mà keyword này sinh ra. Backend mới. */
+  outliers_7d?: number | null;
+  outliers_28d?: number | null;
+  videos_found?: number | null;
+  /** Ngách nhẹ do người đặt. Backend mới. */
+  group_key?: string | null;
+  evidence?: { n_channels: number | null; sample_video_ids: string[] };
+}
+
+export interface DashVideoRow {
+  video_id: string;
+  url: string;
+  title: string;
+  thumbnail_url: string | null;
+  channel_id: string;
+  channel_title: string | null;
+  channel_status: string | null;
+  published_at: string | null;
+  age_days: number | null;
+  duration_sec: number | null;
+  is_short: boolean | null;
+  latest_views: number | null;
+  latest_likes: number | null;
+  latest_comments: number | null;
+  views_gained_24h: number | null;
+  outlier_score: number | null;
+  is_outlier: boolean | null;
+  launch_spike: boolean | null;
+  source: string;
+  found_by_keyword: string | null;
+  first_seen_at: string;
+  snapshots: number;
+}
+
+export type DashOutlierScope = 'all' | 'followed' | 'external';
+
+export interface DashOutlierRow {
+  video_id: string;
+  title: string;
+  channel_id: string;
+  channel_title: string | null;
+  channel_status: string | null;
+  scope: 'followed' | 'external';
+  published_at: string | null;
+  latest_views: number | null;
+  baseline_median_views: number | null;
+  outlier_score: number | null;
+  found_by_keyword: string | null;
+  channel_in_inbox: boolean;
+}
+
+export interface DashHotRow {
+  rank: number;
+  video_id: string;
+  title: string;
+  channel_id: string;
+  channel_title: string | null;
+  views: number;
+  views_gained: number | null;
+  window_days: number;
+  gained_per_day: number | null;
+  heat: number | null;
+  outlier_score: number | null;
+  age_days: number | null;
+  launch_spike: boolean | null;
+}
+
+export interface DashVideoDayPoint {
+  day: string;
+  views: number;
+  likes: number | null;
+  comments: number | null;
+  views_gained: number | null;
+}
+
+export interface DashQuotaRow {
+  quota_day: string;
+  bucket: string;
+  units: number;
+  calls: number;
+}
+
+export interface DashKeywordCheck {
+  checked_at: string;
+  n_results: number | null;
+  n_followed: number | null;
+  median_views: number | null;
+  run_id?: string | null;
+}
+
+/** GET /dash/keywords/:term_key — detail keyword + lịch sử check + top video. */
+export interface DashKeywordDetail {
+  keyword: DashKeywordRow;
+  checks: DashKeywordCheck[];
+  top_videos: DashVideoRow[];
+}
+
+// ── Keyword Run (ghi — backend lane đang build, gọi đúng chữ ký contract) ──
+
+export type SpyKeywordRunStatus =
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped_quota'
+  | 'cancelled';
+
+export interface SpyKeywordRun {
+  run_id: string;
+  status: SpyKeywordRunStatus;
+  n_keywords: number;
+  keywords_done: number;
+  search_calls_used: number;
+  started_at: string;
+  finished_at: string | null;
+  error?: string | null;
+}
+
+export interface SpyKeywordRunItem {
+  term_key: string;
+  status: 'done' | 'failed' | 'skipped_quota';
+  n_results: number | null;
+  n_followed: number | null;
+  median_views: number | null;
+  outliers_found: number | null;
+  error: string | null;
+}
+
+export interface SpyKeywordRunDetail extends SpyKeywordRun {
+  items: SpyKeywordRunItem[];
+}
+
+export interface SpyKeywordRunRequest {
+  topicId: string;
+  /** Chọn 1 trong 3: danh sách term | group | status active. */
+  termKeys?: string[];
+  group?: string;
+  status?: 'active';
+  publishedAfterDays?: number;
+  maxResults?: number;
+  scanChannelsCap?: number;
+  /** true → chỉ trả plan + quota, không chạy. */
+  dryRun?: boolean;
+}
+
+export interface SpyKeywordRunResponse {
+  /** dryRun=true chỉ trả plan — runId có thể null. */
+  runId: string | null;
+  keywords: string[];
+  estimatedSearchCalls: number;
+  quotaRemaining: number;
+}
+
+export interface SpyKeywordBulkResult {
+  added: number;
+  reactivated: number;
+  skipped: string[];
+}
+
+function dashQuery(params: Record<string, string | number | boolean | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    q.set(key, String(value));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
 function spyVphQuerySuffix(query?: SpyPublicVphQuery): string {
   const params = new URLSearchParams();
   if (query?.window) params.set('window', query.window);
@@ -2223,6 +2454,139 @@ export const api = {
     telegram?: { botToken?: string; chatId?: string; enabled?: boolean };
   }) =>
     request<SpyLoopSettings>('/api/settings/spy-loop', { method: 'PUT', body: JSON.stringify(body) }),
+
+  // ── Spy Dash (đọc, /api/spy/dash/*) ───────────────────────────────────────
+  dashTopics: () => request<DashEnvelope<DashTopicRow[]>>('/api/spy/dash/topics'),
+
+  dashKeywords: (topicId: string, params: {
+    status?: KeywordStatus;
+    origin?: string;
+    q?: string;
+    group?: string;
+    sort?: DashKeywordSort;
+    order?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<DashEnvelope<DashKeywordRow[]>>(`/api/spy/dash/keywords${dashQuery({
+      topic_id: topicId,
+      status: params.status,
+      origin: params.origin,
+      q: params.q,
+      group: params.group,
+      sort: params.sort,
+      order: params.order,
+      limit: params.limit,
+      offset: params.offset,
+    })}`),
+
+  dashKeywordDetail: (topicId: string, termKey: string) =>
+    request<DashEnvelope<DashKeywordDetail>>(
+      `/api/spy/dash/keywords/${encodeURIComponent(termKey)}${dashQuery({ topic_id: topicId })}`,
+    ),
+
+  dashVideos: (topicId: string, params: {
+    channel_id?: string;
+    source?: string;
+    keyword?: string;
+    published_after?: string;
+    min_outlier?: number;
+    min_duration?: number;
+    sort?: 'views_gained_24h' | 'outlier_score' | 'latest_views' | 'published_at' | 'first_seen_at';
+    order?: 'asc' | 'desc';
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<DashEnvelope<DashVideoRow[]>>(`/api/spy/dash/videos${dashQuery({
+      topic_id: topicId,
+      channel_id: params.channel_id,
+      source: params.source,
+      keyword: params.keyword,
+      published_after: params.published_after,
+      min_outlier: params.min_outlier,
+      min_duration: params.min_duration,
+      sort: params.sort,
+      order: params.order,
+      limit: params.limit,
+      offset: params.offset,
+    })}`),
+
+  dashOutliers: (topicId: string, params: {
+    from?: string;
+    to?: string;
+    scope?: DashOutlierScope;
+    min_multiple?: number;
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<DashEnvelope<DashOutlierRow[]>>(`/api/spy/dash/outliers${dashQuery({
+      topic_id: topicId,
+      from: params.from,
+      to: params.to,
+      scope: params.scope,
+      min_multiple: params.min_multiple,
+      keyword: params.keyword,
+      limit: params.limit,
+      offset: params.offset,
+    })}`),
+
+  dashHot: (topicId: string, params: { date?: string; limit?: number; exclude_launch?: boolean } = {}) =>
+    request<DashEnvelope<DashHotRow[]>>(`/api/spy/dash/hot${dashQuery({
+      topic_id: topicId,
+      date: params.date,
+      limit: params.limit,
+      exclude_launch: params.exclude_launch,
+    })}`),
+
+  dashVideoTimeseries: (topicId: string, videoId: string) =>
+    request<DashEnvelope<DashVideoDayPoint[]>>(
+      `/api/spy/dash/videos/${encodeURIComponent(videoId)}/timeseries${dashQuery({ topic_id: topicId })}`,
+    ),
+
+  dashQuota: (params: { from?: string; to?: string; bucket?: string } = {}) =>
+    request<DashEnvelope<DashQuotaRow[]>>(`/api/spy/dash/quota${dashQuery({
+      from: params.from,
+      to: params.to,
+      bucket: params.bucket,
+    })}`),
+
+  /** Alias đọc lịch sử run (cùng dữ liệu /api/spy/keywords/runs). */
+  dashKeywordRuns: (topicId: string) =>
+    request<DashEnvelope<SpyKeywordRun[]>>(`/api/spy/dash/keyword-runs${dashQuery({ topic_id: topicId })}`),
+
+  // ── Keyword Run (ghi — backend lane đang build song song) ────────────────
+  spyKeywordBulkAdd: (body: { topicId: string; terms: string[]; group?: string; activate?: boolean }) =>
+    request<SpyKeywordBulkResult>('/api/spy/keywords/bulk', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  spyKeywordDecide: (body: {
+    topic_id: string;
+    term_keys: string[];
+    to_status: KeywordStatus;
+    reason?: string;
+  }) =>
+    request<{ ok: boolean; updated: number }>('/api/spy/keywords/decide', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** dryRun:true → chỉ plan; 409 run đang chạy; 429 quota thiếu ({error, remaining}). */
+  spyKeywordRun: (body: SpyKeywordRunRequest) =>
+    request<SpyKeywordRunResponse>('/api/spy/keywords/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  spyKeywordRuns: (topicId: string, limit = 20) =>
+    request<DashEnvelope<SpyKeywordRun[]>>(`/api/spy/keywords/runs${dashQuery({ topic_id: topicId, limit })}`),
+
+  spyKeywordRunDetail: (runId: string) =>
+    request<DashEnvelope<SpyKeywordRunDetail> | SpyKeywordRunDetail>(
+      `/api/spy/keywords/runs/${encodeURIComponent(runId)}`,
+    ),
 };
 
 export function formatDuration(sec: number): string {

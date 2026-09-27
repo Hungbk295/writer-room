@@ -26,6 +26,32 @@ export const MOCK_TOPICS: Topic[] = [
     createdAt: '2026-08-20T00:00:00Z',
     updatedAt: '2026-08-20T08:00:00Z',
   },
+  {
+    topicId: 'bay-tra-gop',
+    label: 'Bẫy trả góp',
+    market: 'vi',
+    language: 'vi',
+    status: 'active',
+    ownChannelIds: [],
+    briefMd: 'Ngách bẫy tín dụng / trả góp.',
+    facelessRequired: true,
+    dailySearchBudget: 15,
+    createdAt: '2026-09-01T00:00:00Z',
+    updatedAt: '2026-09-20T08:00:00Z',
+  },
+  {
+    topicId: 'crypto-onchain',
+    label: 'Crypto on-chain',
+    market: 'vi',
+    language: 'vi',
+    status: 'paused',
+    ownChannelIds: [],
+    briefMd: 'Ngách crypto tạm dừng.',
+    facelessRequired: false,
+    dailySearchBudget: 10,
+    createdAt: '2026-09-10T00:00:00Z',
+    updatedAt: '2026-09-24T08:00:00Z',
+  },
 ];
 
 export const MOCK_LOOP_STATUS: LoopStatus = {
