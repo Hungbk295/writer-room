@@ -9,7 +9,7 @@ Mục tiêu: một chỗ xem **MCP nào đang sống**, **tool nào expose**, **
 | MCP server | Mount name (agent) | Status | Discovery | Tools exposed |
 |---|---|---|---|---|
 | Team MCP | `team` | **Live** | `GET /api/team/mcp` | 6 |
-| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 23 / 53 catalog |
+| Spy MCP | `writer_room` | **Live** (cần Spy feature on) | `GET /api/spy/mcp` | 25 / 55 catalog |
 | General Pack MCP | `general_pack` | **Live** (cần Spy feature on) | `GET /api/general-pack/mcp` | 10 |
 | External Writer Library MCP | `(planned)` | **Spec only** — chưa code | planned `/mcp/library` | 0 |
 | Writer Run / Training MCP | — | **Không có** | Writer v2 qua HTTP/UI | — |
@@ -86,6 +86,7 @@ Feature gate: `WRITER_ROOM_SPY_ENABLED=0` tắt cả Spy MCP và General Pack MC
 | `spy_corpus_channels` | (none) | `min_videos`, `min_avg_views`, `limit` |
 | `spy_channel_momentum` | `channel_id` | `window_days` 1–365 |
 | `spy_competitors_list` | `owner_channel_id` **or** `channel_id` | |
+| `spy_news_radar` | (none) | `window_days` 1–30, `min_videos`, `min_channels`, `min_vph`, `max_clusters`, `ignore_terms`, `insight_profile` (đọc `<data>/insight/<profile>.md`). Gom video Channel Watch của kênh đang Follow thành cụm sự kiện, đánh dấu cụm đạt tiêu chí title kiểu 3. 0 quota. Client mẫu: `integrations/hermes/` |
 
 #### Spy Loop (read-only)
 

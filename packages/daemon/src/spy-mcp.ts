@@ -35,6 +35,7 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_corpus_channels',
   'spy_channel_momentum',
   'spy_competitors_list',
+  'spy_news_radar',
   // Spy Loop read tools (P0 — agy-2). Write tools (spy_loop_decide, spy_loop_tick)
   // deliberately excluded: they require scope spy.loop.write which is not in SCOPES.
   'spy_topics_list',
@@ -257,6 +258,18 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       window_days: { type: 'integer', minimum: 1, maximum: 365 },
     },
     required: ['channel_id'],
+  },
+  spy_news_radar: {
+    type: 'object',
+    properties: {
+      window_days: { type: 'integer', minimum: 1, maximum: 30, description: 'Cửa sổ ngày đăng, mặc định 7' },
+      min_videos: { type: 'integer', minimum: 1, maximum: 50, description: 'Số video tối thiểu đạt VPH, mặc định 3' },
+      min_channels: { type: 'integer', minimum: 1, maximum: 50, description: 'Số kênh tối thiểu, mặc định 3' },
+      min_vph: { type: 'integer', minimum: 0, description: 'VPH trọn đời tối thiểu, mặc định 100' },
+      max_clusters: { type: 'integer', minimum: 1, maximum: 30, description: 'Mặc định 10' },
+      ignore_terms: { type: 'array', items: { type: 'string', minLength: 1 }, description: 'Từ đệm riêng của kênh cần bỏ qua khi gom cụm' },
+      insight_profile: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$', description: 'Đọc kèm <data>/insight/<profile>.md (painpoint viewer), vd finance-us' },
+    },
   },
   spy_competitors_list: {
     type: 'object',

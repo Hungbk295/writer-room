@@ -700,6 +700,21 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       handler: (args) => spy.listCompetitors(text(args['owner_channel_id'] ?? args['channel_id'], 'owner_channel_id')),
     }),
     wrap({
+      name: 'spy_news_radar',
+      description: 'Radar sự kiện: gom video mới của các kênh đang Follow (Channel Watch) thành cụm sự kiện, đánh dấu cụm đạt tiêu chí title kiểu 3 (>= min_videos video từ >= min_channels kênh trong window_days ngày, VPH >= min_vph). Có thể kèm insight viewer (painpoint) theo insight_profile. Chỉ đọc dữ liệu đã lưu, 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 120_000,
+      handler: (args) => spy.newsRadar({
+        windowDays: integer(args['window_days'], 7, 1, 30),
+        minVideos: integer(args['min_videos'], 3, 1, 50),
+        minChannels: integer(args['min_channels'], 3, 1, 50),
+        minVph: integer(args['min_vph'], 100, 0, 1_000_000),
+        maxClusters: integer(args['max_clusters'], 10, 1, 30),
+        ignoreTerms: args['ignore_terms'] === undefined ? undefined : stringList(args['ignore_terms'], 'ignore_terms'),
+        insightProfile: args['insight_profile'] === undefined ? undefined : text(args['insight_profile'], 'insight_profile'),
+      }),
+    }),
+    wrap({
       name: 'spy_competitors_update',
       description: 'Thêm/bớt kênh đối thủ theo dõi. follow và unfollow không được trùng nhau.',
       requiredScopes: ['spy.start'],
