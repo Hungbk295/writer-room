@@ -43,6 +43,22 @@ import { AppError } from '../errors.ts';
  */
 let CHARGEABLE_WORK_RUNNING: string | null = null;
 
+/** Chiếm khoá toàn cục trước khi làm việc tiêu quota (tick lẫn keyword run). */
+export function acquireChargeableWork(owner: string): void {
+  if (CHARGEABLE_WORK_RUNNING !== null) {
+    throw new AppError(
+      'invalid_input',
+      `Đang có việc tiêu quota chạy cho '${CHARGEABLE_WORK_RUNNING}'. Chạy tuần tự vì kế toán quota tính bằng hiệu số sổ.`,
+    );
+  }
+  CHARGEABLE_WORK_RUNNING = owner;
+}
+
+/** Trả khoá sau khi việc tiêu quota kết thúc — an toàn khi gọi sai chủ. */
+export function releaseChargeableWork(owner: string): void {
+  if (CHARGEABLE_WORK_RUNNING === owner) CHARGEABLE_WORK_RUNNING = null;
+}
+
 export interface LoopRunnerOptions {
   store: SpyStore;
   quota: QuotaLedger;
