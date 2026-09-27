@@ -80,6 +80,20 @@ export class ResearchTokenRegistry {
     return this.grants.length !== before;
   }
 
+  /** Removes every grant for a subject (any role) with an audit line — used to
+   *  strip the writer identity from the Research surface entirely. The revoked
+   *  token then resolves to null, so Research MCP returns 401 for it. */
+  revokeSubject(subject: string): boolean {
+    const removed = this.grants.filter((g) => g.subject === subject);
+    if (!removed.length) return false;
+    this.grants = this.grants.filter((g) => g.subject !== subject);
+    this.save();
+    for (const g of removed) {
+      console.warn(`[research-mcp] revoked grant: subject=${g.subject} role=${g.role}${g.role === 'worker' ? `/${g.profile}` : ''} (token no longer resolves)`);
+    }
+    return true;
+  }
+
   /** Resolve a Bearer token to an actor; null when the token is unknown. */
   resolve(token: string): Actor | null {
     const grant = this.grants.find((g) => g.token === token);

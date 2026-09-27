@@ -152,15 +152,34 @@ test('token registry: legacy real-dir fixture heals profile/role drift, keeps is
   const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
   expect((healed as { profile?: string }).profile).toBe('research');
   expect(healed.token).toBe('wk-token-bbbbbbbbbbbbbbbb');
-  // wr-writer was provisioned as a worker — the Research surface downgrades it to
-  // read-only viewer, keeping the token.
-  const viewer = registry.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
-  expect(viewer.role).toBe('viewer');
-  expect(viewer.token).toBe('ww-token-cccccccccccccccc');
+  // wr-writer was provisioned as a worker — the Research surface revokes the
+  // grant entirely (leader decision: no Research access for the writer
+  // identity in P1/W1); its token stops resolving.
+  expect(registry.revokeSubject('hermes:wr-writer')).toBe(true);
+  expect(registry.revokeSubject('hermes:wr-writer')).toBe(false); // idempotent
   const reopened = new ResearchTokenRegistry(join(root, 'actors.json'));
   expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
-  expect(reopened.resolve('ww-token-cccccccccccccccc')).toEqual({ role: 'viewer', subject: 'hermes:wr-writer' });
+  expect(reopened.resolve('ww-token-cccccccccccccccc')).toBeNull();
   expect(reopened.resolve('nope')).toBeNull();
+});
+
+test('revoked wr-writer token is 401 on the Research MCP surface', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-mcp-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'));
+  const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  // Simulate a legacy worker grant, then boot-time revocation.
+  registry.ensure({ role: 'worker', subject: 'hermes:wr-writer', profile: 'writer' });
+  const grant = registry.tokenFor('worker', 'hermes:wr-writer')!;
+  registry.revokeSubject('hermes:wr-writer');
+  const server = new McpResearchServer(store, registry);
+  try {
+    const res = await server.handleFetch(new Request('http://x/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${grant}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    }));
+    expect(res.status).toBe(401);
+  } finally { store.close(); }
 });
 
 test('cross-repo: daemon seed queue === Hermes RESEARCH_QUEUE', () => {

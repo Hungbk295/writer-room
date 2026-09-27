@@ -20,11 +20,11 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   theo role; `tools/call` re-check — token lạ 401, sai role `-32602`.
   Actors: `hermes:wr-operator` (operator), `hermes:wr-researcher`
   (worker, profile/queue `research` — canonical `RESEARCH_QUEUE` khớp
-  `../hermes/scripts/wr-runtime.py:55`), `hermes:wr-writer` (viewer — grant chỉ
-  là placeholder để Hermes provision inject token; Research MCP trả catalog
-  RỖNG và store deny cả read: `FORBIDDEN viewer has no Research access`).
-  `ensure()` heal profile/role drift in-place, giữ token, audit-log mỗi
-  correction; `revoke()` riêng.
+  `../hermes/scripts/wr-runtime.py:55`). `hermes:wr-writer` **không có grant**
+  trên Research MCP trong P1/W1 (Writer dùng shared Writer MCP token) — grant
+  legacy (worker/viewer) bị `revokeSubject()` khi boot, có audit log, token
+  resolve → null → 401. `ensure()` heal profile/role drift in-place, giữ
+  token, audit-log mỗi correction.
 
 ## Hard gate completion (structural/integrity — đã verify)
 

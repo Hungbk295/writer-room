@@ -624,11 +624,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // 'research'). bind/claim must use the same string. A legacy registry row
   // with a different profile is healed in place (token kept, audit-logged).
   const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
-  // The Writer profile keeps a grant so Hermes provisioning can inject its
-  // token into wr-writer/.env — but the Research MCP gives a 'viewer' actor an
-  // EMPTY tool catalog and the store denies it even reads. It is a credential
-  // placeholder, not data access.
-  const writerViewer = researchTokens.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
+  // The writer identity has NO Research grant in P1/W1 — Writer work uses the
+  // shared Writer MCP token, not this surface. Any legacy wr-writer grant
+  // (worker or viewer) is revoked on boot, with audit, so its token 401s here.
+  researchTokens.revokeSubject('hermes:wr-writer');
   const researchMcp = new McpResearchServer(researchStore, researchTokens);
   await researchMcp.start();
   writeFileSync(
@@ -638,7 +637,6 @@ export async function createHttpApp(): Promise<HttpApp> {
       actors: [
         { role: 'operator', subject: researchOperator.subject, token: researchOperator.token },
         { role: 'worker', subject: researchWorker.subject, profile: 'research', token: researchWorker.token },
-        { role: 'viewer', subject: writerViewer.subject, token: writerViewer.token },
       ],
     }, null, 2),
     { encoding: 'utf8', mode: 0o600 },
