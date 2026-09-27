@@ -700,6 +700,44 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
       handler: (args) => spy.listCompetitors(text(args['owner_channel_id'] ?? args['channel_id'], 'owner_channel_id')),
     }),
     wrap({
+      name: 'spy_news_pull',
+      description: 'Radar tin tức: lấy các video mới nhất của kênh báo chí/tin tức (không phải Channel Watch), kèm title, ngày đăng và transcript để tóm tắt. Bỏ qua video đã ack ở lần trước. yt-dlp, 0 quota Data API. Có thể mất vài phút.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 400_000,
+      handler: (args) => {
+        const channels = stringList(args['channels'], 'channels');
+        if (channels.length < 1 || channels.length > 10) throw new AppError('invalid_input', 'channels phải có 1..10 phần tử');
+        return spy.news.pull({
+          channels,
+          maxPerChannel: integer(args['max_per_channel'], 5, 1, 20),
+          sinceHours: integer(args['since_hours'], 36, 1, 168),
+          maxTranscriptChars: integer(args['max_transcript_chars'], 12_000, 1_000, 50_000),
+          includeDelivered: args['include_delivered'] === true,
+        });
+      },
+    }),
+    wrap({
+      name: 'spy_news_ack',
+      description: 'Đánh dấu video radar tin tức đã gửi (kèm bản tóm tắt để lưu), để lần spy_news_pull sau không gửi lại.',
+      requiredScopes: ['spy.start'],
+      outputLimitBytes: 16_384,
+      handler: (args) => {
+        const items = args['items'];
+        if (!Array.isArray(items) || items.length < 1 || items.length > 50) {
+          throw new AppError('invalid_input', 'items phải là mảng 1..50 phần tử { video_id, summary? }');
+        }
+        return spy.news.ack(items.map((item) => {
+          if (typeof item !== 'object' || item === null) throw new AppError('invalid_input', 'mỗi item phải là object');
+          const record = item as Record<string, unknown>;
+          const summary = record['summary'];
+          if (summary !== undefined && (typeof summary !== 'string' || summary.length > 8_000)) {
+            throw new AppError('invalid_input', 'summary phải là string ≤ 8000 ký tự');
+          }
+          return { videoId: text(record['video_id'], 'video_id'), summary: summary as string | undefined };
+        }));
+      },
+    }),
+    wrap({
       name: 'spy_competitors_update',
       description: 'Thêm/bớt kênh đối thủ theo dõi. follow và unfollow không được trùng nhau.',
       requiredScopes: ['spy.start'],
