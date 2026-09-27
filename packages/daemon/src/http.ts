@@ -620,10 +620,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // daemon-issued tokens; it must not mint its own credential file.
   const researchTokens = new ResearchTokenRegistry(join(root, 'config', 'hermes-actors.json'));
   const researchOperator = researchTokens.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
-  // Profile = the queue string Hermes uses (dev-1 wr-runtime.py RESEARCH_QUEUE):
-  // 'wr-researcher'. bind/claim must use the same string. A legacy registry row
-  // with profile 'research' is healed in place (token kept, audit-logged).
-  const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher' });
+  // Profile = the queue string Hermes uses (dev-1 RESEARCH_QUEUE, canonical
+  // 'research'). bind/claim must use the same string. A legacy registry row
+  // with a different profile is healed in place (token kept, audit-logged).
+  const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
   // The Writer profile token is read-only on the Research surface (P0: it may
   // observe task state, never claim or settle). Worker grants only for queues
   // a worker may actually run.
@@ -636,7 +636,7 @@ export async function createHttpApp(): Promise<HttpApp> {
       url: `http://127.0.0.1:${daemonPort}/api/research/mcp`,
       actors: [
         { role: 'operator', subject: researchOperator.subject, token: researchOperator.token },
-        { role: 'worker', subject: researchWorker.subject, profile: 'wr-researcher', token: researchWorker.token },
+        { role: 'worker', subject: researchWorker.subject, profile: 'research', token: researchWorker.token },
         { role: 'viewer', subject: writerViewer.subject, token: writerViewer.token },
       ],
     }, null, 2),

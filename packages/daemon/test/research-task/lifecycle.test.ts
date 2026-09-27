@@ -143,14 +143,14 @@ test('token registry: legacy real-dir fixture heals profile/role drift, keeps is
   // Mirrors the actual writer-room-data/config/hermes-actors.json dev-1 provisioned.
   writeFileSync(join(root, 'actors.json'), JSON.stringify({ actors: [
     { role: 'operator', subject: 'hermes:wr-operator', token: 'op-token-aaaaaaaaaaaaaaaa' },
-    { role: 'worker', subject: 'hermes:wr-researcher', profile: 'research', token: 'wk-token-bbbbbbbbbbbbbbbb' },
+    { role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher', token: 'wk-token-bbbbbbbbbbbbbbbb' },
     { role: 'worker', subject: 'hermes:wr-writer', profile: 'writer', token: 'ww-token-cccccccccccccccc' },
   ] }));
   const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
   const op = registry.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
   expect(op.token).toBe('op-token-aaaaaaaaaaaaaaaa');
-  const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher' });
-  expect((healed as { profile?: string }).profile).toBe('wr-researcher');
+  const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect((healed as { profile?: string }).profile).toBe('research');
   expect(healed.token).toBe('wk-token-bbbbbbbbbbbbbbbb');
   // wr-writer was provisioned as a worker — the Research surface downgrades it to
   // read-only viewer, keeping the token.
@@ -158,7 +158,7 @@ test('token registry: legacy real-dir fixture heals profile/role drift, keeps is
   expect(viewer.role).toBe('viewer');
   expect(viewer.token).toBe('ww-token-cccccccccccccccc');
   const reopened = new ResearchTokenRegistry(join(root, 'actors.json'));
-  expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher' });
+  expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
   expect(reopened.resolve('ww-token-cccccccccccccccc')).toEqual({ role: 'viewer', subject: 'hermes:wr-writer' });
   expect(reopened.resolve('nope')).toBeNull();
 });
