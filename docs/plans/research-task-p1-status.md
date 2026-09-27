@@ -51,6 +51,15 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   tạo khi `create`). Worker ghi artifact vào đúng dir đó;
   `research_artifact_register` reject mọi path ngoài task dir (kể cả dir của
   task khác). Worker không tự suy ra root từ env/cwd.
+- **Artifact supersede (recovery)**: file drift sau register → `completeTask`
+  fail `EVIDENCE` + row `stale`. Repair = `research_artifact_register` lại
+  **cùng path** với **commandId MỚI** và `expectedVersion` hiện tại → cập nhật
+  hash in-place, audit event `artifact_superseded` {old→new sha256}, completion
+  unblocked. Replay commandId cũ chỉ trả receipt đã lưu (không re-hash).
+- **Cancel preserved on rebind**: `bind()` trên orphan `cancel_requested`
+  (lease hết hạn) GIỮ phase `cancel_requested`; `claim()` nhặt cả
+  `ready`/`cancel_requested` — worker mới kế thừa pending cancel và phải
+  `cancel_ack`. Cancel không bao giờ tự revert `ready`.
 - **Spy quota binding**: `searchCost` = số `search.list` call. `reserve()` gọi
   `spyQuota()` (wire `spy.quota.remaining('search')`) rồi trừ TỔNG
   `reserved_search` outstanding của mọi task → fail closed khi probe null,
