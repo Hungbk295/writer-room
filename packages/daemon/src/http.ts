@@ -624,9 +624,10 @@ export async function createHttpApp(): Promise<HttpApp> {
   // 'research'). bind/claim must use the same string. A legacy registry row
   // with a different profile is healed in place (token kept, audit-logged).
   const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
-  // The Writer profile token is read-only on the Research surface (P0: it may
-  // observe task state, never claim or settle). Worker grants only for queues
-  // a worker may actually run.
+  // The Writer profile keeps a grant so Hermes provisioning can inject its
+  // token into wr-writer/.env — but the Research MCP gives a 'viewer' actor an
+  // EMPTY tool catalog and the store denies it even reads. It is a credential
+  // placeholder, not data access.
   const writerViewer = researchTokens.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
   const researchMcp = new McpResearchServer(researchStore, researchTokens);
   await researchMcp.start();

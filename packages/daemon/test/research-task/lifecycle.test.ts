@@ -189,11 +189,13 @@ test('MCP: token scopes the actor; tools/list and tools/call are both filtered',
     expect(opTools).not.toContain('research_task_claim');
     expect(wkTools).toContain('research_task_claim');
     expect(wkTools).not.toContain('research_task_create');
-    // Viewer token sees only read tools and cannot reach worker mutations.
+    // Viewer (writer identity) resolves but sees ZERO tools — no data access.
     const vwTools = (await rpc(server, vw.token, 'tools/list')).result.tools.map((t: any) => t.name);
-    expect(vwTools.sort()).toEqual(['research_task_events', 'research_task_get', 'research_task_list']);
-    const vwDenied = await rpc(server, vw.token, 'tools/call', { name: 'research_task_claim', arguments: { commandId: 'x', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 60_000).toISOString() } });
-    expect(vwDenied.error.code).toBe(-32602);
+    expect(vwTools).toEqual([]);
+    for (const name of ['research_task_claim', 'research_task_list', 'research_task_get', 'research_task_events']) {
+      const denied = await rpc(server, vw.token, 'tools/call', { name, arguments: { commandId: 'x', taskId: 't1', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 60_000).toISOString() } });
+      expect(denied.error.code).toBe(-32602);
+    }
     // A worker token calling an operator tool by name is rejected like an unknown tool.
     const denied = await rpc(server, wk.token, 'tools/call', { name: 'research_task_create', arguments: { commandId: 'x', mode: 'k', input: {} } });
     expect(denied.error.code).toBe(-32602);

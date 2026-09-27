@@ -8,11 +8,14 @@
  * filtered by role and every `tools/call` re-checks it, so a worker token can
  * never reach an operator tool even if it knows the name.
  *
- * Operator tools (task lifecycle): create, bind, start, instruct, pause,
- * resume, cancel, mark_unknown, get, list, events.
+ * Operator tools (task lifecycle): create, bind, instruct, pause, resume,
+ * cancel, mark_unknown, get, list, events.
  * Worker tools (bound worker only): claim, heartbeat, reserve, round_complete,
  * artifact_register, ack (pause_ack/cancel_ack/block/fail), complete.
- * Read tools (get/list/events) are available to both roles.
+ * Read tools (get/list/events) are available to operator and worker.
+ * Viewer grants (writer identity) get an EMPTY catalog — the token exists only
+ * so Hermes provisioning can inject it into the writer profile .env; the
+ * Research surface exposes no read or mutation to it.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { McpServerInfo } from '@writer-room/shared';
@@ -279,7 +282,7 @@ export class McpResearchServer {
       case 'ping': return {};
       case 'tools/list':
         return {
-          tools: [...this.tools.values()].filter((t) => t.role === 'read' || t.role === actor.role).map((t) => ({
+          tools: [...this.tools.values()].filter((t) => this.visible(actor, t)).map((t) => ({
             name: t.name, description: t.description, inputSchema: t.inputSchema,
           })),
         };
@@ -292,9 +295,17 @@ export class McpResearchServer {
     }
   }
 
+  // A viewer grant exists only so Hermes provisioning can inject the writer
+  // token — the Research surface exposes NO tools to it (data-ACL: a writer
+  // identity may not even enumerate tasks). 'read' tools are operator/worker.
+  private visible(actor: Actor, tool: ResearchToolDef): boolean {
+    if (actor.role === 'viewer') return false;
+    return tool.role === 'read' || tool.role === actor.role;
+  }
+
   private callTool(actor: Actor, name: string, args: ToolArgs): unknown {
     const tool = this.tools.get(name);
-    if (!tool || (tool.role !== 'read' && tool.role !== actor.role)) {
+    if (!tool || !this.visible(actor, tool)) {
       const err = new Error(`tool not found: ${name}`) as Error & { rpcCode: number };
       err.rpcCode = -32602;
       throw err;
