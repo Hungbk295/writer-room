@@ -2,6 +2,8 @@
 
 Mỗi sáng Hermes gọi Writer Room Spy MCP để lấy video mới của các kênh tin tức, tóm tắt từ transcript, rồi gửi một bản tin lên Telegram.
 
+Kế hoạch tổng thể (kiến trúc, các phase tiếp theo): [`docs/plans/hermes-orchestrator-plan.md`](../../docs/plans/hermes-orchestrator-plan.md).
+
 Luồng này **độc lập** với Channel Watch (luồng kênh faceless daily). Về sau hai nguồn sẽ được ghép với nhau; dữ liệu radar đã được lưu sẵn cho bước đó.
 
 ```
