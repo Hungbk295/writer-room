@@ -328,3 +328,28 @@ test('quota: reserve rejects a round exceeding real Spy quota; smaller round sti
     expect(ok.budget.reservedSearch).toBe(3);
   } finally { store.close(); }
 });
+
+test('quota: outstanding reservations across OTHER tasks count against real Spy remaining', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-quota-agg-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyQuota: () => ({ searchRemaining: 5 }) });
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  const future = () => new Date(Date.now() + 3_600_000).toISOString();
+  try {
+    // Task A reserves 3 of the 5 real units.
+    const a = store.create(owner, { commandId: 'ca', taskId: 'ta', mode: 'keyword', input: {} });
+    store.bind(owner, 'ta', { commandId: 'ba', expectedVersion: a.version, profile: 'research' });
+    const claimA = store.claim(worker, { commandId: 'cla', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    store.reserve(worker, 'ta', { commandId: 'ra', expectedVersion: claimA.version, roundIndex: 1, planHash: 'h', searchCost: 3 });
+    // Task B: 2 free units remain — a 3-call round must be rejected even though
+    // the raw ledger still shows 5.
+    const b = store.create(owner, { commandId: 'cb', taskId: 'tb', mode: 'keyword', input: {} });
+    store.bind(owner, 'tb', { commandId: 'bb', expectedVersion: b.version, profile: 'research' });
+    const claimB = store.claim(worker, { commandId: 'clb', profile: 'research', sessionRef: 's2', leaseUntil: future() })!;
+    expect(claimB.id).toBe('tb');
+    expect(() => store.reserve(worker, 'tb', { commandId: 'rb', expectedVersion: claimB.version, roundIndex: 1, planHash: 'h', searchCost: 3 }))
+      .toThrow(/quota depleted/i);
+    const ok = store.reserve(worker, 'tb', { commandId: 'rb2', expectedVersion: claimB.version, roundIndex: 1, planHash: 'h', searchCost: 2 });
+    expect(ok.budget.reservedSearch).toBe(2);
+  } finally { store.close(); }
+});

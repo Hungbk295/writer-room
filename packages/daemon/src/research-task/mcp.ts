@@ -251,7 +251,7 @@ export class McpResearchServer {
         inputSchema: { type: 'object', properties: { audience: { type: 'string', enum: ['worker', 'operator'] }, afterCursor: { type: 'integer' }, limit: { type: 'integer' } }, required: ['audience'] },
         handler: (a, args) => ({ items: store.outboxPoll(a, { audience: reqStr(args, 'audience') as 'worker' | 'operator', afterCursor: optInt(args, 'afterCursor'), limit: optInt(args, 'limit') }) }) },
       { name: 'research_outbox_ack', role: 'read',
-        description: 'Delivery receipt: mark outbox rows ≤ throughCursor delivered (idempotent). Same audience scoping as poll.',
+        description: 'Delivery receipt: mark outbox rows ≤ throughCursor delivered (idempotent ack; delivery is at-least-once — store the transport message id as receipt BEFORE acking). Same audience scoping as poll.',
         inputSchema: { type: 'object', properties: { audience: { type: 'string', enum: ['worker', 'operator'] }, throughCursor: { type: 'integer' }, receipt: { type: 'string' } }, required: ['audience', 'throughCursor'] },
         handler: (a, args) => store.outboxAck(a, { audience: reqStr(args, 'audience') as 'worker' | 'operator', throughCursor: reqInt(args, 'throughCursor'), receipt: optStr(args, 'receipt') }) },
       { name: 'research_task_complete', role: 'worker',

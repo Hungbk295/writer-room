@@ -41,12 +41,16 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
   vào outbox theo audience — `worker` = wake signal (bind/instruct/resume/
   pause/cancel/unknown), `operator` = progress feed cho Telegram bridge.
   `research_outbox_poll`/`research_outbox_ack` (cursor + delivery receipt,
-  ack idempotent, scoped: worker theo profile, operator theo owner). Không
+  ack idempotent, scoped: worker theo profile, operator theo owner). Delivery
+  **at-least-once**: bridge phải persist transport message-id vào `receipt`
+  TRƯỚC khi ack và chỉ advance cursor sau ack; crash giữa send→ack để row
+  undelivered = "unknown — reconcile theo receipt, không auto-resend". Không
   push, không LLM poll, không Telegram send — daemon chỉ là source of truth.
 - **Spy quota binding**: `searchCost` = số `search.list` call. `reserve()` gọi
-  `spyQuota()` (wire `spy.quota.remaining('search')`): probe null → fail
-  closed `QUOTA`; remaining < cost → `QUOTA` reject để worker settle partial
-  report. Reservation (task budget) và actual usage (Spy ledger) tách biệt.
+  `spyQuota()` (wire `spy.quota.remaining('search')`) rồi trừ TỔNG
+  `reserved_search` outstanding của mọi task → fail closed khi probe null,
+  `QUOTA` khi hết. Giới hạn còn lại: snapshot không chặn non-research Spy
+  calls chen giữa reserve→settle (Spy service tự cưỡng chế lúc call).
 
 ## Hard gate completion (structural/integrity — đã verify)
 

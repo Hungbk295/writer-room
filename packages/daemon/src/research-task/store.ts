@@ -87,7 +87,10 @@ export class ResearchTaskStore {
     // Durable outbox (P2): the same transaction also enqueues notifications.
     // 'worker' audience = wake signal the Hermes worker polls after resume /
     // assignment; 'operator' audience = Telegram-bridge progress feed. Delivery
-    // is confirmed via outboxAck (receipt) — never pushed, never LLM-polled.
+    // is AT LEAST ONCE: the watcher/bridge must persist its transport receipt
+    // via outboxAck and only then advance its cursor — a crash between send
+    // and ack leaves the row undelivered and may produce a duplicate send.
+    // Never pushed, never LLM-polled.
     for (const audience of OUTBOX_AUDIENCE[type] ?? []) {
       this.db.query('INSERT INTO research_outbox(task_id,audience,kind,payload_json,created_at) VALUES(?,?,?,?,?)').run(id,audience,type,JSON.stringify(payload),iso());
     }
@@ -110,8 +113,11 @@ export class ResearchTaskStore {
   }
 
   /** Delivery receipt: marks outbox rows ≤ throughCursor as delivered. Replay is
-   *  idempotent — already-delivered rows are skipped, so a Telegram bridge can
-   *  safely retry the same ack window. */
+   *  idempotent (already-delivered rows are skipped) — but this does NOT make
+   *  end-to-end delivery exactly-once. The bridge should store the transport
+   *  message id in `receipt` BEFORE acking; a row left undelivered after a
+   *  crash means "unknown — reconcile via the transport receipt, do not
+   *  auto-resend". */
   outboxAck(actor: Actor, arg: { audience: 'worker' | 'operator'; throughCursor: number; receipt?: string }) {
     if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
     const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
@@ -227,7 +233,12 @@ export class ResearchTaskStore {
       // check is Spy source-of-truth remaining units. Probe offline → fail
       // closed; depleted → reject the round so the worker can settle a partial
       // report instead of spending quota it does not have.
-      if(this.spyQuota){const q=this.spyQuota()??fail('QUOTA','Spy quota source unavailable (fail closed)');if(q.searchRemaining<cost)fail('QUOTA',`Spy search quota depleted: ${q.searchRemaining} unit(s) left, round needs ${cost}`);}if(this.db.query('SELECT 1 FROM research_rounds WHERE task_id=? AND round_index=?').get(id,round))fail('CONFLICT','round exists');this.db.query('INSERT INTO research_rounds VALUES(?,?,?,?,?,?,?,?)').run(id,round,asString(arg.planHash,'planHash'),'reserved',cost,null,iso(),null);
+      if(this.spyQuota){const q=this.spyQuota()??fail('QUOTA','Spy quota source unavailable (fail closed)');
+        // Aggregate outstanding reservations across ALL tasks — otherwise two
+        // tasks each below the ledger remainder could over-subscribe it.
+        const outstanding=(this.db.query("SELECT COALESCE(SUM(reserved_search),0) s FROM research_tasks").get() as any).s as number;
+        const effective=q.searchRemaining-outstanding;
+        if(effective<cost)fail('QUOTA',`Spy search quota depleted: ${effective} unit(s) free (${q.searchRemaining} remaining − ${outstanding} reserved), round needs ${cost}`);}if(this.db.query('SELECT 1 FROM research_rounds WHERE task_id=? AND round_index=?').get(id,round))fail('CONFLICT','round exists');this.db.query('INSERT INTO research_rounds VALUES(?,?,?,?,?,?,?,?)').run(id,round,asString(arg.planHash,'planHash'),'reserved',cost,null,iso(),null);
       const changes:Record<string,unknown>={round_index:round,reserved_search:row.reserved_search+cost};
       const pending=row.pending_command?JSON.parse(row.pending_command) as {commandId:string;instruction:string}:null;
       if(pending)changes.pending_command=null;
