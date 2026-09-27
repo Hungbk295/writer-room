@@ -18,8 +18,11 @@ Ngày 28/9/2026. Bổ sung cho `hermes-writer-room-runtime-redesign.md` §4/§6-
 - MCP `/api/research/mcp`: Bearer token → actor qua
   `config/hermes-actors.json` (daemon là sole writer, 0600). `tools/list` lọc
   theo role; `tools/call` re-check — token lạ 401, sai role `-32602`.
-  Actors: `hermes:wr-operator`, `hermes:wr-researcher` (wr-researcher),
-  `hermes:wr-writer` (wr-writer).
+  Actors: `hermes:wr-operator` (operator), `hermes:wr-researcher`
+  (worker, profile/queue `wr-researcher` — khớp `RESEARCH_QUEUE` của
+  `../hermes/scripts/wr-runtime.py`), `hermes:wr-writer` (viewer read-only,
+  chỉ get/list/events). `ensure()` heal profile/role drift in-place, giữ
+  token, audit-log mỗi correction; `revoke()` riêng.
 
 ## Hard gate completion (structural/integrity — đã verify)
 
