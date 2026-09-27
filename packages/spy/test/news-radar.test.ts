@@ -1,196 +1,168 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SpyService, spyTools } from '../src/index.ts';
-import { buildNewsRadar, titleTerms, type RadarVideo } from '../src/news-radar.ts';
+import { NewsRadarService, newsChannelVideosUrl, dedupedCaptionText } from '../src/news-radar.ts';
+import type { YoutubePort, YoutubeTranscript, YoutubeVideoObservationInfo } from '../src/adapters/ytdlp.ts';
 
-const NOW = new Date('2026-09-26T12:00:00.000Z');
-const SAMPLED = '2026-09-26T08:00:00.000Z';
+const NOW = new Date('2026-09-27T01:00:00.000Z');
 
-let seq = 0;
-function video(channelId: string, title: string, publishedAt: string, views: number, sampledAt = SAMPLED): RadarVideo {
-  seq += 1;
+interface FakeVideo { id: string; title: string; publishedAt: string; transcript?: YoutubeTranscript }
+
+function info(video: FakeVideo, withMetrics: boolean): YoutubeVideoObservationInfo {
   return {
-    videoId: `vid${String(seq).padStart(8, '0')}`,
-    channelId,
-    channelTitle: `Channel ${channelId}`,
-    title,
-    publishedAt,
-    views,
-    sampledAt,
+    sourceVideoId: video.id, canonicalUrl: `https://www.youtube.com/watch?v=${video.id}`,
+    title: video.title, channelTitle: 'Tài chính Kinh doanh', channelId: null,
+    viewCount: null, likeCount: null, commentCount: null, durationSec: withMetrics ? 240 : null,
+    publishedAt: withMetrics ? video.publishedAt : null,
   };
 }
 
-describe('titleTerms', () => {
-  test('keeps event words and bigrams, drops function and generic words', () => {
-    const terms = titleTerms('The Fed Just Raised Rates — What It Costs You in 2026');
-    expect(terms.has('fed')).toBe(true);
-    expect(terms.has('fed raised')).toBe(true);
-    expect(terms.has('the')).toBe(false);
-    expect(terms.has('2026')).toBe(false);
-    expect(terms.has('just')).toBe(false);
-  });
+function okTranscript(...lines: string[]): YoutubeTranscript {
+  return { status: 'ok', language: 'vi', source: 'auto', segments: lines.map((text, i) => ({ startSec: i, endSec: i + 1, text })) };
+}
 
-  test('keeps numeric tokens such as 7%', () => {
-    expect(titleTerms('Mortgage Rates Hit 7%').has('7%')).toBe(true);
-  });
+function fakeYoutube(videos: FakeVideo[], calls: { list: string[]; inspect: number; fallback: number }, opts: { failList?: boolean } = {}): YoutubePort {
+  const byUrl = new Map(videos.map((video) => [`https://www.youtube.com/watch?v=${video.id}`, video]));
+  return {
+    inspectVideo: async () => { throw new Error('unused'); },
+    listChannel: async () => { throw new Error('unused'); },
+    streamUrl: async () => { throw new Error('unused'); },
+    thumbnail: async () => ({ bytes: new Uint8Array(), mimeType: 'image/jpeg' }),
+    listChannelObservation: async (url, limit) => {
+      calls.list.push(url);
+      if (opts.failList) throw new Error('HTTP Error 429');
+      return videos.slice(0, limit).map((video) => info(video, false));
+    },
+    inspectVideoObservation: async (url) => {
+      calls.inspect += 1;
+      return info(byUrl.get(url)!, true);
+    },
+    fetchTranscript: async (url) => byUrl.get(url)!.transcript ?? { status: 'missing', language: null, source: 'unknown', segments: [] },
+    fetchAutoSubsFallback: async () => {
+      calls.fallback += 1;
+      return { status: 'missing', language: null, source: 'unknown', segments: [] };
+    },
+  };
+}
+
+// Newest first, like the channel /videos tab.
+const VIDEOS: FakeVideo[] = [
+  { id: 'news0000003', title: 'Giá vàng hôm nay tăng mạnh', publishedAt: '2026-09-26T23:00:00.000Z', transcript: okTranscript('Giá vàng SJC tăng 1 triệu đồng.', 'Giá vàng SJC tăng 1 triệu đồng.', 'Nhà đầu tư thận trọng.') },
+  { id: 'news0000002', title: 'Lãi suất tiết kiệm tháng 10', publishedAt: '2026-09-26T10:00:00.000Z' },
+  { id: 'news0000001', title: 'VN-Index vượt 1.300 điểm', publishedAt: '2026-09-26T04:00:00.000Z', transcript: okTranscript('VN-Index tăng 15 điểm.') },
+  { id: 'news0000000', title: 'Tin cũ tuần trước', publishedAt: '2026-09-20T04:00:00.000Z', transcript: okTranscript('Cũ.') },
+];
+
+let root = '';
+afterEach(async () => {
+  if (root) await rm(root, { recursive: true, force: true });
+  root = '';
 });
 
-describe('buildNewsRadar', () => {
-  test('qualifies an event seen on 3 channels with VPH >= 100 and marks a 2-channel topic as emerging', () => {
-    // Published 2026-09-25T08:00Z, sampled 24h later → VPH = views / 24.
-    const at = '2026-09-25T08:00:00.000Z';
-    const radar = buildNewsRadar([
-      video('A', 'BREAKING: The Fed Just Raised Interest Rates', at, 24_000),
-      video('B', 'What Others Won\'t Tell You About The Fed Rate Hike', at, 12_000),
-      video('C', 'The FED Just Created A Big Housing Problem', at, 4_800),
-      video('A', 'Gas Prices Hit a Record High', at, 9_600),
-      video('D', 'Record Gas Prices: Truckers Going Bankrupt', at, 7_200),
-      video('E', 'My Morning Routine', at, 100),
-    ], { now: NOW });
-
-    const fed = radar.clusters.find((cluster) => cluster.terms.includes('fed'));
-    expect(fed?.status).toBe('qualified');
-    expect(fed?.qualifyingChannelCount).toBe(3);
-    expect(fed?.topVph).toBe(1_000);
-    expect(fed?.evidence.at(0)?.url).toStartWith('https://www.youtube.com/watch?v=');
-    expect(fed?.postBy).toBe('2026-09-28T08:00:00.000Z');
-
-    const gas = radar.clusters.find((cluster) => cluster.terms.some((term) => term.includes('gas')));
-    expect(gas?.status).toBe('emerging');
-    expect(radar.clusters.at(0)?.status).toBe('qualified');
-    expect(radar.clusters.some((cluster) => cluster.terms.includes('routine'))).toBe(false);
+describe('newsChannelVideosUrl', () => {
+  test('normalises handles, channel URLs and UC ids to the /videos tab', () => {
+    expect(newsChannelVideosUrl('@TaichinhKinhdoanhTV')).toBe('https://www.youtube.com/@TaichinhKinhdoanhTV/videos');
+    expect(newsChannelVideosUrl('https://www.youtube.com/@TaichinhKinhdoanhTV/videos')).toBe('https://www.youtube.com/@TaichinhKinhdoanhTV/videos');
+    expect(newsChannelVideosUrl('https://m.youtube.com/@TaichinhKinhdoanhTV')).toBe('https://www.youtube.com/@TaichinhKinhdoanhTV/videos');
+    expect(newsChannelVideosUrl(`UC${'a'.repeat(22)}`)).toBe(`https://www.youtube.com/channel/UC${'a'.repeat(22)}/videos`);
   });
 
-  test('a cluster whose videos are below min VPH does not qualify', () => {
-    const at = '2026-09-25T08:00:00.000Z';
-    const radar = buildNewsRadar([
-      video('A', 'Medicare Changes 2027', at, 240),
-      video('B', 'Medicare 2027 Explained', at, 240),
-      video('C', 'Medicare Is Changing', at, 240),
-    ], { now: NOW });
-    const medicare = radar.clusters.find((cluster) => cluster.terms.includes('medicare'));
-    expect(medicare?.status).toBe('emerging');
-    expect(medicare?.qualifyingVideoCount).toBe(0);
-  });
-
-  test('ignores videos older than the window and generic words never form a cluster alone', () => {
-    const radar = buildNewsRadar([
-      video('A', 'Tariffs Are Back', '2026-09-10T00:00:00.000Z', 90_000),
-      video('B', 'Tariffs Explained', '2026-09-10T00:00:00.000Z', 90_000),
-      video('C', 'Tariffs Hit Imports', '2026-09-10T00:00:00.000Z', 90_000),
-      video('A', 'Money Habits', '2026-09-25T08:00:00.000Z', 9_000),
-      video('B', 'Money Rules', '2026-09-25T08:00:00.000Z', 9_000),
-      video('C', 'Money Myths', '2026-09-25T08:00:00.000Z', 9_000),
-    ], { now: NOW });
-    expect(radar.videosInWindow).toBe(3);
-    expect(radar.clusters).toHaveLength(0);
-  });
-
-  test('a headline verb shared by unrelated titles does not form a cluster', () => {
-    const at = '2026-09-25T08:00:00.000Z';
-    const radar = buildNewsRadar([
-      video('A', 'Mortgage Rates Hit 7%', at, 9_600),
-      video('B', 'America Just Hit $40 Trillion', at, 9_600),
-      video('C', 'Gold Hits a New High', at, 9_600),
-    ], { now: NOW });
-    expect(radar.clusters.some((cluster) => cluster.terms.includes('hit') || cluster.terms.includes('hits'))).toBe(false);
-  });
-
-  test('uses the latest sample per video and accepts day-only publish dates', () => {
-    const early = video('A', 'Student Loan Forgiveness Ends', '2026-09-24', 100, '2026-09-24T12:00:00.000Z');
-    const later = { ...early, views: 9_600, sampledAt: '2026-09-26T00:00:00.000Z' };
-    const radar = buildNewsRadar([
-      early,
-      later,
-      video('B', 'Student Loan Payments Restart', '2026-09-24', 9_600, '2026-09-26T00:00:00.000Z'),
-      video('C', 'Student Loan Borrowers Warning', '2026-09-24', 9_600, '2026-09-26T00:00:00.000Z'),
-    ], { now: NOW });
-    const loans = radar.clusters.find((cluster) => cluster.terms.includes('student loan'));
-    expect(loans?.status).toBe('qualified');
-    expect(loans?.videoCount).toBe(3);
-    expect(loans?.evidence.at(0)?.vph).toBe(200);
-    expect(loans?.evidence.at(0)?.publishedAtPrecision).toBe('day');
-  });
-
-  test('ignoreTerms removes channel-specific filler', () => {
-    const at = '2026-09-25T08:00:00.000Z';
-    const titles = ['Median Money: Rent', 'Median Money: Cars', 'Median Money: Food'];
-    const radar = buildNewsRadar(titles.map((title, i) => video(`K${i}`, title, at, 9_600)), {
-      now: NOW,
-      ignoreTerms: ['median'],
-    });
-    expect(radar.clusters).toHaveLength(0);
-  });
-});
-
-describe('SpyService.newsRadar + spy_news_radar MCP tool', () => {
-  let root = '';
-  let spy: SpyService | null = null;
-
-  afterEach(async () => {
-    spy?.store.close();
-    spy = null;
-    if (root) await rm(root, { recursive: true, force: true });
-    root = '';
-  });
-
-  async function seed(): Promise<SpyService> {
-    root = await mkdtemp(join(tmpdir(), 'spy-news-radar-'));
-    const service = new SpyService({ dataRoot: join(root, 'spy') });
-    await service.init();
-    const channels = ['a', 'b', 'c', 'd'].map((letter) => `UC${letter.repeat(22)}`);
-    for (const [index, uc] of channels.entries()) {
-      service.store.upsertChannel({
-        channelId: `youtube:channel:/@ch${index}`, youtubeUcId: uc, handle: `@ch${index}`, title: `Finance ${index}`,
-        subscriberCount: null, videoCount: null, totalViewCount: null, fetchedAt: SAMPLED,
-      });
-      service.followChannel(uc, { cadence: 'daily' });
-      const { run } = service.store.createOrGetPublicObservationRun({
-        watchlistId: 'local-desktop', competitorChannelId: uc, planKind: 'daily', planVersion: 'public-vph-collect/v1',
-        localDate: '2026-09-26', playlistLimit: 30, startedAt: SAMPLED,
-      });
-      service.store.insertPublicVideoStatPoint({
-        observationRunId: run.id, sourceVideoId: `fedvideo00${index}`, youtubeUcId: uc, sampledAt: SAMPLED,
-        viewCount: 12_000, likeCount: null, commentCount: null, durationSec: 700,
-        publishedAt: '2026-09-25T08:00:00.000Z', title: `Fed Rate Hike: what it costs you (${index})`,
-        availability: 'present', viewQuality: 'known', providerUsed: 'ytdlp', inspectUsed: true,
-      });
+  test('rejects anything that is not a YouTube channel, including yt-dlp flags', () => {
+    for (const bad of ['--exec=rm', 'https://evil.example/@x', 'http://www.youtube.com/@abc', 'https://www.youtube.com/watch?v=abc', 'abc']) {
+      expect(() => newsChannelVideosUrl(bad)).toThrow();
     }
-    // Channel d is paused: its points must not count toward the radar.
-    service.pauseChannel(channels.at(3)!, {});
-    return service;
+  });
+});
+
+describe('dedupedCaptionText', () => {
+  test('drops consecutive duplicate caption lines', () => {
+    expect(dedupedCaptionText(okTranscript('a  b', 'a b', 'c').segments)).toBe('a b c');
+  });
+});
+
+describe('NewsRadarService', () => {
+  async function service(videos = VIDEOS, opts: { failList?: boolean } = {}) {
+    root = await mkdtemp(join(tmpdir(), 'news-radar-'));
+    const calls = { list: [] as string[], inspect: 0, fallback: 0 };
+    return { news: new NewsRadarService(root, fakeYoutube(videos, calls, opts)), calls };
   }
 
-  test('reads followed channels only and returns coverage', async () => {
-    spy = await seed();
-    const radar = await spy.newsRadar({ now: NOW });
-    expect(radar.coverage.followedChannels).toBe(3);
-    expect(radar.videosInWindow).toBe(3);
-    const fed = radar.clusters.find((cluster) => cluster.terms.includes('fed'));
-    expect(fed?.status).toBe('qualified');
-    expect(fed?.channelCount).toBe(3);
-    expect(radar.insight).toBeNull();
+  test('pulls new videos inside the window, newest first, with deduplicated transcripts', async () => {
+    const { news, calls } = await service();
+    const result = await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW, maxTranscriptChars: 1_000 });
+    expect(calls.list).toEqual(['https://www.youtube.com/@TaichinhKinhdoanhTV/videos']);
+    expect(result.items.map((item) => item.videoId)).toEqual(['news0000003', 'news0000002', 'news0000001']);
+    expect(result.items.at(0)?.transcript.text).toBe('Giá vàng SJC tăng 1 triệu đồng. Nhà đầu tư thận trọng.');
+    // Missing captions: the fallback is tried and the item is still returned, flagged.
+    expect(result.items.at(1)?.transcript.status).toBe('missing');
+    expect(calls.fallback).toBe(1);
+    // The week-old video stops the scan: no inspect beyond it.
+    expect(calls.inspect).toBe(4);
+    const stored = JSON.parse(await readFile(join(root, 'videos', 'news0000003.json'), 'utf8'));
+    expect(stored.deliveredAt).toBeNull();
   });
 
-  test('attaches the insight profile and rejects unsafe profile names', async () => {
-    spy = await seed();
-    await mkdir(join(root, 'insight'), { recursive: true });
-    await writeFile(join(root, 'insight', 'finance-us.md'), '# Painpoints\nN3-1 Giá thật bị giấu');
-    const radar = await spy.newsRadar({ now: NOW, insightProfile: 'finance-us' });
-    expect(radar.insight?.markdown).toContain('N3-1');
-    await expect(spy.newsRadar({ now: NOW, insightProfile: '../config/spy' })).rejects.toThrow('insight_profile');
-    await expect(spy.newsRadar({ now: NOW, insightProfile: 'missing' })).rejects.toThrow('insight_profile_not_found');
+  test('respects max_per_channel and truncates long transcripts', async () => {
+    const long = [{ ...VIDEOS[0]!, transcript: okTranscript('x'.repeat(5_000)) }];
+    const { news } = await service(long);
+    const result = await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW, maxPerChannel: 1, maxTranscriptChars: 1_000 });
+    expect(result.items).toHaveLength(1);
+    expect(result.items.at(0)?.transcript.truncated).toBe(true);
+    expect(result.items.at(0)?.transcript.text).toHaveLength(1_000);
+    const stored = JSON.parse(await readFile(join(root, 'videos', 'news0000003.json'), 'utf8'));
+    expect(stored.transcript.text).toHaveLength(5_000);
   });
 
-  test('MCP tool requires spy.read and validates arguments', async () => {
-    spy = await seed();
-    const tool = spyTools(spy).find((candidate) => candidate.name === 'spy_news_radar');
-    expect(tool).toBeDefined();
-    await expect(tool!.handler({}, { subject: 't', scopes: new Set() })).rejects.toThrow('spy.read');
-    await expect(tool!.handler({ window_days: 99 }, { subject: 't', scopes: new Set(['spy.read']) })).rejects.toThrow();
-    const result = await tool!.handler({ min_channels: 2 }, { subject: 't', scopes: new Set(['spy.read']) }) as { rule: { minChannels: number } };
-    expect(result.rule.minChannels).toBe(2);
+  test('acked videos are not pulled again unless include_delivered', async () => {
+    const { news } = await service();
+    await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW });
+    const ack = await news.ack([{ videoId: 'news0000003', summary: 'Vàng tăng 1 triệu.' }, { videoId: 'zzzzzzzzzzz' }], NOW);
+    expect(ack).toEqual({ acked: ['news0000003'], missing: ['zzzzzzzzzzz'] });
+
+    const again = await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW });
+    expect(again.items.map((item) => item.videoId)).toEqual(['news0000002', 'news0000001']);
+    expect(again.notes.join(' ')).toContain('đã gửi');
+
+    const replay = await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW, includeDelivered: true });
+    expect(replay.items.at(0)?.summary).toBe('Vàng tăng 1 triệu.');
+    expect(replay.items.at(0)?.deliveredAt).toBe(NOW.toISOString());
+  });
+
+  test('a channel listing error is reported per channel, not thrown', async () => {
+    const { news } = await service(VIDEOS, { failList: true });
+    const result = await news.pull({ channels: ['@TaichinhKinhdoanhTV'], now: NOW });
+    expect(result.items).toHaveLength(0);
+    expect(result.skipped.at(0)?.reason).toContain('429');
+  });
+});
+
+describe('spy_news_pull / spy_news_ack MCP tools', () => {
+  let spy: SpyService | null = null;
+  afterEach(() => {
+    spy?.store.close();
+    spy = null;
+  });
+
+  test('require spy.start and validate arguments', async () => {
+    root = await mkdtemp(join(tmpdir(), 'news-radar-mcp-'));
+    const calls = { list: [] as string[], inspect: 0, fallback: 0 };
+    spy = new SpyService({ dataRoot: join(root, 'spy'), youtube: fakeYoutube(VIDEOS, calls) });
+    await spy.init();
+    const tools = spyTools(spy);
+    const pull = tools.find((tool) => tool.name === 'spy_news_pull')!;
+    const ack = tools.find((tool) => tool.name === 'spy_news_ack')!;
+    const ctx = { subject: 't', scopes: new Set(['spy.start']) };
+
+    await expect(pull.handler({ channels: ['@TaichinhKinhdoanhTV'] }, { subject: 't', scopes: new Set(['spy.read']) })).rejects.toThrow('spy.start');
+    await expect(pull.handler({ channels: [] }, ctx)).rejects.toThrow('channels');
+    await expect(pull.handler({ channels: ['https://evil.example/@x'] }, ctx)).rejects.toThrow();
+
+    const pulled = await pull.handler({ channels: ['@TaichinhKinhdoanhTV'], since_hours: 168 }, ctx) as { items: Array<{ videoId: string }> };
+    expect(pulled.items.length).toBeGreaterThan(0);
+    await expect(ack.handler({ items: [{ video_id: 'bad' }] }, ctx)).rejects.toThrow('video_id');
+    const acked = await ack.handler({ items: [{ video_id: pulled.items.at(0)!.videoId, summary: 'ok' }] }, ctx) as { acked: string[] };
+    expect(acked.acked).toEqual([pulled.items.at(0)!.videoId]);
   });
 });

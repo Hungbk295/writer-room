@@ -1,41 +1,54 @@
-# Hermes × Writer Room: bản tin radar tài chính lên Telegram
+# Hermes × Writer Room: radar tin tức lên Telegram
 
-Hermes gọi Writer Room Spy MCP (`spy_news_radar`) mỗi sáng. Tool này gom video mới của các kênh finance đang follow thành cụm sự kiện và đánh dấu cụm đạt tiêu chí title kiểu 3. Hermes ghép kết quả với painpoint viewer, gợi ý title, rồi gửi bản tin lên Telegram.
+Mỗi sáng Hermes gọi Writer Room Spy MCP để lấy video mới của các kênh tin tức, tóm tắt từ transcript, rồi gửi một bản tin lên Telegram.
+
+Luồng này **độc lập** với Channel Watch (luồng kênh faceless daily). Về sau hai nguồn sẽ được ghép với nhau; dữ liệu radar đã được lưu sẵn cho bước đó.
 
 ```
-Channel Watch (daemon, mỗi ngày)  →  video_stat_points trong spy.sqlite
-                                          │
-Hermes cron 07:30 ── MCP HTTP ──→  spy_news_radar (0 quota, chỉ đọc)
-       │                                  + insight/finance-us.md
-       └─ skill finance-news-radar → viết bản tin → Telegram
+Hermes cron 07:00 (skill news-radar)
+   │ 1. mcp_writer_room_spy_news_pull  {channels: ["@TaichinhKinhdoanhTV"]}
+   ▼
+Writer Room daemon (Spy) ── yt-dlp ──► YouTube
+   │   liệt kê tab /videos → video mới chưa gửi → metadata + transcript (vi)
+   │   lưu <data>/spy/news-radar/videos/<videoId>.json
+   ▼
+Hermes (LLM) tóm tắt từng video + đoạn toàn cảnh
+   │ 2. mcp_writer_room_spy_news_ack  {items: [{video_id, summary}]}
+   ▼
+Telegram (home channel)
 ```
 
 ## 1. Writer Room
 
-1. Chạy daemon: mở app, hoặc `bun run daemon` (cổng mặc định 4187).
-2. Bật Channel Watch và follow các kênh finance với nhịp `daily`: trong app, hoặc `PUT /api/settings/channel-watch` với `{"enabled": true, "dailyHourLocal": "05:00", "timezone": "Asia/Ho_Chi_Minh"}`.
-   Radar chỉ thấy video mà Channel Watch đã thu, nên Channel Watch phải xong **trước** cron của Hermes. Scheduler kiểm tra mỗi giờ một lần và thu tuần tự từng kênh (mỗi kênh tối đa 8 phút), nên hãy chừa khoảng 2 giờ: thu lúc 05:00, gửi bản tin lúc 07:30. Video kênh Mỹ thường đăng vào đêm giờ Việt Nam, nên buổi sáng là lúc dữ liệu mới nhất.
-   Muốn radar thấy tin tức rộng hơn thì follow thêm vài kênh tin (CNBC, WSJ, Bloomberg…) ngoài các kênh đối thủ.
-3. Kiểm tra file insight: `writer-room-data/insight/finance-us.md` (nằm trong thư mục dữ liệu `WRITER_ROOM_DATA_DIR` nếu bạn đổi thư mục dữ liệu).
-4. Lấy token MCP cố định: đặt biến môi trường `WRITER_ROOM_MCP_TOKEN` trước khi chạy daemon, hoặc đọc file `<data>/config/mcp-token.txt`.
+1. Cài `yt-dlp` trên máy (hoặc dùng bản đóng gói trong app). Daemon gọi `yt-dlp` trong `PATH`, hoặc đường dẫn trong biến `WRITER_ROOM_YTDLP_BIN`.
+2. Chạy daemon: mở app, hoặc `bun run daemon` (cổng 4187).
+3. Lấy token MCP cố định: đặt `WRITER_ROOM_MCP_TOKEN` trước khi chạy daemon, hoặc đọc `<data>/config/mcp-token.txt` (thư mục dữ liệu mặc định là `writer-room-data/`).
 
-Kiểm tra nhanh:
+Kiểm tra tool trước khi đụng tới Hermes:
 
 ```bash
 curl -s -X POST http://127.0.0.1:4187/api/spy/mcp \
   -H "Authorization: Bearer $WRITER_ROOM_MCP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spy_news_radar","arguments":{"insight_profile":"finance-us"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spy_news_pull","arguments":{"channels":["@TaichinhKinhdoanhTV"],"max_per_channel":1}}}'
 ```
 
+Kết quả phải có `items[0].title` và `items[0].transcript.text`.
+
 ## 2. Hermes
+
+### 2.1 Token và Telegram
 
 `~/.hermes/.env`:
 
 ```
-WRITER_ROOM_MCP_TOKEN=<token ở bước 1.4>
-TELEGRAM_BOT_TOKEN=...
+WRITER_ROOM_MCP_TOKEN=<token ở bước 1.3>
+TELEGRAM_BOT_TOKEN=<token bot từ @BotFather>
 TELEGRAM_ALLOWED_USERS=<telegram user id của bạn>
 ```
+
+Cách nhanh nhất: `hermes gateway setup` (hoặc nút **Create with QR** ở trang Messaging → Telegram trong dashboard), sau đó chạy `hermes gateway`. Mở chat với bot, gõ `/sethome` để cron gửi tin về đúng chat này.
+
+### 2.2 Nối MCP và skill
 
 `~/.hermes/config.yaml`:
 
@@ -45,44 +58,59 @@ mcp_servers:
     url: "http://127.0.0.1:4187/api/spy/mcp"
     headers:
       Authorization: "Bearer ${WRITER_ROOM_MCP_TOKEN}"
-    # GET trên endpoint này trả JSON discovery, không phải luồng MCP → bỏ probe content-type.
+    # GET trên endpoint này trả JSON discovery, không phải luồng MCP → bỏ bước probe content-type.
     skip_preflight: true
-    timeout: 120
+    # Lấy transcript nhiều video có thể mất vài phút.
+    timeout: 600
     tools:
-      include: [spy_news_radar]
+      include: [spy_news_pull, spy_news_ack]
 
 skills:
   external_dirs:
     - /đường/dẫn/tới/writer-room/integrations/hermes/skills
 ```
 
-Telegram: chạy `hermes gateway setup` (hoặc nút **Create with QR** trong dashboard), rồi `hermes gateway`. Gõ `/sethome` trong chat với bot để cron gửi về đó.
+Tên server `writer_room` quyết định tên tool Hermes thấy: `mcp_writer_room_spy_news_pull` và `mcp_writer_room_spy_news_ack`. Đổi tên server thì phải sửa skill theo.
 
-## 3. Chạy thử và lên lịch
+Khởi động lại Hermes (`hermes gateway restart`) để nhận MCP và skill.
 
-Thử tay trong chat với Hermes (CLI hoặc Telegram):
+### 2.3 Chạy thử
+
+Trong chat với bot (hoặc `hermes` CLI):
 
 ```
-/finance-news-radar
+/news-radar
 ```
 
-Tạo cron:
+Bot phải trả về bản tin gồm "Toàn cảnh" và từng video với gạch đầu dòng. Nếu chạy lại ngay, bot sẽ báo "Không có video mới" vì các video đã được ack.
+
+### 2.4 Lên lịch hằng ngày
 
 ```bash
-hermes cron create "every 1d at 07:30" \
-  "Chạy radar tin tài chính hôm nay và gửi bản tin theo đúng định dạng của skill." \
-  --skill finance-news-radar --name "Finance news radar" --deliver telegram
-hermes cron run "Finance news radar"   # chạy ngay ở tick kế tiếp để kiểm tra
+hermes cron create "every 1d at 07:00" \
+  "Chạy radar tin tức hôm nay và gửi bản tin theo đúng định dạng của skill." \
+  --skill news-radar --name "News radar" --deliver telegram
+
+hermes cron run "News radar"     # chạy ở tick kế tiếp để kiểm tra
+hermes cron list
 ```
 
-Nên pin model đủ mạnh cho job này (`hermes cron edit "Finance news radar" --provider … --model …`), vì chất lượng title phụ thuộc model.
+Nên pin một model đủ mạnh cho job này, vì chất lượng tóm tắt phụ thuộc model: `hermes cron edit "News radar" --provider <provider> --model <model>`.
+
+## Thêm kênh
+
+Sửa mục "Kênh theo dõi" trong `skills/news-radar/SKILL.md` và danh sách `channels` ở bước 1 của skill. Tool nhận `@handle`, `UC…` hoặc URL `youtube.com/@handle`, tối đa 10 kênh mỗi lần gọi.
+
+## Dữ liệu lưu lại
+
+Mỗi video là một file `<data>/spy/news-radar/videos/<videoId>.json`, gồm title, ngày đăng, transcript đầy đủ, thời điểm gửi (`deliveredAt`) và bản tóm tắt Hermes đã gửi. Bước ghép với luồng Channel Watch sau này sẽ đọc từ đây.
 
 ## Lỗi thường gặp
 
-| Hiện tượng | Nguyên nhân |
+| Hiện tượng | Nguyên nhân / cách xử lý |
 | --- | --- |
 | Job ở trạng thái `blocked_config` | Hermes chưa kết nối được `writer_room`: daemon chưa chạy, sai URL, hoặc thiếu `skip_preflight: true` |
 | `401` | Token trong `~/.hermes/.env` khác token daemon đang dùng |
-| Radar rỗng, ghi chú "Chưa follow kênh nào" | Chưa follow kênh trong public watchlist |
-| Nhiều kênh "không có video trong cửa sổ" | Channel Watch chưa bật, hoặc chạy sau giờ cron |
-| `insight_profile_not_found` | Thiếu `insight/finance-us.md` trong thư mục dữ liệu |
+| `skipped` có "liệt kê kênh lỗi … 429" hoặc "Sign in to confirm" | YouTube đang chặn yt-dlp. Chờ rồi chạy lại, hoặc trỏ `WRITER_ROOM_YTDLP_BIN` tới một script bọc `yt-dlp --cookies <file>` |
+| Video có `transcript.status: missing` | Video chưa có phụ đề tự động. Nếu video đăng chưa tới 12 giờ, skill không ack nên lần sau sẽ lấy lại và tóm tắt đầy đủ; video cũ hơn thì chỉ gửi tiêu đề |
+| Tool báo "hết ngân sách thời gian" | Quá nhiều video trong một lần. Giảm `max_per_channel`; video còn lại sẽ được lấy ở lần sau |

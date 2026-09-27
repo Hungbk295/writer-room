@@ -35,7 +35,9 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_corpus_channels',
   'spy_channel_momentum',
   'spy_competitors_list',
-  'spy_news_radar',
+  // News radar: press/news channels digest, independent of Channel Watch.
+  'spy_news_pull',
+  'spy_news_ack',
   // Spy Loop read tools (P0 — agy-2). Write tools (spy_loop_decide, spy_loop_tick)
   // deliberately excluded: they require scope spy.loop.write which is not in SCOPES.
   'spy_topics_list',
@@ -259,17 +261,36 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
     },
     required: ['channel_id'],
   },
-  spy_news_radar: {
+  spy_news_pull: {
     type: 'object',
     properties: {
-      window_days: { type: 'integer', minimum: 1, maximum: 30, description: 'Cửa sổ ngày đăng, mặc định 7' },
-      min_videos: { type: 'integer', minimum: 1, maximum: 50, description: 'Số video tối thiểu đạt VPH, mặc định 3' },
-      min_channels: { type: 'integer', minimum: 1, maximum: 50, description: 'Số kênh tối thiểu, mặc định 3' },
-      min_vph: { type: 'integer', minimum: 0, description: 'VPH trọn đời tối thiểu, mặc định 100' },
-      max_clusters: { type: 'integer', minimum: 1, maximum: 30, description: 'Mặc định 10' },
-      ignore_terms: { type: 'array', items: { type: 'string', minLength: 1 }, description: 'Từ đệm riêng của kênh cần bỏ qua khi gom cụm' },
-      insight_profile: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{0,63}$', description: 'Đọc kèm <data>/insight/<profile>.md (painpoint viewer), vd finance-us' },
+      channels: {
+        type: 'array', minItems: 1, maxItems: 10, items: { type: 'string', minLength: 1 },
+        description: 'Kênh tin tức: @handle, UC id hoặc URL youtube.com/@handle',
+      },
+      max_per_channel: { type: 'integer', minimum: 1, maximum: 20, description: 'Số video mới tối đa mỗi kênh, mặc định 5' },
+      since_hours: { type: 'integer', minimum: 1, maximum: 168, description: 'Chỉ lấy video đăng trong N giờ qua, mặc định 36' },
+      max_transcript_chars: { type: 'integer', minimum: 1000, maximum: 50000, description: 'Cắt transcript trả về, mặc định 12000' },
+      include_delivered: { type: 'boolean', description: 'Lấy cả video đã ack (chạy lại để thử)' },
     },
+    required: ['channels'],
+  },
+  spy_news_ack: {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array', minItems: 1, maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            video_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{11}$' },
+            summary: { type: 'string', maxLength: 8000, description: 'Bản tóm tắt đã gửi, lưu lại để dùng về sau' },
+          },
+          required: ['video_id'],
+        },
+      },
+    },
+    required: ['items'],
   },
   spy_competitors_list: {
     type: 'object',

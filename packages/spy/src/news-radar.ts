@@ -1,263 +1,243 @@
 /**
- * News radar: groups recent videos from followed channels into event clusters
- * and applies the "type 3 / event-driven title" rule:
- *   >= minVideos videos from >= minChannels channels within windowDays, each with VPH >= minVph.
+ * News radar: daily pull of the newest videos from news/press channels, with transcripts,
+ * so an external agent (Hermes) can summarise them and post a digest.
  *
- * Pure and deterministic (no store, no provider) so the rule is testable with fixtures.
- * VPH here is lifetime VPH: views / hours between publish and the sample that measured them.
+ * Independent of Channel Watch (faceless competitors): its own channel list comes from the
+ * caller and its own state lives under `<spy data>/news-radar/videos/<videoId>.json`.
+ * yt-dlp only, no Data API quota. Delivery is at-least-once: a video counts as sent only
+ * after `ack`, so a run that dies before acking re-pulls the same videos next time.
  */
-
-export interface RadarVideo {
-  videoId: string;
-  channelId: string;
-  channelTitle: string | null;
-  title: string;
-  /** ISO datetime, or YYYY-MM-DD when the provider only exposes the upload day. */
-  publishedAt: string;
-  views: number;
-  sampledAt: string;
-}
-
-export interface NewsRadarOptions {
-  now: Date;
-  windowDays?: number;
-  minVideos?: number;
-  minChannels?: number;
-  minVph?: number;
-  maxClusters?: number;
-  maxEvidencePerCluster?: number;
-  /** Extra channel-specific filler words to ignore (lowercase). */
-  ignoreTerms?: string[];
-}
-
-export interface RadarEvidence {
-  videoId: string;
-  url: string;
-  channelId: string;
-  channelTitle: string | null;
-  title: string;
-  publishedAt: string;
-  publishedAtPrecision: 'time' | 'day';
-  ageHours: number;
-  views: number;
-  vph: number;
-}
-
-export interface RadarCluster {
-  clusterId: string;
-  label: string;
-  terms: string[];
-  /** qualified = passes the type-3 rule; emerging = seen on >= 2 channels but not yet enough. */
-  status: 'qualified' | 'emerging';
-  channelCount: number;
-  videoCount: number;
-  qualifyingChannelCount: number;
-  qualifyingVideoCount: number;
-  topVph: number;
-  sumVph: number;
-  firstPublishedAt: string;
-  newestPublishedAt: string;
-  /** Newest video in the cluster + 72h: the type-3 window to publish while the event is hot. */
-  postBy: string;
-  evidence: RadarEvidence[];
-}
-
-export interface NewsRadarResult {
-  generatedAt: string;
-  rule: {
-    windowDays: number;
-    minVideos: number;
-    minChannels: number;
-    minVph: number;
-    vphDefinition: string;
-  };
-  videosInWindow: number;
-  channelsInWindow: number;
-  clusters: RadarCluster[];
-}
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { AppError, asAppError } from './errors.ts';
+import type { YoutubePort, YoutubeTranscript } from './adapters/ytdlp.ts';
 
 const HOUR_MS = 3_600_000;
-const POST_WINDOW_HOURS = 72;
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
-/** Words that never carry an event on their own (EN + VI function words, title filler). */
-const FUNCTION_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'of', 'to', 'in', 'on', 'at', 'for', 'from', 'by', 'with', 'about',
-  'into', 'over', 'after', 'before', 'under', 'up', 'down', 'out', 'off', 'as', 'is', 'are', 'was', 'were', 'be',
-  'been', 'being', 'it', 'its', 'this', 'that', 'these', 'those', 'what', 'why', 'how', 'when', 'who', 'which',
-  'where', 'will', 'would', 'can', 'could', 'should', 'do', 'does', 'did', 'done', 'has', 'have', 'had', 'you',
-  'your', 'yours', 'we', 'our', 'they', 'their', 'them', 'he', 'she', 'his', 'her', 'i', 'me', 'my', 'us', 'not',
-  'no', 'so', 'just', 'now', 'here', 'there', 'than', 'then', 'too', 'very', 'all', 'more', 'most', 'every',
-  'any', 'some', 'only', 'even', 'still', 'really', 'actually', 'finally', 'officially', 'again', 'new', 'next',
-  'get', 'got', 'going', 'gonna', 'make', 'makes', 'need', 'know', 'things', 'thing', 'way', 'ways', 'nobody',
-  'everyone', 'anyone', 'people', 'don', 't', 's', 're', 've', 'll', 'vs', 'ft',
-  'và', 'của', 'là', 'có', 'không', 'những', 'các', 'một', 'cho', 'với', 'này', 'đó', 'khi', 'thì', 'mà', 'để',
-  'được', 'bị', 'đã', 'sẽ', 'đang', 'rất', 'vì', 'sao', 'tại', 'gì', 'bạn', 'tôi', 'mình', 'ai', 'nào',
-]);
-
-/** Domain words too broad to name an event alone; still allowed inside a two-word term. */
-const GENERIC_WORDS = new Set([
-  'money', 'finance', 'financial', 'finances', 'invest', 'investing', 'investment', 'investor', 'investors',
-  'stock', 'stocks', 'market', 'markets', 'economy', 'economic', 'rich', 'wealth', 'wealthy', 'millionaire',
-  'broke', 'budget', 'save', 'saving', 'savings', 'dollar', 'dollars', 'price', 'prices', 'cost', 'costs',
-  'americans', 'american', 'america', 'us', 'usa', 'year', 'years', 'month', 'months', 'week', 'today', 'day',
-  'breaking', 'news', 'update', 'warning', 'huge', 'big', 'massive', 'crazy', 'shocking', 'truth', 'real',
-  'math', 'explained', 'video', 'watch', 'live', 'podcast', 'episode', 'full', 'guide', 'tips', 'mistakes',
-  // Headline verbs/adjectives: they say something moved, not what moved.
-  'hit', 'hits', 'getting', 'gets', 'change', 'changes', 'changing', 'official', 'risk', 'problem', 'problems',
-  'rise', 'rising', 'fall', 'falling', 'drop', 'dropping', 'soaring', 'surge', 'crushed', 'struggling', 'generation',
-  '2024', '2025', '2026', '2027', 'tiền', 'tài', 'chính', 'đầu', 'tư', 'năm', 'tháng',
-]);
-
-function isEligibleWord(word: string, ignore: ReadonlySet<string>): boolean {
-  return !FUNCTION_WORDS.has(word) && !ignore.has(word);
+export interface NewsPullInput {
+  /** `@handle`, `UC…` id, or a youtube.com channel URL. */
+  channels: string[];
+  maxPerChannel?: number;
+  sinceHours?: number;
+  maxTranscriptChars?: number;
+  /** Re-send videos that were already acked (manual re-runs, testing). */
+  includeDelivered?: boolean;
+  /** Wall-clock budget for the whole pull; unfinished videos are reported, not lost. */
+  budgetMs?: number;
+  now?: Date;
+  signal?: AbortSignal;
 }
 
-function tokenize(title: string): string[] {
-  return title.normalize('NFC').toLowerCase().match(/[$]?[\p{L}\p{N}]+(?:[.,]\d+)?%?/gu) ?? [];
+export interface NewsTranscript {
+  status: YoutubeTranscript['status'];
+  language: string | null;
+  source: YoutubeTranscript['source'];
+  text: string;
+  chars: number;
+  truncated: boolean;
+  error?: string;
 }
 
-/** Unigrams (non-generic) and bigrams of neighbours once function words are dropped ("Fed Just Raised" → "fed raised"). */
-export function titleTerms(title: string, ignore: ReadonlySet<string> = new Set()): Set<string> {
-  const words = tokenize(title).filter((word) => isEligibleWord(word, ignore));
-  const terms = new Set<string>();
-  words.forEach((word, i) => {
-    if (!GENERIC_WORDS.has(word) && (word.length >= 3 || /\d/.test(word))) terms.add(word);
-    const next = words.at(i + 1);
-    if (next !== undefined && !(GENERIC_WORDS.has(word) && GENERIC_WORDS.has(next))) terms.add(`${word} ${next}`);
-  });
-  return terms;
+export interface NewsVideoRecord {
+  videoId: string;
+  url: string;
+  channelUrl: string;
+  channelTitle: string | null;
+  title: string | null;
+  publishedAt: string | null;
+  durationSec: number | null;
+  transcript: NewsTranscript;
+  firstPulledAt: string;
+  lastPulledAt: string;
+  deliveredAt: string | null;
+  summary: string | null;
 }
 
-function publishedMs(publishedAt: string): { ms: number; precision: 'time' | 'day' } | null {
-  const precision = /^\d{4}-\d{2}-\d{2}$/.test(publishedAt) ? 'day' : 'time';
-  const ms = Date.parse(precision === 'day' ? `${publishedAt}T00:00:00Z` : publishedAt);
-  return Number.isFinite(ms) ? { ms, precision } : null;
+export interface NewsPullResult {
+  pulledAt: string;
+  sinceHours: number;
+  items: NewsVideoRecord[];
+  skipped: Array<{ channelUrl: string; videoId?: string; reason: string }>;
+  notes: string[];
 }
 
-function toEvidence(video: RadarVideo, now: Date): RadarEvidence | null {
-  const published = publishedMs(video.publishedAt);
-  const sampled = Date.parse(video.sampledAt);
-  if (!published || !Number.isFinite(sampled)) return null;
-  const hoursAtSample = Math.max(1, (sampled - published.ms) / HOUR_MS);
-  return {
-    videoId: video.videoId,
-    url: `https://www.youtube.com/watch?v=${video.videoId}`,
-    channelId: video.channelId,
-    channelTitle: video.channelTitle,
-    title: video.title,
-    publishedAt: video.publishedAt,
-    publishedAtPrecision: published.precision,
-    ageHours: Math.round(Math.max(0, now.getTime() - published.ms) / HOUR_MS),
-    views: video.views,
-    vph: Math.round(video.views / hoursAtSample),
-  };
+export interface NewsAckResult {
+  acked: string[];
+  missing: string[];
 }
 
-function slug(term: string): string {
-  return term.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'cluster';
-}
-
-export function buildNewsRadar(videos: readonly RadarVideo[], options: NewsRadarOptions): NewsRadarResult {
-  const windowDays = options.windowDays ?? 7;
-  const minVideos = options.minVideos ?? 3;
-  const minChannels = options.minChannels ?? 3;
-  const minVph = options.minVph ?? 100;
-  const maxClusters = options.maxClusters ?? 10;
-  const maxEvidence = options.maxEvidencePerCluster ?? 8;
-  const ignore = new Set((options.ignoreTerms ?? []).map((term) => term.toLowerCase()));
-  const windowStart = options.now.getTime() - windowDays * 24 * HOUR_MS;
-
-  // Latest sample per video wins; one video can appear across several observation runs.
-  const latestById = new Map<string, RadarVideo>();
-  for (const video of videos) {
-    const current = latestById.get(video.videoId);
-    if (!current || video.sampledAt > current.sampledAt) latestById.set(video.videoId, video);
+/** Builds the `/videos` tab URL ourselves so caller input never reaches yt-dlp verbatim. */
+export function newsChannelVideosUrl(input: string): string {
+  const value = input.trim();
+  const handle = /^@([A-Za-z0-9._-]{3,100})$/.exec(value);
+  if (handle) return `https://www.youtube.com/@${handle[1]}/videos`;
+  if (/^UC[A-Za-z0-9_-]{22}$/.test(value)) return `https://www.youtube.com/channel/${value}/videos`;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new AppError('invalid_input', `channel không hợp lệ: ${value.slice(0, 80)}`);
   }
-  const pool: RadarEvidence[] = [];
-  for (const video of latestById.values()) {
-    const published = publishedMs(video.publishedAt);
-    if (!published || published.ms < windowStart) continue;
-    const evidence = toEvidence(video, options.now);
-    if (evidence) pool.push(evidence);
+  if (url.protocol !== 'https:' || !/^(www\.|m\.)?youtube\.com$/.test(url.hostname)) {
+    throw new AppError('invalid_input', 'channel phải là @handle, UC id hoặc URL youtube.com');
   }
+  const path = /^\/(@[A-Za-z0-9._-]{3,100}|channel\/UC[A-Za-z0-9_-]{22})(\/videos)?\/?$/.exec(url.pathname);
+  if (!path) throw new AppError('invalid_input', 'URL kênh phải có dạng youtube.com/@handle hoặc youtube.com/channel/UC…');
+  return `https://www.youtube.com/${path[1]}/videos`;
+}
 
-  const termIndex = new Map<string, Set<number>>();
-  pool.forEach((video, index) => {
-    for (const term of titleTerms(video.title, ignore)) {
-      const bucket = termIndex.get(term) ?? new Set<number>();
-      bucket.add(index);
-      termIndex.set(term, bucket);
+/** Auto captions roll up the screen and repeat lines; keep each line once. */
+export function dedupedCaptionText(segments: YoutubeTranscript['segments']): string {
+  const lines: string[] = [];
+  for (const segment of segments) {
+    const line = segment.text.replace(/\s+/g, ' ').trim();
+    if (line && line !== lines.at(-1)) lines.push(line);
+  }
+  return lines.join(' ');
+}
+
+/** Day-only dates (no upload timestamp) count until the end of that day, so they are not dropped early. */
+function publishedMs(publishedAt: string | null): number | null {
+  if (!publishedAt) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(publishedAt)) return Date.parse(`${publishedAt}T23:59:59Z`);
+  const ms = Date.parse(publishedAt);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export class NewsRadarService {
+  constructor(
+    private readonly root: string,
+    private readonly youtube: YoutubePort,
+  ) {}
+
+  async pull(input: NewsPullInput): Promise<NewsPullResult> {
+    if (!this.youtube.listChannelObservation || !this.youtube.inspectVideoObservation) {
+      throw new AppError('capability_missing', 'yt-dlp adapter không hỗ trợ liệt kê/inspect video kênh');
     }
-  });
+    if (input.channels.length === 0) throw new AppError('invalid_input', 'channels không được rỗng');
+    const channelUrls = [...new Set(input.channels.map(newsChannelVideosUrl))];
+    const now = input.now ?? new Date();
+    const maxPerChannel = input.maxPerChannel ?? 5;
+    const sinceHours = input.sinceHours ?? 36;
+    const maxChars = input.maxTranscriptChars ?? 12_000;
+    const deadline = Date.now() + (input.budgetMs ?? 240_000);
+    const since = now.getTime() - sinceHours * HOUR_MS;
+    const items: NewsVideoRecord[] = [];
+    const skipped: NewsPullResult['skipped'] = [];
+    const notes: string[] = [];
+    let alreadyDelivered = 0;
 
-  const channelsOf = (members: Iterable<number>) => new Set([...members].map((i) => pool.at(i)!.channelId));
-  const seeds = [...termIndex.entries()]
-    .map(([term, members]) => ({
-      term,
-      members,
-      channels: channelsOf(members).size,
-      sumVph: [...members].reduce((sum, i) => sum + pool.at(i)!.vph, 0),
-    }))
-    .filter((seed) => seed.channels >= 2)
-    .toSorted((a, b) => b.channels - a.channels
-      || (b.term.includes(' ') ? 1 : 0) - (a.term.includes(' ') ? 1 : 0)
-      || b.sumVph - a.sumVph
-      || a.term.localeCompare(b.term));
-
-  // Greedy: a seed mostly covered by an existing cluster becomes that cluster's alias.
-  const clusters: Array<{ terms: string[]; members: Set<number> }> = [];
-  for (const seed of seeds) {
-    const home = clusters.find((cluster) => {
-      const shared = [...seed.members].filter((i) => cluster.members.has(i)).length;
-      return shared / seed.members.size >= 0.6;
-    });
-    if (home) {
-      if (home.terms.length < 5) home.terms.push(seed.term);
-      continue;
+    for (const channelUrl of channelUrls) {
+      let inventory;
+      try {
+        // Newest first; list a few extra so already-sent videos do not starve the quota.
+        inventory = await this.youtube.listChannelObservation(channelUrl, Math.min(50, maxPerChannel * 3), input.signal);
+      } catch (error) {
+        skipped.push({ channelUrl, reason: `liệt kê kênh lỗi: ${asAppError(error).message}` });
+        continue;
+      }
+      let taken = 0;
+      for (const entry of inventory) {
+        if (taken >= maxPerChannel) break;
+        if (Date.now() > deadline) {
+          skipped.push({ channelUrl, videoId: entry.sourceVideoId, reason: 'hết ngân sách thời gian, sẽ lấy ở lần sau' });
+          continue;
+        }
+        const existing = await this.read(entry.sourceVideoId);
+        if (existing?.deliveredAt && !input.includeDelivered) {
+          alreadyDelivered += 1;
+          continue;
+        }
+        try {
+          const detail = await this.youtube.inspectVideoObservation(entry.canonicalUrl, input.signal);
+          const published = publishedMs(detail.publishedAt ?? entry.publishedAt);
+          // The /videos tab is newest-first: once one video is older than the window, the rest are too.
+          if (published !== null && published < since) break;
+          const transcript = await this.transcript(entry.canonicalUrl, maxChars, input.signal);
+          const pulledAt = now.toISOString();
+          const record: NewsVideoRecord = {
+            videoId: entry.sourceVideoId,
+            url: entry.canonicalUrl,
+            channelUrl,
+            channelTitle: detail.channelTitle ?? entry.channelTitle,
+            title: detail.title ?? entry.title,
+            publishedAt: detail.publishedAt ?? entry.publishedAt,
+            durationSec: detail.durationSec,
+            transcript: transcript.full,
+            firstPulledAt: existing?.firstPulledAt ?? pulledAt,
+            lastPulledAt: pulledAt,
+            deliveredAt: existing?.deliveredAt ?? null,
+            summary: existing?.summary ?? null,
+          };
+          await this.write(record);
+          items.push({ ...record, transcript: transcript.returned });
+          taken += 1;
+        } catch (error) {
+          const appError = asAppError(error);
+          if (appError.code === 'cancelled') throw appError;
+          skipped.push({ channelUrl, videoId: entry.sourceVideoId, reason: appError.message });
+        }
+      }
     }
-    clusters.push({ terms: [seed.term], members: new Set(seed.members) });
+    if (alreadyDelivered > 0) notes.push(`Bỏ qua ${alreadyDelivered} video đã gửi ở lần trước.`);
+    if (items.length === 0) notes.push(`Không có video mới trong ${sinceHours} giờ qua.`);
+    return { pulledAt: now.toISOString(), sinceHours, items, skipped, notes };
   }
 
-  const results = clusters.map((cluster): RadarCluster => {
-    const members = [...cluster.members].map((i) => pool.at(i)!).toSorted((a, b) => b.vph - a.vph);
-    const qualifying = members.filter((video) => video.vph >= minVph);
-    const qualifyingChannels = new Set(qualifying.map((video) => video.channelId)).size;
-    const published = members.map((video) => publishedMs(video.publishedAt)!.ms);
-    const newest = Math.max(...published);
-    const label = cluster.terms.find((term) => term.includes(' ')) ?? cluster.terms.at(0)!;
-    return {
-      clusterId: slug(label),
-      label,
-      terms: cluster.terms,
-      status: qualifying.length >= minVideos && qualifyingChannels >= minChannels ? 'qualified' : 'emerging',
-      channelCount: new Set(members.map((video) => video.channelId)).size,
-      videoCount: members.length,
-      qualifyingChannelCount: qualifyingChannels,
-      qualifyingVideoCount: qualifying.length,
-      topVph: members.at(0)?.vph ?? 0,
-      sumVph: members.reduce((sum, video) => sum + video.vph, 0),
-      firstPublishedAt: new Date(Math.min(...published)).toISOString(),
-      newestPublishedAt: new Date(newest).toISOString(),
-      postBy: new Date(newest + POST_WINDOW_HOURS * HOUR_MS).toISOString(),
-      evidence: members.slice(0, maxEvidence),
+  async ack(entries: Array<{ videoId: string; summary?: string }>, now = new Date()): Promise<NewsAckResult> {
+    const acked: string[] = [];
+    const missing: string[] = [];
+    for (const entry of entries) {
+      if (!VIDEO_ID.test(entry.videoId)) throw new AppError('invalid_input', `video_id không hợp lệ: ${entry.videoId}`);
+      const record = await this.read(entry.videoId);
+      if (!record) {
+        missing.push(entry.videoId);
+        continue;
+      }
+      await this.write({
+        ...record,
+        deliveredAt: record.deliveredAt ?? now.toISOString(),
+        summary: entry.summary?.trim() || record.summary,
+      });
+      acked.push(entry.videoId);
+    }
+    return { acked, missing };
+  }
+
+  async read(videoId: string): Promise<NewsVideoRecord | null> {
+    try {
+      return JSON.parse(await readFile(this.path(videoId), 'utf8')) as NewsVideoRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  private async transcript(url: string, maxChars: number, signal?: AbortSignal): Promise<{ full: NewsTranscript; returned: NewsTranscript }> {
+    let raw = await this.youtube.fetchTranscript(url, signal);
+    if (raw.status !== 'ok' && this.youtube.fetchAutoSubsFallback) raw = await this.youtube.fetchAutoSubsFallback(url, signal);
+    const text = raw.status === 'ok' ? dedupedCaptionText(raw.segments) : '';
+    const base = {
+      status: raw.status,
+      language: raw.language,
+      source: raw.source,
+      chars: text.length,
+      ...(raw.error ? { error: raw.error.slice(0, 300) } : {}),
     };
-  });
+    return {
+      full: { ...base, text, truncated: false },
+      returned: { ...base, text: text.slice(0, maxChars), truncated: text.length > maxChars },
+    };
+  }
 
-  return {
-    generatedAt: options.now.toISOString(),
-    rule: {
-      windowDays,
-      minVideos,
-      minChannels,
-      minVph,
-      vphDefinition: 'VPH = view tại lần quan sát mới nhất ÷ số giờ từ lúc đăng tới lần quan sát đó (VPH trọn đời).',
-    },
-    videosInWindow: pool.length,
-    channelsInWindow: new Set(pool.map((video) => video.channelId)).size,
-    clusters: results
-      .toSorted((a, b) => (a.status === b.status ? 0 : a.status === 'qualified' ? -1 : 1)
-        || b.qualifyingChannelCount - a.qualifyingChannelCount
-        || b.sumVph - a.sumVph)
-      .slice(0, maxClusters),
-  };
+  private path(videoId: string): string {
+    return join(this.root, 'videos', `${videoId}.json`);
+  }
+
+  private async write(record: NewsVideoRecord): Promise<void> {
+    await mkdir(join(this.root, 'videos'), { recursive: true });
+    const target = this.path(record.videoId);
+    await writeFile(`${target}.tmp`, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+    await rename(`${target}.tmp`, target);
+  }
 }

@@ -33,7 +33,7 @@ import { LoopRunner } from './loop/runner.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
 import { PublicObservationService } from './channel-intelligence/observations.ts';
-import { buildNewsRadar, type NewsRadarResult, type RadarVideo } from './news-radar.ts';
+import { NewsRadarService } from './news-radar.ts';
 import type {
   FollowChannelInput,
   FollowChannelResult,
@@ -83,34 +83,6 @@ export * from './loop/report.ts';
 export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
 export * from './news-radar.ts';
-
-export interface NewsRadarInput {
-  watchlistId?: string;
-  windowDays?: number;
-  minVideos?: number;
-  minChannels?: number;
-  minVph?: number;
-  maxClusters?: number;
-  ignoreTerms?: string[];
-  /** Slug of `<data>/insight/<profile>.md`: viewer painpoints the caller pairs with the clusters. */
-  insightProfile?: string;
-  now?: Date;
-}
-
-export interface NewsRadarRead extends NewsRadarResult {
-  coverage: {
-    followedChannels: number;
-    channels: Array<{
-      channelId: string;
-      title: string | null;
-      videosInWindow: number;
-      lastObservedAt: string | null;
-      lastObservationStatus: string | null;
-    }>;
-    notes: string[];
-  };
-  insight: { profile: string; markdown: string } | null;
-}
 
 
 export interface SpyServiceOptions {
@@ -293,6 +265,8 @@ export class SpyService {
   readonly roles: SpyRoleService;
   /** C3 yt-dlp-only public observation/VPH boundary. */
   readonly publicObservations: PublicObservationService;
+  /** News/press channels digest; independent of Channel Watch. */
+  readonly news: NewsRadarService;
   config: SpyConfig;
   private niche: NicheConfig | null = null;
 
@@ -319,6 +293,7 @@ export class SpyService {
     // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
     this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
     this.publicObservations = new PublicObservationService(this.store, this.youtube);
+    this.news = new NewsRadarService(join(this.dataRoot, 'news-radar'), this.youtube);
     this.media = opts.media ?? new FfmpegAdapter();
     if (opts.dataApi) {
       this.dataApi = opts.dataApi;
@@ -420,63 +395,6 @@ export class SpyService {
 
   getPublicVideoVph(sourceVideoId: string, watchlistId = 'local-desktop', query: PublicVphQuery = {}): PublicVideoVphRead {
     return this.publicObservations.readVideoVph(sourceVideoId, query, watchlistId);
-  }
-
-  /** Event clusters across followed channels' recent videos. Reads persisted points only: 0 quota, no yt-dlp. */
-  async newsRadar(input: NewsRadarInput = {}): Promise<NewsRadarRead> {
-    const now = input.now ?? new Date();
-    const windowDays = input.windowDays ?? 7;
-    const followed = this.roles.list(input.watchlistId ?? 'local-desktop', 'followed').channels
-      .filter((channel) => channel.watchStatus === 'followed');
-    const from = new Date(now.getTime() - windowDays * 24 * 3_600_000).toISOString();
-    const videos: RadarVideo[] = [];
-    const channels: NewsRadarRead['coverage']['channels'] = [];
-    for (const channel of followed) {
-      const latest = new Map<string, RadarVideo>();
-      for (const point of this.store.listAllPublicVideoStatPoints({ youtubeUcId: channel.youtubeUcId, from })) {
-        if (point.availability !== 'present' || point.viewCount === null || !point.publishedAt || !point.title) continue;
-        latest.set(point.sourceVideoId, {
-          videoId: point.sourceVideoId,
-          channelId: channel.youtubeUcId,
-          channelTitle: channel.title,
-          title: point.title,
-          publishedAt: point.publishedAt,
-          views: point.viewCount,
-          sampledAt: point.sampledAt,
-        });
-      }
-      const inWindow = [...latest.values()].filter((video) => video.publishedAt.slice(0, 10) >= from.slice(0, 10));
-      videos.push(...inWindow);
-      channels.push({
-        channelId: channel.youtubeUcId,
-        title: channel.title,
-        videosInWindow: inWindow.length,
-        lastObservedAt: channel.lastObservedAt,
-        lastObservationStatus: channel.lastObservationStatus,
-      });
-    }
-    const radar = buildNewsRadar(videos, { ...input, now, windowDays });
-    const notes: string[] = [];
-    if (followed.length === 0) notes.push('Chưa follow kênh nào trong public watchlist: radar rỗng.');
-    const stale = channels.filter((channel) => channel.videosInWindow === 0).map((channel) => channel.title ?? channel.channelId);
-    if (stale.length > 0) notes.push(`Không có video trong cửa sổ ${windowDays} ngày (hoặc Channel Watch chưa chạy): ${stale.join(', ')}.`);
-    return {
-      ...radar,
-      coverage: { followedChannels: followed.length, channels, notes },
-      insight: input.insightProfile ? await this.readInsightProfile(input.insightProfile) : null,
-    };
-  }
-
-  private async readInsightProfile(profile: string): Promise<{ profile: string; markdown: string }> {
-    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(profile)) {
-      throw new AppError('invalid_input', 'insight_profile chỉ gồm chữ thường, số và dấu gạch ngang');
-    }
-    const path = join(resolve(this.dataRoot, '..'), 'insight', `${profile}.md`);
-    try {
-      return { profile, markdown: await readFile(path, 'utf8') };
-    } catch {
-      throw new AppError('not_found', `insight_profile_not_found: thiếu file insight/${profile}.md trong thư mục dữ liệu Writer Room`);
-    }
   }
 
   /** Xoá spy run (huỷ operation đang chạy nếu cần). */
