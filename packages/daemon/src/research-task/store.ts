@@ -5,6 +5,12 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 export type Actor = { role: 'operator'; subject: string } | { role: 'worker'; subject: string; profile?: string } | { role: 'viewer'; subject: string };
+export type SpyRunInfo = {
+  status: string;
+  videoIds: string[];
+  run?: { videoCount?: number | null; kind?: string | null; createdAt?: string | null; completedAt?: string | null };
+  videos?: { youtubeVideoId: string; viewCount?: number | null; durationSec?: number | null; publishedAt?: string | null; title?: string | null; channelTitle?: string | null; rank?: number | null; transcriptStatus?: string | null; transcriptSegments?: number | null }[];
+};
 export type Phase = 'created' | 'ready' | 'running' | 'pause_requested' | 'paused' | 'cancel_requested' | 'cancelled' | 'blocked' | 'failed' | 'completed' | 'unknown';
 export type Budget = { maxRounds: number; maxUniqueVideos: number; maxSearchCost: number };
 export class ResearchTaskError extends Error { constructor(public code: string, message: string) { super(message); } }
@@ -41,14 +47,14 @@ export class ResearchTaskStore {
   readonly artifactRoot: string;
   /** Source-of-truth lookup for a Spy run (wired to SpyService in the daemon):
    *  returns run status + the video ids it actually produced, or null. */
-  private readonly spyRunInfo?: (spyRunId: string) => { status: string; videoIds: string[] } | null;
+  private readonly spyRunInfo?: (spyRunId: string) => SpyRunInfo | null;
   /** Real Spy quota probe (wired to `spy.quota.remaining('search')` in the
    *  daemon). `searchCost` on a round is counted in search.list calls. When the
    *  dep is wired and returns null the store fails CLOSED — a task must never
    *  reserve quota it cannot confirm. */
   private readonly spyQuota?: () => { searchRemaining: number } | null;
   constructor(dbPath: string, artifactRoot: string, opts: {
-    spyRunInfo?: (spyRunId: string) => { status: string; videoIds: string[] } | null;
+    spyRunInfo?: (spyRunId: string) => SpyRunInfo | null;
     spyQuota?: () => { searchRemaining: number } | null;
   } = {}) {
     this.spyRunInfo = opts.spyRunInfo;
@@ -69,6 +75,12 @@ export class ResearchTaskStore {
       CREATE TABLE IF NOT EXISTS research_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, audience TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT, receipt TEXT);
       CREATE INDEX IF NOT EXISTS research_outbox_undelivered ON research_outbox(audience,id) WHERE delivered_at IS NULL;
     `);
+    // Migration: v3 adds fact_gate_version (P3 factual gate policy, fixed at
+    // create by the operator — 1 = structural only, 2 = verified claims).
+    const cols = this.db.query("PRAGMA table_info(research_tasks)").all() as any[];
+    if (!cols.some((c) => c.name === 'fact_gate_version')) {
+      this.db.exec('ALTER TABLE research_tasks ADD COLUMN fact_gate_version INTEGER NOT NULL DEFAULT 1');
+    }
   }
   close() { this.db.close(); }
   private task(id: string): any { const row = this.db.query('SELECT * FROM research_tasks WHERE id=?').get(id) as any; return row ?? fail('NOT_FOUND', 'task not found'); }
@@ -80,7 +92,7 @@ export class ResearchTaskStore {
   }
   /** An operator-facing read path that does not require ownership — used by list(). */
   private view(row: any) {
-    return { ...row, artifactDir: join(this.artifactRoot, row.id), input: JSON.parse(row.input_json), budget: { maxRounds: row.max_rounds, maxUniqueVideos: row.max_videos, maxSearchCost: row.max_search, spentSearch: row.spent_search, reservedSearch: row.reserved_search, uniqueVideos: (this.db.query('SELECT COUNT(*) n FROM research_videos WHERE task_id=?').get(row.id) as any).n }, leaseExpired: Boolean(row.lease_until && row.lease_until < iso()) };
+    return { ...row, artifactDir: join(this.artifactRoot, row.id), factGateVersion: row.fact_gate_version, input: JSON.parse(row.input_json), budget: { maxRounds: row.max_rounds, maxUniqueVideos: row.max_videos, maxSearchCost: row.max_search, spentSearch: row.spent_search, reservedSearch: row.reserved_search, uniqueVideos: (this.db.query('SELECT COUNT(*) n FROM research_videos WHERE task_id=?').get(row.id) as any).n }, leaseExpired: Boolean(row.lease_until && row.lease_until < iso()) };
   }
   private event(id: string, type: string, payload: unknown) {
     this.db.query('INSERT INTO research_events(task_id,type,payload_json,created_at) VALUES(?,?,?,?)').run(id,type,JSON.stringify(payload),iso());
@@ -172,12 +184,16 @@ export class ResearchTaskStore {
     if (!result.changes) fail('VERSION','stale task version');
     return this.task(id);
   }
-  create(actor: Actor, arg: { commandId:string; taskId?:string; mode:string; input:unknown; budget?:Partial<Budget> }) {
+  create(actor: Actor, arg: { commandId:string; taskId?:string; mode:string; input:unknown; budget?:Partial<Budget>; factGateVersion?:number }) {
     if (actor.role !== 'operator') fail('FORBIDDEN','operator required');
     const id=arg.taskId ?? randomUUID(); const budget={maxRounds:arg.budget?.maxRounds ?? 13,maxUniqueVideos:arg.budget?.maxUniqueVideos ?? 1300,maxSearchCost:arg.budget?.maxSearchCost ?? 1300};
     asInt(budget.maxRounds,'maxRounds',1); asInt(budget.maxUniqueVideos,'maxUniqueVideos',1); asInt(budget.maxSearchCost,'maxSearchCost',0);
-    return this.command(id,arg.commandId,'create',{actor:actor.subject,...arg,taskId:id,budget},()=>{
-      const at=iso(); this.db.query('INSERT INTO research_tasks(id,owner_id,mode,input_json,phase,max_rounds,max_videos,max_search,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,actor.subject,asString(arg.mode,'mode'),JSON.stringify(arg.input),'created',budget.maxRounds,budget.maxUniqueVideos,budget.maxSearchCost,at,at);
+    // Fact-gate policy is fixed HERE by the operator — the worker cannot
+    // downgrade a v2 task by omitting claimsVersion from its manifest.
+    const factGate=arg.factGateVersion===undefined?1:arg.factGateVersion;
+    if(factGate!==1&&factGate!==2)fail('INVALID','factGateVersion must be 1 or 2');
+    return this.command(id,arg.commandId,'create',{actor:actor.subject,...arg,taskId:id,budget,factGateVersion:factGate},()=>{
+      const at=iso(); this.db.query('INSERT INTO research_tasks(id,owner_id,mode,input_json,phase,round_index,version,max_rounds,max_videos,max_search,spent_search,reserved_search,worker_subject,worker_profile,worker_session,lease_until,pending_command,created_at,updated_at,last_error,fact_gate_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,actor.subject,asString(arg.mode,'mode'),JSON.stringify(arg.input),'created',0,1,budget.maxRounds,budget.maxUniqueVideos,budget.maxSearchCost,0,0,null,null,null,null,null,at,at,null,factGate);
       mkdirSync(join(this.artifactRoot, id), { recursive: true }); // per-task artifact dir, daemon-owned
       this.event(id,'created',{ownerId:actor.subject,budget}); return this.get(actor,id);
     });
@@ -308,14 +324,83 @@ export class ResearchTaskStore {
         if(!ok)fail('EVIDENCE',`artifact drifted or missing: ${art.path}`);}
       const spyRefs=(this.db.query('SELECT spy_run_id FROM research_spy_runs WHERE task_id=?').all(id) as any[]).map(r=>r.spy_run_id as string);
       if(!spyRefs.length)fail('EVIDENCE','Spy run required');
-      if(this.spyRunInfo)for(const ref of spyRefs){const info=this.spyRunInfo(ref);if(!info||info.status!=='completed')fail('EVIDENCE',`Spy run missing or not completed in source-of-truth: ${ref}`);}
+      const runInfos=new Map<string,SpyRunInfo>();
+      if(this.spyRunInfo)for(const ref of spyRefs){const info=this.spyRunInfo(ref);if(info===null||info===undefined)fail('EVIDENCE',`Spy run missing in source-of-truth: ${ref}`);const runInfo=info as SpyRunInfo;if(runInfo.status!=='completed')fail('EVIDENCE',`Spy run ${ref} is ${runInfo.status}, not completed`);runInfos.set(ref,runInfo);}
       // Schema gate: manifest = JSON object with spyRunIds[] covering every recorded
       // Spy ref; report = non-empty body. A report that references nothing cannot
       // satisfy "facts cross-checked with Spy" (plan §4).
       const manifest=arts.find(x=>x.type==='manifest');const report=arts.find(x=>x.type==='report');
-      let manifestRefs:string[]=[];try{const m=JSON.parse(readFileSync(manifest.path,'utf8'));if(!m||typeof m!=='object'||!Array.isArray(m.spyRunIds)||!m.spyRunIds.every((x:unknown)=>typeof x==='string'))fail('EVIDENCE','manifest.spyRunIds must be a string array');manifestRefs=m.spyRunIds;}catch(e){if(e instanceof ResearchTaskError)throw e;fail('EVIDENCE','manifest is not valid JSON');}
+      let manifestRefs:string[]=[];let manifestObj:any=null;try{manifestObj=JSON.parse(readFileSync(manifest.path,'utf8'));const m=manifestObj;if(!m||typeof m!=='object'||!Array.isArray(m.spyRunIds)||!m.spyRunIds.every((x:unknown)=>typeof x==='string'))fail('EVIDENCE','manifest.spyRunIds must be a string array');manifestRefs=m.spyRunIds;}catch(e){if(e instanceof ResearchTaskError)throw e;fail('EVIDENCE','manifest is not valid JSON');}
       for(const ref of spyRefs)if(!manifestRefs.includes(ref))fail('EVIDENCE',`manifest does not reference Spy run ${ref}`);
       if(!readFileSync(report.path,'utf8').trim())fail('EVIDENCE','report is empty');
-      this.bump(id,arg.expectedVersion,{phase:'completed'});this.event(id,'completed',{});return this.get(actor,id);});
+      // P3 v2 fact gate: policy fixed at create() by the operator — a v2 task
+      // requires claimsVersion=2 + structured claims[]; omitting it cannot
+      // downgrade the task to structural-only checks. Summary counts are
+      // computed HERE from validated claims, never trusted from the manifest.
+      // Scope: only whitelisted manifest metrics are verified against the Spy
+      // stored snapshot; prose outside claims[] is NOT checked — this is not
+      // "100% fact check".
+      let claimsSummary:Record<string,number>|undefined;
+      if(row.fact_gate_version===2){if(!this.spyRunInfo)fail('EVIDENCE','fact gate requires Spy source-of-truth verifier');claimsSummary=this.validateClaims(manifestObj,spyRefs,runInfos);}
+      this.bump(id,arg.expectedVersion,{phase:'completed'});this.event(id,'completed',claimsSummary?{claims:claimsSummary}:{});return this.get(actor,id);});
+  }
+  /** P3 claims validator. Deterministic — no prose parsing. Returns
+   *  daemon-computed summary {factVerified,factFailed,inference,unverifiable}.
+   *  Comparisons are pinned to the stored Spy snapshot, never live YouTube. */
+  private validateClaims(manifest:any, spyRefs:string[], runs:Map<string,SpyRunInfo>):Record<string,number>{
+    if(manifest.claimsVersion!==2)fail('EVIDENCE','task factGateVersion=2 requires manifest claimsVersion=2');
+    const claims=manifest.claims;
+    if(!Array.isArray(claims)||!claims.length)fail('EVIDENCE','claims[] must be non-empty on a v2 task');
+    if(claims.length>500)fail('INVALID','claims[] exceeds 500');
+    const ids=new Set<string>();const summary={factVerified:0,factFailed:0,inference:0,unverifiable:0};const failures:string[]=[];let facts=0;
+    for(const c of claims){
+      if(!c||typeof c!=='object'||Array.isArray(c))fail('INVALID','claim must be an object');
+      const cid=asString(c.id,'claim.id');if(ids.has(cid))fail('INVALID',`duplicate claim id: ${cid}`);ids.add(cid);
+      const kind=c.kind;if(kind!=='fact'&&kind!=='inference'&&kind!=='unverifiable')fail('INVALID',`claim ${cid}: kind must be fact|inference|unverifiable`);
+      const subj=c.subject;if(!subj||typeof subj!=='object')fail('INVALID',`claim ${cid}: subject required`);
+      const runId=asString(subj.spyRunId,`claim ${cid}.subject.spyRunId`);
+      if(!spyRefs.includes(runId))fail('EVIDENCE',`claim ${cid}: spyRunId ${runId} is not a recorded task ref`);
+      const info=runs.get(runId)!;
+      if(kind==='inference'){summary.inference++;continue;}
+      if(kind==='unverifiable'){summary.unverifiable++;continue;}
+      facts++;
+      const metric=asString(c.metric,`claim ${cid}.metric`);
+      const op=c.op;if(op!=='eq'&&op!=='gte'&&op!=='lte')fail('INVALID',`claim ${cid}: op must be eq|gte|lte`);
+      const videoId=subj.videoId===undefined?undefined:asString(subj.videoId,`claim ${cid}.subject.videoId`);
+      const table=videoId===undefined?CLAIM_METRICS.run:CLAIM_METRICS.video;
+      const mtype=(table as Record<string,string>)[metric];
+      if(!mtype)fail('INVALID',`claim ${cid}: metric '${metric}' is not a whitelisted ${videoId===undefined?'run':'video'} metric`);
+      if(mtype==='cat'&&op!=='eq')fail('INVALID',`claim ${cid}: categorical metrics only support eq`);
+      let snap:unknown;
+      if(videoId===undefined){snap=metric==='status'?info.status:(info.run as any)?.[metric];}
+      else{if(!info.videoIds.includes(videoId))fail('EVIDENCE',`claim ${cid}: video ${videoId} not in Spy run ${runId}`);snap=((info.videos??[]).find(v=>v.youtubeVideoId===videoId) as Record<string,unknown>|undefined)?.[metric];}
+      if(snap===undefined||snap===null)fail('EVIDENCE',`claim ${cid}: Spy snapshot has no value for metric ${metric}`);
+      if(mtype==='num'){
+        if(typeof c.value!=='number'||!Number.isFinite(c.value))fail('INVALID',`claim ${cid}: value must be a finite number`);
+        if(typeof snap!=='number'||!Number.isFinite(snap))fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not numeric`);
+        const s=snap as number;const ok=op==='eq'?s===c.value:op==='gte'?s>=c.value:s<=c.value;
+        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
+      }else if(mtype==='cat'){
+        if(op!=='eq')fail('INVALID',`claim ${cid}: categorical metrics only support eq`);
+        if(typeof c.value!=='string')fail('INVALID',`claim ${cid}: value must be a string`);
+        if(typeof snap!=='string')fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a string`);
+        const ok=normStr(snap as string)===normStr(c.value);
+        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot='${snap}' expected '${c.value}'`);}
+      }else{ // date: strict ISO-UTC parse, epoch compare
+        if(typeof c.value!=='string'||Number.isNaN(Date.parse(c.value)))fail('INVALID',`claim ${cid}: value must be an ISO date string`);
+        if(typeof snap!=='string'||Number.isNaN(Date.parse(snap)))fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a date`);
+        const a=Date.parse(snap as string),b=Date.parse(c.value);
+        const ok=op==='eq'?a===b:op==='gte'?a>=b:a<=b;
+        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
+      }
+    }
+    if(!facts)fail('EVIDENCE','v2 manifest requires at least one fact claim');
+    if(summary.factFailed)fail('EVIDENCE',`fact claims failed vs Spy snapshot: ${failures.join('; ')}`);
+    return summary;
   }
 }
+const normStr=(s:string)=>s.trim().replace(/\s+/g,' ').toLowerCase();
+const CLAIM_METRICS={
+  run:{videoCount:'num',status:'cat',kind:'cat',createdAt:'date',completedAt:'date'},
+  video:{viewCount:'num',durationSec:'num',rank:'num',transcriptSegments:'num',title:'cat',channelTitle:'cat',transcriptStatus:'cat',publishedAt:'date'},
+};

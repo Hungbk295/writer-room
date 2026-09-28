@@ -459,3 +459,107 @@ test('outbox ack_one: exact-row ack leaves an earlier HOLD row undelivered, surv
     expect(rest.length).toBe(1); // row1 survived restart, still undelivered
   } finally { reopened.close(); }
 });
+
+// ── P3: factGateVersion=2 — deterministic claim validation vs Spy snapshot ──
+
+const SPY_RUN = {
+  status: 'completed', videoIds: ['v1', 'v2'],
+  run: { videoCount: 2, kind: 'channel', createdAt: '2025-01-01T00:00:00Z', completedAt: '2025-01-02T00:00:00Z' },
+  videos: [
+    { youtubeVideoId: 'v1', viewCount: 1000, durationSec: 600, publishedAt: '2024-06-01T00:00:00Z', title: 'Alpha Title', channelTitle: 'Chan', rank: 1, transcriptStatus: 'ok', transcriptSegments: 12 },
+    { youtubeVideoId: 'v2', viewCount: null, durationSec: 300, publishedAt: '2024-07-01T00:00:00Z', title: 'Beta', channelTitle: 'Chan', rank: 2, transcriptStatus: 'missing', transcriptSegments: 0 },
+  ],
+};
+/** Runs a v2 task to the completeTask boundary; returns the thrown error or the completed task + emitted summary event. */
+const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2) => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => id === 'spy-1' ? SPY_RUN : null });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  const done = { task: null as any, event: null as any, error: null as Error | null, store, owner, worker };
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, factGateVersion: gateVersion });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [{ videoId: 'v1', spyRunId: 'spy-1' }, { videoId: 'v2', spyRunId: 'spy-1' }] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'], ...manifest }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report body');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
+    try {
+      done.task = store.completeTask(worker, 't1', { commandId: 'done', expectedVersion: a2.version });
+      done.event = store.events(owner, 't1').find((e: any) => e.type === 'completed');
+    } catch (e) { done.error = e as Error; }
+    return done;
+  } catch (e) { store.close(); throw e; }
+};
+
+test('P3 happy path: fact claims verified against Spy snapshot; daemon computes summary', () => {
+  const f = v2Flow({ claimsVersion: 2, factVerified: 999, claims: [
+    { id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 },
+    { id: 'c2', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'viewCount', op: 'gte', value: 500 },
+    { id: 'c3', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'publishedAt', op: 'lte', value: '2024-12-31T00:00:00Z' },
+    { id: 'c4', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'title', op: 'eq', value: 'alpha  title' },
+    { id: 'c5', kind: 'inference', subject: { spyRunId: 'spy-1' }, metric: 'viewCount', note: 'views likely bot-inflated' },
+    { id: 'c6', kind: 'unverifiable', subject: { spyRunId: 'spy-1' }, note: 'channel authority' },
+  ] });
+  try {
+    expect(f.error).toBeNull();
+    expect(f.task.phase).toBe('completed');
+    // Daemon-computed summary — the manifest's bogus factVerified:999 is ignored.
+    expect(JSON.parse(f.event.payload_json).claims).toEqual({ factVerified: 4, factFailed: 0, inference: 1, unverifiable: 1 });
+  } finally { f.store.close(); }
+});
+
+test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/value, missing snapshot', () => {
+  const cases: [Record<string, unknown>, RegExp][] = [
+    [{}, /claimsVersion=2/],                                             // worker omits claimsVersion → cannot downgrade
+    [{ claimsVersion: 1 }, /claimsVersion=2/],
+    [{ claimsVersion: 3, claims: [{}] }, /claimsVersion=2/],
+    [{ claimsVersion: 2, claims: [] }, /non-empty/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'inference', subject: { spyRunId: 'spy-1' } }] }, /at least one fact/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 }, { id: 'x', kind: 'inference', subject: { spyRunId: 'spy-1' } }] }, /duplicate claim id/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'subscribers', op: 'eq', value: 1 }] }, /not a whitelisted/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'status', op: 'gte', value: 'completed' }] }, /categorical.*eq/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 3 }] }, /fact claims failed/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v2' }, metric: 'viewCount', op: 'gte', value: 1 }] }, /no value/], // null snapshot ≠ 0
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v-ghost' }, metric: 'viewCount', op: 'eq', value: 1 }] }, /not in Spy run/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-other' }, metric: 'videoCount', op: 'eq', value: 2 }] }, /not a recorded task ref/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: 'not-a-date' }] }, /ISO date/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.NaN }] }, /finite number/],
+  ];
+  for (const [manifest, re] of cases) {
+    const f = v2Flow(manifest);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
+    finally { f.store.close(); }
+  }
+});
+
+test('P3 policy: factGateVersion fixed at create; v1 task ignores claimsVersion (legacy compat)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => SPY_RUN });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    expect(() => store.create(owner, { commandId: 'bad', taskId: 'tx', mode: 'k', input: {}, factGateVersion: 3 })).toThrow(/factGateVersion/);
+    const t2 = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {}, factGateVersion: 2 });
+    expect(t2.factGateVersion).toBe(2);
+    expect(store.get(owner, 't2').factGateVersion).toBe(2); // persisted, projected
+    // Legacy v1 task: manifest may carry claimsVersion but the v1 gate is
+    // structural only — completion succeeds without claims[].
+    const t1 = store.create(owner, { commandId: 'c1', taskId: 't1', mode: 'k', input: {} });
+    expect(t1.factGateVersion).toBe(1);
+    store.bind(owner, 't1', { commandId: 'b1', expectedVersion: t1.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r1', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc1', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
+    expect(store.completeTask(worker, 't1', { commandId: 'd1', expectedVersion: a2.version }).phase).toBe('completed');
+  } finally { store.close(); }
+});

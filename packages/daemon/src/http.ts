@@ -612,7 +612,11 @@ export async function createHttpApp(): Promise<HttpApp> {
     spyRunInfo: (spyRunId) => {
       try {
         const m = spy.getRunManifest(spyRunId);
-        return { status: m.status, videoIds: m.videos.map((v) => v.youtubeVideoId) };
+        return {
+          status: m.status, videoIds: m.videos.map((v) => v.youtubeVideoId),
+          run: { videoCount: m.videoCount, kind: m.kind, createdAt: m.createdAt, completedAt: m.completedAt },
+          videos: m.videos.map((v) => ({ youtubeVideoId: v.youtubeVideoId, viewCount: v.viewCount, durationSec: v.durationSec, publishedAt: v.publishedAt, title: v.title, channelTitle: v.channelTitle, rank: v.rank, transcriptStatus: v.transcriptStatus, transcriptSegments: v.transcriptSegments })),
+        };
       } catch { return null; }
     },
     // Quota binding (P2): task searchCost units are search.list calls; the

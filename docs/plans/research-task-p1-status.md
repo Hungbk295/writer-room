@@ -79,21 +79,42 @@ với `manifest.videos[].youtubeVideoId` của Spy run tương ứng.
 ## Giới hạn đã biết — KHÔNG phải factual validation hoàn chỉnh
 
 - Gate trên là **structural + integrity**: chứng minh artifact không bị sửa,
-  Spy refs/video IDs là thật theo Spy store. Nó **không** chứng minh từng con
-  số/claim trong report khớp số liệu Spy (đối chiếu nội dung số → luật skill /
-  gate P3, chưa implement).
-- `resume` chỉ đổi phase phía daemon; cơ chế đánh thức worker (wake/outbox)
-  chưa có — P2.
-- Chưa có event→Telegram outbox theo delivery receipt — P2.
-- `maxSearchCost` do operator set lúc create; chưa wire quota thật từ Spy
-  service — P2.
+  Spy refs/video IDs là thật theo Spy store.
+- P3 foundation (`factGateVersion=2`, xem dưới) verify các claim số/ngày
+  **trong `manifest.claims[]` có cấu trúc** theo Spy snapshot. Prose trong
+  report ngoài `claims[]` vẫn **không được check** — không claim "100% fact
+  check". Full P3 cần thêm gate: report chỉ được kết luận định lượng qua
+  `claimId` đã validate (proposed, chưa implement).
 - `tools.include`/loopback không phải bằng chứng danh tính: ACL thật là token
   scoped trong `hermes-actors.json`, phát hành và thu hồi bởi daemon.
 
+## P3 foundation — `factGateVersion` (leader-approved, implemented)
+
+- `research_task_create` nhận `factGateVersion` `1|2` (mặc định `1` legacy);
+  persist `research_tasks.fact_gate_version`, projection `get`/`claim`/`list`
+  trả `factGateVersion`. **Worker không thể downgrade**: task v2 bắt buộc
+  manifest `claimsVersion=2` + `claims[]` non-empty + ≥1 claim `kind:'fact'`,
+  claim id unique, ≤500 claims; thiếu/sai version → `EVIDENCE`/`INVALID`.
+- Claim shape: `{id, kind:'fact'|'inference'|'unverifiable', subject:{spyRunId[,videoId]}, metric, op, value}`.
+  `spyRunId` phải là recorded ref; `videoId` phải thuộc run manifest.
+- Metric whitelist = đúng field `spy.getRunManifest` (snapshot đã lưu, KHÔNG
+  query YouTube live): run `{videoCount,status,kind,createdAt,completedAt}`;
+  video `{viewCount,durationSec,rank,transcriptSegments,title,channelTitle,transcriptStatus,publishedAt}`.
+- So sánh deterministic: numeric `eq|gte|lte` (finite), categorical chỉ `eq`
+  (normalize trim/ws/case), date ISO-parse epoch `eq|gte|lte`. Snapshot
+  null/missing → `EVIDENCE` (không suy ra 0); metric/type sai → `INVALID`.
+- `fact` sai → `EVIDENCE` chặn completion. `inference`/`unverifiable` chỉ là
+  label, KHÔNG tính verified. Summary `{factVerified,factFailed,inference,unverifiable}`
+  do **daemon tự tính** và đính vào event `completed` — không tin field
+  `factVerified` tự khai trong manifest.
+
 ## Tests
 
-`packages/daemon/test/research-task/{store,lifecycle}.test.ts` — 9 tests:
+`packages/daemon/test/research-task/{store,lifecycle}.test.ts` — 24 tests:
 idempotency/budget, ACL scope, queue claim + worker isolation, lease expiry →
 mark_unknown → rebind, cancel release reservation, instruct boundary,
 crash/restart cursor, hard gate (fake/running/ghost-video/tamper), MCP
-role-filter + E2E call chain.
+role-filter + E2E call chain, outbox poll/ack/ack_one, quota fail-closed +
+cross-task aggregate, artifactDir projection/confinement, supersede,
+cancel-preserved rebind, P3 v2 claims (happy path + 14 reject cases +
+downgrade attempt + v1 compat).

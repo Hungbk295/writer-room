@@ -185,10 +185,12 @@ export class McpResearchServer {
           commandId: CMD, taskId: { type: 'string' }, mode: { type: 'string', description: 'vd keyword, channel_list' },
           input: { type: 'object', description: 'Payload nghiệp vụ: keywords/channels, region, language, topic' },
           budget: { type: 'object', properties: { maxRounds: { type: 'integer' }, maxUniqueVideos: { type: 'integer' }, maxSearchCost: { type: 'integer' } } },
+          factGateVersion: { type: 'integer', description: '1 (mặc định, structural only) | 2 (P3: manifest phải kèm claimsVersion=2 + claims[] structured, daemon verify fact claims theo Spy snapshot)' },
         }, required: ['commandId', 'mode', 'input'] },
         handler: (a, args) => ({ outcome: 'applied', task: store.create(a, {
           commandId: reqStr(args, 'commandId'), taskId: optStr(args, 'taskId'), mode: reqStr(args, 'mode'),
-          input: args['input'] ?? {}, budget: args['budget'] as Record<string, number> | undefined }) }) },
+          input: args['input'] ?? {}, budget: args['budget'] as Record<string, number> | undefined,
+          factGateVersion: optInt(args, 'factGateVersion') }) }) },
       { name: 'research_task_bind', role: 'operator',
         description: 'Giao task vào queue của một worker profile (ready). workerSubject bỏ trống = worker nào claim trước trên profile đó. Chỉ rebind được task running khi lease đã hết hạn.',
         inputSchema: { type: 'object', properties: { ...MUTATION_PROPS,
