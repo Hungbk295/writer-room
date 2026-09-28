@@ -593,16 +593,21 @@ test('P3 happy path: fact claims verified against Spy snapshot; daemon computes 
     expect(payload.claims).toEqual({ factVerified: 4, factFailed: 0, inference: 1, unverifiable: 1 });
     expect(typeof payload.rendered.sha256).toBe('string');
     // Operator reads the pinned rendered report.
-    const rep = f.store.reportGet(f.owner, 't1');
+    const rep = f.store.reportGet(f.owner, 't1') as any;
     expect(rep.claims.factVerified).toBe(4);
     expect(rep.renderedMarkdown).toContain('videoCount = 2');
     expect(rep.renderedMarkdown).toContain('viewCount ≥ 500');
     expect(rep.renderedMarkdown).toContain('snapshot: 1000'); // value from Spy snapshot, not worker
-    expect(rep.unverifiedAnalysis).toContain('not verified');
-    expect(rep.renderedMarkdown).not.toContain('not verified'); // analysis NOT in verified markdown
+    // Analysis requires EXPLICIT opt-in — absent by default, never in the
+    // completed event, never in verified markdown.
+    expect('unverifiedAnalysis' in rep).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain('channel authority is my opinion');
+    expect(rep.renderedMarkdown).not.toContain('not verified');
+    expect(f.store.reportGet(f.owner, 't1', { includeUnverified: true }).unverifiedAnalysis).toContain('not verified');
     // Worker and cross-owner reads denied.
     expect(() => f.store.reportGet(f.worker, 't1')).toThrow();
     expect(() => f.store.reportGet({ role: 'operator', subject: 'other-owner' }, 't1')).toThrow();
+    expect(() => f.store.reportGet({ role: 'operator', subject: 'other-owner' }, 't1', { includeUnverified: true })).toThrow();
     // Reopen serves identical pinned bytes.
     const reopened = new ResearchTaskStore(join(f.root, 'task.sqlite'), join(f.root, 'artifacts'), { spyRunInfo: () => ({ ...SPY_RUN, run: { ...SPY_RUN.run, videoCount: 99 } }) });
     try {
@@ -632,6 +637,12 @@ test('P3 report gate: conclusion-v1 schema — no worker text, claim refs exactl
     [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }, { id: 'k1', claimIds: ['c1'] }] }, /duplicate conclusion id/],
     [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [] }] }, /non-empty|not referenced/], // c1 omitted entirely
     ['not json', /valid JSON/], // invalid JSON report
+    // Bounds: analysis 100KB, conclusion id 256 chars, claimIds ≤500, ids must be strings
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }], unverifiedAnalysis: 'x'.repeat(100_001) }, /exceeds 100000/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k'.repeat(257), claimIds: ['c1'] }] }, /exceeds 256/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: Array(501).fill('c1') }] }, /exceed 500|more than once/],
+    [{ formatVersion: 1, conclusions: [{ id: 7, claimIds: ['c1'] }] }, /required/], // non-string id
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [7] }] }, /required|not a passed fact/], // non-string claimId
   ];
   for (const [rep, re] of cases) {
     const f = v2Flow({ claimsVersion: 2, claims: goodClaims }, 2, SPY_RUN, rep);
@@ -670,6 +681,29 @@ test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/val
     try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
     finally { f.store.close(); }
   }
+});
+
+test('P3 v2: exactly one report artifact required — a second report path fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => SPY_RUN });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, factGateVersion: 2 });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'], claimsVersion: 2, claims: [{ id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 }] }));
+    const rep = JSON.stringify({ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }] });
+    writeFileSync(join(root, 'artifacts', 't1', 'report.json'), rep);
+    writeFileSync(join(root, 'artifacts', 't1', 'report2.json'), rep);
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.json') });
+    const a3 = store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: a2.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report2.json') });
+    expect(() => store.completeTask(worker, 't1', { commandId: 'done', expectedVersion: a3.version })).toThrow(/exactly one report/);
+  } finally { store.close(); }
 });
 
 test('P3: negative/non-integer Spy snapshot values are EVIDENCE, not silently verified', () => {

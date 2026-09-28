@@ -357,7 +357,12 @@ export class ResearchTaskStore {
       // Schema gate: manifest = JSON object with spyRunIds[] covering every recorded
       // Spy ref; report = non-empty body. A report that references nothing cannot
       // satisfy "facts cross-checked with Spy" (plan §4).
-      const manifest=arts.find(x=>x.type==='manifest');const report=arts.find(x=>x.type==='report');
+      const manifest=arts.find(x=>x.type==='manifest');const reportArts=arts.filter(x=>x.type==='report');
+      // v2 requires exactly ONE report input — multiple registered report
+      // artifacts would make the canonical conclusions source ambiguous.
+      // Recovery supersedes the SAME path; it must never add a second path.
+      if(row.fact_gate_version===2&&reportArts.length!==1)fail('EVIDENCE',`v2 task requires exactly one report artifact (have ${reportArts.length})`);
+      const report=reportArts[0];
       let manifestRefs:string[]=[];let manifestObj:any=null;try{manifestObj=JSON.parse(readFileSync(manifest.path,'utf8'));const m=manifestObj;if(!m||typeof m!=='object'||!Array.isArray(m.spyRunIds)||!m.spyRunIds.every((x:unknown)=>typeof x==='string'))fail('EVIDENCE','manifest.spyRunIds must be a string array');manifestRefs=m.spyRunIds;}catch(e){if(e instanceof ResearchTaskError)throw e;fail('EVIDENCE','manifest is not valid JSON');}
       for(const ref of spyRefs)if(!manifestRefs.includes(ref))fail('EVIDENCE',`manifest does not reference Spy run ${ref}`);
       const reportRaw=readFileSync(report.path,'utf8');
@@ -381,7 +386,7 @@ export class ResearchTaskStore {
         if(!rep||typeof rep!=='object'||Array.isArray(rep))fail('EVIDENCE','v2 report must be a JSON object');
         for(const k of Object.keys(rep))if(k!=='formatVersion'&&k!=='conclusions'&&k!=='unverifiedAnalysis')fail('INVALID',`report field '${k}' not allowed`);
         if(rep.formatVersion!==1)fail('EVIDENCE','report.formatVersion must be 1');
-        if(rep.unverifiedAnalysis!==undefined&&typeof rep.unverifiedAnalysis!=='string')fail('INVALID','unverifiedAnalysis must be a string');
+        if(rep.unverifiedAnalysis!==undefined){if(typeof rep.unverifiedAnalysis!=='string')fail('INVALID','unverifiedAnalysis must be a string');if(Buffer.byteLength(rep.unverifiedAnalysis,'utf8')>100_000)fail('INVALID','unverifiedAnalysis exceeds 100000 bytes');}
         const cons=rep.conclusions;
         if(!Array.isArray(cons)||!cons.length)fail('EVIDENCE','report.conclusions must be non-empty');
         if(cons.length>500)fail('INVALID','conclusions exceed 500');
@@ -389,8 +394,9 @@ export class ResearchTaskStore {
         for(const con of cons){
           if(!con||typeof con!=='object'||Array.isArray(con))fail('INVALID','conclusion must be an object');
           for(const k of Object.keys(con))if(k!=='id'&&k!=='claimIds')fail('INVALID',`conclusion field '${k}' not allowed — conclusions carry claim references only`);
-          const kid=asString(con.id,'conclusion.id');if(cids.has(kid))fail('INVALID',`duplicate conclusion id: ${kid}`);cids.add(kid);
+          const kid=asString(con.id,'conclusion.id');if(kid.length>256)fail('INVALID','conclusion id exceeds 256 chars');if(cids.has(kid))fail('INVALID',`duplicate conclusion id: ${kid}`);cids.add(kid);
           if(!Array.isArray(con.claimIds)||!con.claimIds.length)fail('EVIDENCE',`conclusion ${kid}: claimIds must be non-empty`);
+          if(con.claimIds.length>500)fail('INVALID',`conclusion ${kid}: claimIds exceed 500`);
           for(const x of con.claimIds){const ref=asString(x,'claimId');if(!v.passed.has(ref))fail('EVIDENCE',`conclusion ${kid}: claim ${ref} is not a passed fact claim`);if(used.has(ref))fail('EVIDENCE',`claim ${ref} referenced more than once`);used.add(ref);}
         }
         for(const fid of v.passed.keys())if(!used.has(fid))fail('EVIDENCE',`passed fact claim ${fid} is not referenced by any conclusion`);
@@ -486,14 +492,18 @@ export class ResearchTaskStore {
   /** Operator read of the pinned rendered report — completed v2 tasks only.
    *  Serves stored bytes from research_rendered_reports; never re-renders from
    *  live Spy data, so post-completion snapshot drift cannot alter output. */
-  reportGet(actor:Actor,id:string){
+  reportGet(actor:Actor,id:string,opts:{includeUnverified?:boolean}={}){
     const row=this.task(id);
     if(actor.role!=='operator'||row.owner_id!==actor.subject)fail('FORBIDDEN','report read is operator-owner scoped');
     if(row.phase!=='completed')fail('PHASE','task not completed');
     const rep=this.db.query('SELECT * FROM research_rendered_reports WHERE task_id=?').get(id) as any;
     if(!rep)fail('NOT_FOUND','no rendered report for this task');
     const content=JSON.parse(rep.content_json);
-    return {taskId:id,sha256:rep.sha256,renderedMarkdown:rep.rendered_markdown,claims:JSON.parse(rep.claim_summary_json),conclusions:content.conclusions,unverifiedAnalysis:content.unverifiedAnalysis,createdAt:rep.created_at};
+    const base:Record<string,unknown>={taskId:id,sha256:rep.sha256,renderedMarkdown:rep.rendered_markdown,claims:JSON.parse(rep.claim_summary_json),conclusions:content.conclusions,createdAt:rep.created_at};
+    // unverifiedAnalysis requires EXPLICIT opt-in — it is not part of the
+    // verified conclusion surface and must never appear by default.
+    if(opts.includeUnverified)base.unverifiedAnalysis=content.unverifiedAnalysis;
+    return base;
   }
 }
 const mdEsc=(s:string)=>s.replace(/[\\`*_[\]|<>\n\r]/g,' ');
