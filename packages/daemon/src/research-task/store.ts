@@ -152,7 +152,7 @@ export class ResearchTaskStore {
    *  message id in `receipt` BEFORE acking; a row left undelivered after a
    *  crash means "unknown — reconcile via the transport receipt, do not
    *  auto-resend". */
-  outboxAck(actor: Actor, arg: { audience: 'worker' | 'operator'; throughCursor: number; receipt?: string }) {
+  outboxAck(actor: Actor, arg: { audience: 'worker' | 'operator'; throughCursor: number; receipt?: string; expectedEpoch?: string }) {
     if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
     const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
     if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
@@ -160,6 +160,10 @@ export class ResearchTaskStore {
     const through = asInt(arg.throughCursor, 'throughCursor', 1);
     const receipt = typeof arg.receipt === 'string' && arg.receipt.trim() ? arg.receipt.trim() : null;
     return this.db.transaction(() => {
+      // TOCTOU guard: relay read epoch/rows, daemon may restart on a fresh DB
+      // reusing cursor ids — reject a mismatched epoch atomically, BEFORE any
+      // row is marked delivered. Relays should always send expectedEpoch.
+      if(arg.expectedEpoch!==undefined){if(asString(arg.expectedEpoch,'expectedEpoch')!==this.outboxEpoch())fail('EPOCH','outbox epoch mismatch — research DB was replaced; do not ack rows from stale receipts');}
       const scope = audience === 'worker' ? (actor as { profile?: string }).profile ?? '' : actor.subject;
       const rows = audience === 'worker'
         ? this.db.query("SELECT o.id FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='worker' AND o.delivered_at IS NULL AND o.id<=? AND t.worker_profile=?").all(through, scope) as any[]
@@ -173,13 +177,14 @@ export class ResearchTaskStore {
    *  earlier in the stream stays undelivered (no false ack), so a relay can
    *  confirm row N without implicitly confirming row N-1. Idempotent — an
    *  already-delivered row returns delivered:0. */
-  outboxAckOne(actor: Actor, arg: { audience: 'worker' | 'operator'; cursor: number; receipt?: string }) {
+  outboxAckOne(actor: Actor, arg: { audience: 'worker' | 'operator'; cursor: number; receipt?: string; expectedEpoch?: string }) {
     if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
     const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
     if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
     if (audience === 'operator' && actor.role !== 'operator') fail('FORBIDDEN', 'operator audience requires operator token');
     const cursor = asInt(arg.cursor, 'cursor', 1);
     const receipt = typeof arg.receipt === 'string' && arg.receipt.trim() ? arg.receipt.trim() : null;
+    if(arg.expectedEpoch!==undefined){if(asString(arg.expectedEpoch,'expectedEpoch')!==this.outboxEpoch())fail('EPOCH','outbox epoch mismatch — research DB was replaced; do not ack rows from stale receipts');}
     const row = this.db.query("SELECT o.id FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.id=? AND o.audience=? AND o.delivered_at IS NULL").get(cursor, audience) as any;
     if (!row) return { delivered: 0, cursor, receipt };
     const scope = audience === 'worker' ? (actor as { profile?: string }).profile ?? '' : actor.subject;

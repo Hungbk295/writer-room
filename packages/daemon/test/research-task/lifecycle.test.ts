@@ -500,6 +500,41 @@ test('outbox epoch: stable across restart, different on fresh DB, scoped + in po
   } finally { c.store.close(); }
 });
 
+test('expectedEpoch TOCTOU guard: stale-epoch ack rejected, row stays undelivered', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-epoch-ack-'));
+  const dbPath = join(root, 'task.sqlite'); const artRoot = join(root, 'artifacts');
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  let cursor = 0; let epoch = '';
+  try {
+    epoch = store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {} });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    cursor = store.outboxPoll(owner, { audience: 'operator' })[0]!.cursor;
+    store.close();
+    // Simulate a fresh DB at the same URL — cursor ids are reused but epoch differs.
+    const fresh = new ResearchTaskStore(join(mkdtempSync(join(tmpdir(), 'research-epoch-ack2-')), 'task.sqlite'), join(mkdtempSync(join(tmpdir(), 'research-epoch-ack3-')), 'artifacts'));
+    let freshEpoch = '';
+    try {
+      freshEpoch = fresh.outboxIdentity(owner, { audience: 'operator' }).epoch;
+      expect(freshEpoch).not.toBe(epoch);
+      // A relay acking with a STALE epoch is rejected atomically — no row marked.
+      const reopened = new ResearchTaskStore(dbPath, artRoot);
+      try {
+        expect(() => reopened.outboxAckOne(owner, { audience: 'operator', cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+        expect(reopened.outboxPoll(owner, { audience: 'operator' }).length).toBe(1); // still undelivered
+        expect(() => reopened.outboxAck(owner, { audience: 'operator', throughCursor: cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+        expect(reopened.outboxPoll(owner, { audience: 'operator' }).length).toBe(1);
+        // Matching epoch passes on both APIs.
+        expect(reopened.outboxAckOne(owner, { audience: 'operator', cursor, expectedEpoch: epoch }).delivered).toBe(1);
+        // Worker audience same protection.
+        expect(() => reopened.outboxAck(worker, { audience: 'worker', throughCursor: cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+      } finally { reopened.close(); }
+    } finally { fresh.close(); }
+  } catch (e) { try { store.close(); } catch {} throw e; }
+});
+
 // ── P3: factGateVersion=2 — deterministic claim validation vs Spy snapshot ──
 
 const SPY_RUN = {
