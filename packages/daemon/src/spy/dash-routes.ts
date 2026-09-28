@@ -10,6 +10,9 @@ import {
   dashChannels,
   dashDecisions,
   dashInbox,
+  dashKeywordDetail,
+  dashKeywordRunDetail,
+  dashKeywordRuns,
   dashKeywords,
   dashMeta,
   dashQuota,
@@ -231,6 +234,7 @@ const CHANNEL_SORTS = [
 ] as const;
 const KEYWORD_SORTS = [
   'last_median_views', 'last_n_followed', 'last_checked_at', 'added_at',
+  'outliers_28d',
 ] as const;
 const VIDEO_SORTS = [
   'views_gained_24h', 'outlier_score', 'latest_views', 'published_at', 'first_seen_at',
@@ -332,11 +336,38 @@ export function handleSpyDash(url: URL, spy: SpyService): Response {
         order: parseOrder(url),
         status: parseEnum(url, 'status', KEYWORD_STATUSES),
         origin: parseEnum(url, 'origin', KEYWORD_ORIGINS),
+        group: url.searchParams.get('group') ?? undefined,
         q: url.searchParams.get('q') ?? undefined,
       };
       const { rows, total } = dashKeywords(db, topicId, params);
       return maybeCsv(url, rows as unknown as Record<string, unknown>[], 'keywords')
         ?? envelope(rows, topicId, { total, limit, offset });
+    }
+
+    // 7b /keywords/:term_key?topic_id — detail + checks + top video (v14)
+    const keywordDetail = path.match(/^keywords\/([^/]+)$/);
+    if (keywordDetail) {
+      const topicId = requireTopic(url, spy);
+      const detail = dashKeywordDetail(db, topicId, decodeURIComponent(keywordDetail[1]!));
+      if (!detail) return err('Keyword không thuộc topic', 404);
+      return envelope(detail, topicId);
+    }
+
+    // 7c /keyword-runs?topic_id&limit — lịch sử run cho board (v14)
+    if (path === 'keyword-runs') {
+      const topicId = requireTopic(url, spy);
+      const rawLimit = url.searchParams.get('limit');
+      const limit = rawLimit === null ? 20 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw 'limit 1..500';
+      return envelope(dashKeywordRuns(db, topicId, { limit }), topicId);
+    }
+
+    // 7d /keyword-runs/:run_id — một run kèm items (v14)
+    const keywordRun = path.match(/^keyword-runs\/([^/]+)$/);
+    if (keywordRun) {
+      const detail = dashKeywordRunDetail(db, decodeURIComponent(keywordRun[1]!));
+      if (!detail) return err('Keyword run không tồn tại', 404);
+      return envelope(detail, detail.topic_id);
     }
 
     // 8 /videos?topic_id&channel_id&source&keyword&published_after&min_outlier&min_duration&sort&order&limit&offset&format
@@ -407,6 +438,7 @@ export function handleSpyDash(url: URL, spy: SpyService): Response {
         range: { from, to },
         scope: parseEnum<DashOutlierScope>(url, 'scope', OUTLIER_SCOPES) ?? 'all',
         minMultiple: parseNum(url, 'min_multiple') ?? settings.outlierMultiple,
+        keyword: url.searchParams.get('keyword') ?? undefined,
       };
       const rows = activity.outliers(db, topicId, params);
       return maybeCsv(url, rows as unknown as Record<string, unknown>[], 'outliers')

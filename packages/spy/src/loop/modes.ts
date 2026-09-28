@@ -299,6 +299,370 @@ export interface WeeklyModeResult {
   keywordsProposed: number;
 }
 
+/** Hit video mạnh nhất của một kênh NGOÀI follow list — đầu vào quét kênh. */
+export interface OutsideHit {
+  channelId: string;
+  videoId: string;
+  title: string;
+  views: number;
+  termKey: string;
+}
+
+/** Kết quả từng keyword sau một lượt search — W1 report lẫn keyword_run_items. */
+export interface KeywordSearchItem {
+  termKey: string;
+  term: string;
+  status: 'done' | 'failed' | 'skipped_quota';
+  nResults: number | null;
+  nFollowed: number | null;
+  medianViews: number | null;
+  /** Số hit của kênh ĐANG follow vượt outlier_multiple so với baseline kênh. */
+  outliersInFollow: number;
+  error: string | null;
+}
+
+export interface KeywordSearchesOptions {
+  /** Mặc định 28 — cửa sổ "video mới" của W1. */
+  publishedAfterDays?: number;
+  /** Mặc định 50 — page size của search.list. */
+  maxResults?: number;
+  /** v14: run_id ghi vào keyword_checks (null = check của weekly W1). */
+  runId?: string | null;
+  /** Nguồn ghi topic_videos.source — 'weekly_search' (W1) hoặc 'keyword_run'. */
+  videoSource?: string;
+  /** Callback sau mỗi keyword — run dùng để ghi keyword_run_items từng bước. */
+  onItem?: (item: KeywordSearchItem) => void;
+}
+
+export interface KeywordSearchesResult {
+  /** Một dòng mỗi keyword đầu vào, theo đúng thứ tự — kể cả skipped/failed. */
+  items: KeywordSearchItem[];
+  /** Best video theo kênh ngoài follow — đưa vào scanOutsideChannels. */
+  outsideHits: Map<string, OutsideHit>;
+  /** Outlier trong follow — W2 report + nguồn n-gram W4. */
+  outliersInFollow: Array<{ videoId: string; title: string; channelTitle: string; outlierScore: number }>;
+  /** Video outlier (follow + ngoài sau quét kênh) — nguồn n-gram W4. */
+  outlierVideoIds: Array<{ videoId: string; title: string; channelTitle: string }>;
+}
+
+/**
+ * W1 tách thành hàm chia sẻ: search từng keyword (order=viewCount), ghi video
+ * của kênh follow vào topic_videos + snapshot ngày, cập nhật sức khoẻ keyword
+ * (updateKeywordCheck → keyword_checks), gom kênh ngoài follow vào outsideHits.
+ * Hết quota giữa chừng → dừng, các keyword còn lại 'skipped_quota'; keyword lỗi
+ * → item 'failed' và chạy tiếp — không bao giờ làm chết cả lượt.
+ */
+export async function runKeywordSearches(
+  ctx: ModeContext,
+  keywords: ReadonlyArray<{ termKey: string; displayTerm: string }>,
+  opts: KeywordSearchesOptions = {},
+): Promise<KeywordSearchesResult> {
+  const { store, settings } = ctx;
+  const publishedAfter = new Date(
+    Date.parse(ctx.nowIso) - (opts.publishedAfterDays ?? 28) * DAY_MS,
+  ).toISOString();
+  const maxResults = opts.maxResults ?? 50;
+  const videoSource = opts.videoSource ?? 'weekly_search';
+
+  const followedRows = store.listTopicChannelsByStatus(ctx.topicId, ['active']);
+  const followed = new Set(followedRows.map(rowChannelId));
+  // Baseline per kênh từ cột đã lưu — đỡ phải query topic_videos cho từng hit.
+  const baselineByChannel = new Map(
+    followedRows.map((r) => [
+      rowChannelId(r),
+      { medianViews: r.baselineMedianViews ?? null, reliable: (r.baselineN ?? 0) >= settings.baselineMinN },
+    ]),
+  );
+
+  const result: KeywordSearchesResult = {
+    items: [],
+    outsideHits: new Map(),
+    outliersInFollow: [],
+    outlierVideoIds: [],
+  };
+
+  for (const kw of keywords) {
+    const termKey = kw.termKey;
+    const term = kw.displayTerm || termKey;
+    const item: KeywordSearchItem = {
+      termKey, term,
+      status: 'done',
+      nResults: null, nFollowed: null, medianViews: null,
+      outliersInFollow: 0, error: null,
+    };
+    result.items.push(item);
+
+    if (ctx.quota.remaining('search') <= 0) {
+      item.status = 'skipped_quota';
+      item.error = 'Hết quota search';
+      opts.onItem?.(item);
+      continue;
+    }
+    if (!ctx.dataApi.search) {
+      item.status = 'failed';
+      item.error = 'dataApi không có search capability';
+      opts.onItem?.(item);
+      continue;
+    }
+
+    try {
+      const search = await ctx.dataApi.search({
+        q: term,
+        type: 'video',
+        order: 'viewCount',
+        maxResults,
+        regionCode: ctx.regionCode || undefined,
+        relevanceLanguage: ctx.language,
+        publishedAfter,
+      });
+      const hits = search.hits;
+      item.nResults = hits.length;
+
+      const videoIds = hits.map((h) => h.videoId).filter((v): v is string => Boolean(v));
+      const vstats = videoIds.length ? await ctx.dataApi.fetchVideoStatistics(videoIds) : new Map();
+
+      let nFollowed = 0;
+      const hitViews: number[] = [];
+      for (const hit of hits) {
+        const channelId = hit.channelId ?? vstats.get(hit.videoId ?? '')?.channelId ?? null;
+        const vs = hit.videoId ? vstats.get(hit.videoId) : undefined;
+        const views = vs?.viewCount ?? null;
+        if (views !== null) hitViews.push(views);
+        if (!channelId) continue;
+
+        if (followed.has(channelId)) {
+          nFollowed++;
+          // W2: outlier TRONG follow — so với baseline của chính kênh đó.
+          const oScore = outlierScore(views, baselineByChannel.get(channelId) ?? { medianViews: null, reliable: false });
+          if (hit.videoId && oScore !== null && oScore >= settings.outlierMultiple) {
+            item.outliersInFollow++;
+            result.outliersInFollow.push({
+              videoId: hit.videoId,
+              title: vs?.title ?? hit.title ?? hit.videoId,
+              channelTitle: vs?.channelTitle ?? hit.channelTitle ?? channelId,
+              outlierScore: oScore,
+            });
+            result.outlierVideoIds.push({ videoId: hit.videoId, title: vs?.title ?? hit.title ?? hit.videoId, channelTitle: '' });
+          }
+          // Video của kênh follow lọt qua search → vẫn ghi vào sổ để daily không bỏ sót.
+          if (hit.videoId && vs) {
+            store.upsertTopicVideo({
+              topicId: ctx.topicId,
+              videoId: hit.videoId,
+              channelId,
+              title: vs.title ?? hit.title ?? hit.videoId,
+              publishedAt: vs.publishedAt ?? hit.publishedAt,
+              durationSec: vs.durationSec,
+              thumbnailUrl: vs.thumbnailUrl ?? hit.thumbnailUrl,
+              source: videoSource,
+              foundByKeyword: termKey,
+              views: vs.viewCount,
+              likes: vs.likeCount,
+              comments: vs.commentCount,
+              capturedAt: ctx.nowIso,
+            });
+            if (vs.viewCount !== null) {
+              store.recordVideoDailyView({
+                topicId: ctx.topicId,
+                videoId: hit.videoId,
+                day: ctx.day,
+                views: vs.viewCount,
+                likes: vs.likeCount,
+                comments: vs.commentCount,
+                capturedAt: ctx.nowIso,
+              });
+            }
+          }
+        } else if (hit.videoId && views !== null && vs) {
+          // Kênh ngoài follow — giữ video "hit" mạnh nhất mỗi kênh cho quét sâu.
+          const prev = result.outsideHits.get(channelId);
+          if (!prev || views > prev.views) {
+            result.outsideHits.set(channelId, {
+              channelId,
+              videoId: hit.videoId,
+              title: vs.title ?? hit.title ?? hit.videoId,
+              views,
+              termKey,
+            });
+          }
+        }
+      }
+
+      item.nFollowed = nFollowed;
+      item.medianViews = hitViews.length ? median(hitViews) : null;
+      store.updateKeywordCheck(ctx.topicId, termKey, {
+        lastCheckedAt: ctx.nowIso,
+        lastNResults: hits.length,
+        lastNFollowed: nFollowed,
+        lastMedianViews: item.medianViews,
+        runId: opts.runId ?? null,
+      });
+    } catch (error) {
+      item.status = 'failed';
+      item.error = error instanceof Error ? error.message : String(error);
+    }
+    opts.onItem?.(item);
+  }
+  return result;
+}
+
+/** Kênh được đề xuất sau quét — W3 report lẫn counter new_candidates của run. */
+export interface ProposedChannel {
+  channelId: string;
+  title: string | null;
+  outlierScore: number;
+  baselineMedianViews: number | null;
+  foundByKeyword: string;
+}
+
+export interface ScanOutsideChannelsResult {
+  proposed: ProposedChannel[];
+  rejectedLang: number;
+  filteredDeadLottery: number;
+  /** Hit video của kênh vừa đề xuất — nguồn n-gram W4. */
+  outlierVideoIds: Array<{ videoId: string; title: string; channelTitle: string }>;
+}
+
+/**
+ * W3-scan tách thành hàm chia sẻ: quét ≤ cap kênh ngoài follow (sắp theo view
+ * hit giảm), bỏ kênh đã có trong sổ, auto-reject sai ngôn ngữ, loại dead/lottery,
+ * hit video vượt outlier_multiple lần baseline → đề xuất status='new'.
+ */
+export async function scanOutsideChannels(
+  ctx: ModeContext,
+  outsideHits: Map<string, OutsideHit>,
+  cap: number,
+  opts: { videoSource?: string } = {},
+): Promise<ScanOutsideChannelsResult> {
+  const { store, settings } = ctx;
+  const videoSource = opts.videoSource ?? 'weekly_search';
+  const result: ScanOutsideChannelsResult = {
+    proposed: [],
+    rejectedLang: 0,
+    filteredDeadLottery: 0,
+    outlierVideoIds: [],
+  };
+
+  // Kênh đã có trong sổ (mọi status) — không scan/đề xuất lại.
+  const knownChannels = new Set(
+    store
+      .listTopicChannelsByStatus(ctx.topicId, ['new', 'active', 'paused', 'rejected', 'own'])
+      .map(rowChannelId),
+  );
+  const candidates = [...outsideHits.values()]
+    .filter((h) => !knownChannels.has(h.channelId))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, cap);
+
+  if (candidates.length === 0) return result;
+  const channelStats = await ctx.dataApi.fetchChannelStatistics(candidates.map((c) => c.channelId));
+  for (const cand of candidates) {
+    const stats = channelStats.get(cand.channelId);
+    if (!stats) continue;
+    const scanned = await scanChannelVideos(ctx, stats.uploadsPlaylistId, CHANNEL_BASELINE_SCAN);
+    const langVerdict = evaluateChannelLanguage(scanned.langSample, ctx.language);
+    if (langVerdict.reject) {
+      // Contract: rejectChannelForLanguage yêu cầu dòng topic_channels đã tồn
+      // tại → insert 'new' rồi reject ngay (quyết định auto DUY NHẤT của loop).
+      store.upsertTopicChannelCandidate({
+        topicId: ctx.topicId,
+        channelId: cand.channelId,
+        title: stats.title ?? cand.channelId,
+        subscriberCount: stats.subscriberCount ?? undefined,
+        discoveredVia: 'weekly_outlier',
+        discoveredFrom: cand.termKey,
+        tickId: ctx.tickId,
+      });
+      store.rejectChannelForLanguage(
+        ctx.topicId,
+        cand.channelId,
+        JSON.stringify({
+          method: langVerdict.method,
+          decisive: langVerdict.decisive,
+          evidenceField: langVerdict.evidenceField,
+          declaredByField: langVerdict.declaredByField,
+          declaredCounts: langVerdict.declaredCounts,
+          declaredCount: langVerdict.declaredCount,
+          sampleSize: langVerdict.sampleSize,
+          majority: langVerdict.langDetected,
+        }),
+        ctx.tickId,
+      );
+      result.rejectedLang++;
+      continue;
+    }
+
+    const baselineVideos: BaselineVideoInput[] = scanned.items.map((item) => {
+      const vs = scanned.stats.get(item.videoId);
+      return {
+        views: vs?.viewCount ?? null,
+        durationSec: vs?.durationSec ?? null,
+        publishedAt: vs?.publishedAt ?? item.publishedAt,
+      };
+    });
+    const baseline = baselineOf(baselineVideos, settings);
+    // L7: dead/lottery → KHÔNG đề xuất (acceptance §6.4).
+    if (baseline.dead || baseline.lottery) {
+      result.filteredDeadLottery++;
+      continue;
+    }
+    const hitOutlier = outlierScore(cand.views, baseline);
+    if (hitOutlier === null || hitOutlier < settings.outlierMultiple) continue;
+
+    // status='new' + decisions(actor=loop,to=new) — tất cả trong contract.
+    const thumbs = scanned.items
+      .map((i) => scanned.stats.get(i.videoId)?.thumbnailUrl)
+      .filter((u): u is string => Boolean(u))
+      .slice(0, 6);
+    store.upsertTopicChannelCandidate({
+      topicId: ctx.topicId,
+      channelId: cand.channelId,
+      title: stats.title ?? cand.channelId,
+      subscriberCount: stats.subscriberCount ?? undefined,
+      discoveredVia: 'weekly_outlier',
+      discoveredFrom: cand.termKey,
+      thumbnailsJson: thumbs.length ? JSON.stringify(thumbs) : undefined,
+      langDetected: langVerdict.langDetected ?? undefined,
+      tickId: ctx.tickId,
+    });
+    store.updateChannelBaseline(ctx.topicId, cand.channelId, {
+      baselineMedianViews: baseline.medianViews,
+      baselineN: baseline.n,
+      maxViews: baseline.maxViews,
+      lastPublishedAt: newestPublishedAt(scanned.items),
+      lastCheckedAt: ctx.nowIso,
+    });
+    for (const item of scanned.items) {
+      const vs = scanned.stats.get(item.videoId);
+      if (!vs) continue;
+      store.upsertTopicVideo({
+        topicId: ctx.topicId,
+        videoId: item.videoId,
+        channelId: cand.channelId,
+        title: vs.title ?? item.title ?? item.videoId,
+        publishedAt: vs.publishedAt ?? item.publishedAt,
+        durationSec: vs.durationSec,
+        thumbnailUrl: vs.thumbnailUrl,
+        source: videoSource,
+        foundByKeyword: item.videoId === cand.videoId ? cand.termKey : null,
+        views: vs.viewCount,
+        likes: vs.likeCount,
+        comments: vs.commentCount,
+        capturedAt: ctx.nowIso,
+      });
+    }
+    result.proposed.push({
+      channelId: cand.channelId,
+      title: stats.title,
+      outlierScore: hitOutlier,
+      baselineMedianViews: baseline.medianViews,
+      foundByKeyword: cand.termKey,
+    });
+    result.outlierVideoIds.push({ videoId: cand.videoId, title: cand.title, channelTitle: '' });
+  }
+  return result;
+}
+
 export async function runWeeklyMode(ctx: ModeContext): Promise<WeeklyModeResult> {
   const { store, settings } = ctx;
   const section: WeeklyReportSection = {
@@ -316,259 +680,35 @@ export async function runWeeklyMode(ctx: ModeContext): Promise<WeeklyModeResult>
     return { section, keywordsSearched, channelsProposed: 0, keywordsProposed: 0 };
   }
 
-  const followedRows = store.listTopicChannelsByStatus(ctx.topicId, ['active']);
-  const followed = new Set(followedRows.map(rowChannelId));
-  // Baseline per kênh từ cột đã lưu — đỡ phải query topic_videos cho từng hit.
-  const baselineByChannel = new Map(
-    followedRows.map((r) => [
-      rowChannelId(r),
-      { medianViews: r.baselineMedianViews ?? null, reliable: (r.baselineN ?? 0) >= settings.baselineMinN },
-    ]),
-  );
-  // Kênh đã có trong sổ (mọi status) — không scan/đề xuất lại.
-  const knownChannels = new Set(
-    store
-      .listTopicChannelsByStatus(ctx.topicId, ['new', 'active', 'paused', 'rejected', 'own'])
-      .map(rowChannelId),
-  );
-
   // --- W1: search keyword active, xoay theo last_checked_at (null trước) ---
   const activeKeywords = store
     .listKeywordsByStatus(ctx.topicId, ['active'])
     .sort((a, b) => String(a.lastCheckedAt ?? '').localeCompare(String(b.lastCheckedAt ?? '')))
     .slice(0, settings.weeklyKeywordBudget);
 
-  const publishedAfter = new Date(Date.parse(ctx.nowIso) - 28 * DAY_MS).toISOString();
-
-  interface OutsideHit {
-    channelId: string;
-    videoId: string;
-    title: string;
-    views: number;
-    termKey: string;
-  }
-  const outsideHits = new Map<string, OutsideHit>(); // best video theo kênh
-  const outlierVideoIds: Array<{ videoId: string; title: string; channelTitle: string }> = [];
-
-  for (const kw of activeKeywords) {
-    if (ctx.quota.remaining('search') <= 0) break;
-    const termKey = kw.termKey;
-    const term = kw.displayTerm || termKey;
-
-    let hits: Awaited<ReturnType<NonNullable<typeof ctx.dataApi.search>>>['hits'] = [];
-    try {
-      const result = await ctx.dataApi.search({
-        q: term,
-        type: 'video',
-        order: 'viewCount',
-        maxResults: 50,
-        regionCode: ctx.regionCode || undefined,
-        relevanceLanguage: ctx.language,
-        publishedAfter,
-      });
-      hits = result.hits;
-    } catch {
-      continue; // keyword hỏng không được làm chết cả tick weekly
-    }
-    keywordsSearched.push(termKey);
-
-    const videoIds = hits.map((h) => h.videoId).filter((v): v is string => Boolean(v));
-    const vstats = videoIds.length ? await ctx.dataApi.fetchVideoStatistics(videoIds) : new Map();
-
-    let nFollowed = 0;
-    const hitViews: number[] = [];
-    for (const hit of hits) {
-      const channelId = hit.channelId ?? vstats.get(hit.videoId ?? '')?.channelId ?? null;
-      const vs = hit.videoId ? vstats.get(hit.videoId) : undefined;
-      const views = vs?.viewCount ?? null;
-      if (views !== null) hitViews.push(views);
-      if (!channelId) continue;
-
-      if (followed.has(channelId)) {
-        nFollowed++;
-        // W2: outlier TRONG follow — so với baseline của chính kênh đó.
-        const oScore = outlierScore(views, baselineByChannel.get(channelId) ?? { medianViews: null, reliable: false });
-        if (hit.videoId && oScore !== null && oScore >= settings.outlierMultiple) {
-          section.outliersInFollow.push({
-            videoId: hit.videoId,
-            title: vs?.title ?? hit.title ?? hit.videoId,
-            channelTitle: vs?.channelTitle ?? hit.channelTitle ?? channelId,
-            outlierScore: oScore,
-          });
-          outlierVideoIds.push({ videoId: hit.videoId, title: vs?.title ?? hit.title ?? hit.videoId, channelTitle: '' });
-        }
-        // Video của kênh follow lọt qua search → vẫn ghi vào sổ để daily không bỏ sót.
-        if (hit.videoId && vs) {
-          store.upsertTopicVideo({
-            topicId: ctx.topicId,
-            videoId: hit.videoId,
-            channelId,
-            title: vs.title ?? hit.title ?? hit.videoId,
-            publishedAt: vs.publishedAt ?? hit.publishedAt,
-            durationSec: vs.durationSec,
-            thumbnailUrl: vs.thumbnailUrl ?? hit.thumbnailUrl,
-            source: 'weekly_search',
-            foundByKeyword: termKey,
-            views: vs.viewCount,
-            likes: vs.likeCount,
-            comments: vs.commentCount,
-            capturedAt: ctx.nowIso,
-          });
-          if (vs.viewCount !== null) {
-            store.recordVideoDailyView({
-              topicId: ctx.topicId,
-              videoId: hit.videoId,
-              day: ctx.day,
-              views: vs.viewCount,
-              likes: vs.likeCount,
-              comments: vs.commentCount,
-              capturedAt: ctx.nowIso,
-            });
-          }
-        }
-      } else if (hit.videoId && views !== null && vs) {
-        // W3: kênh ngoài follow — giữ video "hit" mạnh nhất mỗi kênh.
-        const prev = outsideHits.get(channelId);
-        if (!prev || views > prev.views) {
-          outsideHits.set(channelId, {
-            channelId,
-            videoId: hit.videoId,
-            title: vs.title ?? hit.title ?? hit.videoId,
-            views,
-            termKey,
-          });
-        }
-      }
-    }
-
-    store.updateKeywordCheck(ctx.topicId, termKey, {
-      lastCheckedAt: ctx.nowIso,
-      lastNResults: hits.length,
-      lastNFollowed: nFollowed,
-      lastMedianViews: hitViews.length ? median(hitViews) : null,
-    });
+  const w1 = await runKeywordSearches(ctx, activeKeywords);
+  for (const item of w1.items) {
+    if (item.status !== 'done') continue;
+    keywordsSearched.push(item.termKey);
     section.keywordsSearched.push({
-      termKey,
-      term,
-      nResults: hits.length,
-      nFollowed,
-      medianViews: hitViews.length ? median(hitViews) : null,
+      termKey: item.termKey,
+      term: item.term,
+      nResults: item.nResults ?? 0,
+      nFollowed: item.nFollowed ?? 0,
+      medianViews: item.medianViews,
     });
   }
+  section.outliersInFollow.push(...w1.outliersInFollow);
+  const outlierVideoIds: Array<{ videoId: string; title: string; channelTitle: string }> = [
+    ...w1.outlierVideoIds,
+  ];
 
   // --- W3: quét nhanh kênh ngoài follow, ≤ weekly_new_channel_scan ---
-  const candidates = [...outsideHits.values()]
-    .filter((h) => !knownChannels.has(h.channelId))
-    .sort((a, b) => b.views - a.views)
-    .slice(0, settings.weeklyNewChannelScan);
-
-  if (candidates.length > 0) {
-    const channelStats = await ctx.dataApi.fetchChannelStatistics(candidates.map((c) => c.channelId));
-    for (const cand of candidates) {
-      const stats = channelStats.get(cand.channelId);
-      if (!stats) continue;
-      const scanned = await scanChannelVideos(ctx, stats.uploadsPlaylistId, CHANNEL_BASELINE_SCAN);
-      const langVerdict = evaluateChannelLanguage(scanned.langSample, ctx.language);
-      if (langVerdict.reject) {
-        // Contract: rejectChannelForLanguage yêu cầu dòng topic_channels đã tồn
-        // tại → insert 'new' rồi reject ngay (quyết định auto DUY NHẤT của loop).
-        store.upsertTopicChannelCandidate({
-          topicId: ctx.topicId,
-          channelId: cand.channelId,
-          title: stats.title ?? cand.channelId,
-          subscriberCount: stats.subscriberCount ?? undefined,
-          discoveredVia: 'weekly_outlier',
-          discoveredFrom: cand.termKey,
-          tickId: ctx.tickId,
-        });
-        store.rejectChannelForLanguage(
-          ctx.topicId,
-          cand.channelId,
-          JSON.stringify({
-            method: langVerdict.method,
-            decisive: langVerdict.decisive,
-            evidenceField: langVerdict.evidenceField,
-            declaredByField: langVerdict.declaredByField,
-            declaredCounts: langVerdict.declaredCounts,
-            declaredCount: langVerdict.declaredCount,
-            sampleSize: langVerdict.sampleSize,
-            majority: langVerdict.langDetected,
-          }),
-          ctx.tickId,
-        );
-        section.channelsRejectedLang++;
-        continue;
-      }
-
-      const baselineVideos: BaselineVideoInput[] = scanned.items.map((item) => {
-        const vs = scanned.stats.get(item.videoId);
-        return {
-          views: vs?.viewCount ?? null,
-          durationSec: vs?.durationSec ?? null,
-          publishedAt: vs?.publishedAt ?? item.publishedAt,
-        };
-      });
-      const baseline = baselineOf(baselineVideos, settings);
-      // L7: dead/lottery → KHÔNG đề xuất (acceptance §6.4).
-      if (baseline.dead || baseline.lottery) {
-        section.channelsFilteredDeadLottery++;
-        continue;
-      }
-      const hitOutlier = outlierScore(cand.views, baseline);
-      if (hitOutlier === null || hitOutlier < settings.outlierMultiple) continue;
-
-      // status='new' + decisions(actor=loop,to=new) — tất cả trong contract.
-      const thumbs = scanned.items
-        .map((i) => scanned.stats.get(i.videoId)?.thumbnailUrl)
-        .filter((u): u is string => Boolean(u))
-        .slice(0, 6);
-      store.upsertTopicChannelCandidate({
-        topicId: ctx.topicId,
-        channelId: cand.channelId,
-        title: stats.title ?? cand.channelId,
-        subscriberCount: stats.subscriberCount ?? undefined,
-        discoveredVia: 'weekly_outlier',
-        discoveredFrom: cand.termKey,
-        thumbnailsJson: thumbs.length ? JSON.stringify(thumbs) : undefined,
-        langDetected: langVerdict.langDetected ?? undefined,
-        tickId: ctx.tickId,
-      });
-      store.updateChannelBaseline(ctx.topicId, cand.channelId, {
-        baselineMedianViews: baseline.medianViews,
-        baselineN: baseline.n,
-        maxViews: baseline.maxViews,
-        lastPublishedAt: newestPublishedAt(scanned.items),
-        lastCheckedAt: ctx.nowIso,
-      });
-      for (const item of scanned.items) {
-        const vs = scanned.stats.get(item.videoId);
-        if (!vs) continue;
-        store.upsertTopicVideo({
-          topicId: ctx.topicId,
-          videoId: item.videoId,
-          channelId: cand.channelId,
-          title: vs.title ?? item.title ?? item.videoId,
-          publishedAt: vs.publishedAt ?? item.publishedAt,
-          durationSec: vs.durationSec,
-          thumbnailUrl: vs.thumbnailUrl,
-          source: 'weekly_search',
-          foundByKeyword: item.videoId === cand.videoId ? cand.termKey : null,
-          views: vs.viewCount,
-          likes: vs.likeCount,
-          comments: vs.commentCount,
-          capturedAt: ctx.nowIso,
-        });
-      }
-      section.newChannelsProposed.push({
-        channelId: cand.channelId,
-        title: stats.title,
-        outlierScore: hitOutlier,
-        baselineMedianViews: baseline.medianViews,
-        foundByKeyword: cand.termKey,
-      });
-      outlierVideoIds.push({ videoId: cand.videoId, title: cand.title, channelTitle: '' });
-    }
-  }
+  const w3 = await scanOutsideChannels(ctx, w1.outsideHits, settings.weeklyNewChannelScan);
+  section.newChannelsProposed.push(...w3.proposed);
+  section.channelsRejectedLang += w3.rejectedLang;
+  section.channelsFilteredDeadLottery += w3.filteredDeadLottery;
+  outlierVideoIds.push(...w3.outlierVideoIds);
 
   // --- W4: n-gram chung của ≥2 video outlier → keyword pending ---
   // Mỗi video outlier là một nhóm (key = videoId) → nChannels = số video chứa cụm.

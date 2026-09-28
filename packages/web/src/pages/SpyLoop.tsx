@@ -5,7 +5,7 @@
  *   SpyLoopPage
  *     TopicSwitcher
  *     LoopKpiRow + TickActions + DryRunPlanModal
- *     tabs: InboxTab | KeywordBoardTab | FollowTab | ReportsTab
+ *     tabs: SpyBoardTab | InboxTab | KeywordBoardTab | FollowTab | ReportsTab
  *   LoopSettingsPanel (bottom of page)
  */
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -24,9 +24,10 @@ import {
   type Topic,
 } from '../api.ts';
 import { href } from '../router.ts';
-import { CustomSelect, Field, Input } from '../components/ui/Forms.tsx';
+import { Field, Input } from '../components/ui/Forms.tsx';
 import { Stack, Row, Panel } from '../components/ui/Layout.tsx';
 import { Chip } from '../components/ui/Chip.tsx';
+import { SpyBoardTab } from '../features/spy-board/SpyBoardTab.tsx';
 
 // ─── dev mock flag ────────────────────────────────────────────────────────────
 // Query params are embedded in the hash (#/spy/loop?mock=1), not location.search
@@ -253,26 +254,29 @@ function P0CorpusIntelligencePanel({ topicId }: { topicId: string }) {
   );
 }
 
-// ─── TopicSwitcher ────────────────────────────────────────────────────────────
+// ─── TopicSwitcher: mỗi topic = 1 tab trong menu, scroll ngang khi nhiều ─────
 function TopicSwitcher({ topics, current, onChange }: { topics: Topic[]; current: string; onChange: (id: string) => void }) {
-  const options = topics.map((t) => ({ value: t.topicId, label: t.label, description: t.status !== 'active' ? t.status : undefined }));
+  const pick = (id: string) => {
+    onChange(id);
+    // Giữ deep-link ?topic= trong hash router
+    location.hash = href({ name: 'spy-loop', topic: id }).replace(/^#/, '');
+  };
   return (
-    <Row style={{ gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
-      <span class="muted" style={{ fontSize: '0.85rem' }}>Chủ đề:</span>
-      <CustomSelect<string>
-        value={current}
-        onChange={(val) => {
-          onChange(val);
-          // Sync URL
-          const u = new URL(location.href);
-          u.searchParams.set('topic', val);
-          // For hash router we embed query in hash
-          location.hash = href({ name: 'spy-loop', topic: val }).replace(/^#/, '');
-        }}
-        options={options}
-        placeholder="Chọn chủ đề…"
-      />
-    </Row>
+    <div class="spy-topic-tabs" role="tablist" aria-label="Chủ đề spy">
+      {topics.map((t) => (
+        <button
+          key={t.topicId}
+          role="tab"
+          aria-selected={t.topicId === current}
+          class={`spy-topic-tab ${t.topicId === current ? 'active' : ''}`}
+          onClick={() => pick(t.topicId)}
+          title={`${t.topicId} — ${t.status}`}
+        >
+          {t.label}
+          {t.status !== 'active' && <span class="spy-topic-badge">{t.status}</span>}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1365,13 +1369,13 @@ function LoopSettingsPanel() {
 }
 
 // ─── SpyLoopPage ──────────────────────────────────────────────────────────────
-type Tab = 'inbox' | 'keywords' | 'follow' | 'reports';
+type Tab = 'board' | 'inbox' | 'keywords' | 'follow' | 'reports';
 
 export function SpyLoopPage({ topic }: { topic?: string }) {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [currentTopicId, setCurrentTopicId] = useState<string>(topic ?? '');
   const [loopStatus, setLoopStatus] = useState<LoopStatus | null>(null);
-  const [activeTab, setActiveTab] = useState<Tab>('inbox');
+  const [activeTab, setActiveTab] = useState<Tab>('board');
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   // Load topics
@@ -1410,6 +1414,7 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
   }, [currentTopicId]);
 
   const tabs: { id: Tab; label: string }[] = [
+    { id: 'board', label: 'Board' },
     { id: 'inbox', label: 'Inbox' },
     { id: 'keywords', label: 'Keywords' },
     { id: 'follow', label: 'Follow List' },
@@ -1463,6 +1468,7 @@ export function SpyLoopPage({ topic }: { topic?: string }) {
             ))}
           </div>
 
+          {activeTab === 'board' && <SpyBoardTab topicId={currentTopicId} />}
           {activeTab === 'inbox' && <InboxTab topicId={currentTopicId} />}
           {activeTab === 'keywords' && <KeywordBoardTab topicId={currentTopicId} />}
           {activeTab === 'follow' && <FollowTab topicId={currentTopicId} />}

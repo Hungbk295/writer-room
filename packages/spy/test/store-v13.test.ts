@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
-import { DEFAULT_TOPIC_SETTINGS, SpyStore } from '../src/store.ts';
+import { DEFAULT_TOPIC_SETTINGS, SCHEMA_VERSION, SpyStore } from '../src/store.ts';
 import { AppError } from '../src/errors.ts';
 
 let tempDir = '';
@@ -178,7 +178,7 @@ describe('v12 → v13 migration', () => {
     openStores.push(store);
 
     const raw = new Database(path, { readonly: true });
-    expect(Number((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(13);
+    expect(Number((raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version)).toBe(SCHEMA_VERSION);
 
     const kws = raw.prepare('SELECT term_key, status, origin FROM topic_keywords ORDER BY term_key').all() as Array<Record<string, unknown>>;
     const kwStatus = Object.fromEntries(kws.map((k) => [String(k['term_key']), String(k['status'])]));
@@ -238,7 +238,7 @@ describe('v12 → v13 migration', () => {
     const store = await setupStore();
     const raw = new Database(store.databasePath, { readonly: true });
     const version = (raw.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(13);
+    expect(version).toBe(SCHEMA_VERSION);
     const tkCols = raw.prepare('PRAGMA table_info(topic_keywords)').all().map((c) => String((c as Record<string, unknown>)['name']));
     expect(tkCols).toContain('origin');
     expect(tkCols).toContain('last_checked_at');
