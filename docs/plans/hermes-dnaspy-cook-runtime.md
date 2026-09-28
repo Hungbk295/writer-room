@@ -6,28 +6,35 @@ Trạng thái: **đề xuất ngày 28/9/2026, chưa triển khai**. Mở rộng
 Mục tiêu của chủ: sau khi Writer viết xong bài, Hermes điều chuyển bài sang
 DNA Spy để cook ngay, và Hermes là agent chính bên trong DNA Spy.
 
-## 0. v0 tối thiểu — "khởi tạo Hermes trong DNA Spy là đủ"
+## 0. v0 tối thiểu — "khởi tạo Hermes trong DNA Spy là đủ" ✅ đã làm
 
 Theo phản hồi của chủ (28/9): bản đầy đủ ở các mục dưới là kiến trúc đích;
-**v0 chỉ cần hai việc** để Hermes làm agent trong DNA Spy:
+v0 đã triển khai trong DNASPY (xem decision
+`docs/decisions/0017-hermes-control-bridge.md` bên repo đó):
 
-1. **Nối MCP**: `~/.hermes/config.yaml` thêm `mcp_servers.dnaspy` chạy stdio
-   `bun hermes/server.ts` (hoặc giữ nguyên nếu đã cấu hình). Server này đã có
-   sẵn `prepare_workspace`, `import_results`, `pipeline_status`, `list_cook_projects`.
-   Hermes tự đọc `prompt.md`, làm việc trong workspace dir và ghi `output/*.json`
-   — tức là thay Claude Code/Agy trong các stage agentic mà **không cần**
-   `run_claude_workspace` (tool này chỉ cần sửa path hardcode hoặc bỏ).
-2. **Bridge nhỏ cho stage deterministic**: một HTTP listener trong sidecar
-   (loopback + token) allowlist `cook.run`, `cook.lint`, `cook.cancel`,
-   `cook.get` — vì `cook.run` hiện chỉ đi qua stdin RPC từ Tauri, không có
-   đường nào khác gọi `CookJobManager` từ ngoài. Nếu chấp nhận bấm tay các
-   stage images/tts/render trong app thì v0 không cần cả bridge.
+1. **Control bridge** `sidecar/src/control-bridge.ts`: HTTP loopback
+   127.0.0.1:4199 (`DNASPY_CONTROL_PORT` đổi, `DNASPY_CONTROL=off` tắt),
+   bearer token bền `<dataDir>/config/control-token.txt`, discovery
+   `<dataDir>/_control.json`. `POST /mcp` nói MCP JSON-RPC; allowlist
+   `cook_create/save_script/prepare/import_stage/lint/makeup/clean_tts/run/
+   cancel/board_frame/image_one/tts_one` + `dna_options` + `ping/projects/
+   project`. Mọi call đi qua `RpcServer.invoke` → cùng handler đã bọc license.
+2. **`hermes/server.ts` thu về read-only** (DB mở readonly): gỡ toàn bộ tool
+   orchestration (`prepare_workspace`, `run_claude_workspace`,
+   `workspace_status`, `import_results`, `pipeline_status`) — Hermes tự làm
+   agent trong workspace, không spawn Claude/Agy; mọi mutation qua bridge.
+3. **Hermes config + skill**: `~/.hermes/config.yaml` thêm `mcp_servers.dnaspy`
+   trỏ `http://127.0.0.1:4199/mcp` (token trong `_control.json`); skill
+   `integrations/hermes/skills/dna-cook` mô tả luồng create → script → board
+   workspace → lint → makeup → images/tts/render → retry lẻ.
 
-Lưu ý duy nhất của v0: `import_results` trong `hermes/server.ts` ghi DB từ
-process ngoài app — chấp nhận được khi một mình chủ vận hành và không chạm cùng
-project trên UI đồng thời; khi có hai nơi ghi thì bắt buộc qua bridge (§2).
-Các phần còn lại của tài liệu (CookTask ledger, scoped token, event cursor) là
-hardening khi cần — không phải điều kiện để Hermes bắt đầu cook.
+Khác so với phác thảo ban đầu của mục này: stdio server không còn đường ghi
+DB (đúng luật app-owned), và workspace agentic đi qua `cook_prepare`/
+`cook_import_stage` in-app thay vì prompt copy trong `hermes/server.ts`.
+
+Các phần còn lại của tài liệu (CookTask ledger, scoped token, event cursor,
+auto-handoff Writer→Cook) là hardening khi cần — không phải điều kiện để
+Hermes bắt đầu cook.
 
 ## 1. Kết quả cần đạt và ranh giới
 
