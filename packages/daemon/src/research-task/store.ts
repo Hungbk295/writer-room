@@ -134,6 +134,28 @@ export class ResearchTaskStore {
       return { delivered: rows.length, throughCursor: through, receipt };
     })();
   }
+
+  /** Exact-row ack: delivers ONLY the row at `cursor`. A HOLD/unknown row
+   *  earlier in the stream stays undelivered (no false ack), so a relay can
+   *  confirm row N without implicitly confirming row N-1. Idempotent — an
+   *  already-delivered row returns delivered:0. */
+  outboxAckOne(actor: Actor, arg: { audience: 'worker' | 'operator'; cursor: number; receipt?: string }) {
+    if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
+    const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
+    if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
+    if (audience === 'operator' && actor.role !== 'operator') fail('FORBIDDEN', 'operator audience requires operator token');
+    const cursor = asInt(arg.cursor, 'cursor', 1);
+    const receipt = typeof arg.receipt === 'string' && arg.receipt.trim() ? arg.receipt.trim() : null;
+    const row = this.db.query("SELECT o.id FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.id=? AND o.audience=? AND o.delivered_at IS NULL").get(cursor, audience) as any;
+    if (!row) return { delivered: 0, cursor, receipt };
+    const scope = audience === 'worker' ? (actor as { profile?: string }).profile ?? '' : actor.subject;
+    const allowed = audience === 'worker'
+      ? this.db.query("SELECT 1 FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.id=? AND t.worker_profile=?").get(cursor, scope)
+      : this.db.query("SELECT 1 FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.id=? AND t.owner_id=?").get(cursor, scope);
+    if (!allowed) fail('FORBIDDEN', 'row outside actor scope');
+    this.db.query('UPDATE research_outbox SET delivered_at=?, receipt=? WHERE id=?').run(iso(), receipt, cursor);
+    return { delivered: 1, cursor, receipt };
+  }
   private command<T>(id: string, key: string, operation: string, payload: unknown, fn: () => T): T {
     asString(key,'commandId'); const hash = sha(JSON.stringify([operation,payload]));
     return this.db.transaction(() => {

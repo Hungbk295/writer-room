@@ -427,3 +427,35 @@ test('rebind of a cancel_requested orphan preserves the cancel intent', () => {
     expect(cancelled.phase).toBe('cancelled');
   } finally { store.close(); }
 });
+
+test('outbox ack_one: exact-row ack leaves an earlier HOLD row undelivered, survives reopen', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-ack1-'));
+  const dbPath = join(root, 'task.sqlite');
+  const artRoot = join(root, 'artifacts');
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  try {
+    // Two tasks → two operator-feed rows (row1 = the "held" one, row2 = sent).
+    const t1 = store.create(owner, { commandId: 'c1', taskId: 't1', mode: 'k', input: {} });
+    const t2 = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {} });
+    store.bind(owner, 't1', { commandId: 'b1', expectedVersion: t1.version, profile: 'research' });
+    store.bind(owner, 't2', { commandId: 'b2', expectedVersion: t2.version, profile: 'research' });
+    const rows = store.outboxPoll(owner, { audience: 'operator' });
+    expect(rows.length).toBe(2);
+    const [row1, row2] = rows;
+    // Ack only row2 — row1 must stay undelivered.
+    const ack = store.outboxAckOne(owner, { audience: 'operator', cursor: row2!.cursor, receipt: 'tg-msg-2' });
+    expect(ack.delivered).toBe(1);
+    const rest = store.outboxPoll(owner, { audience: 'operator' });
+    expect(rest.map((r) => r.cursor)).toEqual([row1!.cursor]);
+    // Replay is idempotent; a worker still cannot ack the operator feed.
+    expect(store.outboxAckOne(owner, { audience: 'operator', cursor: row2!.cursor }).delivered).toBe(0);
+    expect(() => store.outboxAckOne(worker, { audience: 'operator', cursor: row1!.cursor })).toThrow();
+  } finally { store.close(); }
+  const reopened = new ResearchTaskStore(dbPath, artRoot);
+  try {
+    const rest = reopened.outboxPoll(owner, { audience: 'operator' });
+    expect(rest.length).toBe(1); // row1 survived restart, still undelivered
+  } finally { reopened.close(); }
+});
