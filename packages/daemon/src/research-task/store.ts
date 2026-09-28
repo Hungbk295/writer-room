@@ -74,7 +74,13 @@ export class ResearchTaskStore {
       CREATE TABLE IF NOT EXISTS research_artifacts (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, round_index INTEGER NOT NULL, type TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, validation_state TEXT NOT NULL, UNIQUE(task_id,path));
       CREATE TABLE IF NOT EXISTS research_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, audience TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT, receipt TEXT);
       CREATE INDEX IF NOT EXISTS research_outbox_undelivered ON research_outbox(audience,id) WHERE delivered_at IS NULL;
+      CREATE TABLE IF NOT EXISTS research_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    // Outbox epoch: daemon-issued UUID minted once per research DB, stable over
+    // process restart, different when the DB is replaced. Relays must key
+    // transport receipts by epoch+audience+cursor — a fresh DB at the same URL
+    // reuses cursor ids, so cursor alone is not a stable delivery key.
+    this.db.query("INSERT OR IGNORE INTO research_meta VALUES('outbox_epoch',?)").run(randomUUID());
     // Migration: v3 adds fact_gate_version (P3 factual gate policy, fixed at
     // create by the operator — 1 = structural only, 2 = verified claims).
     const cols = this.db.query("PRAGMA table_info(research_tasks)").all() as any[];
@@ -121,7 +127,23 @@ export class ResearchTaskStore {
     const rows = audience === 'worker'
       ? this.db.query("SELECT o.id,o.task_id,o.kind,o.payload_json,o.created_at FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='worker' AND o.delivered_at IS NULL AND o.id>? AND t.worker_profile=? ORDER BY o.id LIMIT ?").all(cursor, scope, limit)
       : this.db.query("SELECT o.id,o.task_id,o.kind,o.payload_json,o.created_at FROM research_outbox o JOIN research_tasks t ON t.id=o.task_id WHERE o.audience='operator' AND o.delivered_at IS NULL AND o.id>? AND t.owner_id=? ORDER BY o.id LIMIT ?").all(cursor, scope, limit);
-    return (rows as any[]).map((r) => ({ cursor: r.id, taskId: r.task_id, kind: r.kind, payload: JSON.parse(r.payload_json), at: r.created_at }));
+    const epoch = this.outboxEpoch();
+    return (rows as any[]).map((r) => ({ epoch, cursor: r.id, taskId: r.task_id, kind: r.kind, payload: JSON.parse(r.payload_json), at: r.created_at }));
+  }
+
+  /** Daemon-issued outbox epoch for this DB instance. Relay keys transport
+   *  receipts by epoch+audience+cursor and must fail closed when the epoch is
+   *  absent/changes — it means the research DB was replaced under the same
+   *  URL and previously stored receipts do not map to new rows. */
+  outboxIdentity(actor: Actor, arg: { audience: 'worker' | 'operator' }) {
+    if (actor.role === 'viewer') fail('FORBIDDEN', 'viewer has no Research access');
+    const audience = arg.audience === 'worker' ? 'worker' : arg.audience === 'operator' ? 'operator' : fail('INVALID', 'audience must be worker|operator');
+    if (audience === 'worker' && actor.role !== 'worker') fail('FORBIDDEN', 'worker audience requires worker token');
+    if (audience === 'operator' && actor.role !== 'operator') fail('FORBIDDEN', 'operator audience requires operator token');
+    return { epoch: this.outboxEpoch(), audience };
+  }
+  private outboxEpoch(): string {
+    return (this.db.query("SELECT value FROM research_meta WHERE key='outbox_epoch'").get() as any).value as string;
   }
 
   /** Delivery receipt: marks outbox rows ≤ throughCursor as delivered. Replay is

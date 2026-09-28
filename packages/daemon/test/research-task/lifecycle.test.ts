@@ -460,6 +460,46 @@ test('outbox ack_one: exact-row ack leaves an earlier HOLD row undelivered, surv
   } finally { reopened.close(); }
 });
 
+test('outbox epoch: stable across restart, different on fresh DB, scoped + in poll rows', () => {
+  const mk = () => {
+    const root = mkdtempSync(join(tmpdir(), 'research-epoch-'));
+    return { root, store: new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts')) };
+  };
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const a = mk();
+  let e1 = '';
+  try {
+    e1 = a.store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    expect(e1).toMatch(/^[0-9a-f-]{36}$/);
+    // Poll rows carry the epoch so the relay can key epoch+audience+cursor.
+    const t = a.store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {} });
+    a.store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const feed = a.store.outboxPoll(owner, { audience: 'operator' });
+    expect(feed[0]!.epoch).toBe(e1);
+    // Cross-audience scope still enforced.
+    expect(() => a.store.outboxIdentity(worker, { audience: 'operator' })).toThrow();
+    a.store.close();
+    // Reopen same DB → same epoch (stable across process restart).
+    const reopened = new ResearchTaskStore(join(a.root, 'task.sqlite'), join(a.root, 'artifacts'));
+    try { expect(reopened.outboxIdentity(owner, { audience: 'operator' }).epoch).toBe(e1); }
+    finally { reopened.close(); }
+  } catch (e) { try { a.store.close(); } catch {} throw e; }
+  // Fresh DB (new data dir at the "same URL") → different epoch: old receipts
+  // keyed by epoch+cursor cannot ack rows of the new DB.
+  const b = mk();
+  let e2 = '';
+  try { e2 = b.store.outboxIdentity(owner, { audience: 'operator' }).epoch; }
+  finally { b.store.close(); }
+  const c = mk();
+  try {
+    const e3 = c.store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    expect(e2).not.toBe(e1 ?? '');
+    expect(e3).not.toBe(e2);
+    expect(e3).not.toBe(e1);
+  } finally { c.store.close(); }
+});
+
 // ── P3: factGateVersion=2 — deterministic claim validation vs Spy snapshot ──
 
 const SPY_RUN = {
