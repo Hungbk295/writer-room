@@ -100,9 +100,14 @@ với `manifest.videos[].youtubeVideoId` của Spy run tương ứng.
 - Metric whitelist = đúng field `spy.getRunManifest` (snapshot đã lưu, KHÔNG
   query YouTube live): run `{videoCount,status,kind,createdAt,completedAt}`;
   video `{viewCount,durationSec,rank,transcriptSegments,title,channelTitle,transcriptStatus,publishedAt}`.
-- So sánh deterministic: numeric `eq|gte|lte` (finite), categorical chỉ `eq`
-  (normalize trim/ws/case), date ISO-parse epoch `eq|gte|lte`. Snapshot
-  null/missing → `EVIDENCE` (không suy ra 0); metric/type sai → `INVALID`.
+- So sánh deterministic: count metrics (`videoCount/viewCount/rank/
+  transcriptSegments`) = nonnegative **safe integer** cho cả claim lẫn
+  snapshot; `durationSec` = finite nonnegative; categorical chỉ `eq`
+  (normalize trim/ws/case); date = **strict RFC3339 UTC**
+  (`YYYY-MM-DDTHH:MM:SS[.fff]Z`, regex + canonical roundtrip — reject
+  `'2020'`, locale date, offset `+07:00`, ngày không tồn tại như
+  `2025-02-30`), epoch `eq|gte|lte`. Snapshot null/missing → `EVIDENCE`
+  (không suy ra 0); metric/type sai → `INVALID`.
 - `fact` sai → `EVIDENCE` chặn completion. `inference`/`unverifiable` chỉ là
   label, KHÔNG tính verified. Summary `{factVerified,factFailed,inference,unverifiable}`
   do **daemon tự tính** và đính vào event `completed` — không tin field

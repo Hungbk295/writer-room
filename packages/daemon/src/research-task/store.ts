@@ -397,22 +397,26 @@ export class ResearchTaskStore {
       if(videoId===undefined){snap=metric==='status'?info.status:(info.run as any)?.[metric];}
       else{if(!info.videoIds.includes(videoId))fail('EVIDENCE',`claim ${cid}: video ${videoId} not in Spy run ${runId}`);snap=((info.videos??[]).find(v=>v.youtubeVideoId===videoId) as Record<string,unknown>|undefined)?.[metric];}
       if(snap===undefined||snap===null)fail('EVIDENCE',`claim ${cid}: Spy snapshot has no value for metric ${metric}`);
-      if(mtype==='num'){
-        if(typeof c.value!=='number'||!Number.isFinite(c.value))fail('INVALID',`claim ${cid}: value must be a finite number`);
-        if(typeof snap!=='number'||!Number.isFinite(snap))fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not numeric`);
+      if(mtype==='int'||mtype==='num'){
+        // int = nonnegative safe integer (count metrics); num = finite
+        // nonnegative (durationSec). Applies to BOTH claim value and snapshot.
+        const isInt=mtype==='int';
+        const okVal=isInt?Number.isSafeInteger(c.value)&&c.value>=0:typeof c.value==='number'&&Number.isFinite(c.value)&&c.value>=0;
+        if(!okVal)fail('INVALID',`claim ${cid}: value must be a ${isInt?'nonnegative safe integer':'finite nonnegative number'}`);
+        const okSnap=isInt?Number.isSafeInteger(snap):typeof snap==='number'&&Number.isFinite(snap);
+        if(!okSnap)fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a ${isInt?'safe integer':'number'}`);
         const s=snap as number;const ok=op==='eq'?s===c.value:op==='gte'?s>=c.value:s<=c.value;
         if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
       }else if(mtype==='cat'){
-        if(op!=='eq')fail('INVALID',`claim ${cid}: categorical metrics only support eq`);
         if(typeof c.value!=='string')fail('INVALID',`claim ${cid}: value must be a string`);
         if(typeof snap!=='string')fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a string`);
         const ok=normStr(snap as string)===normStr(c.value);
         if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot='${snap}' expected '${c.value}'`);}
-      }else{ // date: strict ISO-UTC parse, epoch compare
-        if(typeof c.value!=='string'||Number.isNaN(Date.parse(c.value)))fail('INVALID',`claim ${cid}: value must be an ISO date string`);
-        if(typeof snap!=='string'||Number.isNaN(Date.parse(snap)))fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a date`);
-        const a=Date.parse(snap as string),b=Date.parse(c.value);
-        const ok=op==='eq'?a===b:op==='gte'?a>=b:a<=b;
+      }else{ // date: strict RFC3339 UTC only, epoch compare
+        const a=parseIsoUtc(snap);if(a===null)fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not strict ISO-UTC`);
+        const b=parseIsoUtc(c.value);if(b===null)fail('INVALID',`claim ${cid}: value must be strict ISO-UTC (YYYY-MM-DDTHH:MM:SS[.fff]Z)`);
+        const at=a as number,bt=b as number;
+        const ok=op==='eq'?at===bt:op==='gte'?at>=bt:at<=bt;
         if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
       }
     }
@@ -422,7 +426,17 @@ export class ResearchTaskStore {
   }
 }
 const normStr=(s:string)=>s.trim().replace(/\s+/g,' ').toLowerCase();
+// Strict RFC3339 UTC: YYYY-MM-DDTHH:MM:SS[.fff]Z only — rejects bare years,
+// locale strings, offsets, and impossible calendar dates (roundtrip check).
+const ISO_UTC=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?Z$/;
+const parseIsoUtc=(s:unknown):number|null=>{
+  if(typeof s!=='string')return null;const m=ISO_UTC.exec(s);if(!m)return null;
+  const ms=m[7]?Math.round(parseFloat(m[7])*1000):0;
+  const d=new Date(Date.UTC(+m[1]!,+m[2]!-1,+m[3]!,+m[4]!,+m[5]!,+m[6]!,ms));
+  if(d.getUTCFullYear()!==+m[1]!||d.getUTCMonth()!==+m[2]!-1||d.getUTCDate()!==+m[3]!||d.getUTCHours()!==+m[4]!||d.getUTCMinutes()!==+m[5]!||d.getUTCSeconds()!==+m[6]!)return null;
+  return d.getTime();
+};
 const CLAIM_METRICS={
-  run:{videoCount:'num',status:'cat',kind:'cat',createdAt:'date',completedAt:'date'},
-  video:{viewCount:'num',durationSec:'num',rank:'num',transcriptSegments:'num',title:'cat',channelTitle:'cat',transcriptStatus:'cat',publishedAt:'date'},
+  run:{videoCount:'int',status:'cat',kind:'cat',createdAt:'date',completedAt:'date'},
+  video:{viewCount:'int',durationSec:'num',rank:'int',transcriptSegments:'int',title:'cat',channelTitle:'cat',transcriptStatus:'cat',publishedAt:'date'},
 };

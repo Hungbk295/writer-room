@@ -567,8 +567,16 @@ test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/val
     [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v2' }, metric: 'viewCount', op: 'gte', value: 1 }] }, /no value/], // null snapshot ≠ 0
     [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v-ghost' }, metric: 'viewCount', op: 'eq', value: 1 }] }, /not in Spy run/],
     [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-other' }, metric: 'videoCount', op: 'eq', value: 2 }] }, /not a recorded task ref/],
-    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: 'not-a-date' }] }, /ISO date/],
-    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.NaN }] }, /finite number/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: 'not-a-date' }] }, /strict ISO-UTC/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2020' }] }, /strict ISO-UTC/], // Date.parse accepts bare years — we don't
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '01/02/2025' }] }, /strict ISO-UTC/], // locale date
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2025-01-01T00:00:00+07:00' }] }, /strict ISO-UTC/], // offset ≠ UTC
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2025-02-30T00:00:00Z' }] }, /strict ISO-UTC/], // impossible calendar date
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.NaN }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 1.5 }] }, /nonnegative safe integer/], // count metrics are ints
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.MAX_SAFE_INTEGER + 1 }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: -1 }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'durationSec', op: 'eq', value: -5 }] }, /finite nonnegative/],
   ];
   for (const [manifest, re] of cases) {
     const f = v2Flow(manifest);
