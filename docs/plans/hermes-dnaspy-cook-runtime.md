@@ -6,6 +6,29 @@ Trạng thái: **đề xuất ngày 28/9/2026, chưa triển khai**. Mở rộng
 Mục tiêu của chủ: sau khi Writer viết xong bài, Hermes điều chuyển bài sang
 DNA Spy để cook ngay, và Hermes là agent chính bên trong DNA Spy.
 
+## 0. v0 tối thiểu — "khởi tạo Hermes trong DNA Spy là đủ"
+
+Theo phản hồi của chủ (28/9): bản đầy đủ ở các mục dưới là kiến trúc đích;
+**v0 chỉ cần hai việc** để Hermes làm agent trong DNA Spy:
+
+1. **Nối MCP**: `~/.hermes/config.yaml` thêm `mcp_servers.dnaspy` chạy stdio
+   `bun hermes/server.ts` (hoặc giữ nguyên nếu đã cấu hình). Server này đã có
+   sẵn `prepare_workspace`, `import_results`, `pipeline_status`, `list_cook_projects`.
+   Hermes tự đọc `prompt.md`, làm việc trong workspace dir và ghi `output/*.json`
+   — tức là thay Claude Code/Agy trong các stage agentic mà **không cần**
+   `run_claude_workspace` (tool này chỉ cần sửa path hardcode hoặc bỏ).
+2. **Bridge nhỏ cho stage deterministic**: một HTTP listener trong sidecar
+   (loopback + token) allowlist `cook.run`, `cook.lint`, `cook.cancel`,
+   `cook.get` — vì `cook.run` hiện chỉ đi qua stdin RPC từ Tauri, không có
+   đường nào khác gọi `CookJobManager` từ ngoài. Nếu chấp nhận bấm tay các
+   stage images/tts/render trong app thì v0 không cần cả bridge.
+
+Lưu ý duy nhất của v0: `import_results` trong `hermes/server.ts` ghi DB từ
+process ngoài app — chấp nhận được khi một mình chủ vận hành và không chạm cùng
+project trên UI đồng thời; khi có hai nơi ghi thì bắt buộc qua bridge (§2).
+Các phần còn lại của tài liệu (CookTask ledger, scoped token, event cursor) là
+hardening khi cần — không phải điều kiện để Hermes bắt đầu cook.
+
 ## 1. Kết quả cần đạt và ranh giới
 
 Từ Telegram, một lệnh viết bài chạy liền mạch tới video: Writer run → DONE +
