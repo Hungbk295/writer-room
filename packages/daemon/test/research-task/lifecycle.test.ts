@@ -546,9 +546,9 @@ const SPY_RUN = {
   ],
 };
 /** Runs a v2 task to the completeTask boundary; returns the thrown error or the completed task + emitted summary event. */
-const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2) => {
+const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2, spyInfo: any = SPY_RUN) => {
   const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
-  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => id === 'spy-1' ? SPY_RUN : null });
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => id === 'spy-1' ? spyInfo : null });
   const owner = { role: 'operator' as const, subject: 'o' };
   const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
   const lease = () => new Date(Date.now() + 60_000).toISOString();
@@ -616,6 +616,16 @@ test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/val
   for (const [manifest, re] of cases) {
     const f = v2Flow(manifest);
     try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
+    finally { f.store.close(); }
+  }
+});
+
+test('P3: negative/non-integer Spy snapshot values are EVIDENCE, not silently verified', () => {
+  // viewCount=-5 would satisfy 'lte 999' — the snapshot sanity guard must fire first.
+  const neg = { ...SPY_RUN, videos: [{ youtubeVideoId: 'v1', viewCount: -5, durationSec: -1, publishedAt: '2024-06-01T00:00:00Z', title: 'A', channelTitle: 'C', rank: 1, transcriptStatus: 'ok', transcriptSegments: 1 }] };
+  for (const [metric, value] of [['viewCount', 999], ['durationSec', 999]] as const) {
+    const f = v2Flow({ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric, op: 'lte', value }] }, 2, neg);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(/snapshot.*not/); }
     finally { f.store.close(); }
   }
 });

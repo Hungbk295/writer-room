@@ -408,7 +408,7 @@ export class ResearchTaskStore {
         const isInt=mtype==='int';
         const okVal=isInt?Number.isSafeInteger(c.value)&&c.value>=0:typeof c.value==='number'&&Number.isFinite(c.value)&&c.value>=0;
         if(!okVal)fail('INVALID',`claim ${cid}: value must be a ${isInt?'nonnegative safe integer':'finite nonnegative number'}`);
-        const okSnap=isInt?Number.isSafeInteger(snap):typeof snap==='number'&&Number.isFinite(snap);
+        const okSnap=isInt?Number.isSafeInteger(snap)&&(snap as number)>=0:typeof snap==='number'&&Number.isFinite(snap)&&(snap as number)>=0;
         if(!okSnap)fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a ${isInt?'safe integer':'number'}`);
         const s=snap as number;const ok=op==='eq'?s===c.value:op==='gte'?s>=c.value:s<=c.value;
         if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
