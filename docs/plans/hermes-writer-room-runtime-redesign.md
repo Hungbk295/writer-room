@@ -1,6 +1,12 @@
 # Hermes làm agent runtime cho Writer Room — kế hoạch triển khai
 
-Trạng thái: **CONDITIONAL PASS cho kiến trúc đích; chưa đủ điều kiện cắt bridge hoặc chuyển Writer stage**. Ngày 28/9/2026. Đây là kế hoạch, chưa triển khai.
+Trạng thái: **CONDITIONAL PASS cho kiến trúc đích; chưa đủ điều kiện cắt bridge hoặc chuyển Writer stage**. Ngày 28/9/2026.
+
+**Trạng thái triển khai** (chi tiết: `research-task-p1-status.md`):
+
+- **P1 ResearchTask core — ĐÃ XONG, leader-accepted** (`377bb05`): store durable, state machine, budget/reservation, lease/claim, idempotent commands, event/outbox nền, ACL token, queue `research`, wr-writer không có Research grant.
+- **P2 backend daemon — ĐÃ XONG, leader-accepted** (`8dc474a`..`0e598d5`): outbox durable cursor + at-least-once receipt + `ack_one` exact-row + `outbox_epoch`/`expectedEpoch` TOCTOU guard; Spy quota fail-closed có trừ outstanding cross-task; per-task `artifactDir` projection + confinement; artifact supersede recovery; cancel-preserved rebind. **P2 Telegram relay vẫn là mock/design phía dev-1 — chưa chứng minh send thật.**
+- **P3 foundation — ĐÃ XONG (leader-accepted), FULL P3 MỞ** (`dec3cca`,`0e598d5`): `factGateVersion=2` fixed lúc create; structured `claims[]` verify deterministic theo Spy snapshot (strict ISO-UTC, safe-integer counts, daemon-computed summary). **Prose ngoài claims[] chưa được check — full P3 cần report format link kết luận định lượng tới claimId đã verify (design pending).**
 
 ## 1. Kết quả cần đạt và ranh giới
 
@@ -66,9 +72,9 @@ Publish là phase riêng: định nghĩa đích, draft/approval token gắn owne
 | Phase | Deliverable | Gate bắt buộc |
 | --- | --- | --- |
 | P0 — proof Hermes (1–2 ngày) | Pin version Hermes; cấu hình 3 profile thử; kiểm Telegram routing, profile-targeted handoff, MCP allowlist, terminal.cwd, secret isolation, restart. | Trace chứng minh task chạy dưới Research profile và không thấy Writer/publish tool; nếu không có cross-profile delegation, chốt transport thay thế trước P1. |
-| P1 — ResearchTask core (3–5 ngày) | Store/migration, transaction ledger, event cursor, ACL, MCP schemas, artifact registry. | Concurrent reserve không vượt 13/1.300/quota; duplicate command/round không tăng budget; worker token không impersonate owner. |
-| P2 — một vertical slice (3–5 ngày) | Research worker chạy 1 vòng qua Spy, checkpoint, report, status Telegram; Hermes skill dùng API mới. | Spy run/video IDs kiểm được; restart gateway/daemon rồi tiếp tục không lặp search đã settle; pause/resume/cancel có ack thật. |
-| P3 — full niche loop (3–5 ngày) | Adapt skill và scripts, 13-round cap, progress event, report validator, coverage. | Chạy một run thật hoặc fixture Spy replay đủ nhiều vòng; con số báo cáo đối chiếu; quota exhaustion tạo partial report có nhãn. |
+| P1 — ResearchTask core (3–5 ngày) **daemon-side DONE** | Store/migration, transaction ledger, event cursor, ACL, MCP schemas, artifact registry. | Concurrent reserve không vượt 13/1.300/quota; duplicate command/round không tăng budget; worker token không impersonate owner. |
+| P2 — một vertical slice (3–5 ngày) **daemon backend DONE; Telegram relay + full worker slice còn mock/pending** | Research worker chạy 1 vòng qua Spy, checkpoint, report, status Telegram; Hermes skill dùng API mới. | Spy run/video IDs kiểm được; restart gateway/daemon rồi tiếp tục không lặp search đã settle; pause/resume/cancel có ack thật. |
+| P3 — full niche loop (3–5 ngày) **foundation `factGateVersion=2` DONE; full report-conclusion gate MỞ** | Adapt skill và scripts, 13-round cap, progress event, report validator, coverage. | Chạy một run thật hoặc fixture Spy replay đủ nhiều vòng; con số báo cáo đối chiếu; quota exhaustion tạo partial report có nhãn. |
 | P4 — Writer integration (2–4 ngày cho W1; W2/W3 estimate sau proof) | Operator orchestration W1, sau đó Writer stage adapter theo W2/W3. | Gate đỏ không thành DONE; worker khác không settle turn; restart/timeout không tạo hai stage result. |
 | P5 — cutover (1–2 ngày) | Feature flags, rollback runbook, bỏ bridge chỉ sau khi không còn task active; cập nhật docs/diagram. | Một task Telegram E2E Research → Writer → signoff thử, audit đủ ID/hash/receipt; rollback không mất task. |
 
