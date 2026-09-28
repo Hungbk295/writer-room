@@ -546,13 +546,13 @@ const SPY_RUN = {
   ],
 };
 /** Runs a v2 task to the completeTask boundary; returns the thrown error or the completed task + emitted summary event. */
-const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2, spyInfo: any = SPY_RUN) => {
+const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2, spyInfo: any = SPY_RUN, report?: unknown) => {
   const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
   const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => id === 'spy-1' ? spyInfo : null });
   const owner = { role: 'operator' as const, subject: 'o' };
   const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
   const lease = () => new Date(Date.now() + 60_000).toISOString();
-  const done = { task: null as any, event: null as any, error: null as Error | null, store, owner, worker };
+  const done = { task: null as any, event: null as any, error: null as Error | null, store, owner, worker, root };
   try {
     const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, factGateVersion: gateVersion });
     store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
@@ -560,9 +560,12 @@ const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2, spyIn
     const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
     const rc = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [{ videoId: 'v1', spyRunId: 'spy-1' }, { videoId: 'v2', spyRunId: 'spy-1' }] });
     writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'], ...manifest }));
-    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report body');
+    // v2 report defaults to conclusions covering every fact claim exactly once.
+    const factIds = (Array.isArray(manifest.claims) ? manifest.claims : []).filter((c: any) => c?.kind === 'fact').map((c: any) => c.id);
+    const rep = report ?? { formatVersion: 1, conclusions: [{ id: 'k1', claimIds: factIds }] };
+    writeFileSync(join(root, 'artifacts', 't1', 'report.json'), typeof rep === 'string' ? rep : JSON.stringify(rep));
     const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
-    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.json') });
     try {
       done.task = store.completeTask(worker, 't1', { commandId: 'done', expectedVersion: a2.version });
       done.event = store.events(owner, 't1').find((e: any) => e.type === 'completed');
@@ -579,13 +582,62 @@ test('P3 happy path: fact claims verified against Spy snapshot; daemon computes 
     { id: 'c4', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'title', op: 'eq', value: 'alpha  title' },
     { id: 'c5', kind: 'inference', subject: { spyRunId: 'spy-1' }, metric: 'viewCount', note: 'views likely bot-inflated' },
     { id: 'c6', kind: 'unverifiable', subject: { spyRunId: 'spy-1' }, note: 'channel authority' },
-  ] });
+  ] }, 2, SPY_RUN, { formatVersion: 1, conclusions: [
+    { id: 'k1', claimIds: ['c1', 'c2'] }, { id: 'k2', claimIds: ['c3', 'c4'] },
+  ], unverifiedAnalysis: 'channel authority is my opinion — not verified' });
   try {
     expect(f.error).toBeNull();
     expect(f.task.phase).toBe('completed');
     // Daemon-computed summary — the manifest's bogus factVerified:999 is ignored.
-    expect(JSON.parse(f.event.payload_json).claims).toEqual({ factVerified: 4, factFailed: 0, inference: 1, unverifiable: 1 });
+    const payload = JSON.parse(f.event.payload_json);
+    expect(payload.claims).toEqual({ factVerified: 4, factFailed: 0, inference: 1, unverifiable: 1 });
+    expect(typeof payload.rendered.sha256).toBe('string');
+    // Operator reads the pinned rendered report.
+    const rep = f.store.reportGet(f.owner, 't1');
+    expect(rep.claims.factVerified).toBe(4);
+    expect(rep.renderedMarkdown).toContain('videoCount = 2');
+    expect(rep.renderedMarkdown).toContain('viewCount ≥ 500');
+    expect(rep.renderedMarkdown).toContain('snapshot: 1000'); // value from Spy snapshot, not worker
+    expect(rep.unverifiedAnalysis).toContain('not verified');
+    expect(rep.renderedMarkdown).not.toContain('not verified'); // analysis NOT in verified markdown
+    // Worker and cross-owner reads denied.
+    expect(() => f.store.reportGet(f.worker, 't1')).toThrow();
+    expect(() => f.store.reportGet({ role: 'operator', subject: 'other-owner' }, 't1')).toThrow();
+    // Reopen serves identical pinned bytes.
+    const reopened = new ResearchTaskStore(join(f.root, 'task.sqlite'), join(f.root, 'artifacts'), { spyRunInfo: () => ({ ...SPY_RUN, run: { ...SPY_RUN.run, videoCount: 99 } }) });
+    try {
+      const rep2 = reopened.reportGet(f.owner, 't1');
+      expect(rep2.sha256).toBe(rep.sha256);
+      expect(rep2.renderedMarkdown).toBe(rep.renderedMarkdown); // Spy drift after completion cannot alter pinned output
+    } finally { reopened.close(); }
   } finally { f.store.close(); }
+});
+
+test('P3 report gate: conclusion-v1 schema — no worker text, claim refs exactly-once', () => {
+  const goodClaims = [
+    { id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 },
+    { id: 'c5', kind: 'inference', subject: { spyRunId: 'spy-1' } },
+  ];
+  const cases: [unknown, RegExp][] = [
+    // worker-supplied template/text on a conclusion — the old hole
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'], text: 'doubled overnight' }] }, /not allowed/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'], template: '{c1} grew 300%' }] }, /not allowed/],
+    [{ formatVersion: 1, conclusions: [], extra: 'x' }, /not allowed/],
+    [{ formatVersion: 2, conclusions: [{ id: 'k1', claimIds: ['c1'] }] }, /formatVersion must be 1/],
+    [{ formatVersion: 1, conclusions: [] }, /non-empty/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c5'] }, { id: 'k2', claimIds: ['c1'] }] }, /not a passed fact/], // inference ref
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['ghost'] }, { id: 'k2', claimIds: ['c1'] }] }, /not a passed fact/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1', 'c1'] }] }, /more than once/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [] }, { id: 'k2', claimIds: ['c1'] }] }, /non-empty/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }, { id: 'k1', claimIds: ['c1'] }] }, /duplicate conclusion id/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [] }] }, /non-empty|not referenced/], // c1 omitted entirely
+    ['not json', /valid JSON/], // invalid JSON report
+  ];
+  for (const [rep, re] of cases) {
+    const f = v2Flow({ claimsVersion: 2, claims: goodClaims }, 2, SPY_RUN, rep);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
+    finally { f.store.close(); }
+  }
 });
 
 test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/value, missing snapshot', () => {

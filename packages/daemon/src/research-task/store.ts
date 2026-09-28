@@ -75,6 +75,7 @@ export class ResearchTaskStore {
       CREATE TABLE IF NOT EXISTS research_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, audience TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT, receipt TEXT);
       CREATE INDEX IF NOT EXISTS research_outbox_undelivered ON research_outbox(audience,id) WHERE delivered_at IS NULL;
       CREATE TABLE IF NOT EXISTS research_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS research_rendered_reports (task_id TEXT PRIMARY KEY, content_json TEXT NOT NULL, rendered_markdown TEXT NOT NULL, sha256 TEXT NOT NULL, claim_summary_json TEXT NOT NULL, created_at TEXT NOT NULL);
     `);
     // Outbox epoch: daemon-issued UUID minted once per research DB, stable over
     // process restart, different when the DB is replaced. Relays must key
@@ -359,7 +360,8 @@ export class ResearchTaskStore {
       const manifest=arts.find(x=>x.type==='manifest');const report=arts.find(x=>x.type==='report');
       let manifestRefs:string[]=[];let manifestObj:any=null;try{manifestObj=JSON.parse(readFileSync(manifest.path,'utf8'));const m=manifestObj;if(!m||typeof m!=='object'||!Array.isArray(m.spyRunIds)||!m.spyRunIds.every((x:unknown)=>typeof x==='string'))fail('EVIDENCE','manifest.spyRunIds must be a string array');manifestRefs=m.spyRunIds;}catch(e){if(e instanceof ResearchTaskError)throw e;fail('EVIDENCE','manifest is not valid JSON');}
       for(const ref of spyRefs)if(!manifestRefs.includes(ref))fail('EVIDENCE',`manifest does not reference Spy run ${ref}`);
-      if(!readFileSync(report.path,'utf8').trim())fail('EVIDENCE','report is empty');
+      const reportRaw=readFileSync(report.path,'utf8');
+      if(!reportRaw.trim())fail('EVIDENCE','report is empty');
       // P3 v2 fact gate: policy fixed at create() by the operator — a v2 task
       // requires claimsVersion=2 + structured claims[]; omitting it cannot
       // downgrade the task to structural-only checks. Summary counts are
@@ -367,19 +369,52 @@ export class ResearchTaskStore {
       // Scope: only whitelisted manifest metrics are verified against the Spy
       // stored snapshot; prose outside claims[] is NOT checked — this is not
       // "100% fact check".
-      let claimsSummary:Record<string,number>|undefined;
-      if(row.fact_gate_version===2){if(!this.spyRunInfo)fail('EVIDENCE','fact gate requires Spy source-of-truth verifier');claimsSummary=this.validateClaims(manifestObj,spyRefs,runInfos);}
-      this.bump(id,arg.expectedVersion,{phase:'completed'});this.event(id,'completed',claimsSummary?{claims:claimsSummary}:{});return this.get(actor,id);});
+      let claimsSummary:Record<string,number>|undefined;let renderedPayload:Record<string,unknown>|undefined;
+      if(row.fact_gate_version===2){
+        if(!this.spyRunInfo)fail('EVIDENCE','fact gate requires Spy source-of-truth verifier');
+        const v=this.validateClaims(manifestObj,spyRefs,runInfos);claimsSummary=v.summary;
+        // conclusion-v1 report: JSON {formatVersion:1, conclusions:[{id,claimIds}],
+        // unverifiedAnalysis?}. Worker picks claim ids + order ONLY — no text,
+        // no template, no numeric literals. Every passed fact must be referenced
+        // exactly once across all conclusions.
+        const rep=(()=>{try{return JSON.parse(reportRaw);}catch{fail('EVIDENCE','v2 report must be valid JSON');}})();
+        if(!rep||typeof rep!=='object'||Array.isArray(rep))fail('EVIDENCE','v2 report must be a JSON object');
+        for(const k of Object.keys(rep))if(k!=='formatVersion'&&k!=='conclusions'&&k!=='unverifiedAnalysis')fail('INVALID',`report field '${k}' not allowed`);
+        if(rep.formatVersion!==1)fail('EVIDENCE','report.formatVersion must be 1');
+        if(rep.unverifiedAnalysis!==undefined&&typeof rep.unverifiedAnalysis!=='string')fail('INVALID','unverifiedAnalysis must be a string');
+        const cons=rep.conclusions;
+        if(!Array.isArray(cons)||!cons.length)fail('EVIDENCE','report.conclusions must be non-empty');
+        if(cons.length>500)fail('INVALID','conclusions exceed 500');
+        const cids=new Set<string>();const used=new Set<string>();
+        for(const con of cons){
+          if(!con||typeof con!=='object'||Array.isArray(con))fail('INVALID','conclusion must be an object');
+          for(const k of Object.keys(con))if(k!=='id'&&k!=='claimIds')fail('INVALID',`conclusion field '${k}' not allowed — conclusions carry claim references only`);
+          const kid=asString(con.id,'conclusion.id');if(cids.has(kid))fail('INVALID',`duplicate conclusion id: ${kid}`);cids.add(kid);
+          if(!Array.isArray(con.claimIds)||!con.claimIds.length)fail('EVIDENCE',`conclusion ${kid}: claimIds must be non-empty`);
+          for(const x of con.claimIds){const ref=asString(x,'claimId');if(!v.passed.has(ref))fail('EVIDENCE',`conclusion ${kid}: claim ${ref} is not a passed fact claim`);if(used.has(ref))fail('EVIDENCE',`claim ${ref} referenced more than once`);used.add(ref);}
+        }
+        for(const fid of v.passed.keys())if(!used.has(fid))fail('EVIDENCE',`passed fact claim ${fid} is not referenced by any conclusion`);
+        // Render canonical sentences + persist pinned bytes in the SAME
+        // transaction as phase→completed — rollback covers both.
+        const md=this.renderVerifiedReport(cons,v.passed,runInfos);
+        const digest=sha(md);
+        const content={formatVersion:1,conclusions:cons.map((con:any)=>({id:con.id,claimIds:con.claimIds})),unverifiedAnalysis:rep.unverifiedAnalysis??null};
+        this.db.query('INSERT INTO research_rendered_reports VALUES(?,?,?,?,?,?)').run(id,JSON.stringify(content),md,digest,JSON.stringify(claimsSummary),iso());
+        renderedPayload={claims:claimsSummary,rendered:{sha256:digest}};
+      }
+      this.bump(id,arg.expectedVersion,{phase:'completed'});this.event(id,'completed',renderedPayload??(claimsSummary?{claims:claimsSummary}:{}));return this.get(actor,id);});
   }
   /** P3 claims validator. Deterministic — no prose parsing. Returns
-   *  daemon-computed summary {factVerified,factFailed,inference,unverifiable}.
-   *  Comparisons are pinned to the stored Spy snapshot, never live YouTube. */
-  private validateClaims(manifest:any, spyRefs:string[], runs:Map<string,SpyRunInfo>):Record<string,number>{
+   *  daemon-computed summary + the PASSED fact claims (id → validated claim +
+   *  snapshot value) for the conclusion renderer. Comparisons are pinned to
+   *  the stored Spy snapshot, never live YouTube. */
+  private validateClaims(manifest:any, spyRefs:string[], runs:Map<string,SpyRunInfo>):{summary:Record<string,number>;passed:Map<string,{spyRunId:string;videoId?:string;metric:string;op:string;value:unknown;snapshot:unknown}>}{
     if(manifest.claimsVersion!==2)fail('EVIDENCE','task factGateVersion=2 requires manifest claimsVersion=2');
     const claims=manifest.claims;
     if(!Array.isArray(claims)||!claims.length)fail('EVIDENCE','claims[] must be non-empty on a v2 task');
     if(claims.length>500)fail('INVALID','claims[] exceeds 500');
     const ids=new Set<string>();const summary={factVerified:0,factFailed:0,inference:0,unverifiable:0};const failures:string[]=[];let facts=0;
+    const passed=new Map<string,{spyRunId:string;videoId?:string;metric:string;op:string;value:unknown;snapshot:unknown}>();
     for(const c of claims){
       if(!c||typeof c!=='object'||Array.isArray(c))fail('INVALID','claim must be an object');
       const cid=asString(c.id,'claim.id');if(ids.has(cid))fail('INVALID',`duplicate claim id: ${cid}`);ids.add(cid);
@@ -411,25 +446,58 @@ export class ResearchTaskStore {
         const okSnap=isInt?Number.isSafeInteger(snap)&&(snap as number)>=0:typeof snap==='number'&&Number.isFinite(snap)&&(snap as number)>=0;
         if(!okSnap)fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a ${isInt?'safe integer':'number'}`);
         const s=snap as number;const ok=op==='eq'?s===c.value:op==='gte'?s>=c.value:s<=c.value;
-        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
+        if(ok){summary.factVerified++;passed.set(cid,{spyRunId:runId,videoId,metric,op,value:c.value,snapshot:snap});}else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
       }else if(mtype==='cat'){
         if(typeof c.value!=='string')fail('INVALID',`claim ${cid}: value must be a string`);
         if(typeof snap!=='string')fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not a string`);
         const ok=normStr(snap as string)===normStr(c.value);
-        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot='${snap}' expected '${c.value}'`);}
+        if(ok){summary.factVerified++;passed.set(cid,{spyRunId:runId,videoId,metric,op,value:c.value,snapshot:snap});}else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot='${snap}' expected '${c.value}'`);}
       }else{ // date: strict RFC3339 UTC only, epoch compare
         const a=parseIsoUtc(snap);if(a===null)fail('EVIDENCE',`claim ${cid}: snapshot ${metric} is not strict ISO-UTC`);
         const b=parseIsoUtc(c.value);if(b===null)fail('INVALID',`claim ${cid}: value must be strict ISO-UTC (YYYY-MM-DDTHH:MM:SS[.fff]Z)`);
         const at=a as number,bt=b as number;
         const ok=op==='eq'?at===bt:op==='gte'?at>=bt:at<=bt;
-        if(ok)summary.factVerified++;else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
+        if(ok){summary.factVerified++;passed.set(cid,{spyRunId:runId,videoId,metric,op,value:c.value,snapshot:snap});}else{summary.factFailed++;failures.push(`${cid}: ${metric} snapshot=${snap} expected ${op} ${c.value}`);}
       }
     }
     if(!facts)fail('EVIDENCE','v2 manifest requires at least one fact claim');
     if(summary.factFailed)fail('EVIDENCE',`fact claims failed vs Spy snapshot: ${failures.join('; ')}`);
-    return summary;
+    return {summary,passed};
+  }
+  /** Deterministic renderer: one canonical sentence per passed fact claim,
+   *  grouped by conclusion order. Worker supplies claim ids/order only —
+   *  every value/string interpolated here comes from the validated claim or
+   *  the Spy snapshot. Spy-sourced strings are Markdown-escaped. */
+  private renderVerifiedReport(conclusions:any[], passed:Map<string,{spyRunId:string;videoId?:string;metric:string;op:string;value:unknown;snapshot:unknown}>, runs:Map<string,SpyRunInfo>):string{
+    const OPSYM:Record<string,string>={eq:'=',gte:'≥',lte:'≤'};
+    const out=['# Verified conclusions','','Every value below is sourced from a validated Spy snapshot claim.',''];
+    for(const con of conclusions){
+      out.push(`## ${mdEsc(con.id)}`);
+      for(const ref of con.claimIds as string[]){
+        const f=passed.get(ref)!;const info=runs.get(f.spyRunId)!;
+        const at=info.run?.completedAt??info.run?.createdAt??'unknown';
+        const scope=f.videoId!==undefined?`video ${mdEsc(f.videoId)} in run ${mdEsc(f.spyRunId)}`:`run ${mdEsc(f.spyRunId)}`;
+        out.push(`- ${scope}: ${mdEsc(f.metric)} ${OPSYM[f.op]} ${fmtClaimVal(f.value)} (snapshot: ${fmtClaimVal(f.snapshot)}; run snapshot at ${mdEsc(String(at))}).`);
+      }
+      out.push('');
+    }
+    return out.join('\n');
+  }
+  /** Operator read of the pinned rendered report — completed v2 tasks only.
+   *  Serves stored bytes from research_rendered_reports; never re-renders from
+   *  live Spy data, so post-completion snapshot drift cannot alter output. */
+  reportGet(actor:Actor,id:string){
+    const row=this.task(id);
+    if(actor.role!=='operator'||row.owner_id!==actor.subject)fail('FORBIDDEN','report read is operator-owner scoped');
+    if(row.phase!=='completed')fail('PHASE','task not completed');
+    const rep=this.db.query('SELECT * FROM research_rendered_reports WHERE task_id=?').get(id) as any;
+    if(!rep)fail('NOT_FOUND','no rendered report for this task');
+    const content=JSON.parse(rep.content_json);
+    return {taskId:id,sha256:rep.sha256,renderedMarkdown:rep.rendered_markdown,claims:JSON.parse(rep.claim_summary_json),conclusions:content.conclusions,unverifiedAnalysis:content.unverifiedAnalysis,createdAt:rep.created_at};
   }
 }
+const mdEsc=(s:string)=>s.replace(/[\\`*_[\]|<>\n\r]/g,' ');
+const fmtClaimVal=(v:unknown)=>typeof v==='string'?`'${mdEsc(v)}'`:String(v);
 const normStr=(s:string)=>s.trim().replace(/\s+/g,' ').toLowerCase();
 // Strict RFC3339 UTC: YYYY-MM-DDTHH:MM:SS[.fff]Z only — rejects bare years,
 // locale strings, offsets, and impossible calendar dates (roundtrip check).

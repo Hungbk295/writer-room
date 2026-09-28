@@ -113,13 +113,31 @@ với `manifest.videos[].youtubeVideoId` của Spy run tương ứng.
   do **daemon tự tính** và đính vào event `completed` — không tin field
   `factVerified` tự khai trong manifest.
 
+### conclusion-v1 report (full-P3 enforceable surface)
+
+- Task v2 bắt buộc report artifact là JSON `{formatVersion:1, conclusions:[{id,
+  claimIds}], unverifiedAnalysis?}`; unknown top-level field → `INVALID`.
+  Conclusion chỉ mang `{id, claimIds}` — worker chọn claim ids + thứ tự,
+  KHÔNG text/template/literals. Mọi `claimId` phải là fact đã pass; mỗi passed
+  fact được tham chiếu **đúng một lần** (không bỏ sót, không lặp).
+- Daemon render mỗi claim thành 1 câu canonical (renderer hữu hạn, escape
+  Markdown cho string từ Spy, kèm run/video id + snapshot timestamp của run
+  đó). Persist `research_rendered_reports` TRONG CÙNG transaction với
+  `phase→completed` + event — rollback cover cả hai, không ghi file canonical.
+- `research_report_get` (operator-owner scoped, completed only) trả bytes đã
+  pin + sha256 + summary + `unverifiedAnalysis` (riêng, không nối vào
+  verified markdown). Snapshot Spy đổi sau completion không ảnh hưởng output.
+- Claim chính xác: "mọi value trong verified conclusions đến từ claim đã
+  validate theo Spy snapshot" — không claim prose/analysis đúng.
+
 ## Tests
 
-`packages/daemon/test/research-task/{store,lifecycle}.test.ts` — 24 tests:
+`packages/daemon/test/research-task/{store,lifecycle}.test.ts` — 28 tests:
 idempotency/budget, ACL scope, queue claim + worker isolation, lease expiry →
 mark_unknown → rebind, cancel release reservation, instruct boundary,
 crash/restart cursor, hard gate (fake/running/ghost-video/tamper), MCP
 role-filter + E2E call chain, outbox poll/ack/ack_one, quota fail-closed +
 cross-task aggregate, artifactDir projection/confinement, supersede,
-cancel-preserved rebind, P3 v2 claims (happy path + 14 reject cases +
-downgrade attempt + v1 compat).
+cancel-preserved rebind, P3 v2 claims (happy path + reject cases +
+downgrade attempt + v1 compat + conclusion-v1 report gate + pinned
+rendered report read/immutability), outbox epoch + expectedEpoch TOCTOU.
