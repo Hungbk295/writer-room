@@ -265,7 +265,7 @@ export class McpResearchServer {
         inputSchema: { type: 'object', properties: { audience: { type: 'string', enum: ['worker', 'operator'] }, cursor: { type: 'integer' }, receipt: { type: 'string' }, expectedEpoch: { type: 'string', description: 'Epoch từ research_outbox_identity/poll row — bắt buộc cho relay; mismatch → EPOCH, không ack.' } }, required: ['audience', 'cursor'] },
         handler: (a, args) => store.outboxAckOne(a, { audience: reqStr(args, 'audience') as 'worker' | 'operator', cursor: reqInt(args, 'cursor'), receipt: optStr(args, 'receipt'), expectedEpoch: optStr(args, 'expectedEpoch') }) },
       { name: 'research_report_get', role: 'operator',
-        description: 'Đọc rendered report đã pin (chỉ task completed, owner-scoped). Trả {sha256, renderedMarkdown, claims summary, conclusions, unverifiedAnalysis} — bytes trong DB, không render lại từ Spy live.',
+        description: 'Đọc rendered report đã pin (chỉ task completed, owner-scoped). Trả {sha256, renderedMarkdown, claims summary, conclusions} — bytes trong DB, không render lại từ Spy live. unverifiedAnalysis KHÔNG trả mặc định; chỉ khi includeUnverified=true.',
         inputSchema: { type: 'object', properties: { taskId: TASK, includeUnverified: { type: 'boolean', description: 'default false — unverifiedAnalysis chỉ trả khi true' } }, required: ['taskId'] },
         handler: (a, args) => store.reportGet(a, taskId(args), { includeUnverified: args['includeUnverified'] === true }) },
       { name: 'research_task_complete', role: 'worker',
