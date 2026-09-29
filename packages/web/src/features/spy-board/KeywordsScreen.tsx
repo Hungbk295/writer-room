@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { api, type BoardRunDetail, type SpyKeywordRunResponse } from '../../api.ts';
 import { loadKeywords, loadRunDetail } from './data.ts';
+import { PromptComposer, validTemplates } from './PromptComposer.tsx';
 import {
   Badge,
   Icon,
@@ -36,6 +37,7 @@ export function KeywordsScreen({ topicId, niche, niches, refreshKey, onRunFinish
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => setChecked(new Set()), [topicId, filter]);
 
+  const [composing, setComposing] = useState(false);
   const selectable = rows.filter((k) => !k.lockedUntil && k.status !== 'rejected');
   const allChecked = selectable.length > 0 && selectable.every((k) => checked.has(k.termKey));
   const toggle = (key: string) => {
@@ -62,7 +64,21 @@ export function KeywordsScreen({ topicId, niche, niches, refreshKey, onRunFinish
             {niches.map((n) => <option key={n ?? '_none'} value={n ?? '_none'}>{nicheLabel(n)}</option>)}
           </select>
         </label>
+        <button class="sb-btn secondary" onClick={() => setComposing(!composing)}>
+          <Icon name="sparkles" size={16} />Soạn prompt
+        </button>
       </div>
+      {composing && (
+        <PromptComposer
+          topicId={topicId}
+          templates={validTemplates('keywords', { niche: filter })}
+          niche={filter}
+          selection={{ termKeys: [...checked] }}
+          summary={checked.size > 0 ? `${checked.size} keyword đã tick.` : 'Chưa tick keyword nào — agent đọc toàn bộ keyword của ngách.'}
+          emptyHint="Chọn một ngách ở bộ lọc (không phải “Tất cả ngách”) để soạn prompt."
+          onClose={() => setComposing(false)}
+        />
+      )}
 
       <LoadState state={state} empty={!state.loading && !state.error && rows.length === 0} />
       {rows.length > 0 && (

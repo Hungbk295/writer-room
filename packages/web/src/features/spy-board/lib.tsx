@@ -85,6 +85,10 @@ const ICONS = {
   chevron: 'M6 9l6 6 6-6',
   plus: 'M12 5v14M5 12h14',
   play: 'M5 3l14 9-14 9V3z',
+  check: 'M20 6L9 17l-5-5',
+  copy: 'M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+  sparkles: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z',
+  bot: 'M12 8V4H8M4 12a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6zM2 15h2M20 15h2M9 14v2M15 14v2',
 } as const;
 
 export type IconName = keyof typeof ICONS;

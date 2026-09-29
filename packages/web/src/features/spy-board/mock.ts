@@ -4,6 +4,9 @@
  * lượt chạy có mục bỏ qua).
  */
 import type {
+  AgentSelection,
+  AgentTemplate,
+  BoardAgentTask,
   BoardChannelRow,
   BoardEnvelope,
   BoardKeywordRow,
@@ -111,3 +114,111 @@ export const MOCK_RUN_DETAIL: BoardRunDetail = {
     { target: 'passive_income_ideas', status: 'done', nResults: 50, nNew: 4, medianViews: 88_000, outliersFound: 0, skipReason: null, error: null },
   ],
 };
+
+// ── Phiếu việc agent ────────────────────────────────────────────────────────
+
+const TEMPLATE_LABEL: Record<AgentTemplate, string> = {
+  compare_niches: 'So sánh tệp',
+  outlier_patterns: 'Phân tích outlier',
+  audience_pains: 'Nỗi đau khán giả',
+  keyword_ideas: 'Đề xuất keyword',
+  next_steps: 'Lượt tiếp theo',
+};
+
+const SUBMIT_EXAMPLE: Record<AgentTemplate, string> = {
+  compare_niches: '{ "ranking": [{ "niche": "<group_key>", "verdict": "choose|maybe|drop", "reason": "…" }], "pick": null, "missingEvidence": ["…"] }',
+  outlier_patterns: '{ "patterns": [{ "name": "…", "description": "…", "videoIds": ["<video_id>"] }], "titleTemplates": ["…"] }',
+  audience_pains: '{ "pains": [{ "pain": "…", "frequency": "high|medium|low", "quotes": [{ "videoId": "<video_id>", "text": "…" }] }], "questions": ["…"] }',
+  keyword_ideas: '{ "stop": [{ "termKey": "<term_key>", "reason": "…" }], "try": [{ "term": "…", "reason": "…", "evidenceVideoIds": ["<video_id>"] }] }',
+  next_steps: '{ "discover": [{ "termKey": "<term_key>", "reason": "…", "priority": 1 }], "deepdive": [], "follow": [] }',
+};
+
+/** Prompt giả nhưng đúng dạng server soạn: prompt_id, danh sách ID, dòng spy_board_submit. */
+export function mockPromptText(promptId: string, template: AgentTemplate, niche: string | null | undefined, selection: AgentSelection, note: string | null): string {
+  const nicheArg = niche === undefined ? null : niche === null ? '_none' : niche;
+  const lines = [
+    `[Spy Board · phiếu ${promptId} · ${TEMPLATE_LABEL[template]}]`,
+    `Topic: finance-vi${nicheArg ? ` · Ngách: ${nicheArg}${nicheArg === '_none' ? ' (chưa gán)' : ''}` : ''}`,
+  ];
+  if (selection.niches?.length) lines.push(`Ngách đã chọn: ${selection.niches.map((n) => n ?? '_none').join(', ')}`);
+  if (selection.videoIds?.length) lines.push(`Video đã chọn (${selection.videoIds.length}): ${selection.videoIds.join(', ')}`);
+  if (selection.termKeys?.length) lines.push(`Keyword đã chọn (${selection.termKeys.length}): ${selection.termKeys.join(', ')}`);
+  if (note) lines.push(`Ghi chú của người dùng: ${note}`);
+  lines.push(
+    '',
+    'Dùng MCP Writer Room Spy (tool spy_board_*). Gọi spy_board_metrics trước để hiểu đúng định nghĩa chỉ số.',
+    '(mock) Việc cần làm: đọc dữ liệu bằng spy_board_scorecard / spy_board_videos / spy_board_keywords rồi đề xuất.',
+    '',
+    `Kết thúc: gọi spy_board_submit với prompt_id="${promptId}" và result đúng khuôn JSON sau (không thêm trường):`,
+    SUBMIT_EXAMPLE[template],
+  );
+  return lines.join('\n');
+}
+
+const task = (
+  promptId: string, template: AgentTemplate, niche: string | null, selection: AgentSelection,
+  hoursAgo: number, note: string | null, result: BoardAgentTask['result'],
+): BoardAgentTask => ({
+  promptId, topicId: 'finance-vi', template, label: TEMPLATE_LABEL[template], niche, selection, note,
+  promptText: mockPromptText(promptId, template, template === 'compare_niches' ? undefined : niche, selection, note),
+  status: result ? 'submitted' : 'pending',
+  createdAt: ago(hoursAgo),
+  result,
+  submittedBy: result ? 'claude-code' : null,
+  submittedAt: result ? ago(hoursAgo - 0.2) : null,
+});
+
+export const MOCK_TASKS: BoardAgentTask[] = [
+  task('p_a1b2c3d4e5f6', 'next_steps', 'side-hustle', { termKeys: ['make_money_online_2026'] }, 0.5, 'Ưu tiên tăng cỡ mẫu kênh nhỏ', null),
+  task('p_10a1b2c3d4e5', 'compare_niches', null, { niches: ['side-hustle', 'debt-payoff', 'retire-early'] }, 5, 'Chọn tệp để làm 5 video đầu', {
+    ranking: [
+      { niche: 'side-hustle', verdict: 'choose', reason: 'Sàn view 4.150, 23 kênh nhỏ, 6 kênh outlier khác nhau (3 tin cậy), đủ luật dừng.' },
+      { niche: 'debt-payoff', verdict: 'maybe', reason: 'Sàn 2.300 nhưng mới 14/20 kênh nhỏ, sàn giảm 6% so với tuần trước.' },
+      { niche: 'retire-early', verdict: 'drop', reason: 'Chỉ 6 kênh nhỏ, 1 kênh lặp outlier, chưa đủ bằng chứng.' },
+    ],
+    pick: 'side-hustle',
+    missingEvidence: ['debt-payoff cần thêm 6 kênh nhỏ để đạt luật dừng', 'retire-early chưa có outlier nào ở kênh có mức thường tin cậy'],
+  }),
+  task('p_20b2c3d4e5f6', 'outlier_patterns', 'side-hustle', { videoIds: ['dQw4w9WgXcQ', 'M7lc1UVf-VE', 'aqz-KE-bpKQ'] }, 26, null, {
+    patterns: [
+      { name: 'Thử thách có con số', description: 'Tiêu đề nêu số ngày/số tiền và cam kết "Real Numbers"; kể theo nhật ký, lặp ở kênh khác nhau.', videoIds: ['dQw4w9WgXcQ', 'M7lc1UVf-VE'] },
+      { name: 'Cứu tinh từ nợ nần', description: 'Mở bằng nỗi đau (nợ) rồi giới thiệu công cụ đơn giản như phao cứu sinh.', videoIds: ['aqz-KE-bpKQ'] },
+    ],
+    titleTemplates: ['I Tried {X} for 30 Days — Real Numbers', 'The $0 {X} Nobody Talks About', 'I Was Drowning in {Y}. This {Z} Saved Me'],
+  }),
+  task('p_30c3d4e5f6a1', 'audience_pains', 'side-hustle', { videoIds: ['dQw4w9WgXcQ', 'ScMzIvxBSi4'] }, 30, 'Chỉ 2 video đã đào sâu', {
+    pains: [
+      { pain: 'Không biết bắt đầu side hustle nào khi chỉ có 1–2 giờ mỗi ngày', frequency: 'high', quotes: [
+        { videoId: 'dQw4w9WgXcQ', text: 'I only have an hour after work, which one of these would you pick first?' },
+        { videoId: 'ScMzIvxBSi4', text: 'Where do you even start when you have zero budget?' },
+      ] },
+      { pain: 'Nghi ngờ số liệu thu nhập có thật hay không', frequency: 'medium', quotes: [
+        { videoId: 'dQw4w9WgXcQ', text: 'Do you have screenshots of the payouts or is this estimated?' },
+      ] },
+    ],
+    questions: ['Cần bao nhiêu vốn ban đầu?', 'Thuế xử lý thế nào với thu nhập phụ?'],
+  }),
+  task('p_40d4e5f6a1b2', 'keyword_ideas', 'side-hustle', { termKeys: ['side_hustle_ideas', 'make_money_online_2026'] }, 50, null, {
+    stop: [{ termKey: 'make_money_online_2026', reason: 'Tỉ lệ mới chỉ 6% sau 4 lần search, chỉ ra 1 outlier — đã cạn.' }],
+    try: [
+      { term: 'side hustle with no money', reason: 'Nhiều tiêu đề outlier nhấn mạnh vốn $0.', evidenceVideoIds: ['M7lc1UVf-VE'] },
+      { term: 'side hustle real numbers', reason: 'Cụm "Real Numbers" lặp ở outlier 22x.', evidenceVideoIds: ['dQw4w9WgXcQ'] },
+    ],
+  }),
+  task('p_50e5f6a1b2c3', 'next_steps', 'side-hustle', { termKeys: ['side_hustle_ideas'] }, 74, null, {
+    discover: [{ termKey: 'reselling_thrift', reason: 'Chưa từng search, cùng ngách với outlier 4.2x của Flip Diary.', priority: 1 }],
+    deepdive: [
+      { videoId: 'dQw4w9WgXcQ', reason: 'Outlier 22.4x, kênh 6.2k subs, mức thường tin cậy.', priority: 1 },
+      { videoId: 'M7lc1UVf-VE', reason: 'Outlier 18.5x nhưng mẫu mỏng — cần thêm dữ liệu.', priority: 2 },
+    ],
+    follow: [{ channelId: 'UCTiny Ledger', reason: 'Kênh 64 ngày tuổi đã có outlier 18x.' }],
+  }),
+];
+
+export function mockCreateTask(template: AgentTemplate, niche: string | null | undefined, selection: AgentSelection, note: string | undefined): { promptId: string; promptText: string } {
+  const promptId = `p_${Math.random().toString(16).slice(2, 14).padEnd(12, '0')}`;
+  const t = task(promptId, template, niche ?? null, selection, 0, note?.trim() || null, null);
+  t.promptText = mockPromptText(promptId, template, niche, selection, t.note);
+  MOCK_TASKS.unshift(t);
+  return { promptId, promptText: t.promptText };
+}

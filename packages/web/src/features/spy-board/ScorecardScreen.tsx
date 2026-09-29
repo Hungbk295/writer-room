@@ -4,7 +4,9 @@
  * 7 ngày trước, cỡ mẫu, độ lặp tách ✅/⚠️/🆕, outlier 28 ngày, trạng thái luật dừng.
  * Dưới: biểu đồ sàn view theo ngày + bảng xếp hạng tệp. Bấm thẻ/hàng → Màn 2.
  */
+import { useState } from 'preact/hooks';
 import type { BoardScorecardRow } from '../../api.ts';
+import { PromptComposer, validTemplates } from './PromptComposer.tsx';
 import { Badge, Icon, IconBox, MultiLineChart, SERIES_COLORS, fmtInt, nicheLabel } from './lib.tsx';
 
 function pctOf(cur: number | null, prev: number | null): number | null {
@@ -36,7 +38,8 @@ function StopBadge({ stop }: { stop: BoardScorecardRow['stop'] }) {
   return <Badge tone="warning">Chưa đủ · {need}</Badge>;
 }
 
-export function ScorecardScreen({ rows, onOpenNiche }: {
+export function ScorecardScreen({ topicId, rows, onOpenNiche }: {
+  topicId: string;
   rows: BoardScorecardRow[];
   onOpenNiche: (niche: string | null) => void;
 }) {
@@ -47,9 +50,26 @@ export function ScorecardScreen({ rows, onOpenNiche }: {
     return (b.floorSmall ?? -1) - (a.floorSmall ?? -1);
   });
   const named = sorted.filter((r) => r.niche !== null);
+  const [composing, setComposing] = useState(false);
 
   return (
     <div class="sb-stack">
+      <div class="sb-bar">
+        <span class="sb-hint">Bấm một thẻ để xem ngách; hoặc nhờ agent so sánh tất cả các tệp.</span>
+        <button class="sb-btn secondary" onClick={() => setComposing(!composing)}>
+          <Icon name="sparkles" size={16} />Soạn prompt: So sánh tệp
+        </button>
+      </div>
+      {composing && (
+        <PromptComposer
+          topicId={topicId}
+          templates={validTemplates('niches', {})}
+          niche={undefined}
+          selection={{}}
+          summary={`Mọi ngách (${named.length}${sorted.length > named.length ? ' + chưa gán' : ''}) — agent tự đọc bảng điểm.`}
+          onClose={() => setComposing(false)}
+        />
+      )}
       <div class="sb-grid sb-grid-4">
         {sorted.map((r) => (
           <button

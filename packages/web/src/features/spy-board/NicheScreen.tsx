@@ -13,6 +13,7 @@ import {
   type BoardVideoView,
 } from '../../api.ts';
 import { loadChannels, loadVideos } from './data.ts';
+import { PromptComposer, validTemplates } from './PromptComposer.tsx';
 import { DeepDiveBox } from './DeepDiveBox.tsx';
 import {
   Badge,
@@ -135,6 +136,7 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [open, setOpen] = useState<BoardVideoRow | null>(null);
   const [diving, setDiving] = useState(false);
+  const [composing, setComposing] = useState(false);
   const rows = state.data?.data ?? [];
 
   const toggle = (id: string) => {
@@ -152,15 +154,30 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
           <span class="sb-hint">
             {rows.length} video{state.data?.truncated ? ' (đã cắt bớt)' : ''} · {view === 'rising' ? 'xếp theo views tăng 24h' : 'xếp theo bội số outlier'}
           </span>
-          <button
-            class="sb-btn primary"
-            disabled={selected.size === 0 || diving}
-            title={selected.size === 0 ? 'Tick video để đào sâu (kéo comment + transcript)' : undefined}
-            onClick={() => setDiving(true)}
-          >
-            <Icon name="layers" size={16} />Đào sâu {selected.size} video
-          </button>
+          <div class="sb-actions">
+            <button class="sb-btn secondary" onClick={() => setComposing(!composing)}>
+              <Icon name="sparkles" size={16} />Soạn prompt
+            </button>
+            <button
+              class="sb-btn primary"
+              disabled={selected.size === 0 || diving}
+              title={selected.size === 0 ? 'Tick video để đào sâu (kéo comment + transcript)' : undefined}
+              onClick={() => setDiving(true)}
+            >
+              <Icon name="layers" size={16} />Đào sâu {selected.size} video
+            </button>
+          </div>
         </div>
+      )}
+      {composing && (
+        <PromptComposer
+          topicId={topicId}
+          templates={validTemplates('videos', { videos: selected.size, niche })}
+          niche={niche}
+          selection={{ videoIds: [...selected] }}
+          summary={selected.size > 0 ? `${selected.size} video đã tick.` : 'Chưa tick video nào — tick ≥ 2 video để phân tích outlier, ≥ 1 video (đã Đào sâu) cho nỗi đau khán giả.'}
+          onClose={() => setComposing(false)}
+        />
       )}
       {diving && (
         <DeepDiveBox

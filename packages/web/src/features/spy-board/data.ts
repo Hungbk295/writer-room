@@ -4,6 +4,9 @@
  */
 import {
   api,
+  type AgentSelection,
+  type AgentTemplate,
+  type BoardAgentTask,
   type BoardChannelRow,
   type BoardEnvelope,
   type BoardKeywordRow,
@@ -79,4 +82,53 @@ export async function loadRunDetail(runId: string): Promise<BoardRunDetail> {
     return { ...m.MOCK_RUN_DETAIL, card: m.MOCK_RUNS.find((r) => r.runId === runId) ?? m.MOCK_RUN_DETAIL.card };
   }
   return (await api.boardRunDetail(runId)).data;
+}
+
+export async function loadTasks(topicId: string): Promise<BoardAgentTask[]> {
+  if (IS_MOCK) return [...(await mock()).MOCK_TASKS];
+  return (await api.boardTasks(topicId)).data;
+}
+
+export async function loadTask(promptId: string): Promise<BoardAgentTask | null> {
+  if (IS_MOCK) return (await mock()).MOCK_TASKS.find((t) => t.promptId === promptId) ?? null;
+  return (await api.boardTask(promptId)).data;
+}
+
+export async function createTask(topicId: string, body: {
+  template: AgentTemplate; niche?: string | null; selection: AgentSelection; note?: string;
+}): Promise<{ promptId: string; promptText: string }> {
+  if (IS_MOCK) {
+    const m = await mock();
+    return m.mockCreateTask(body.template, body.niche, body.selection, body.note);
+  }
+  return api.boardCreateTask({ topicId, ...body });
+}
+
+/** Bảng tra ID → tên để màn Agent hiện tên thay vì ID thô. Thiếu thì màn tự dùng ID. */
+export interface IdLabels {
+  videos: Record<string, string>;
+  channels: Record<string, string>;
+}
+
+export async function loadLabels(topicId: string): Promise<IdLabels> {
+  const out: IdLabels = { videos: {}, channels: {} };
+  if (IS_MOCK) {
+    const m = await mock();
+    for (const v of m.MOCK_VIDEOS) out.videos[v.videoId] = v.title;
+    for (const c of m.MOCK_CHANNELS) if (c.title) out.channels[c.channelId] = c.title;
+    return out;
+  }
+  // Video agent trích dẫn thường là outlier/đang lên; chỉ là nhãn hiển thị nên lỗi thì bỏ qua.
+  const [outliers, rising, channels] = await Promise.allSettled([
+    api.boardVideos(topicId, { view: 'outliers', limit: 500 }),
+    api.boardVideos(topicId, { view: 'rising', limit: 200 }),
+    api.boardChannels(topicId, { limit: 500 }),
+  ]);
+  for (const r of [outliers, rising]) {
+    if (r.status === 'fulfilled') for (const v of r.value.data) out.videos[v.videoId] = v.title;
+  }
+  if (channels.status === 'fulfilled') {
+    for (const c of channels.value.data) if (c.title) out.channels[c.channelId] = c.title;
+  }
+  return out;
 }

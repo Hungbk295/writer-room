@@ -1,6 +1,6 @@
 /**
- * Tab "Board" của 1 topic spy — 4 màn, mỗi màn một quyết định (plan
- * spy-analyst-workflow §G): Chọn tệp → Ngách → Keyword → Lượt chạy.
+ * Tab "Board" của 1 topic spy — 5 màn, mỗi màn một quyết định (plan
+ * spy-analyst-workflow §G): Chọn tệp → Ngách → Keyword → Lượt chạy → Agent.
  * Thanh trên: độ tươi dữ liệu (lượt Theo dõi / Tìm mới gần nhất). Bảng điểm tải
  * một lần ở đây, dùng cho Màn 1, hàng số của Màn 2 và danh sách ngách.
  * Giao diện theo phong cách TailPanel, CSS scope dưới `.spy-board` (board.css).
@@ -8,6 +8,7 @@
 import { useState } from 'preact/hooks';
 import type { BoardScorecardRow } from '../../api.ts';
 import { loadScorecard } from './data.ts';
+import { AgentScreen } from './AgentScreen.tsx';
 import { KeywordsScreen } from './KeywordsScreen.tsx';
 import { NicheScreen } from './NicheScreen.tsx';
 import { RunsScreen } from './RunsScreen.tsx';
@@ -15,13 +16,14 @@ import { ScorecardScreen } from './ScorecardScreen.tsx';
 import { Badge, Icon, IS_MOCK, LoadState, nicheLabel, relDate, useLoad } from './lib.tsx';
 import './board.css';
 
-type Screen = 'scorecard' | 'niche' | 'keywords' | 'runs';
+type Screen = 'scorecard' | 'niche' | 'keywords' | 'runs' | 'agent';
 
 const SCREENS: Array<{ key: Screen; label: string; question: string }> = [
   { key: 'scorecard', label: '1 · Chọn tệp', question: 'Tệp nào cho kênh nhỏ sàn view cao nhất?' },
   { key: 'niche', label: '2 · Ngách', question: 'Học video/kênh nào, đào sâu gì?' },
   { key: 'keywords', label: '3 · Keyword', question: 'Keyword nào chạy tiếp?' },
   { key: 'runs', label: '4 · Lượt chạy', question: 'Có đang tốn quota vô ích không?' },
+  { key: 'agent', label: '5 · Agent', question: 'Agent đã phân tích gì, áp dụng gì?' },
 ];
 
 export function SpyBoardTab({ topicId }: { topicId: string }) {
@@ -77,10 +79,10 @@ export function SpyBoardTab({ topicId }: { topicId: string }) {
         )}
       </div>
 
-      {screen !== 'runs' && screen !== 'keywords' && <LoadState state={board} empty={!board.loading && !board.error && rows.length === 0} />}
+      {screen !== 'runs' && screen !== 'keywords' && screen !== 'agent' && <LoadState state={board} empty={!board.loading && !board.error && rows.length === 0} />}
 
       {screen === 'scorecard' && rows.length > 0 && (
-        <ScorecardScreen rows={rows} onOpenNiche={(n) => { setNiche(n); setScreen('niche'); }} />
+        <ScorecardScreen topicId={topicId} rows={rows} onOpenNiche={(n) => { setNiche(n); setScreen('niche'); }} />
       )}
       {screen === 'niche' && board.data && (
         <NicheScreen
@@ -96,6 +98,7 @@ export function SpyBoardTab({ topicId }: { topicId: string }) {
         <KeywordsScreen topicId={topicId} niche={niche} niches={niches} refreshKey={refreshKey} onRunFinished={refresh} />
       )}
       {screen === 'runs' && <RunsScreen topicId={topicId} refreshKey={refreshKey} />}
+      {screen === 'agent' && <AgentScreen topicId={topicId} refreshKey={refreshKey} />}
     </div>
   );
 }
