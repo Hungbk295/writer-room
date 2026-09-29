@@ -132,7 +132,18 @@ describe('nicheFloor', () => {
       { ...base, videoId: 'young-ok', channelId: 'small2', views: 2_500, publishedAt: daysAgo(2) },
       { ...base, videoId: 'short', channelId: 'small2', views: 10, durationSec: 30 },
     ], new Set(['small1', 'small2']), S, NOW);
-    expect(floor).toEqual({ floorViews: 2_250, nChannels: 2, nVideos: 4 });
+    // small1: median(1000, 3000)=2000; small2: median(2000, 2500)=2250 → median kênh = 2125.
+    expect(floor).toEqual({ floorViews: 2_125, nChannels: 2, nVideos: 4 });
+  });
+
+  test('mỗi kênh một phiếu — kênh 30 video không lấn kênh 3 video', () => {
+    const base = { durationSec: 600, publishedAt: daysAgo(10), baselineEligible: true };
+    const old = Array.from({ length: 30 }, (_, i) => ({ ...base, videoId: `o${i}`, channelId: 'old', views: 5_000 }));
+    const fresh = ['n1', 'n2', 'n3', 'n4'].flatMap((ch) =>
+      [0, 1, 2].map((i) => ({ ...base, videoId: `${ch}-${i}`, channelId: ch, views: 300 })));
+    const floor = nicheFloor([...old, ...fresh], new Set(['old', 'n1', 'n2', 'n3', 'n4']), S, NOW);
+    expect(floor.floorViews).toBe(300);
+    expect(floor.nChannels).toBe(5);
   });
 });
 

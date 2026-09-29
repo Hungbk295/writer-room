@@ -65,6 +65,7 @@ import { createSpyLoopAdapter, type SpyLoopAdapter, type LoopMode, type SetupSte
 import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
 import { handleSpyDash } from './spy/dash-routes.ts';
 import { handleSpyKeywords } from './spy/keyword-routes.ts';
+import { handleSpyBoard } from './spy/board-routes.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -837,6 +838,12 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (method !== 'GET') return error('Spy Dashboard chỉ nhận GET', 405);
         return handleSpyDash(url, spy);
+      }
+
+      // ── Spy Board API — 6 truy vấn đọc + gán ngách (plan spy-analyst-workflow §F)
+      if (pathname.startsWith('/api/spy/board')) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        return handleSpyBoard(url, req, spy);
       }
 
       // ── Spy Keyword Run API — bulk/decide/run/runs (plan spy-keyword-run-board §2)

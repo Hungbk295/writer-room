@@ -59,7 +59,7 @@ Không có nút "chạy bất chấp". Mỗi lần bỏ qua ghi lý do lên th�
 | **Đang lên** | Video < 7 ngày tuổi, xếp theo views tăng 24h |
 | Kênh nhỏ | subs < 10K |
 | Tuổi kênh | Ngày tạo kênh thật; bộ lọc "< 180 ngày", không loại cứng |
-| **Sàn view kênh nhỏ** | Trung vị views video dài của kênh nhỏ trong ngách, **chỉ video lấy từ lượt quét uploads** (không từ kết quả search). Video < 7 ngày tuổi chỉ tính khi đã ≥ 500 views. Luôn kèm cỡ mẫu (n kênh, n video). **= Tiêu chí thắng** |
+| **Sàn view kênh nhỏ** | **Theo kênh:** trung vị views của từng kênh nhỏ, rồi trung vị giữa các kênh (mỗi kênh một phiếu). Chỉ video dài, **chỉ video lấy từ lượt quét uploads** (không từ kết quả search). Video < 7 ngày tuổi chỉ tính khi đã ≥ 500 views. Luôn kèm cỡ mẫu (n kênh, n video). **= Tiêu chí thắng** |
 | **Độ lặp** | Số kênh nhỏ *khác nhau* có outlier trong 28 ngày, hiển thị tách ✅/⚠️/🆕. Gợi ý ≥ 3 |
 | Tỉ lệ mới của keyword | Video chưa từng thấy ÷ tổng kết quả của lần search gần nhất |
 | Kênh nhỏ đã đo | Số kênh nhỏ của ngách đã quét uploads — cỡ mẫu |
@@ -89,6 +89,7 @@ File báo cáo mỗi lượt chạy · ước tính doanh thu/RPM · search volu
 
 | # | Việc | Trạng thái |
 |---|---|---|
+| D3 | Bước 4: `spy/src/board/queries.ts` (6 truy vấn) → HTTP `/api/spy/board/{metrics,scorecard,videos,channels,keywords,runs,runs/:id}` + `POST /board/channels/niche` → MCP `spy_board_*` (7 tool, chỉ đọc). Sàn view tính theo kênh. `niche=_none` = chưa gán. Chạy thử trên bản sao DB thật: finance-us 867 video, scorecard 7ms | ✅ Code + test xanh (spy 397, daemon 547) |
 | D2 | Bước 2 (phần lõi) + bước 3: schema v16 (thẻ lượt chạy `type/note/group_key/triggered_by/n_new/n_skipped`, item `skipped_dedup` + lý do, `n_new` trên keyword_checks, `group_key` + `channel_published_at` trên kênh); luật 3 ngày; hit kênh ngoài cũng vào kho (để đếm "mới"); `spy/src/board/metrics.ts` (3 tier, bỏ video đang xét, luật 7 ngày, chết khi ≥3 video, sàn view, độ lặp) | ✅ Code + test xanh (spy 391, daemon 544) |
 | D1 | Sửa lỗi lấy mẫu: sổ `measured_channels` (mọi kênh lạ đã quét, kể cả không outlier/chết/lottery), uploads ghi `outside_scan` tính baseline, đo lại sau 14 ngày, không outlier ở kênh chết. Setup cũng ghi kênh chết/lottery vào sổ | ✅ Code + test xanh (spy 376, daemon 542). **Chưa commit** |
 
