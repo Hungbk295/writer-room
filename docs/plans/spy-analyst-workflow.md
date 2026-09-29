@@ -59,7 +59,7 @@ Không có nút "chạy bất chấp". Mỗi lần bỏ qua ghi lý do lên th�
 | **Đang lên** | Video < 7 ngày tuổi, xếp theo views tăng 24h |
 | Kênh nhỏ | subs < 10K |
 | Tuổi kênh | Ngày tạo kênh thật; bộ lọc "< 180 ngày", không loại cứng |
-| **Sàn view kênh nhỏ** | Trung vị views video dài của kênh nhỏ trong ngách, **chỉ video lấy từ lượt quét uploads** (không từ kết quả search). Luôn kèm cỡ mẫu (n kênh, n video). **= Tiêu chí thắng** |
+| **Sàn view kênh nhỏ** | Trung vị views video dài của kênh nhỏ trong ngách, **chỉ video lấy từ lượt quét uploads** (không từ kết quả search). Video < 7 ngày tuổi chỉ tính khi đã ≥ 500 views. Luôn kèm cỡ mẫu (n kênh, n video). **= Tiêu chí thắng** |
 | **Độ lặp** | Số kênh nhỏ *khác nhau* có outlier trong 28 ngày, hiển thị tách ✅/⚠️/🆕. Gợi ý ≥ 3 |
 | Tỉ lệ mới của keyword | Video chưa từng thấy ÷ tổng kết quả của lần search gần nhất |
 | Kênh nhỏ đã đo | Số kênh nhỏ của ngách đã quét uploads — cỡ mẫu |

@@ -120,7 +120,7 @@ describe('scoreVideo', () => {
 });
 
 describe('nicheFloor', () => {
-  test('chỉ video uploads, dài, ≥ 7 ngày, của kênh nhỏ', () => {
+  test('chỉ video uploads, dài, của kênh nhỏ; video < 7 ngày chỉ tính khi ≥ 500 views', () => {
     const base = { durationSec: 600, publishedAt: daysAgo(10), baselineEligible: true };
     const floor = nicheFloor([
       { ...base, videoId: '1', channelId: 'small1', views: 1_000 },
@@ -128,10 +128,11 @@ describe('nicheFloor', () => {
       { ...base, videoId: '3', channelId: 'small2', views: 2_000 },
       { ...base, videoId: 'search', channelId: 'small2', views: 900_000, baselineEligible: false },
       { ...base, videoId: 'big', channelId: 'big', views: 500_000 },
-      { ...base, videoId: 'young', channelId: 'small2', views: 10, publishedAt: daysAgo(1) },
+      { ...base, videoId: 'young', channelId: 'small2', views: 499, publishedAt: daysAgo(1) },
+      { ...base, videoId: 'young-ok', channelId: 'small2', views: 2_500, publishedAt: daysAgo(2) },
       { ...base, videoId: 'short', channelId: 'small2', views: 10, durationSec: 30 },
     ], new Set(['small1', 'small2']), S, NOW);
-    expect(floor).toEqual({ floorViews: 2_000, nChannels: 2, nVideos: 3 });
+    expect(floor).toEqual({ floorViews: 2_250, nChannels: 2, nVideos: 4 });
   });
 });
 

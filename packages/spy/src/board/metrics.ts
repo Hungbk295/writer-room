@@ -31,6 +31,8 @@ export interface BoardSettings {
   repeatWindowDays: number;
   /** Luật dừng: số kênh nhỏ đã đo tối thiểu mỗi ngách. */
   stopMinSmallChannels: number;
+  /** Sàn view: video < risingDays tuổi chỉ được tính khi đã đạt ngưỡng views này. */
+  floorYoungMinViews: number;
 }
 
 export const DEFAULT_BOARD_SETTINGS: BoardSettings = {
@@ -44,6 +46,7 @@ export const DEFAULT_BOARD_SETTINGS: BoardSettings = {
   smallSubs: 10_000,
   repeatWindowDays: 28,
   stopMinSmallChannels: 20,
+  floorYoungMinViews: 500,
 };
 
 const DAY_MS = 86_400_000;
@@ -163,9 +166,10 @@ export interface NicheFloor {
 }
 
 /**
- * Sàn view kênh nhỏ của ngách: median views video dài, đã qua risingDays (video
- * non chưa kịp lên view sẽ kéo sàn xuống oan), của kênh nhỏ, CHỈ video quét
- * uploads (baselineEligible) — search xếp theo views nên thiên về video thắng.
+ * Sàn view kênh nhỏ của ngách: median views video dài của kênh nhỏ, CHỈ video
+ * quét uploads (baselineEligible) — search xếp theo views nên thiên về video
+ * thắng. Video < risingDays tuổi chỉ tính khi đã ≥ floorYoungMinViews (chốt
+ * 2026-09-29): video non chưa kịp lên view thì bỏ, video non đã chạy thì giữ.
  */
 export function nicheFloor(
   videos: ReadonlyArray<BoardVideoInput & { channelId: string; baselineEligible: boolean }>,
@@ -177,7 +181,8 @@ export function nicheFloor(
     if (!v.baselineEligible || v.views === null || !smallChannelIds.has(v.channelId)) return false;
     if (!isLongVideo(v, settings)) return false;
     const age = ageDays(v.publishedAt, nowMs);
-    return age === null || age >= settings.risingDays;
+    if (age === null || age >= settings.risingDays) return true;
+    return (v.views as number) >= settings.floorYoungMinViews;
   });
   return {
     floorViews: picked.length ? median(picked.map((v) => v.views as number)) : null,
@@ -230,7 +235,7 @@ export function metricDefinitions(settings: BoardSettings): Array<{ name: string
     { name: 'dead', definition: `Kênh có ≥ ${settings.thinMinN} video khác và median < ${settings.deadMedian} views.` },
     { name: 'is_rising', definition: `Video < ${settings.risingDays} ngày tuổi; xếp theo views tăng 24h.` },
     { name: 'small_channel', definition: `subs < ${settings.smallSubs}.` },
-    { name: 'floor_small', definition: `Sàn view kênh nhỏ: median views video dài ≥ ${settings.risingDays} ngày tuổi của kênh nhỏ trong ngách, chỉ video lấy từ lượt quét uploads. Tiêu chí thắng.` },
+    { name: 'floor_small', definition: `Sàn view kênh nhỏ: median views video dài của kênh nhỏ trong ngách, chỉ video lấy từ lượt quét uploads; video < ${settings.risingDays} ngày tuổi chỉ tính khi đã ≥ ${settings.floorYoungMinViews} views. Tiêu chí thắng.` },
     { name: 'repeat_small', definition: `Số kênh nhỏ khác nhau có ≥ 1 outlier đăng trong ${settings.repeatWindowDays} ngày, tách theo tier. Gợi ý ≥ 3.` },
     { name: 'stop_rule', definition: `Ngách đủ tin cậy khi ≥ ${settings.stopMinSmallChannels} kênh nhỏ đã đo và thứ hạng sàn view không đổi 2 tuần liên tiếp.` },
     { name: 'new_rate', definition: 'Tỉ lệ mới của keyword: kết quả chưa từng có trong kho ÷ tổng kết quả, lần search gần nhất.' },
