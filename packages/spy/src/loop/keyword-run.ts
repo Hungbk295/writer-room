@@ -18,7 +18,7 @@ import { quotaDay } from '../quota.ts';
 import { topicToNicheMarket } from '../topic.ts';
 import { AppError } from '../errors.ts';
 import { topicConfigSchema } from './types.ts';
-import type { SpyStore, TopicKeywordRow } from '../store.ts';
+import type { RunTrigger, SpyStore, TopicKeywordRow } from '../store.ts';
 import type { QuotaLedger } from '../quota.ts';
 import type { YouTubeDataApiPort } from '../adapters/data-api.ts';
 import type { ModeContext } from './modes.ts';
@@ -143,6 +143,8 @@ export class KeywordRunService {
       });
 
       let keywordsDone = 0;
+      let nNew = 0;
+      let nSkipped = 0;
       const w1 = await runKeywordSearches(ctx, keywords, {
         publishedAfterDays: params.publishedAfterDays,
         maxResults: params.maxResults,
@@ -158,13 +160,19 @@ export class KeywordRunService {
             medianViews: item.medianViews,
             outliersFound: item.outliersInFollow,
             error: item.error,
+            nNew: item.nNew,
+            skipReason: item.skipReason,
           });
           keywordsDone++;
+          nNew += item.nNew ?? 0;
+          if (item.status === 'skipped_dedup') nSkipped++;
           const used = charged();
           store.updateKeywordRun(runId, {
             keywordsDone,
             searchCallsUsed: used.searchCalls,
             generalUnitsUsed: used.generalUnits,
+            nNew,
+            nSkipped,
           });
         },
       });
@@ -192,6 +200,8 @@ export class KeywordRunService {
           medianViews: item.medianViews,
           outliersFound: item.outliersInFollow + extra,
           error: item.error,
+          nNew: item.nNew,
+          skipReason: item.skipReason,
         });
       }
 
@@ -222,6 +232,7 @@ export class KeywordRunService {
     keywords: TopicKeywordRow[],
     params: KeywordRunParams,
     paramsJson: string,
+    card: { note?: string | null; groupKey?: string | null; triggeredBy?: RunTrigger } = {},
   ): string {
     const runId = randomUUID();
     this.store.createKeywordRun({
@@ -230,6 +241,10 @@ export class KeywordRunService {
       paramsJson,
       nKeywords: keywords.length,
       startedAt: new Date().toISOString(),
+      type: 'discover',
+      note: card.note ?? null,
+      groupKey: card.groupKey ?? null,
+      triggeredBy: card.triggeredBy ?? 'human',
     });
     void this.execute(runId, topicId, keywords, params);
     return runId;

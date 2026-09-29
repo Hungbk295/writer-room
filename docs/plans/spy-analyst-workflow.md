@@ -89,6 +89,7 @@ File báo cáo mỗi lượt chạy · ước tính doanh thu/RPM · search volu
 
 | # | Việc | Trạng thái |
 |---|---|---|
+| D2 | Bước 2 (phần lõi) + bước 3: schema v16 (thẻ lượt chạy `type/note/group_key/triggered_by/n_new/n_skipped`, item `skipped_dedup` + lý do, `n_new` trên keyword_checks, `group_key` + `channel_published_at` trên kênh); luật 3 ngày; hit kênh ngoài cũng vào kho (để đếm "mới"); `spy/src/board/metrics.ts` (3 tier, bỏ video đang xét, luật 7 ngày, chết khi ≥3 video, sàn view, độ lặp) | ✅ Code + test xanh (spy 391, daemon 544) |
 | D1 | Sửa lỗi lấy mẫu: sổ `measured_channels` (mọi kênh lạ đã quét, kể cả không outlier/chết/lottery), uploads ghi `outside_scan` tính baseline, đo lại sau 14 ngày, không outlier ở kênh chết. Setup cũng ghi kênh chết/lottery vào sổ | ✅ Code + test xanh (spy 376, daemon 542). **Chưa commit** |
 
 Độ lệch còn lại, chấp nhận có ý thức: kênh nhỏ chỉ vào kho khi có ít nhất 1 video lọt top kết quả search. Mọi ngách chịu cùng độ lệch nên **so sánh giữa các ngách vẫn công bằng**. Khi khai báo ngách, thêm tay vài kênh nhỏ bình thường làm mốc.

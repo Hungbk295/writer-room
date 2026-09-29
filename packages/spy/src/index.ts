@@ -88,6 +88,8 @@ export {
 } from './loop/runner.ts';
 export { KeywordRunService, type KeywordRunParams, type KeywordRunServiceOptions } from './loop/keyword-run.ts';
 export {
+  KEYWORD_RESEARCH_DAYS,
+  OUTSIDE_REMEASURE_DAYS,
   runKeywordSearches,
   scanOutsideChannels,
   type ModeContext,
@@ -1999,3 +2001,21 @@ export class SpyService {
     return null;
   }
 }
+export {
+  DEFAULT_BOARD_SETTINGS,
+  ageDays,
+  channelBaselineFor,
+  isLongVideo,
+  isSmallChannel,
+  metricDefinitions,
+  nicheFloor,
+  repeatSmall,
+  scoreVideo,
+  type BaselineTier,
+  type BoardSettings,
+  type BoardVideoInput,
+  type ChannelBaseline,
+  type NicheFloor,
+  type RepeatCount,
+  type VideoScore,
+} from './board/metrics.ts';

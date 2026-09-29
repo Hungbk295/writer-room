@@ -9,6 +9,7 @@
 
 import {
   AppError,
+  KEYWORD_RESEARCH_DAYS,
   dashKeywordRunDetail,
   dashKeywordRuns,
   normalizeTermKey,
@@ -182,8 +183,10 @@ export async function handleSpyKeywords(
       return json({ ok: true, updated: termKeys.length });
     }
 
-    // POST /run {topicId, termKeys?|group?|status='active',
+    // POST /run {topicId, termKeys?|group?|status='active', note?,
     //   publishedAfterDays=28, maxResults=50, scanChannelsCap=10, dryRun?}
+    // v16: keyword đã search trong KEYWORD_RESEARCH_DAYS ngày bị khoá — không
+    // tính vào ước tính quota, lượt chạy ghi nó là skipped_dedup.
     // Resolve keyword → preflight → tạo keyword_runs row + chạy nền.
     if (method === 'POST' && path === 'run') {
       const body = await readBody(req);
@@ -219,17 +222,34 @@ export async function handleSpyKeywords(
         return err('Không có keyword nào khớp bộ lọc');
       }
 
-      const estimatedSearchCalls = keywords.length; // 1 keyword = 1 search.list
+      const nowMs = Date.now();
+      const locked = keywords.filter((k) => k.lastCheckedAt
+        && nowMs - Date.parse(k.lastCheckedAt) < KEYWORD_RESEARCH_DAYS * 86_400_000);
+      const estimatedSearchCalls = keywords.length - locked.length; // 1 keyword = 1 search.list
       const quotaRemaining = spy.quota.remaining('search');
+      const lockedOut = locked.map((k) => ({ termKey: k.termKey, lastCheckedAt: k.lastCheckedAt }));
 
       if (body['dryRun'] === true) {
         return json({
           dryRun: true,
           keywords: keywords.map((k) => k.termKey),
+          locked: lockedOut,
           estimatedSearchCalls,
           quotaRemaining,
         });
       }
+      if (estimatedSearchCalls === 0) {
+        return json({
+          error: `Mọi keyword đã được search trong ${KEYWORD_RESEARCH_DAYS} ngày qua`,
+          locked: lockedOut,
+        }, 409);
+      }
+      const note = typeof body['note'] === 'string' && body['note'].trim() !== ''
+        ? body['note'].trim().slice(0, 500)
+        : null;
+      // Ngách của thẻ: group truyền vào, hoặc nhóm chung của mọi keyword.
+      const groups = new Set(keywords.map((k) => k.groupKey ?? null));
+      const runGroup = group ?? (groups.size === 1 ? [...groups][0] ?? null : null);
 
       // Preflight theo spec: paused → 409, run đang chạy → 409, quota → 429.
       if (String(topic['status']) === 'paused') {
@@ -250,10 +270,11 @@ export async function handleSpyKeywords(
         group: group ?? null,
         status,
         ...params,
-      }));
+      }), { note, groupKey: runGroup, triggeredBy: 'human' });
       return json({
         runId,
         keywords: keywords.map((k) => k.termKey),
+        locked: lockedOut,
         estimatedSearchCalls,
         quotaRemaining,
       });

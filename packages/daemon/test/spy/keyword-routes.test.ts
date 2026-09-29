@@ -295,7 +295,7 @@ describe('POST /keywords/run', () => {
     expect(service.store.listKeywordRuns(TOPIC).length).toBe(0);
   });
 
-  test('run thật: kênh ngoài được đo (outside_scan) → new, items + checks đúng', async () => {
+  test('run thật: kênh ngoài được đo → new, items + checks đúng', async () => {
     const { service, dataApi, handler } = await boot();
     seedOutsideChannel(dataApi, 'UCoutside');
     await post(handler, '/bulk', { topicId: TOPIC, terms: ['vay trả góp'], activate: true });
@@ -315,10 +315,10 @@ describe('POST /keywords/run', () => {
     expect(item['status']).toBe('done');
     expect(item['n_results']).toBe(1);
 
-    // hit1 nằm trong uploads vừa quét của kênh ngoài → source='outside_scan'
-    // (uploads thật, tính baseline) + found_by_keyword giữ keyword dẫn tới nó.
+    // hit1 vào sổ ngay lúc search (source giữ nguồn đầu tiên = keyword_run), rồi
+    // lượt quét uploads của kênh ngoài thấy nó → được tính baseline.
     const video = service.store.listTopicVideos(TOPIC, {}).find((v) => v.videoId === 'hit1')!;
-    expect(video.source).toBe('outside_scan');
+    expect(video.source).toBe('keyword_run');
     expect(video.foundByKeyword).toBe('vay_tra_gop');
     expect(video.baselineEligible).toBe(true);
     // Lượt đo được ghi sổ measured_channels, nguồn là keyword_run.
@@ -486,5 +486,60 @@ describe('dash mở rộng v14', () => {
     const mb = await meta.json() as { data: { enums: Record<string, string[]> } };
     expect(mb.data.enums['video_source']).toContain('keyword_run');
     expect(mb.data.enums['keyword_run_status']).toContain('skipped_quota');
+  });
+});
+
+describe('POST /keywords/run — thẻ lượt chạy + chống trùng 3 ngày (plan spy-analyst-workflow §H bước 3)', () => {
+  test('thẻ ghi note/group/triggered_by/n_new; keyword search < 3 ngày → skipped_dedup, không tốn search', async () => {
+    const { service, dataApi, handler } = await boot();
+    seedOutsideChannel(dataApi, 'UCoutside');
+    await post(handler, '/bulk', { topicId: TOPIC, terms: ['vay trả góp', 'thẻ tín dụng'], group: 'vay', activate: true });
+    // 'thẻ tín dụng' vừa search hôm qua → bị khoá.
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+    service.store.updateKeywordCheck(TOPIC, 'the_tin_dung', {
+      lastCheckedAt: yesterday, lastNResults: 5, lastNFollowed: 0, lastMedianViews: 100,
+    });
+
+    const dry = await post(handler, '/run', { topicId: TOPIC, group: 'vay', dryRun: true });
+    const db = await dry.json() as { estimatedSearchCalls: number; locked: Array<{ termKey: string }> };
+    expect(db.estimatedSearchCalls).toBe(1);
+    expect(db.locked.map((l) => l.termKey)).toEqual(['the_tin_dung']);
+
+    const res = await post(handler, '/run', { topicId: TOPIC, group: 'vay', note: 'Tìm kênh nhỏ đang lên' });
+    expect(res.status).toBe(200);
+    const { runId } = await res.json() as { runId: string };
+    const run = await waitRun(service, runId);
+
+    expect(run['type']).toBe('discover');
+    expect(run['note']).toBe('Tìm kênh nhỏ đang lên');
+    expect(run['group_key']).toBe('vay');
+    expect(run['triggered_by']).toBe('human');
+    expect(run['search_calls_used']).toBe(1);
+    expect(run['n_skipped']).toBe(1);
+    expect(run['n_new']).toBe(1);
+    expect(dataApi.searchCalls.length).toBe(1);
+
+    const items = new Map(service.store.getKeywordRun(runId)!.items.map((i) => [String(i['term_key']), i]));
+    expect(items.get('the_tin_dung')!['status']).toBe('skipped_dedup');
+    expect(items.get('the_tin_dung')!['skip_reason']).toBe(`searched_at:${yesterday}`);
+    expect(items.get('vay_tra_gop')!['n_new']).toBe(1);
+
+    // Kênh ngoài vừa đo nhận ngách của keyword tìm ra nó + ngày tạo kênh.
+    const measured = service.store.listMeasuredChannels(TOPIC)[0]!;
+    expect(measured.groupKey).toBe('vay');
+    expect(measured.channelPublishedAt).not.toBeNull();
+    const ch = service.store.listTopicChannelsByStatus(TOPIC, ['new'])[0]!;
+    expect(ch.groupKey).toBe('vay');
+  });
+
+  test('mọi keyword đều bị khoá 3 ngày → 409, không tạo lượt chạy', async () => {
+    const { service, handler } = await boot();
+    await post(handler, '/bulk', { topicId: TOPIC, terms: ['a'], activate: true });
+    service.store.updateKeywordCheck(TOPIC, 'a', {
+      lastCheckedAt: new Date().toISOString(), lastNResults: 1, lastNFollowed: 0, lastMedianViews: 1,
+    });
+    const res = await post(handler, '/run', { topicId: TOPIC });
+    expect(res.status).toBe(409);
+    expect(service.store.listKeywordRuns(TOPIC).length).toBe(0);
   });
 });
