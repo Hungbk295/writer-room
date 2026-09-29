@@ -3,6 +3,7 @@
  * spy-analyst-workflow §G): Chọn tệp → Ngách → Keyword → Lượt chạy.
  * Thanh trên: độ tươi dữ liệu (lượt Theo dõi / Tìm mới gần nhất). Bảng điểm tải
  * một lần ở đây, dùng cho Màn 1, hàng số của Màn 2 và danh sách ngách.
+ * Giao diện theo phong cách TailPanel, CSS scope dưới `.spy-board` (board.css).
  */
 import { useState } from 'preact/hooks';
 import type { BoardScorecardRow } from '../../api.ts';
@@ -11,7 +12,8 @@ import { KeywordsScreen } from './KeywordsScreen.tsx';
 import { NicheScreen } from './NicheScreen.tsx';
 import { RunsScreen } from './RunsScreen.tsx';
 import { ScorecardScreen } from './ScorecardScreen.tsx';
-import { IS_MOCK, LoadState, nicheLabel, relDate, useLoad } from './lib.tsx';
+import { Badge, Icon, IS_MOCK, LoadState, nicheLabel, relDate, useLoad } from './lib.tsx';
+import './board.css';
 
 type Screen = 'scorecard' | 'niche' | 'keywords' | 'runs';
 
@@ -39,28 +41,31 @@ export function SpyBoardTab({ topicId }: { topicId: string }) {
   const current = SCREENS.find((s) => s.key === screen)!;
 
   return (
-    <div class="stack">
-      <div class="spy-board-top">
-        <div class="feed-filter-tabs" style={{ flexWrap: 'wrap' }}>
-          {SCREENS.map((s) => (
-            <button key={s.key} class={`feed-tab-btn ${screen === s.key ? 'active' : ''}`} onClick={() => setScreen(s.key)}>
-              {s.label}
-            </button>
-          ))}
+    <div class="spy-board">
+      <div class="sb-page-head">
+        <div>
+          <h1 class="sb-h1">{current.label.replace(/^\d · /, '')}</h1>
+          <p class="sb-sub">{current.question}</p>
         </div>
-        <div class="spy-fresh">
-          {IS_MOCK && <span class="spy-topic-badge">mock</span>}
-          <span>Theo dõi: <b>{relDate(board.data?.freshness.lastTrackAt)}</b></span>
-          <span>Tìm mới: <b>{relDate(board.data?.freshness.lastDiscoverAt)}</b></span>
-          <button class="btn secondary spy-btn-sm" onClick={refresh} disabled={board.loading}>Tải lại</button>
+        <div class="sb-fresh">
+          {IS_MOCK && <Badge tone="warning">mock</Badge>}
+          <Badge><Icon name="clock" size={12} />Theo dõi: {relDate(board.data?.freshness.lastTrackAt)}</Badge>
+          <Badge><Icon name="clock" size={12} />Tìm mới: {relDate(board.data?.freshness.lastDiscoverAt)}</Badge>
+          <button class="sb-btn secondary" onClick={refresh} disabled={board.loading}>
+            <Icon name="refresh" size={16} />Tải lại
+          </button>
         </div>
       </div>
 
-      <div class="spy-screen-q">
-        <span>{current.question}</span>
+      <div class="sb-nav" role="tablist">
+        {SCREENS.map((s) => (
+          <button key={s.key} role="tab" aria-selected={screen === s.key} class={`sb-nav-item ${screen === s.key ? 'active' : ''}`} onClick={() => setScreen(s.key)}>
+            {s.label}
+          </button>
+        ))}
         {screen === 'niche' && (
           <select
-            class="input spy-select-sm"
+            class="sb-select sb-nav-select"
             value={nicheForScreen2 ?? '_none'}
             onChange={(e) => {
               const v = (e.target as HTMLSelectElement).value;

@@ -2,7 +2,7 @@
  * Màn 2 · Ngách — "học video/kênh nào, đào sâu gì?" (plan spy-analyst-workflow §G).
  * Hàng số của ngách → tab con Outlier | Đang lên | Kênh nhỏ. Video có nhãn
  * mức thường ✅/⚠️/🆕; bấm video xem views theo ngày. Kênh: Theo dõi (vào hàng
- * chờ duyệt Inbox) và Gán ngách.
+ * chờ duyệt Inbox) và Gán ngách. Giao diện TailPanel — CSS ở board.css.
  */
 import { useState } from 'preact/hooks';
 import {
@@ -12,10 +12,12 @@ import {
   type BoardVideoRow,
   type BoardVideoView,
 } from '../../api.ts';
-import { Chip } from '../../components/ui/Chip.tsx';
-import { Panel, Row } from '../../components/ui/Layout.tsx';
 import { loadChannels, loadVideos } from './data.ts';
 import {
+  Badge,
+  Icon,
+  IconBox,
+  type IconName,
   IS_MOCK,
   LoadState,
   Sparkline,
@@ -49,39 +51,43 @@ export function NicheScreen({ topicId, niche, niches, score, refreshKey, onChang
   const [youngChannels, setYoungChannels] = useState(false);
 
   return (
-    <div class="stack">
+    <div class="sb-stack">
       {score && (
-        <div class="spy-kpi-row">
-          <Kpi label="Sàn view kênh nhỏ" value={fmtInt(score.floorSmall)} />
-          <Kpi label="Cỡ mẫu" value={`${score.nSmallChannels} kênh`} sub={`${score.nSmallVideos} video`} />
+        <div class="sb-grid sb-grid-4">
+          <Kpi label="Sàn view kênh nhỏ" value={fmtInt(score.floorSmall)} icon="trending" tone="success" />
+          <Kpi label="Cỡ mẫu" value={`${score.nSmallChannels} kênh`} sub={`${score.nSmallVideos} video`} icon="users" tone="primary" />
           <Kpi
             label="Độ lặp"
             value={String(score.repeat.total)}
             sub={`${score.repeat.reliable}✅ ${score.repeat.thin}⚠️ ${score.repeat.niche}🆕`}
+            icon="repeat"
+            tone="warning"
           />
-          <Kpi label="Outlier 28 ngày" value={String(score.outliers28d)} />
+          <Kpi label="Outlier 28 ngày" value={String(score.outliers28d)} icon="zap" tone="secondary" />
         </div>
       )}
 
-      <Row style={{ gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-        <div class="feed-filter-tabs">
+      <div class="sb-card sb-toolbar">
+        <div class="sb-tabs">
           {SUB_TABS.map((t) => (
-            <button key={t.key} class={`feed-tab-btn ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
+            <button key={t.key} class={`sb-nav-item ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
               {t.label}
             </button>
           ))}
         </div>
-        <label class="spy-check">
-          <input type="checkbox" checked={smallOnly} onChange={(e) => setSmallOnly((e.target as HTMLInputElement).checked)} />
-          Chỉ kênh nhỏ (&lt; 10K subs)
-        </label>
-        {tab !== 'channels' && (
-          <label class="spy-check">
-            <input type="checkbox" checked={youngChannels} onChange={(e) => setYoungChannels((e.target as HTMLInputElement).checked)} />
-            Kênh &lt; 180 ngày tuổi
+        <div class="sb-toolbar-checks">
+          <label class="sb-check">
+            <input type="checkbox" checked={smallOnly} onChange={(e) => setSmallOnly((e.target as HTMLInputElement).checked)} />
+            Chỉ kênh nhỏ (&lt; 10K subs)
           </label>
-        )}
-      </Row>
+          {tab !== 'channels' && (
+            <label class="sb-check">
+              <input type="checkbox" checked={youngChannels} onChange={(e) => setYoungChannels((e.target as HTMLInputElement).checked)} />
+              Kênh &lt; 180 ngày tuổi
+            </label>
+          )}
+        </div>
+      </div>
 
       {tab === 'channels'
         ? <ChannelsTable topicId={topicId} niche={niche} niches={niches} smallOnly={smallOnly} refreshKey={refreshKey} onChanged={onChanged} />
@@ -90,12 +96,23 @@ export function NicheScreen({ topicId, niche, niches, score, refreshKey, onChang
   );
 }
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Kpi({ label, value, sub, icon, tone }: {
+  label: string;
+  value: string;
+  sub?: string;
+  icon: IconName;
+  tone: 'success' | 'primary' | 'warning' | 'secondary';
+}) {
   return (
-    <div class="spy-kpi">
-      <span class="muted">{label}</span>
-      <b class="num">{value}</b>
-      {sub && <span class="muted">{sub}</span>}
+    <div class="sb-card sb-stat">
+      <div class="sb-stat-top">
+        <div class="sb-stat-main">
+          <div class="sb-stat-label">{label}</div>
+          <div class="sb-stat-value">{value}</div>
+        </div>
+        <IconBox tone={tone} name={icon} />
+      </div>
+      {sub && <div class="sb-stat-row"><span class="sb-hint">{sub}</span></div>}
     </div>
   );
 }
@@ -126,65 +143,62 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
   };
 
   return (
-    <div class="stack">
+    <div class="sb-stack">
       <LoadState state={state} empty={!state.loading && !state.error && rows.length === 0} />
       {rows.length > 0 && (
-        <Row style={{ gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-          <span class="muted" style={{ fontSize: '0.78rem' }}>
+        <div class="sb-bar">
+          <span class="sb-hint">
             {rows.length} video{state.data?.truncated ? ' (đã cắt bớt)' : ''} · {view === 'rising' ? 'xếp theo views tăng 24h' : 'xếp theo bội số outlier'}
           </span>
           <button
-            class="btn teal spy-btn-sm"
+            class="sb-btn primary"
             disabled
             title="Đào sâu (kéo comment + transcript) là bước 6 — chưa làm"
           >
-            Đào sâu {selected.size} video
+            <Icon name="layers" size={16} />Đào sâu {selected.size} video
           </button>
-        </Row>
+        </div>
       )}
-      <div class="spy-outlier-grid">
+      <div class="sb-grid sb-grid-videos">
         {rows.map((r) => (
-          <div key={r.videoId} class={`spy-outlier-card ${open?.videoId === r.videoId ? 'is-sel' : ''}`} onClick={() => setOpen(open?.videoId === r.videoId ? null : r)}>
-            <input
-              type="checkbox"
-              checked={selected.has(r.videoId)}
-              onClick={(e) => e.stopPropagation()}
-              onChange={() => toggle(r.videoId)}
-              aria-label="Chọn để đào sâu"
-            />
-            <div class="spy-outlier-thumb">
+          <article key={r.videoId} class={`sb-card sb-video sb-clickable ${open?.videoId === r.videoId ? 'is-sel' : ''}`} onClick={() => setOpen(open?.videoId === r.videoId ? null : r)}>
+            <div class="sb-thumb">
+              <span class="sb-thumb-ph"><Icon name="image" size={32} /></span>
               <img
                 src={r.thumbnailUrl ?? `https://i.ytimg.com/vi/${r.videoId}/hqdefault.jpg`}
                 alt=""
                 loading="lazy"
                 onError={(e) => ((e.target as HTMLImageElement).style.visibility = 'hidden')}
               />
+              <label class="sb-pick" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={selected.has(r.videoId)}
+                  onChange={() => toggle(r.videoId)}
+                  aria-label="Chọn để đào sâu"
+                />
+              </label>
             </div>
-            <div class="spy-outlier-main">
-              <div class="spy-outlier-title">{r.title}</div>
-              <div class="muted spy-card-meta">
-                <span>{r.channelTitle ?? r.channelId}</span>
-                <span>{fmtNum(r.subs)} subs</span>
-                {r.channelAgeDays !== null && <span>kênh {r.channelAgeDays} ngày</span>}
-                <span>{relDate(r.publishedAt)}</span>
-              </div>
-              <div class="spy-card-meta">
-                <TierChip tier={r.tier} n={r.baselineN} />
-                {r.foundByKeyword && <Chip variant="default">{r.foundByKeyword}</Chip>}
-              </div>
+            <h3 class="sb-video-title">{r.title}</h3>
+            <div class="sb-video-meta">
+              {r.channelTitle ?? r.channelId} • {fmtNum(r.subs)} subs
+              {r.channelAgeDays !== null && <> • kênh {r.channelAgeDays} ngày</>} • {relDate(r.publishedAt)}
             </div>
-            <div class="spy-outlier-score">
+            <div class="sb-video-value-row">
+              {/* Video < 7 ngày không chấm outlier (plan §B4) — số chính của tab
+                  Đang lên là views tăng 24h; bội số chỉ để tham khảo bên dưới. */}
               {view === 'rising'
-                ? <span class="num spy-score-cool" style={{ fontSize: '1.05rem', fontWeight: 700 }}>+{fmtNum(r.velocity24h)}/24h</span>
-                : <span class={`num ${scoreClass(r.outlierX)}`} style={{ fontSize: '1.15rem', fontWeight: 700 }}>
-                    {r.outlierX !== null ? `${r.outlierX.toFixed(1)}x` : '—'}
-                  </span>}
-              <span class="num muted" style={{ fontSize: '0.72rem' }}>{fmtInt(r.views)} views</span>
-              <span class="num muted" style={{ fontSize: '0.68rem' }} title="Mức thường đã dùng để chia">
-                thường {fmtNum(r.baselineViews)}
-              </span>
+                ? <span class="sb-video-value sb-up">+{fmtNum(r.velocity24h)}/24h</span>
+                : <span class={`sb-video-value ${scoreClass(r.outlierX)}`}>{r.outlierX !== null ? `${r.outlierX.toFixed(1)}x` : '—'}</span>}
+              <TierChip tier={r.tier} n={r.baselineN} />
             </div>
-          </div>
+            <dl class="sb-kv">
+              <div><dt>Views:</dt><dd>{fmtInt(r.views)}</dd></div>
+              <div title="Mức thường đã dùng để chia"><dt>Mức thường:</dt><dd>{fmtNum(r.baselineViews)}</dd></div>
+              {view === 'rising' && <div title="Chưa tính là outlier vì video < 7 ngày"><dt>Bội số hiện tại:</dt><dd>{r.outlierX !== null ? `${r.outlierX.toFixed(1)}x` : '—'}</dd></div>}
+            </dl>
+            {r.foundByKeyword && <div class="sb-video-kw"><Badge>{r.foundByKeyword}</Badge></div>}
+          </article>
         ))}
       </div>
       {open && <VideoTrend topicId={topicId} video={open} />}
@@ -202,17 +216,17 @@ function VideoTrend({ topicId, video }: { topicId: string; video: BoardVideoRow 
     return (res.data ?? []).map((p) => p.views);
   }, [topicId, video.videoId]);
   return (
-    <Panel class="stack">
-      <Row style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <strong style={{ fontSize: '0.88rem' }}>{video.title}</strong>
-        <a href={`https://www.youtube.com/watch?v=${video.videoId}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.78rem' }}>
+    <section class="sb-card">
+      <div class="sb-bar">
+        <h2 class="sb-h2">{video.title}</h2>
+        <a class="sb-link" href={`https://www.youtube.com/watch?v=${video.videoId}`} target="_blank" rel="noreferrer">
           Mở YouTube ↗
         </a>
-      </Row>
+      </div>
       <LoadState state={state} />
       {state.data && <Sparkline points={state.data} width={640} height={80} />}
-      <p class="muted" style={{ margin: 0, fontSize: '0.75rem' }}>Views theo ngày (mỗi ngày một ảnh chụp).</p>
-    </Panel>
+      <p class="sb-hint sb-card-sub">Views theo ngày (mỗi ngày một ảnh chụp).</p>
+    </section>
   );
 }
 
@@ -269,61 +283,63 @@ function ChannelsTable({ topicId, niche, niches, smallOnly, refreshKey, onChange
   });
 
   return (
-    <div class="stack">
+    <div class="sb-stack">
       <LoadState state={state} empty={!state.loading && !state.error && rows.length === 0} />
-      {notice && <p class="ok" style={{ margin: 0, fontSize: '0.82rem' }}>{notice}</p>}
-      {error && <p class="error" style={{ margin: 0, fontSize: '0.82rem' }}>{error}</p>}
+      {notice && <div class="sb-alert ok">{notice}</div>}
+      {error && <div class="sb-alert">{error}</div>}
       {rows.length > 0 && (
-        <div class="spy-table-wrap">
-          <table class="spy-kw-table">
-            <thead>
-              <tr>
-                <th>Kênh</th>
-                <th class="num">Subs</th>
-                <th class="num">Tuổi kênh</th>
-                <th>Mức thường</th>
-                <th class="num">Outlier 28d</th>
-                <th class="num">Cao nhất</th>
-                <th>Trạng thái</th>
-                <th>Ngách</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((c) => (
-                <tr key={c.channelId}>
-                  <td>
-                    <a href={`https://www.youtube.com/channel/${c.channelId}`} target="_blank" rel="noreferrer">{c.title ?? c.channelId}</a>
-                    {c.dead && <Chip variant="bad" style={{ marginLeft: '0.35rem' }}>kênh chết</Chip>}
-                  </td>
-                  <td class="num">{fmtNum(c.subs)}</td>
-                  <td class="num">{c.channelAgeDays !== null ? `${c.channelAgeDays} ngày` : '—'}</td>
-                  <td>
-                    <span class="num">{fmtNum(c.baselineViews)}</span>{' '}
-                    {/* < 3 video khác: video của kênh được so với sàn ngách (🆕). */}
-                    <TierChip tier={c.tier ?? (c.baselineN < 3 ? 'niche' : null)} n={c.baselineN} />
-                  </td>
-                  <td class="num">{c.outliers28d}</td>
-                  <td class={`num ${scoreClass(c.bestOutlierX)}`}>{c.bestOutlierX !== null ? `${c.bestOutlierX.toFixed(1)}x` : '—'}</td>
-                  <td>
-                    {c.state === 'measured'
-                      ? <button class="btn secondary spy-btn-sm" disabled={busy === c.channelId} onClick={() => void follow(c)}>Theo dõi</button>
-                      : <span class="muted">{STATE_LABEL[c.state]}</span>}
-                  </td>
-                  <td>
-                    <select
-                      class="input spy-select-sm"
-                      value={c.niche ?? '_none'}
-                      disabled={busy === c.channelId}
-                      onChange={(e) => void assign(c, (e.target as HTMLSelectElement).value)}
-                    >
-                      {niches.map((n) => <option key={n ?? '_none'} value={n ?? '_none'}>{nicheLabel(n)}</option>)}
-                    </select>
-                  </td>
+        <section class="sb-card sb-card-flush">
+          <div class="sb-table-wrap">
+            <table class="sb-table">
+              <thead>
+                <tr>
+                  <th>Kênh</th>
+                  <th class="num">Subs</th>
+                  <th class="num">Tuổi kênh</th>
+                  <th>Mức thường</th>
+                  <th class="num">Outlier 28d</th>
+                  <th class="num">Cao nhất</th>
+                  <th>Trạng thái</th>
+                  <th>Ngách</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map((c) => (
+                  <tr key={c.channelId}>
+                    <td>
+                      <a class="sb-link" href={`https://www.youtube.com/channel/${c.channelId}`} target="_blank" rel="noreferrer">{c.title ?? c.channelId}</a>
+                      {c.dead && <Badge tone="danger" class="sb-ml">kênh chết</Badge>}
+                    </td>
+                    <td class="num">{fmtNum(c.subs)}</td>
+                    <td class="num">{c.channelAgeDays !== null ? `${c.channelAgeDays} ngày` : '—'}</td>
+                    <td>
+                      <span class="sb-mr">{fmtNum(c.baselineViews)}</span>
+                      {/* < 3 video khác: video của kênh được so với sàn ngách (🆕). */}
+                      <TierChip tier={c.tier ?? (c.baselineN < 3 ? 'niche' : null)} n={c.baselineN} />
+                    </td>
+                    <td class="num">{c.outliers28d}</td>
+                    <td class={`num ${scoreClass(c.bestOutlierX)}`}>{c.bestOutlierX !== null ? `${c.bestOutlierX.toFixed(1)}x` : '—'}</td>
+                    <td>
+                      {c.state === 'measured'
+                        ? <button class="sb-btn secondary sm" disabled={busy === c.channelId} onClick={() => void follow(c)}>Theo dõi</button>
+                        : <span class="sb-hint">{STATE_LABEL[c.state]}</span>}
+                    </td>
+                    <td>
+                      <select
+                        class="sb-select"
+                        value={c.niche ?? '_none'}
+                        disabled={busy === c.channelId}
+                        onChange={(e) => void assign(c, (e.target as HTMLSelectElement).value)}
+                      >
+                        {niches.map((n) => <option key={n ?? '_none'} value={n ?? '_none'}>{nicheLabel(n)}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
     </div>
   );

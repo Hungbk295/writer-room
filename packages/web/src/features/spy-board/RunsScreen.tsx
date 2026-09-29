@@ -1,13 +1,14 @@
 /**
  * Màn 4 · Lượt chạy — "có tốn quota vô ích không?" (plan spy-analyst-workflow §G).
  * Sổ lượt chạy gộp Theo dõi (tự động) + Tìm mới/Đào sâu (người bấm). Bấm một
- * thẻ → từng keyword/video, kể cả mục bị bỏ qua và lý do.
+ * thẻ → từng keyword/video, kể cả mục bị bỏ qua và lý do. Giao diện TailPanel
+ * (list kiểu Recent Orders) — CSS ở board.css.
  */
 import { useState } from 'preact/hooks';
 import type { BoardRunCard, BoardRunType } from '../../api.ts';
-import { Chip } from '../../components/ui/Chip.tsx';
 import { loadRunDetail, loadRuns } from './data.ts';
 import {
+  Badge,
   LoadState,
   RUN_TYPE_LABEL,
   fmtInt,
@@ -42,43 +43,52 @@ export function RunsScreen({ topicId, refreshKey }: { topicId: string; refreshKe
   const rows = state.data?.data ?? [];
 
   return (
-    <div class="stack">
-      <div class="feed-filter-tabs">
+    <div class="sb-stack">
+      <div class="sb-tabs">
         {TYPE_FILTERS.map((t) => (
-          <button key={t.key} class={`feed-tab-btn ${type === t.key ? 'active' : ''}`} onClick={() => setType(t.key)}>
+          <button key={t.key} class={`sb-nav-item ${type === t.key ? 'active' : ''}`} onClick={() => setType(t.key)}>
             {t.label}
           </button>
         ))}
       </div>
       <LoadState state={state} empty={!state.loading && !state.error && rows.length === 0} />
-      <div class="stack" style={{ gap: '0.5rem' }}>
-        {rows.map((c) => (
-          <RunCard key={c.runId} card={c} open={open === c.runId} onToggle={() => setOpen(open === c.runId ? null : c.runId)} />
-        ))}
-      </div>
+      {rows.length > 0 && (
+        <section class="sb-card sb-card-flush">
+          <div class="sb-list sb-list-flush">
+            {rows.map((c) => (
+              <RunCard key={c.runId} card={c} open={open === c.runId} onToggle={() => setOpen(open === c.runId ? null : c.runId)} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
 
 function RunCard({ card, open, onToggle }: { card: BoardRunCard; open: boolean; onToggle: () => void }) {
+  const sub = [
+    RUN_TYPE_LABEL[card.type],
+    card.niche !== null ? `ngách ${nicheLabel(card.niche)}` : null,
+    TRIGGER_LABEL[card.triggeredBy] ?? card.triggeredBy,
+    relDate(card.startedAt),
+    card.nNew !== null ? `${fmtInt(card.nNew)} video mới` : null,
+    card.newChannels > 0 ? `${card.newChannels} kênh đề xuất` : null,
+  ].filter(Boolean).join(' · ');
   return (
-    <div class={`spy-run-row ${open ? 'is-open' : ''}`}>
-      <button class="spy-run-row-head" onClick={onToggle}>
-        <div class="spy-run-row-title">
-          <Chip variant={card.type === 'track' ? 'other' : 'writer'}>{RUN_TYPE_LABEL[card.type]}</Chip>
-          <strong>{card.note ?? '—'}</strong>
+    <div class={`sb-run ${open ? 'is-open' : ''}`}>
+      <button class="sb-list-row" onClick={onToggle} aria-expanded={open}>
+        <div class="sb-list-main">
+          <div class="sb-list-title">{card.note ?? '—'}</div>
+          <div class="sb-list-sub">{sub}</div>
+          {card.error && <div class="sb-run-error">{card.error}</div>}
         </div>
-        <div class="muted spy-card-meta">
-          {runStatusChip(card.status)}
-          <span>{relDate(card.startedAt)}</span>
-          {card.niche !== null && <span>ngách {nicheLabel(card.niche)}</span>}
-          <span>{TRIGGER_LABEL[card.triggeredBy] ?? card.triggeredBy}</span>
-          <span>{card.searchCalls} search · {fmtInt(card.units)} unit</span>
-          {card.nNew !== null && <span>{fmtInt(card.nNew)} video mới</span>}
-          {card.newChannels > 0 && <span>{card.newChannels} kênh đề xuất</span>}
-          {card.nSkipped ? <span class="spy-lock">{card.nSkipped} bỏ qua</span> : null}
+        <div class="sb-list-side">
+          <div class="sb-list-value">{card.searchCalls} search · {fmtInt(card.units)} unit</div>
+          <div class="sb-badges">
+            {card.nSkipped ? <Badge tone="warning">{card.nSkipped} bỏ qua</Badge> : null}
+            {runStatusChip(card.status)}
+          </div>
         </div>
-        {card.error && <p class="error" style={{ margin: 0, fontSize: '0.78rem' }}>{card.error}</p>}
       </button>
       {open && <RunItems runId={card.runId} />}
     </div>
@@ -89,11 +99,11 @@ function RunItems({ runId }: { runId: string }) {
   const state = useLoad(() => loadRunDetail(runId), [runId]);
   const items = state.data?.items ?? [];
   return (
-    <div class="spy-run-row-body">
+    <div class="sb-run-body">
       <LoadState state={state} empty={!state.loading && !state.error && items.length === 0} />
       {items.length > 0 && (
-        <div class="spy-table-wrap">
-          <table class="spy-kw-table">
+        <div class="sb-table-wrap">
+          <table class="sb-table">
             <thead>
               <tr>
                 <th>Mục</th>
@@ -109,12 +119,12 @@ function RunItems({ runId }: { runId: string }) {
               {items.map((i) => (
                 <tr key={i.target}>
                   <td>{i.target}</td>
-                  <td>{i.status === 'skipped_dedup' ? <Chip variant="warn">bỏ qua (trùng)</Chip> : runStatusChip(i.status)}</td>
+                  <td>{i.status === 'skipped_dedup' ? <Badge tone="warning">bỏ qua (trùng)</Badge> : runStatusChip(i.status)}</td>
                   <td class="num">{fmtInt(i.nResults)}</td>
                   <td class="num">{fmtInt(i.nNew)}</td>
                   <td class="num">{fmtInt(i.medianViews)}</td>
                   <td class="num">{fmtInt(i.outliersFound)}</td>
-                  <td class="muted">{skipLabel(i.skipReason) || i.error || ''}</td>
+                  <td class="sb-hint">{skipLabel(i.skipReason) || i.error || ''}</td>
                 </tr>
               ))}
             </tbody>
