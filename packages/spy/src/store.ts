@@ -5116,14 +5116,25 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
   setTopicChannelMeta(
     topicId: string,
     channelId: string,
-    meta: { channelPublishedAt?: string | null; groupKey?: string | null },
+    meta: {
+      channelPublishedAt?: string | null;
+      groupKey?: string | null;
+      /** Từ channels.list: kênh seed/import chưa từng có tên+subs trong sổ theo dõi. */
+      title?: string | null;
+      subscriberCount?: number | null;
+    },
   ): void {
     this.database.prepare(
       `UPDATE topic_channels SET
          channel_published_at=COALESCE(?, channel_published_at),
-         group_key=COALESCE(group_key, ?)
+         group_key=COALESCE(group_key, ?),
+         title=COALESCE(?, title),
+         subscriber_count=COALESCE(?, subscriber_count)
        WHERE topic_id=? AND channel_id=?`,
-    ).run(meta.channelPublishedAt ?? null, meta.groupKey ?? null, topicId, channelId);
+    ).run(
+      meta.channelPublishedAt ?? null, meta.groupKey ?? null,
+      meta.title ?? null, meta.subscriberCount ?? null, topicId, channelId,
+    );
   }
 
   /** v16: người gán ngách tay — ghi đè cả sổ theo dõi lẫn sổ đo. Trả số kênh đổi. */

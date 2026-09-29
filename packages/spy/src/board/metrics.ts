@@ -238,7 +238,7 @@ export function isSmallChannel(subs: number | null | undefined, settings: BoardS
 /** Bảng định nghĩa cho spy_board_metrics / tooltip board. */
 export function metricDefinitions(settings: BoardSettings): Array<{ name: string; definition: string }> {
   return [
-    { name: 'baseline', definition: `Mức thường của kênh: median views các video dài (≥ ${settings.minDurationSec}s) KHÁC của kênh, tối đa ${settings.baselineWindow} video mới nhất. ≥ ${settings.reliableMinN} video → reliable (✅); ${settings.thinMinN}–${settings.reliableMinN - 1} → thin (⚠️); < ${settings.thinMinN} → so với sàn ngách (niche, 🆕).` },
+    { name: 'baseline', definition: `Mức thường của kênh: median views các video dài (≥ ${settings.minDurationSec}s) KHÁC của kênh, tối đa ${settings.baselineWindow} video mới nhất. ≥ ${settings.reliableMinN} video → reliable (✅); ${settings.thinMinN}–${settings.reliableMinN - 1} → thin (⚠️); < ${settings.thinMinN} → so với sàn ngách (niche, 🆕) — chỉ khi kênh đã được quét uploads; kênh chưa quét thì không chấm.` },
     { name: 'outlier_x', definition: 'views ÷ mức thường (theo tier).' },
     { name: 'is_outlier', definition: `outlier_x ≥ ${settings.outlierMultiple} và video ≥ ${settings.risingDays} ngày tuổi và kênh không chết.` },
     { name: 'dead', definition: `Kênh có ≥ ${settings.thinMinN} video khác và median < ${settings.deadMedian} views.` },

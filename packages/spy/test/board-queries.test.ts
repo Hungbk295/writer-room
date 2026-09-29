@@ -141,6 +141,28 @@ describe('boardVideos', () => {
   });
 });
 
+describe('kênh chưa quét uploads', () => {
+  test('video hot chỉ có từ kết quả search của kênh chưa quét KHÔNG bị chấm 🆕/outlier so với sàn ngách', async () => {
+    const store = await seed();
+    // Kênh UCghost không có trong topic_channels/measured_channels: chỉ biết 1 video từ search.
+    store.upsertTopicVideo({
+      topicId: T, videoId: 'ghost-hit', channelId: 'UCghost', title: 'viral of a big channel',
+      publishedAt: daysAgo(12), durationSec: 600, source: 'keyword_run', foundByKeyword: 'vay_nhanh',
+      views: 2_000_000, capturedAt: daysAgo(0),
+    });
+    const all = boardVideos(store.rawDb, T, { niche: 'vay', view: 'all', nowMs: NOW, limit: 100 });
+    const ghost = all.data.find((r) => r.videoId === 'ghost-hit')!;
+    expect(ghost.tier).toBeNull();
+    expect(ghost.outlierX).toBeNull();
+    expect(ghost.isOutlier).toBe(false);
+    expect(boardVideos(store.rawDb, T, { niche: 'vay', view: 'outliers', nowMs: NOW }).data.map((r) => r.videoId))
+      .not.toContain('ghost-hit');
+    // Kênh đã đo (C: 2 video) vẫn được chấm 🆕 như cũ.
+    expect(all.data.find((r) => r.videoId === 'C-0')!.tier).toBe('niche');
+    store.close();
+  });
+});
+
 describe('boardChannels', () => {
   test('kênh theo ngách: trạng thái, mức thường, outlier 28 ngày', async () => {
     const store = await seed();

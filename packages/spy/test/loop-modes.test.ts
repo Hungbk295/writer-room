@@ -181,6 +181,23 @@ describe('DAILY mode — D1–D5 (§6.3: 0 search call)', () => {
     store.close();
   });
 
+  test('daily ghi tên + subs + ngày tạo kênh vào sổ theo dõi (kênh seed chưa có) để board xếp được kênh nhỏ', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCseed', status: 'active' });
+    dataApi.videosByChannel.set('UCseed', makeVideos('seed', 'UCseed', 5, 2_000));
+    dataApi.channelsMeta.set('UCseed', { title: 'Kênh Seed', subscriberCount: 4_321, publishedAt: '2025-11-02T00:00:00.000Z' });
+    expect(store.listTopicChannelsByStatus('fin', ['active'])[0]!.subscriberCount).toBeNull();
+
+    await loop.runTick('fin', { mode: 'daily' });
+
+    const ch = store.listTopicChannelsByStatus('fin', ['active'])[0]!;
+    expect(ch.title).toBe('Kênh Seed');
+    expect(ch.subscriberCount).toBe(4_321);
+    expect(ch.channelPublishedAt).toBe('2025-11-02T00:00:00.000Z');
+    store.close();
+  });
+
   test('baseline daily chỉ tính video uploads của kênh — video tìm qua search không đẩy baseline lên', async () => {
     const { store, dataApi, loop } = await setup();
     seedTopic(store);

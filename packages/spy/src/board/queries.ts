@@ -244,10 +244,21 @@ function scoreNiche(
   const uploads = (channelId: string) => (data.uploadsByChannel.get(channelId) ?? [])
     .filter((v) => !viewsAt || (v.publishedAt !== null && Date.parse(v.publishedAt) <= nowMs))
     .map(withViews);
+  // Tier 🆕 (so với sàn ngách) chỉ đúng với kênh ĐÃ được quét uploads mà có < 3
+  // video dài. Kênh chưa từng quét (chỉ có kết quả search, vd ngoài trần quét
+  // mỗi lượt) không có dữ liệu để kết luận "kênh mới" — không chấm, nếu không
+  // video hot của kênh lớn bị tính là outlier so với sàn kênh nhỏ.
+  const noNicheRef = { floorViews: null, nVideos: 0 };
   const scored = inNiche.map((video) => ({
     video,
     niche,
-    score: scoreVideo(video, uploads(video.channelId), nicheRef, data.settings, nowMs),
+    score: scoreVideo(
+      video,
+      uploads(video.channelId),
+      data.channels.has(video.channelId) ? nicheRef : noNicheRef,
+      data.settings,
+      nowMs,
+    ),
   }));
   return { floor, scored };
 }

@@ -177,8 +177,14 @@ export async function runDailyMode(ctx: ModeContext): Promise<DailyModeResult> {
     const chStats = statsByChannel.get(channelId) ?? null;
     const channelTitle = chStats?.title ?? row.title ?? channelId;
     section.channelsChecked++;
-    if (chStats?.publishedAt) {
-      store.setTopicChannelMeta(ctx.topicId, channelId, { channelPublishedAt: chStats.publishedAt });
+    if (chStats) {
+      // Ghi luôn tên + subs mới nhất: kênh seed/import chưa từng có chúng nên board
+      // không xếp được kênh nhỏ (sàn view kênh nhỏ = tiêu chí chọn tệp).
+      store.setTopicChannelMeta(ctx.topicId, channelId, {
+        channelPublishedAt: chStats.publishedAt ?? null,
+        title: chStats.title ?? null,
+        subscriberCount: chStats.subscriberCount ?? null,
+      });
     }
 
     const scanned = await scanChannelVideos(
