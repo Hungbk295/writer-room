@@ -31,6 +31,7 @@ import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
 import { KeywordRunService } from './loop/keyword-run.ts';
+import { DeepDiveService } from './loop/deepdive.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
 import { PublicObservationService } from './channel-intelligence/observations.ts';
@@ -351,6 +352,8 @@ export class SpyService {
   readonly loop: LoopRunner;
   /** v14: keyword run theo yêu cầu — spy.keywordRuns.resolveKeywords/startRun. */
   readonly keywordRuns: KeywordRunService;
+  /** v16: lượt Đào sâu (comment + transcript) — spy.deepDives.startRun. */
+  readonly deepDives: DeepDiveService;
   /** P0 evidence/review plane; does not reuse legacy Auto-Loop candidate state. */
   readonly corpus: CorpusIntelligenceService;
   /** C1 local bookmark/follow role boundary; storage-only by construction. */
@@ -463,6 +466,13 @@ export class SpyService {
       store: this.store,
       quota: this.quota,
       dataApi: countingApi,
+    });
+    this.deepDives = new DeepDiveService({
+      store: this.store,
+      quota: this.quota,
+      videoSpy: (input) => this.videoSpy(input),
+      wait: (opId, timeoutMs) => this.wait(opId, timeoutMs),
+      videoComments: (input) => this.videoComments(input),
     });
   }
 
@@ -2047,3 +2057,12 @@ export {
   type BoardVideosParams,
   type ScorecardRow,
 } from './board/queries.ts';
+export {
+  DEEPDIVE_COMMENTS_PER_VIDEO,
+  DEEPDIVE_MAX_VIDEOS,
+  DeepDiveService,
+  hasComments,
+  hasTranscript,
+  type DeepDiveItemResult,
+  type DeepDivePorts,
+} from './loop/deepdive.ts';

@@ -107,3 +107,26 @@ describe('/api/spy/board', () => {
     expect((await post(handler, 'channels/niche', { topicId: T, channelIds: [], niche: 'x' })).status).toBe(400);
   });
 });
+
+describe('POST /api/spy/board/deepdive', () => {
+  test('dryRun báo video nào đã có comment/transcript; validate; tất cả đã có → 409', async () => {
+    const { service, handler } = await boot();
+    service.store.upsertVideoComments([{
+      id: 'c1', sourceVideoId: 'A0', channelId: null, parentCommentId: null, authorDisplayName: 'a',
+      text: 'x', likeCount: 0, publishedAt: null, updatedAt: null, fetchedAt: daysAgo(1),
+    }]);
+    const dry = await post(handler, 'deepdive', { topicId: T, videoIds: ['A0', 'A1', 'A1'], dryRun: true });
+    expect(dry.status).toBe(200);
+    const body = await dry.json() as { plan: Array<Record<string, unknown>>; toWork: number };
+    expect(body.plan).toEqual([
+      { videoId: 'A0', commentsPresent: true, transcriptPresent: false },
+      { videoId: 'A1', commentsPresent: false, transcriptPresent: false },
+    ]);
+    expect(body.toWork).toBe(2);
+    expect(service.store.listKeywordRuns(T).length).toBe(0);
+
+    expect((await post(handler, 'deepdive', { topicId: T, videoIds: [] })).status).toBe(400);
+    expect((await post(handler, 'deepdive', { topicId: T, videoIds: Array.from({ length: 21 }, (_, i) => `v${i}`) })).status).toBe(400);
+    expect((await post(handler, 'deepdive', { topicId: 'nope', videoIds: ['A0'] })).status).toBe(404);
+  });
+});

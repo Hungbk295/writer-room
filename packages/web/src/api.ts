@@ -1869,6 +1869,14 @@ export interface BoardKeywordRow {
   outliersFound: number;
 }
 
+export interface BoardDeepDiveResponse {
+  runId?: string;
+  dryRun?: boolean;
+  plan: Array<{ videoId: string; commentsPresent: boolean; transcriptPresent: boolean }>;
+  /** Số video còn thiếu comment hoặc transcript (sẽ thực sự tốn công). */
+  toWork: number;
+}
+
 export type BoardRunType = 'track' | 'discover' | 'deepdive' | 'weekly' | 'setup';
 
 export interface BoardRunCard {
@@ -2716,6 +2724,12 @@ export const api = {
     })}`),
   boardRunDetail: (runId: string) =>
     request<BoardEnvelope<BoardRunDetail>>(`/api/spy/board/runs/${encodeURIComponent(runId)}`),
+  /** Lượt Đào sâu: kéo comment + transcript; dryRun chỉ trả kế hoạch (cái nào đã có). */
+  boardDeepDive: (body: { topicId: string; videoIds: string[]; note?: string; niche?: string; dryRun?: boolean }) =>
+    request<BoardDeepDiveResponse>('/api/spy/board/deepdive', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   /** Gán ngách tay; niche=null gỡ ngách. */
   boardAssignNiche: (topicId: string, channelIds: string[], niche: string | null) =>
     request<{ changed: number }>('/api/spy/board/channels/niche', {

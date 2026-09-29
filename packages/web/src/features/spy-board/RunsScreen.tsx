@@ -28,12 +28,19 @@ const TYPE_FILTERS: Array<{ key: BoardRunType | ''; label: string }> = [
 
 const TRIGGER_LABEL: Record<string, string> = { human: 'anh bấm', loop: 'máy', agent: 'agent' };
 
+const SKIP_LABEL: Record<string, string> = {
+  comments_present: 'đã có comment',
+  transcript_present: 'đã có transcript',
+};
+
+/** skip_reason có thể ghép nhiều lý do bằng dấu phẩy (Đào sâu). */
 function skipLabel(reason: string | null): string {
   if (!reason) return '';
-  const m = reason.match(/^searched_at:(.+)$/);
-  if (m) return `đã search ${relDate(m[1])}`;
-  if (reason === 'comments_present') return 'đã có comment';
-  return reason;
+  return reason.split(',').map((part) => {
+    const m = part.match(/^searched_at:(.+)$/);
+    if (m) return `đã search ${relDate(m[1])}`;
+    return SKIP_LABEL[part] ?? part;
+  }).join(' · ');
 }
 
 export function RunsScreen({ topicId, refreshKey }: { topicId: string; refreshKey: number }) {

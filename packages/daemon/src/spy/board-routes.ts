@@ -2,11 +2,15 @@
 // spy-analyst-workflow §F). Đọc: GET /api/spy/board/{metrics,scorecard,videos,
 // channels,keywords,runs,runs/:id} — gọi thẳng board/queries.ts, CÙNG hàm với
 // MCP spy_board_*, nên board và agent luôn thấy cùng số. Ghi: POST
-// /api/spy/board/channels/niche (người gán ngách tay).
+// /api/spy/board/channels/niche (người gán ngách tay), POST /api/spy/board/deepdive
+// (lượt Đào sâu — người bấm; agent không có đường ghi này).
 //
 // Tham số `niche`: bỏ trống = mọi ngách; `niche=_none` = "chưa gán" (NULL).
 
 import {
+  DEEPDIVE_MAX_VIDEOS,
+  hasComments,
+  hasTranscript,
   boardChannels,
   boardKeywords,
   boardMetrics,
@@ -93,6 +97,38 @@ export async function handleSpyBoard(url: URL, req: Request, spy: SpyService): P
       const niche = nicheRaw === null ? null : (nicheRaw as string).trim();
       return json({ changed: spy.store.assignChannelNiche(topicId, ids, niche) });
     }
+    // POST /deepdive {topicId, videoIds[], note?, niche?, dryRun?} — kéo comment
+    // + transcript; cái đã có thì bỏ qua (chống trùng). dryRun chỉ trả kế hoạch.
+    if (method === 'POST' && path === 'deepdive') {
+      let body: Record<string, unknown> = {};
+      try { body = await req.json() as Record<string, unknown>; } catch { /* body rỗng */ }
+      const topicId = typeof body['topicId'] === 'string' ? body['topicId'] : '';
+      if (!topicId) return err('topicId bắt buộc');
+      const topic = spy.store.getTopic(topicId);
+      if (!topic) return err(`Topic '${topicId}' không tồn tại`, 404);
+      const videoIds = Array.isArray(body['videoIds'])
+        ? [...new Set((body['videoIds'] as unknown[]).map(String).map((v) => v.trim()).filter(Boolean))]
+        : [];
+      if (videoIds.length === 0) return err('videoIds bắt buộc');
+      if (videoIds.length > DEEPDIVE_MAX_VIDEOS) return err(`Tối đa ${DEEPDIVE_MAX_VIDEOS} video mỗi lượt Đào sâu`);
+      const plan = videoIds.map((videoId) => ({
+        videoId,
+        commentsPresent: hasComments(spy.store, videoId),
+        transcriptPresent: hasTranscript(spy.store, videoId),
+      }));
+      const toWork = plan.filter((p) => !p.commentsPresent || !p.transcriptPresent).length;
+      if (body['dryRun'] === true) return json({ dryRun: true, plan, toWork });
+      if (String(topic['status']) === 'paused') return err('Topic đang paused', 409);
+      if (spy.store.getRunningKeywordRun(topicId)) return err('Đã có lượt chạy đang chạy cho topic này', 409);
+      if (toWork === 0) return json({ error: 'Mọi video đã có comment và transcript', plan }, 409);
+      const note = typeof body['note'] === 'string' && body['note'].trim() !== '' ? body['note'].trim().slice(0, 500) : null;
+      const niche = typeof body['niche'] === 'string' && body['niche'].trim() !== '' && body['niche'] !== NICHE_NONE
+        ? body['niche'].trim()
+        : null;
+      const runId = spy.deepDives.startRun(topicId, videoIds, { note, groupKey: niche, triggeredBy: 'human' });
+      return json({ runId, plan, toWork });
+    }
+
     if (method !== 'GET') return err('Method không hỗ trợ', 405);
 
     const runDetail = path.match(/^runs\/([^/]+)$/);

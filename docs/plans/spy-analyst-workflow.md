@@ -89,6 +89,8 @@ File báo cáo mỗi lượt chạy · ước tính doanh thu/RPM · search volu
 
 | # | Việc | Trạng thái |
 |---|---|---|
+| D5 | Bước 6 Đào sâu: `POST /api/spy/board/deepdive {topicId, videoIds≤20, note?, niche?, dryRun?}` → `spy.deepDives` (loop/deepdive.ts). Transcript đi qua `videoSpy(depth=transcript)` (tạo snapshot → agent đọc bằng `spy_read_video_material`), comment qua `videoComments` (100 thread/video). Đã có → bỏ qua (`comments_present`/`transcript_present`), lỗi một phần vẫn giữ phần lấy được. Thẻ ghi `keyword_runs type='deepdive'`. Nút "Đào sâu N video" ở Màn 2 | ✅ Code + test xanh (spy 400, daemon 548, web 19) |
+| D4 | Bước 5 UI 4 màn + restyle TailPanel (`board.css` scope `.spy-board`) | ✅ |
 | D3 | Bước 4: `spy/src/board/queries.ts` (6 truy vấn) → HTTP `/api/spy/board/{metrics,scorecard,videos,channels,keywords,runs,runs/:id}` + `POST /board/channels/niche` → MCP `spy_board_*` (7 tool, chỉ đọc). Sàn view tính theo kênh. `niche=_none` = chưa gán. Chạy thử trên bản sao DB thật: finance-us 867 video, scorecard 7ms | ✅ Code + test xanh (spy 397, daemon 547) |
 | D2 | Bước 2 (phần lõi) + bước 3: schema v16 (thẻ lượt chạy `type/note/group_key/triggered_by/n_new/n_skipped`, item `skipped_dedup` + lý do, `n_new` trên keyword_checks, `group_key` + `channel_published_at` trên kênh); luật 3 ngày; hit kênh ngoài cũng vào kho (để đếm "mới"); `spy/src/board/metrics.ts` (3 tier, bỏ video đang xét, luật 7 ngày, chết khi ≥3 video, sàn view, độ lặp) | ✅ Code + test xanh (spy 391, daemon 544) |
 | D1 | Sửa lỗi lấy mẫu: sổ `measured_channels` (mọi kênh lạ đã quét, kể cả không outlier/chết/lottery), uploads ghi `outside_scan` tính baseline, đo lại sau 14 ngày, không outlier ở kênh chết. Setup cũng ghi kênh chết/lottery vào sổ | ✅ Code + test xanh (spy 376, daemon 542). **Chưa commit** |
@@ -147,7 +149,7 @@ Mọi response có khung chung:
 | HTTP | Body | Việc |
 |---|---|---|
 | `POST /api/spy/keywords/run` (có, **sửa**) | + `note?`; `group` bắt buộc khi không truyền `termKeys` | Ghi thẻ đầy đủ; bỏ qua keyword đã search trong 3 ngày (`skipped_dedup`) |
-| `POST /api/spy/deepdive` (**mới**) | `{topicId, videoIds[], note?}` | Tạo lượt Đào sâu; comment/transcript đã có → bỏ qua + lý do |
+| `POST /api/spy/board/deepdive` (**đã làm**) | `{topicId, videoIds[], note?}` | Tạo lượt Đào sâu; comment/transcript đã có → bỏ qua + lý do |
 | `POST /api/spy/board/channels/niche` (**mới**) | `{topicId, channelIds[], niche}` | Gán ngách tay cho kênh "chưa gán" |
 | `POST /api/spy/keywords/bulk`, `/decide` (có) | — | Giữ nguyên |
 | Duyệt kênh theo dõi (có, `/api/spy/loop/decide`) | — | Giữ nguyên |

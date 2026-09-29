@@ -13,6 +13,7 @@ import {
   type BoardVideoView,
 } from '../../api.ts';
 import { loadChannels, loadVideos } from './data.ts';
+import { DeepDiveBox } from './DeepDiveBox.tsx';
 import {
   Badge,
   Icon,
@@ -133,6 +134,7 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
   );
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [open, setOpen] = useState<BoardVideoRow | null>(null);
+  const [diving, setDiving] = useState(false);
   const rows = state.data?.data ?? [];
 
   const toggle = (id: string) => {
@@ -152,12 +154,22 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
           </span>
           <button
             class="sb-btn primary"
-            disabled
-            title="Đào sâu (kéo comment + transcript) là bước 6 — chưa làm"
+            disabled={selected.size === 0 || diving}
+            title={selected.size === 0 ? 'Tick video để đào sâu (kéo comment + transcript)' : undefined}
+            onClick={() => setDiving(true)}
           >
             <Icon name="layers" size={16} />Đào sâu {selected.size} video
           </button>
         </div>
+      )}
+      {diving && (
+        <DeepDiveBox
+          topicId={topicId}
+          niche={niche}
+          videoIds={[...selected]}
+          onClose={() => setDiving(false)}
+          onFinished={() => setSelected(new Set())}
+        />
       )}
       <div class="sb-grid sb-grid-videos">
         {rows.map((r) => (
