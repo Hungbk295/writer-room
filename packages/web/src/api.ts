@@ -1766,6 +1766,8 @@ export interface SpyKeywordRunRequest {
   scanChannelsCap?: number;
   /** true → chỉ trả plan + quota, không chạy. */
   dryRun?: boolean;
+  /** v16: ghi chú mục đích (tuỳ chọn) — hiện trên thẻ lượt chạy. */
+  note?: string;
 }
 
 export interface SpyKeywordRunResponse {
@@ -1774,6 +1776,133 @@ export interface SpyKeywordRunResponse {
   keywords: string[];
   estimatedSearchCalls: number;
   quotaRemaining: number;
+  /** v16: keyword đã search trong 3 ngày — bị bỏ qua, không tốn quota. */
+  locked?: Array<{ termKey: string; lastCheckedAt: string | null }>;
+}
+
+// ── Spy Board (/api/spy/board/*) — plan spy-analyst-workflow §F ────────────
+// Cùng hàm với MCP spy_board_* → board và agent thấy cùng số.
+
+/** Tham số niche: '_none' = chưa gán ngách. */
+export const BOARD_NICHE_NONE = '_none';
+
+export type BoardTier = 'reliable' | 'thin' | 'niche';
+
+export interface BoardEnvelope<T> {
+  data: T;
+  dataAsOf: string | null;
+  runIds: string[];
+  freshness: { lastTrackAt: string | null; lastDiscoverAt: string | null };
+  sample: { channels: number; videos: number };
+  limit: number | null;
+  truncated: boolean;
+}
+
+export interface BoardRepeat { total: number; reliable: number; thin: number; niche: number }
+
+export interface BoardScorecardRow {
+  niche: string | null;
+  floorSmall: number | null;
+  floorSmall7dAgo: number | null;
+  nSmallChannels: number;
+  nSmallVideos: number;
+  repeat: BoardRepeat;
+  outliers28d: number;
+  stop: { ready: boolean; smallMeasured: number; need: number; rankStableDays: number };
+  history: Array<{ day: string; floorSmall: number | null }>;
+}
+
+export type BoardVideoView = 'outliers' | 'rising' | 'all';
+
+export interface BoardVideoRow {
+  videoId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  channelId: string;
+  channelTitle: string | null;
+  subs: number | null;
+  channelAgeDays: number | null;
+  niche: string | null;
+  views: number | null;
+  velocity24h: number | null;
+  publishedAt: string | null;
+  videoAgeDays: number | null;
+  outlierX: number | null;
+  tier: BoardTier | null;
+  baselineViews: number | null;
+  baselineN: number;
+  isOutlier: boolean;
+  isRising: boolean;
+  foundByKeyword: string | null;
+}
+
+export type BoardChannelState = 'following' | 'pending' | 'paused' | 'measured';
+
+export interface BoardChannelRow {
+  channelId: string;
+  title: string | null;
+  subs: number | null;
+  isSmall: boolean;
+  channelAgeDays: number | null;
+  niche: string | null;
+  state: BoardChannelState;
+  verdict: string | null;
+  baselineViews: number | null;
+  baselineN: number;
+  tier: Exclude<BoardTier, 'niche'> | null;
+  dead: boolean;
+  outliers28d: number;
+  bestOutlierX: number | null;
+}
+
+export interface BoardKeywordRow {
+  termKey: string;
+  term: string;
+  niche: string | null;
+  status: string;
+  lastCheckedAt: string | null;
+  lockedUntil: string | null;
+  lastNResults: number | null;
+  lastNNew: number | null;
+  newRate: number | null;
+  nChecks: number;
+  outliersFound: number;
+}
+
+export type BoardRunType = 'track' | 'discover' | 'deepdive' | 'weekly' | 'setup';
+
+export interface BoardRunCard {
+  runId: string;
+  source: 'keyword_run' | 'loop_tick';
+  type: BoardRunType;
+  niche: string | null;
+  note: string | null;
+  triggeredBy: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  nItems: number | null;
+  itemsDone: number | null;
+  searchCalls: number;
+  units: number;
+  nNew: number | null;
+  nSkipped: number | null;
+  newChannels: number;
+  error: string | null;
+}
+
+export interface BoardRunDetail {
+  card: BoardRunCard;
+  items: Array<{
+    target: string;
+    status: string;
+    nResults: number | null;
+    nNew: number | null;
+    medianViews: number | null;
+    outliersFound: number | null;
+    skipReason: string | null;
+    error: string | null;
+  }>;
 }
 
 export interface SpyKeywordBulkResult {
@@ -2554,6 +2683,45 @@ export const api = {
   /** Alias đọc lịch sử run (cùng dữ liệu /api/spy/keywords/runs). */
   dashKeywordRuns: (topicId: string) =>
     request<DashEnvelope<SpyKeywordRun[]>>(`/api/spy/dash/keyword-runs${dashQuery({ topic_id: topicId })}`),
+
+  // ── Spy Board (đọc, /api/spy/board/*) ──────────────────────────────────────
+  boardMetrics: (topicId: string) =>
+    request<{ data: Array<{ name: string; definition: string }> }>(`/api/spy/board/metrics${dashQuery({ topic_id: topicId })}`),
+  boardScorecard: (topicId: string, historyDays?: number) =>
+    request<BoardEnvelope<BoardScorecardRow[]>>(
+      `/api/spy/board/scorecard${dashQuery({ topic_id: topicId, history_days: historyDays })}`,
+    ),
+  boardVideos: (topicId: string, params: {
+    niche?: string; view?: BoardVideoView; smallOnly?: boolean; channelAgeMaxDays?: number;
+    sort?: 'outlier_x' | 'velocity_24h' | 'views' | 'published_at'; limit?: number;
+  } = {}) =>
+    request<BoardEnvelope<BoardVideoRow[]>>(`/api/spy/board/videos${dashQuery({
+      topic_id: topicId, niche: params.niche, view: params.view,
+      small_only: params.smallOnly ? 1 : undefined, channel_age_max_days: params.channelAgeMaxDays,
+      sort: params.sort, limit: params.limit,
+    })}`),
+  boardChannels: (topicId: string, params: {
+    niche?: string; smallOnly?: boolean; hasOutlier?: boolean;
+    sort?: 'outliers_28d' | 'subs' | 'baseline' | 'channel_age'; limit?: number;
+  } = {}) =>
+    request<BoardEnvelope<BoardChannelRow[]>>(`/api/spy/board/channels${dashQuery({
+      topic_id: topicId, niche: params.niche, small_only: params.smallOnly ? 1 : undefined,
+      has_outlier: params.hasOutlier ? 1 : undefined, sort: params.sort, limit: params.limit,
+    })}`),
+  boardKeywords: (topicId: string, niche?: string) =>
+    request<BoardEnvelope<BoardKeywordRow[]>>(`/api/spy/board/keywords${dashQuery({ topic_id: topicId, niche })}`),
+  boardRuns: (topicId: string, params: { niche?: string; type?: BoardRunType; limit?: number } = {}) =>
+    request<BoardEnvelope<BoardRunCard[]>>(`/api/spy/board/runs${dashQuery({
+      topic_id: topicId, niche: params.niche, type: params.type, limit: params.limit,
+    })}`),
+  boardRunDetail: (runId: string) =>
+    request<BoardEnvelope<BoardRunDetail>>(`/api/spy/board/runs/${encodeURIComponent(runId)}`),
+  /** Gán ngách tay; niche=null gỡ ngách. */
+  boardAssignNiche: (topicId: string, channelIds: string[], niche: string | null) =>
+    request<{ changed: number }>('/api/spy/board/channels/niche', {
+      method: 'POST',
+      body: JSON.stringify({ topicId, channelIds, niche }),
+    }),
 
   // ── Keyword Run (ghi — backend lane đang build song song) ────────────────
   spyKeywordBulkAdd: (body: { topicId: string; terms: string[]; group?: string; activate?: boolean }) =>
