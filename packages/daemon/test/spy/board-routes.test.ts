@@ -156,3 +156,23 @@ describe('/api/spy/board/tasks + MCP spy_board_submit', () => {
     expect((await post(handler, 'tasks', { topicId: T, template: 'outlier_patterns', selection: { videoIds: ['A0'] } })).status).toBe(400);
   });
 });
+
+describe('GET /api/spy/board/labels', () => {
+  test('trả tên video, kênh, subs cho đúng ID; ID lạ vắng mặt', async () => {
+    const { handler } = await boot();
+    const res = await get(handler, `labels?topic_id=${T}&video_ids=A0,A1,khong-co&channel_ids=X,ghost`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as {
+      data: {
+        videos: Record<string, { title: string; channelId: string; channelTitle: string | null; views: number | null }>;
+        channels: Record<string, { title: string | null; subs: number | null }>;
+      };
+    };
+    expect(Object.keys(data.videos).sort()).toEqual(['A0', 'A1']);
+    expect(data.videos['A0']).toMatchObject({ title: 'A0', channelId: 'A', channelTitle: 'A', views: 6_000 });
+    expect(data.channels['A']).toEqual({ title: 'A', subs: 4_000 });
+    expect(data.channels['X']).toEqual({ title: 'X', subs: 900 });
+    expect(data.channels['ghost']).toBeUndefined();
+    expect((await get(handler, 'labels')).status).toBe(400);
+  });
+});

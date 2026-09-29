@@ -828,3 +828,66 @@ export function boardRunDetail(db: Database, runId: string): BoardEnvelope<Board
   }));
   return envelope(db, String(tick['topic_id']), { card: cardFromTick(tick), items }, { channels: 0, videos: 0 });
 }
+
+// ── Nhãn hiển thị cho ID (tên, thumbnail, kênh) ─────────────────────────────
+
+export interface BoardVideoLabel {
+  title: string;
+  channelId: string;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+  views: number | null;
+  publishedAt: string | null;
+}
+
+export interface BoardLabels {
+  videos: Record<string, BoardVideoLabel>;
+  channels: Record<string, { title: string | null; subs: number | null }>;
+}
+
+const LABEL_MAX_IDS = 200;
+
+/**
+ * Tên/thumbnail/kênh cho các ID mà UI cần hiện (kết quả agent, chi tiết lượt
+ * Đào sâu). Tra chính xác theo ID nên không phụ thuộc video có nằm trong top
+ * outlier hay không. ID không có trong topic thì vắng mặt — UI tự dùng ID.
+ */
+export function boardLabels(db: Database, topicId: string, videoIds: readonly string[], channelIds: readonly string[]): BoardLabels {
+  const out: BoardLabels = { videos: {}, channels: {} };
+  const inList = (n: number) => Array(n).fill('?').join(',');
+  const vids = [...new Set(videoIds)].slice(0, LABEL_MAX_IDS);
+  if (vids.length > 0) {
+    for (const r of db.prepare(
+      `SELECT video_id, title, channel_id, thumbnail_url, latest_views, published_at
+       FROM topic_videos WHERE topic_id=? AND video_id IN (${inList(vids.length)})`,
+    ).all(topicId, ...vids) as Row[]) {
+      out.videos[String(r['video_id'])] = {
+        title: String(r['title']),
+        channelId: String(r['channel_id']),
+        channelTitle: null,
+        thumbnailUrl: str(r['thumbnail_url']),
+        views: num(r['latest_views']),
+        publishedAt: str(r['published_at']),
+      };
+    }
+  }
+  const wantedChannels = new Set(channelIds);
+  for (const v of Object.values(out.videos)) wantedChannels.add(v.channelId);
+  const chans = [...wantedChannels].slice(0, LABEL_MAX_IDS);
+  if (chans.length > 0) {
+    // Sổ theo dõi trước, sổ đo sau (INSERT OR IGNORE giữ bản đầu).
+    for (const table of ['topic_channels', 'measured_channels']) {
+      for (const r of db.prepare(
+        `SELECT channel_id, title, subscriber_count FROM ${table} WHERE topic_id=? AND channel_id IN (${inList(chans.length)})`,
+      ).all(topicId, ...chans) as Row[]) {
+        const id = String(r['channel_id']);
+        const prev = out.channels[id];
+        if (!prev || (prev.title === null && r['title'] !== null)) {
+          out.channels[id] = { title: str(r['title']), subs: num(r['subscriber_count']) };
+        }
+      }
+    }
+    for (const v of Object.values(out.videos)) v.channelTitle = out.channels[v.channelId]?.title ?? null;
+  }
+  return out;
+}

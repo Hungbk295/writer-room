@@ -1914,6 +1914,20 @@ export interface AgentResultMap {
   };
 }
 
+/** Nhãn hiển thị cho ID (tên, thumbnail, kênh) — /api/spy/board/labels. */
+export interface BoardVideoLabel {
+  title: string;
+  channelId: string;
+  channelTitle: string | null;
+  thumbnailUrl: string | null;
+  views: number | null;
+  publishedAt: string | null;
+}
+export interface BoardLabels {
+  videos: Record<string, BoardVideoLabel>;
+  channels: Record<string, { title: string | null; subs: number | null }>;
+}
+
 export interface BoardAgentTask {
   promptId: string;
   topicId: string;
@@ -2790,6 +2804,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...body, niche: body.niche === null ? BOARD_NICHE_NONE : body.niche }),
     }),
+  boardLabels: (topicId: string, videoIds: string[], channelIds: string[]) =>
+    request<{ data: BoardLabels }>(`/api/spy/board/labels${dashQuery({
+      topic_id: topicId, video_ids: videoIds.join(','), channel_ids: channelIds.join(','),
+    })}`),
   boardTasks: (topicId: string, limit = 50) =>
     request<{ data: BoardAgentTask[] }>(`/api/spy/board/tasks${dashQuery({ topic_id: topicId, limit })}`),
   boardTask: (promptId: string) =>

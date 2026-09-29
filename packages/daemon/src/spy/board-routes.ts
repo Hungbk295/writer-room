@@ -17,6 +17,7 @@ import {
   hasTranscript,
   boardChannels,
   boardKeywords,
+  boardLabels,
   boardMetrics,
   boardRunDetail,
   boardRuns,
@@ -206,6 +207,10 @@ export async function handleSpyBoard(url: URL, req: Request, spy: SpyService): P
         }));
       case 'keywords':
         return json(boardKeywords(db, topicId, { niche: parseNiche(q('niche')) }));
+      case 'labels': {
+        const list = (k: string) => (q(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+        return json({ data: boardLabels(db, topicId, list('video_ids'), list('channel_ids')) });
+      }
       case 'tasks':
         return json({ data: spy.store.listAgentTasks(topicId, parseInt0(q('limit'), 'limit', 1, 200) ?? 50).map(agentTaskFromRow) });
       case 'runs':

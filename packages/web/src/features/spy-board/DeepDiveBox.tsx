@@ -6,8 +6,9 @@
  */
 import { useEffect, useState } from 'preact/hooks';
 import { api, type BoardDeepDiveResponse, type BoardRunDetail } from '../../api.ts';
-import { loadRunDetail } from './data.ts';
-import { IS_MOCK, Icon, runStatusChip } from './lib.tsx';
+import { loadLabels, loadRunDetail } from './data.ts';
+import { VideoRef } from './VideoRef.tsx';
+import { Badge, IS_MOCK, Icon, runStatusChip, useLoad } from './lib.tsx';
 
 export function DeepDiveBox({ topicId, niche, videoIds: initialIds, onClose, onFinished }: {
   topicId: string;
@@ -21,6 +22,7 @@ export function DeepDiveBox({ topicId, niche, videoIds: initialIds, onClose, onF
   const [plan, setPlan] = useState<BoardDeepDiveResponse | null>(null);
   const [note, setNote] = useState('');
   const [running, setRunning] = useState<BoardRunDetail | null>(null);
+  const labels = useLoad(() => loadLabels(topicId, videoIds, []), [topicId, videoIds.join(',')]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -86,6 +88,19 @@ export function DeepDiveBox({ topicId, niche, videoIds: initialIds, onClose, onF
             {withComments > 0 && <span class="sb-hint"> · {withComments} đã có comment</span>}
             {withTranscript > 0 && <span class="sb-hint"> · {withTranscript} đã có transcript</span>}
           </p>
+          <div class="sb-list sb-list-inner">
+            {plan.plan.map((p) => (
+              <div key={p.videoId} class="sb-step">
+                <div class="sb-list-main">
+                  <VideoRef id={p.videoId} label={labels.data?.videos[p.videoId]} />
+                </div>
+                <span class="sb-actions">
+                  {p.commentsPresent ? <Badge tone="secondary">đã có comment</Badge> : <Badge tone="primary">sẽ kéo comment</Badge>}
+                  {p.transcriptPresent ? <Badge tone="secondary">đã có transcript</Badge> : <Badge tone="primary">sẽ kéo transcript</Badge>}
+                </span>
+              </div>
+            ))}
+          </div>
           <input
             class="sb-input"
             placeholder="Ghi chú mục đích (tuỳ chọn) — vd: tìm nỗi đau khán giả của outlier"

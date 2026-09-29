@@ -6,7 +6,8 @@
  */
 import { useState } from 'preact/hooks';
 import type { BoardRunCard, BoardRunType } from '../../api.ts';
-import { loadRunDetail, loadRuns } from './data.ts';
+import { loadLabels, loadRunDetail, loadRuns } from './data.ts';
+import { VideoRef } from './VideoRef.tsx';
 import {
   Badge,
   LoadState,
@@ -63,7 +64,7 @@ export function RunsScreen({ topicId, refreshKey }: { topicId: string; refreshKe
         <section class="sb-card sb-card-flush">
           <div class="sb-list sb-list-flush">
             {rows.map((c) => (
-              <RunCard key={c.runId} card={c} open={open === c.runId} onToggle={() => setOpen(open === c.runId ? null : c.runId)} />
+              <RunCard key={c.runId} card={c} topicId={topicId} open={open === c.runId} onToggle={() => setOpen(open === c.runId ? null : c.runId)} />
             ))}
           </div>
         </section>
@@ -72,7 +73,7 @@ export function RunsScreen({ topicId, refreshKey }: { topicId: string; refreshKe
   );
 }
 
-function RunCard({ card, open, onToggle }: { card: BoardRunCard; open: boolean; onToggle: () => void }) {
+function RunCard({ card, topicId, open, onToggle }: { card: BoardRunCard; topicId: string; open: boolean; onToggle: () => void }) {
   const sub = [
     RUN_TYPE_LABEL[card.type],
     card.niche !== null ? `ngách ${nicheLabel(card.niche)}` : null,
@@ -97,14 +98,17 @@ function RunCard({ card, open, onToggle }: { card: BoardRunCard; open: boolean; 
           </div>
         </div>
       </button>
-      {open && <RunItems runId={card.runId} />}
+      {open && <RunItems runId={card.runId} topicId={topicId} deep={card.type === 'deepdive'} />}
     </div>
   );
 }
 
-function RunItems({ runId }: { runId: string }) {
+function RunItems({ runId, topicId, deep }: { runId: string; topicId: string; deep: boolean }) {
   const state = useLoad(() => loadRunDetail(runId), [runId]);
   const items = state.data?.items ?? [];
+  // Lượt Đào sâu: mục là video → hiện thumbnail + tên + link thay vì ID thô.
+  const videoIds = deep ? items.map((i) => i.target) : [];
+  const labels = useLoad(() => loadLabels(topicId, videoIds, []), [topicId, videoIds.join(',')]);
   return (
     <div class="sb-run-body">
       <LoadState state={state} empty={!state.loading && !state.error && items.length === 0} />
@@ -113,24 +117,24 @@ function RunItems({ runId }: { runId: string }) {
           <table class="sb-table">
             <thead>
               <tr>
-                <th>Mục</th>
+                <th>{deep ? 'Video' : 'Mục'}</th>
                 <th>Trạng thái</th>
-                <th class="num">Kết quả</th>
-                <th class="num">Mới</th>
-                <th class="num">Median views</th>
-                <th class="num">Outlier</th>
+                <th class="num">{deep ? 'Comment lưu' : 'Kết quả'}</th>
+                {!deep && <th class="num">Mới</th>}
+                {!deep && <th class="num">Median views</th>}
+                {!deep && <th class="num">Outlier</th>}
                 <th>Lý do bỏ qua / lỗi</th>
               </tr>
             </thead>
             <tbody>
               {items.map((i) => (
                 <tr key={i.target}>
-                  <td>{i.target}</td>
+                  <td>{deep ? <VideoRef id={i.target} label={labels.data?.videos[i.target]} /> : i.target}</td>
                   <td>{i.status === 'skipped_dedup' ? <Badge tone="warning">bỏ qua (trùng)</Badge> : runStatusChip(i.status)}</td>
                   <td class="num">{fmtInt(i.nResults)}</td>
-                  <td class="num">{fmtInt(i.nNew)}</td>
-                  <td class="num">{fmtInt(i.medianViews)}</td>
-                  <td class="num">{fmtInt(i.outliersFound)}</td>
+                  {!deep && <td class="num">{fmtInt(i.nNew)}</td>}
+                  {!deep && <td class="num">{fmtInt(i.medianViews)}</td>}
+                  {!deep && <td class="num">{fmtInt(i.outliersFound)}</td>}
                   <td class="sb-hint">{skipLabel(i.skipReason) || i.error || ''}</td>
                 </tr>
               ))}

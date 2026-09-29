@@ -106,6 +106,22 @@ export const MOCK_RUNS: BoardRunCard[] = [
   { runId: 'run-0', source: 'keyword_run', type: 'discover', niche: 'debt-payoff', note: null, triggeredBy: 'human', status: 'skipped_quota', startedAt: ago(98), finishedAt: ago(97.8), nItems: 8, itemsDone: 8, searchCalls: 5, units: 20, nNew: 61, nSkipped: 0, newChannels: 1, error: null },
 ];
 
+export const MOCK_DEEPDIVE_CARD: BoardRunCard = {
+  runId: 'run-dd', source: 'keyword_run', type: 'deepdive', niche: 'side-hustle',
+  note: 'Đào comment + transcript các outlier tiêu biểu', triggeredBy: 'human', status: 'done',
+  startedAt: ago(20), finishedAt: ago(19.8), nItems: 3, itemsDone: 3, searchCalls: 0, units: 9,
+  nNew: 2, nSkipped: 1, newChannels: 0, error: null,
+};
+
+export const MOCK_DEEPDIVE_DETAIL: BoardRunDetail = {
+  card: MOCK_DEEPDIVE_CARD,
+  items: [
+    { target: 'dQw4w9WgXcQ', status: 'done', nResults: 138, nNew: 1, medianViews: null, outliersFound: null, skipReason: 'transcript_present', error: null },
+    { target: 'M7lc1UVf-VE', status: 'done', nResults: 43, nNew: 1, medianViews: null, outliersFound: null, skipReason: null, error: 'transcript: spy video completed, không có caption' },
+    { target: 'aqz-KE-bpKQ', status: 'skipped_dedup', nResults: 0, nNew: 0, medianViews: null, outliersFound: null, skipReason: 'comments_present,transcript_present', error: null },
+  ],
+};
+
 export const MOCK_RUN_DETAIL: BoardRunDetail = {
   card: MOCK_RUNS[1]!,
   items: [

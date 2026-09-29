@@ -6,21 +6,46 @@
  */
 import { createContext } from 'preact';
 import { useContext, useState } from 'preact/hooks';
-import { api, type AgentResultMap, type AgentTemplate, type BoardAgentTask } from '../../api.ts';
-import { loadLabels, loadTasks, type IdLabels } from './data.ts';
+import { api, type AgentResultMap, type AgentTemplate, type BoardAgentTask, type BoardLabels } from '../../api.ts';
+import { loadLabels, loadTasks } from './data.ts';
 import { Badge, IS_MOCK, Icon, LoadState, type IconName, nicheLabel, relDate, useLoad, type BadgeTone } from './lib.tsx';
 import { AGENT_LABEL, CopyButton } from './PromptComposer.tsx';
+import { VideoRef, VideoRefs, ytChannelUrl } from './VideoRef.tsx';
 
-const NO_LABELS: IdLabels = { videos: {}, channels: {} };
-const LabelsContext = createContext<IdLabels>(NO_LABELS);
+const NO_LABELS: BoardLabels = { videos: {}, channels: {} };
+const LabelsContext = createContext<BoardLabels>(NO_LABELS);
 
-function short(text: string, n = 56): string {
-  return text.length > n ? `${text.slice(0, n - 1)}…` : text;
+/** Gom mọi video/kênh mà kết quả + lựa chọn của các phiếu nhắc tới để tra nhãn MỘT lần. */
+function collectIds(tasks: BoardAgentTask[]): { videos: string[]; channels: string[] } {
+  const videos = new Set<string>();
+  const channels = new Set<string>();
+  const walk = (value: unknown, key = ''): void => {
+    if (typeof value === 'string') {
+      if (key === 'videoId') videos.add(value);
+      else if (key === 'channelId') channels.add(value);
+    } else if (Array.isArray(value)) {
+      for (const v of value) {
+        if (typeof v === 'string' && (key === 'videoIds' || key === 'evidenceVideoIds')) videos.add(v);
+        else walk(v, key);
+      }
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) walk(v, k);
+    }
+  };
+  for (const t of tasks) {
+    walk(t.result);
+    for (const id of t.selection.videoIds ?? []) videos.add(id);
+  }
+  return { videos: [...videos], channels: [...channels] };
 }
 
 export function AgentScreen({ topicId, refreshKey }: { topicId: string; refreshKey: number }) {
   const state = useLoad(() => loadTasks(topicId), [topicId, refreshKey]);
-  const labels = useLoad(() => loadLabels(topicId), [topicId, refreshKey]);
+  const ids = collectIds(state.data ?? []);
+  const labels = useLoad(
+    () => loadLabels(topicId, ids.videos, ids.channels),
+    [topicId, ids.videos.join(','), ids.channels.join(',')],
+  );
   const [open, setOpen] = useState<string | null>(null);
   const rows = state.data ?? [];
 
@@ -114,31 +139,16 @@ function Apply({ label, done, run, disabled, primary, icon }: {
 }
 
 function VideoChips({ ids }: { ids: string[] }) {
-  const labels = useContext(LabelsContext);
-  return (
-    <span class="sb-chips">
-      {ids.map((id) => {
-        const title = labels.videos[id];
-        return (
-          <a
-            key={id}
-            class="sb-chip"
-            href={`https://www.youtube.com/watch?v=${id}`}
-            target="_blank"
-            rel="noreferrer"
-            title={title ? `${title} · ${id}` : id}
-          >
-            {title ? short(title) : id}
-          </a>
-        );
-      })}
-    </span>
-  );
+  return <VideoRefs ids={ids} labels={useContext(LabelsContext)} />;
+}
+
+function VideoRow({ id }: { id: string }) {
+  return <VideoRef id={id} label={useContext(LabelsContext).videos[id]} />;
 }
 
 function ChannelName({ id }: { id: string }) {
-  const name = useContext(LabelsContext).channels[id];
-  return <a href={`https://www.youtube.com/channel/${id}`} target="_blank" rel="noreferrer" title={id}>{name ?? id}</a>;
+  const c = useContext(LabelsContext).channels[id];
+  return <a href={ytChannelUrl(id)} target="_blank" rel="noreferrer" title={id}>{c?.title ?? id}</a>;
 }
 
 // ── Hiển thị kết quả theo mẫu ───────────────────────────────────────────────
@@ -351,7 +361,7 @@ function NextStepsView({ r, task, topicId }: { r: AgentResultMap['next_steps']; 
                 <label key={d.videoId} class="sb-step sb-step-pick">
                   <input type="checkbox" checked={picked.has(d.videoId)} onChange={() => toggle(d.videoId)} />
                   <div class="sb-list-main">
-                    <div class="sb-list-title"><Priority n={d.priority} /> <VideoChips ids={[d.videoId]} /></div>
+                    <div class="sb-list-title"><Priority n={d.priority} /> <VideoRow id={d.videoId} /></div>
                     <div class="sb-list-sub">{d.reason}</div>
                   </div>
                 </label>

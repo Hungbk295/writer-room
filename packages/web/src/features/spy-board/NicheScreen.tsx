@@ -15,6 +15,7 @@ import {
 import { loadChannels, loadVideos } from './data.ts';
 import { PromptComposer, validTemplates } from './PromptComposer.tsx';
 import { DeepDiveBox } from './DeepDiveBox.tsx';
+import { ytThumb, ytWatchUrl } from './VideoRef.tsx';
 import {
   Badge,
   Icon,
@@ -194,10 +195,18 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
             <div class="sb-thumb">
               <span class="sb-thumb-ph"><Icon name="image" size={32} /></span>
               <img
-                src={r.thumbnailUrl ?? `https://i.ytimg.com/vi/${r.videoId}/hqdefault.jpg`}
+                src={ytThumb(r.videoId)}
                 alt=""
                 loading="lazy"
                 onError={(e) => ((e.target as HTMLImageElement).style.visibility = 'hidden')}
+              />
+              <a
+                class="sb-thumb-link"
+                href={ytWatchUrl(r.videoId)}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Mở trên YouTube: ${r.title}`}
+                onClick={(e) => e.stopPropagation()}
               />
               <label class="sb-pick" onClick={(e) => e.stopPropagation()}>
                 <input
@@ -208,7 +217,9 @@ function VideoGrid({ topicId, niche, view, smallOnly, youngChannels, refreshKey 
                 />
               </label>
             </div>
-            <h3 class="sb-video-title">{r.title}</h3>
+            <h3 class="sb-video-title">
+              <a href={ytWatchUrl(r.videoId)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{r.title}</a>
+            </h3>
             <div class="sb-video-meta">
               {r.channelTitle ?? r.channelId} • {fmtNum(r.subs)} subs
               {r.channelAgeDays !== null && <> • kênh {r.channelAgeDays} ngày</>} • {relDate(r.publishedAt)}
