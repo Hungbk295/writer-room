@@ -22,6 +22,7 @@ import {
   harvestNgrams,
   outlierScore,
   viewsGained24h,
+  type BaselineResult,
   type BaselineVideoInput,
 } from './metrics.ts';
 import type { SpyStore } from '../store.ts';
@@ -34,6 +35,7 @@ import type {
   WeeklyReportSection,
 } from './types.ts';
 import type {
+  MeasuredChannelVerdict,
   TopicChannelRow,
   TopicSettings,
   TopicVideoRow,
@@ -370,7 +372,12 @@ export async function runKeywordSearches(
   const baselineByChannel = new Map(
     followedRows.map((r) => [
       rowChannelId(r),
-      { medianViews: r.baselineMedianViews ?? null, reliable: (r.baselineN ?? 0) >= settings.baselineMinN },
+      {
+        medianViews: r.baselineMedianViews ?? null,
+        reliable: (r.baselineN ?? 0) >= settings.baselineMinN,
+        dead: r.baselineMedianViews !== null && r.baselineMedianViews !== undefined
+          && r.baselineMedianViews < settings.deadMedian,
+      },
     ]),
   );
 
@@ -519,14 +526,72 @@ export interface ScanOutsideChannelsResult {
   proposed: ProposedChannel[];
   rejectedLang: number;
   filteredDeadLottery: number;
+  /** Kênh đã quét uploads và ghi vào measured_channels (mọi verdict trừ sai ngôn ngữ). */
+  measured: number;
   /** Hit video của kênh vừa đề xuất — nguồn n-gram W4. */
   outlierVideoIds: Array<{ videoId: string; title: string; channelTitle: string }>;
 }
 
 /**
+ * Ghi uploads vừa quét của một kênh ngoài follow: source='outside_scan' (tính
+ * baseline), snapshot ngày, outlier_score theo baseline vừa đo.
+ */
+function storeOutsideUploads(
+  ctx: ModeContext,
+  channelId: string,
+  scanned: Awaited<ReturnType<typeof scanChannelVideos>>,
+  baseline: BaselineResult,
+  hit: { videoId: string | null; termKey: string } | null,
+): void {
+  const { store } = ctx;
+  for (const item of scanned.items) {
+    const vs = scanned.stats.get(item.videoId);
+    if (!vs) continue;
+    store.upsertTopicVideo({
+      topicId: ctx.topicId,
+      videoId: item.videoId,
+      channelId,
+      title: vs.title ?? item.title ?? item.videoId,
+      publishedAt: vs.publishedAt ?? item.publishedAt,
+      durationSec: vs.durationSec,
+      thumbnailUrl: vs.thumbnailUrl,
+      source: 'outside_scan',
+      foundByKeyword: hit && item.videoId === hit.videoId ? hit.termKey : null,
+      views: vs.viewCount,
+      likes: vs.likeCount,
+      comments: vs.commentCount,
+      capturedAt: ctx.nowIso,
+    });
+    if (vs.viewCount !== null) {
+      store.recordVideoDailyView({
+        topicId: ctx.topicId,
+        videoId: item.videoId,
+        day: ctx.day,
+        views: vs.viewCount,
+        likes: vs.likeCount,
+        comments: vs.commentCount,
+        capturedAt: ctx.nowIso,
+      });
+    }
+    store.updateVideoDerived(ctx.topicId, item.videoId, {
+      viewsGained24h: null,
+      outlierScore: outlierScore(vs.viewCount, baseline),
+    });
+  }
+}
+
+/** Kênh ngoài follow đã đo thì không quét lại trong cửa sổ này (chốt 2026-09-29). */
+export const OUTSIDE_REMEASURE_DAYS = 14;
+
+/**
  * W3-scan tách thành hàm chia sẻ: quét ≤ cap kênh ngoài follow (sắp theo view
- * hit giảm), bỏ kênh đã có trong sổ, auto-reject sai ngôn ngữ, loại dead/lottery,
- * hit video vượt outlier_multiple lần baseline → đề xuất status='new'.
+ * hit giảm), bỏ kênh đã có trong sổ hoặc đã đo trong OUTSIDE_REMEASURE_DAYS,
+ * auto-reject sai ngôn ngữ, rồi GHI MỌI kênh đã quét vào measured_channels cùng
+ * uploads của nó (source='outside_scan', tính baseline). Chỉ kênh không
+ * dead/lottery có hit ≥ outlier_multiple mới được đề xuất status='new'.
+ *
+ * `opts.videoSource` giờ chỉ là discovered_via của lượt đo ('weekly_search' |
+ * 'keyword_run') — video quét uploads luôn ghi source='outside_scan'.
  */
 export async function scanOutsideChannels(
   ctx: ModeContext,
@@ -535,11 +600,12 @@ export async function scanOutsideChannels(
   opts: { videoSource?: string } = {},
 ): Promise<ScanOutsideChannelsResult> {
   const { store, settings } = ctx;
-  const videoSource = opts.videoSource ?? 'weekly_search';
+  const measuredVia = opts.videoSource ?? 'weekly_search';
   const result: ScanOutsideChannelsResult = {
     proposed: [],
     rejectedLang: 0,
     filteredDeadLottery: 0,
+    measured: 0,
     outlierVideoIds: [],
   };
 
@@ -549,8 +615,12 @@ export async function scanOutsideChannels(
       .listTopicChannelsByStatus(ctx.topicId, ['new', 'active', 'paused', 'rejected', 'own'])
       .map(rowChannelId),
   );
+  const remeasureSince = new Date(
+    Date.parse(ctx.nowIso) - OUTSIDE_REMEASURE_DAYS * DAY_MS,
+  ).toISOString();
+  const recentlyMeasured = store.listMeasuredChannelIdsSince(ctx.topicId, remeasureSince);
   const candidates = [...outsideHits.values()]
-    .filter((h) => !knownChannels.has(h.channelId))
+    .filter((h) => !knownChannels.has(h.channelId) && !recentlyMeasured.has(h.channelId))
     .sort((a, b) => b.views - a.views)
     .slice(0, cap);
 
@@ -601,13 +671,36 @@ export async function scanOutsideChannels(
       };
     });
     const baseline = baselineOf(baselineVideos, settings);
-    // L7: dead/lottery → KHÔNG đề xuất (acceptance §6.4).
-    if (baseline.dead || baseline.lottery) {
-      result.filteredDeadLottery++;
-      continue;
-    }
+    // outlierScore đã trả NULL cho baseline chưa tin cậy hoặc dead.
     const hitOutlier = outlierScore(cand.views, baseline);
-    if (hitOutlier === null || hitOutlier < settings.outlierMultiple) continue;
+    let verdict: MeasuredChannelVerdict;
+    if (!baseline.reliable) verdict = 'unreliable';
+    else if (baseline.dead) verdict = 'dead';
+    else if (baseline.lottery) verdict = 'lottery';
+    else if (hitOutlier !== null && hitOutlier >= settings.outlierMultiple) verdict = 'proposed';
+    else verdict = 'no_outlier';
+    // L7: dead/lottery → KHÔNG đề xuất (acceptance §6.4) — nhưng vẫn là mẫu đo.
+    if (verdict === 'dead' || verdict === 'lottery') result.filteredDeadLottery++;
+
+    // Uploads của MỌI kênh đã đo đều vào kho — sàn view kênh nhỏ cần cả kênh
+    // không thắng, không chỉ kênh có outlier (plan §5 E1/E2).
+    storeOutsideUploads(ctx, cand.channelId, scanned, baseline, { videoId: cand.videoId, termKey: cand.termKey });
+    store.upsertMeasuredChannel({
+      topicId: ctx.topicId,
+      channelId: cand.channelId,
+      title: stats.title ?? null,
+      subscriberCount: stats.subscriberCount ?? null,
+      baselineMedianViews: baseline.medianViews,
+      baselineN: baseline.n,
+      maxViews: baseline.maxViews,
+      verdict,
+      hitOutlierScore: hitOutlier,
+      discoveredVia: measuredVia,
+      discoveredFrom: cand.termKey,
+      measuredAt: ctx.nowIso,
+    });
+    result.measured++;
+    if (verdict !== 'proposed') continue;
 
     // status='new' + decisions(actor=loop,to=new) — tất cả trong contract.
     const thumbs = scanned.items
@@ -632,29 +725,10 @@ export async function scanOutsideChannels(
       lastPublishedAt: newestPublishedAt(scanned.items),
       lastCheckedAt: ctx.nowIso,
     });
-    for (const item of scanned.items) {
-      const vs = scanned.stats.get(item.videoId);
-      if (!vs) continue;
-      store.upsertTopicVideo({
-        topicId: ctx.topicId,
-        videoId: item.videoId,
-        channelId: cand.channelId,
-        title: vs.title ?? item.title ?? item.videoId,
-        publishedAt: vs.publishedAt ?? item.publishedAt,
-        durationSec: vs.durationSec,
-        thumbnailUrl: vs.thumbnailUrl,
-        source: videoSource,
-        foundByKeyword: item.videoId === cand.videoId ? cand.termKey : null,
-        views: vs.viewCount,
-        likes: vs.likeCount,
-        comments: vs.commentCount,
-        capturedAt: ctx.nowIso,
-      });
-    }
     result.proposed.push({
       channelId: cand.channelId,
       title: stats.title,
-      outlierScore: hitOutlier,
+      outlierScore: hitOutlier as number,
       baselineMedianViews: baseline.medianViews,
       foundByKeyword: cand.termKey,
     });
@@ -867,6 +941,23 @@ async function runSetupChannels(ctx: ModeContext): Promise<SetupModeResult> {
       );
       if (baseline.dead || baseline.lottery) {
         section.channelsFilteredDeadLottery++;
+        // Không đề xuất (L7) nhưng vẫn là mẫu đo — bỏ đi thì sàn view ngách chỉ
+        // còn kênh sống/khoẻ (plan §5 E1).
+        storeOutsideUploads(ctx, channelId, scanned, baseline, null);
+        store.upsertMeasuredChannel({
+          topicId: ctx.topicId,
+          channelId,
+          title: stats.title ?? null,
+          subscriberCount: stats.subscriberCount ?? null,
+          baselineMedianViews: baseline.medianViews,
+          baselineN: baseline.n,
+          maxViews: baseline.maxViews,
+          verdict: baseline.dead ? 'dead' : 'lottery',
+          hitOutlierScore: null,
+          discoveredVia: 'keyword_search',
+          discoveredFrom: termKey,
+          measuredAt: ctx.nowIso,
+        });
         continue;
       }
 

@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
-import { SpyStore } from '../src/store.ts';
+import { SCHEMA_VERSION, SpyStore } from '../src/store.ts';
 
 let tempDir = '';
 const openStores: SpyStore[] = [];
@@ -97,14 +97,14 @@ describe('migration v13 → v14', () => {
     const store = new SpyStore(dbPath);
     openStores.push(store);
 
-    // version nhảy 14, cột group_key có mặt.
+    // version nhảy lên bản hiện tại (≥14), cột group_key có mặt.
     const check = new Database(dbPath, { readonly: true });
     const version = Number(
       (check.prepare('SELECT version FROM schema_version').get() as { version: number }).version,
     );
     const cols = check.prepare("SELECT name FROM pragma_table_info('topic_keywords')").all() as Array<{ name: string }>;
     check.close();
-    expect(version).toBe(14);
+    expect(version).toBe(SCHEMA_VERSION);
     expect(cols.map((c) => c.name)).toContain('group_key');
 
     // Dữ liệu cũ nguyên vẹn — kể cả keyword đã active.

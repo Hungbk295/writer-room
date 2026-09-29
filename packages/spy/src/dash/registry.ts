@@ -173,7 +173,7 @@ export function dashMeta(_db: Database): DashMetaData {
       tick_mode: ['setup', 'daily', 'weekly'],
       decision_actor: ['human', 'loop'],
       // v14: video do keyword run tìm ra mang source 'keyword_run'.
-      video_source: ['setup', 'daily_scan', 'weekly_search', 'keyword_run'],
+      video_source: ['setup', 'daily_scan', 'weekly_search', 'keyword_run', 'outside_scan'],
       tick_status: ['running', 'done', 'failed', 'skipped_quota'],
       // v14: keyword run là việc theo yêu cầu, không phải LoopMode — tick_mode
       // giữ nguyên 3 nhịp; lịch sử run nằm ở /keyword-runs.

@@ -42,7 +42,9 @@ import type {
 // v13 -> v14: Spy Keyword Run (docs/plans/spy-keyword-run-board.html §3).
 // 3 bảng mới keyword_runs/keyword_run_items/keyword_checks + index mới có
 // IF NOT EXISTS ở dưới; migrate13To14() chỉ ALTER topic_keywords.group_key.
-export const SCHEMA_VERSION = 14;
+// v14 -> v15: sổ measured_channels (docs/plans/spy-analyst-workflow.md §5 E1) —
+// bảng mới IF NOT EXISTS, không cần migrate riêng.
+export const SCHEMA_VERSION = 15;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -821,6 +823,31 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE INDEX IF NOT EXISTS idx_decisions_entity
   ON decisions(topic_id, entity_type, entity_id, at DESC);
 
+-- v15: MỌI kênh ngoài follow đã quét uploads để đo baseline — kể cả kênh không
+-- có outlier. Trước v15 kênh không outlier bị bỏ sau khi đã trả quota quét, nên
+-- kho chỉ còn kênh "thắng" và sàn view kênh nhỏ bị thổi phồng. Bảng này KHÔNG
+-- phải Inbox: chỉ verdict='proposed' mới có dòng topic_channels status='new'.
+CREATE TABLE IF NOT EXISTS measured_channels (
+  topic_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  title TEXT,
+  subscriber_count INTEGER,
+  baseline_median_views REAL,
+  baseline_n INTEGER,
+  max_views INTEGER,
+  -- proposed = có hit ≥ outlierMultiple, đã vào Inbox; no_outlier = đo xong,
+  -- không đề xuất; dead/lottery = baseline tin cậy nhưng bị loại L7;
+  -- unreliable = chưa đủ baselineMinN video dài.
+  verdict TEXT NOT NULL CHECK(verdict IN ('proposed','no_outlier','dead','lottery','unreliable')),
+  hit_outlier_score REAL,
+  discovered_via TEXT,
+  discovered_from TEXT,
+  measured_at TEXT NOT NULL,
+  PRIMARY KEY (topic_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_measured_channels_at
+  ON measured_channels(topic_id, measured_at);
+
 -- §4 spy-dashboard-api: index đọc cho 16 endpoint /api/spy/dash/*.
 CREATE INDEX IF NOT EXISTS idx_video_daily_views_day
   ON video_daily_views(topic_id, day);
@@ -940,9 +967,27 @@ CREATE INDEX IF NOT EXISTS idx_video_stat_points_channel_time
 /**
  * Nguồn video được tính baseline kênh: lượt quét uploads của chính kênh (mới
  * nhất trước). Video đến từ search (weekly_search) hay chọn theo view cao thì
- * không — chúng lệch lên và làm baseline cao giả.
+ * không — chúng lệch lên và làm baseline cao giả. 'outside_scan' (v15) là lượt
+ * quét uploads của kênh ngoài follow khi đo baseline — cũng là uploads thật.
  */
-export const BASELINE_SOURCES: readonly string[] = ['daily_scan', 'setup'];
+export type MeasuredChannelVerdict = 'proposed' | 'no_outlier' | 'dead' | 'lottery' | 'unreliable';
+
+export interface MeasuredChannelRow {
+  topicId: string;
+  channelId: string;
+  title: string | null;
+  subscriberCount: number | null;
+  baselineMedianViews: number | null;
+  baselineN: number | null;
+  maxViews: number | null;
+  verdict: MeasuredChannelVerdict;
+  hitOutlierScore: number | null;
+  discoveredVia: string | null;
+  discoveredFrom: string | null;
+  measuredAt: string;
+}
+
+export const BASELINE_SOURCES: readonly string[] = ['daily_scan', 'setup', 'outside_scan'];
 
 const V5_ADDED_COLUMNS: ReadonlyArray<{ table: string; column: string; type: string }> = [
   { table: 'topic_channels', column: 'faceless_hint', type: 'REAL' },
@@ -4861,6 +4906,76 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       row.likes ?? null, row.comments ?? null, row.capturedAt,
     );
     return { inserted: Number(result.changes) > 0 };
+  }
+
+  /**
+   * v15: ghi kết quả đo baseline của một kênh ngoài follow (mọi verdict). Đo lại
+   * sau cửa sổ dedup thì đè bản cũ — bảng giữ lần đo gần nhất, không lịch sử.
+   */
+  upsertMeasuredChannel(row: {
+    topicId: string;
+    channelId: string;
+    title: string | null;
+    subscriberCount: number | null;
+    baselineMedianViews: number | null;
+    baselineN: number | null;
+    maxViews: number | null;
+    verdict: MeasuredChannelVerdict;
+    hitOutlierScore: number | null;
+    discoveredVia: string;
+    discoveredFrom: string | null;
+    measuredAt: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO measured_channels
+         (topic_id, channel_id, title, subscriber_count, baseline_median_views,
+          baseline_n, max_views, verdict, hit_outlier_score, discovered_via,
+          discovered_from, measured_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id, channel_id) DO UPDATE SET
+         title=excluded.title,
+         subscriber_count=excluded.subscriber_count,
+         baseline_median_views=excluded.baseline_median_views,
+         baseline_n=excluded.baseline_n,
+         max_views=excluded.max_views,
+         verdict=excluded.verdict,
+         hit_outlier_score=excluded.hit_outlier_score,
+         discovered_via=excluded.discovered_via,
+         discovered_from=excluded.discovered_from,
+         measured_at=excluded.measured_at`,
+    ).run(
+      row.topicId, row.channelId, row.title, row.subscriberCount,
+      row.baselineMedianViews, row.baselineN, row.maxViews, row.verdict,
+      row.hitOutlierScore, row.discoveredVia, row.discoveredFrom, row.measuredAt,
+    );
+  }
+
+  /** v15: kênh đã đo từ `sinceIso` trở đi — luật dedup "đo lại sau N ngày". */
+  listMeasuredChannelIdsSince(topicId: string, sinceIso: string): Set<string> {
+    const rows = this.database.prepare(
+      'SELECT channel_id FROM measured_channels WHERE topic_id=? AND measured_at >= ?',
+    ).all(topicId, sinceIso) as Row[];
+    return new Set(rows.map((r) => String(r['channel_id'])));
+  }
+
+  listMeasuredChannels(topicId: string): MeasuredChannelRow[] {
+    const rows = this.database.prepare(
+      'SELECT * FROM measured_channels WHERE topic_id=? ORDER BY measured_at DESC',
+    ).all(topicId) as Row[];
+    return rows.map((r) => ({
+      topicId: String(r['topic_id']),
+      channelId: String(r['channel_id']),
+      title: r['title'] === null ? null : String(r['title']),
+      subscriberCount: r['subscriber_count'] === null ? null : Number(r['subscriber_count']),
+      baselineMedianViews: r['baseline_median_views'] === null ? null : Number(r['baseline_median_views']),
+      baselineN: r['baseline_n'] === null ? null : Number(r['baseline_n']),
+      maxViews: r['max_views'] === null ? null : Number(r['max_views']),
+      verdict: String(r['verdict']) as MeasuredChannelVerdict,
+      hitOutlierScore: r['hit_outlier_score'] === null ? null : Number(r['hit_outlier_score']),
+      discoveredVia: r['discovered_via'] === null ? null : String(r['discovered_via']),
+      discoveredFrom: r['discovered_from'] === null ? null : String(r['discovered_from']),
+      measuredAt: String(r['measured_at']),
+    }));
   }
 
   /** views_gained_24h/outlier_score do flow tính (L6: NULL khi mới 1 snapshot). */

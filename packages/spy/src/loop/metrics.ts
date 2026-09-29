@@ -84,14 +84,16 @@ export function baselineOf(
 /**
  * Bội số so với sàn kênh. NULL khi baseline chưa tin cậy — một con số không có
  * mẫu đứng sau thì không được phép xuất hiện trong báo cáo như "outlier".
+ * NULL cả khi kênh dead: 3x trên median 200 views là nhiễu, không phải tín hiệu
+ * (docs/plans/spy-analyst-workflow.md §5 E3).
  */
 export function outlierScore(
   views: number | null | undefined,
-  baseline: Pick<BaselineResult, 'medianViews' | 'reliable'>,
+  baseline: Pick<BaselineResult, 'medianViews' | 'reliable'> & { dead?: boolean },
 ): number | null {
   if (views === null || views === undefined || !Number.isFinite(views)) return null;
   const base = baseline.medianViews;
-  if (!baseline.reliable || base === null || base <= 0) return null;
+  if (!baseline.reliable || baseline.dead || base === null || base <= 0) return null;
   return Math.round((views / base) * 100) / 100;
 }
 

@@ -3,9 +3,11 @@
  * search theo yêu cầu của NGƯỜI trên một nhóm keyword, KHÔNG phải nhịp loop.
  *
  * Khác weekly: run do người bấm (có thể chọn mọi status, không xoay budget),
- * tiến độ ghi keyword_runs/keyword_run_items để board poll, và video tìm được
- * ghi source='keyword_run' — KHÔNG đủ điều kiện baseline (BASELINE_SOURCES chỉ
- * có daily_scan/setup) nên video search-view-cao không đẩy baseline kênh lên.
+ * tiến độ ghi keyword_runs/keyword_run_items để board poll, và video search
+ * của kênh follow ghi source='keyword_run' — KHÔNG đủ điều kiện baseline nên
+ * video search-view-cao không đẩy baseline kênh lên. Kênh ngoài follow được đo
+ * qua scanOutsideChannels: uploads ghi 'outside_scan', lượt đo ghi
+ * measured_channels(discovered_via='keyword_run').
  *
  * Chia sẻ runKeywordSearches/scanOutsideChannels của W1/W3 và khoá toàn cục
  * CHARGEABLE_WORK_RUNNING của runner (kế toán quota bằng hiệu số sổ — hai

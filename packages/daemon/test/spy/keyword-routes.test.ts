@@ -295,7 +295,7 @@ describe('POST /keywords/run', () => {
     expect(service.store.listKeywordRuns(TOPIC).length).toBe(0);
   });
 
-  test('run thật: video source=keyword_run, kênh ngoài → new, items + checks đúng', async () => {
+  test('run thật: kênh ngoài được đo (outside_scan) → new, items + checks đúng', async () => {
     const { service, dataApi, handler } = await boot();
     seedOutsideChannel(dataApi, 'UCoutside');
     await post(handler, '/bulk', { topicId: TOPIC, terms: ['vay trả góp'], activate: true });
@@ -315,12 +315,16 @@ describe('POST /keywords/run', () => {
     expect(item['status']).toBe('done');
     expect(item['n_results']).toBe(1);
 
-    // Video của kênh ngoài ghi source='keyword_run' + found_by_keyword.
+    // hit1 nằm trong uploads vừa quét của kênh ngoài → source='outside_scan'
+    // (uploads thật, tính baseline) + found_by_keyword giữ keyword dẫn tới nó.
     const video = service.store.listTopicVideos(TOPIC, {}).find((v) => v.videoId === 'hit1')!;
-    expect(video.source).toBe('keyword_run');
+    expect(video.source).toBe('outside_scan');
     expect(video.foundByKeyword).toBe('vay_tra_gop');
-    // keyword_run KHÔNG được tính baseline (BASELINE_SOURCES chỉ daily_scan/setup).
-    expect(video.baselineEligible).toBe(false);
+    expect(video.baselineEligible).toBe(true);
+    // Lượt đo được ghi sổ measured_channels, nguồn là keyword_run.
+    const measured = service.store.listMeasuredChannels(TOPIC);
+    expect(measured.map((m) => [m.channelId, m.verdict, m.discoveredVia]))
+      .toEqual([['UCoutside', 'proposed', 'keyword_run']]);
     // Kênh ngoài follow được quét → đề xuất 'new' (HITL: loop chỉ ghi new).
     const ch = service.store.listTopicChannelsByStatus(TOPIC, ['new'])[0]!;
     expect(ch.channelId).toBe('UCoutside');
