@@ -2066,3 +2066,18 @@ export {
   type DeepDiveItemResult,
   type DeepDivePorts,
 } from './loop/deepdive.ts';
+export {
+  AGENT_TEMPLATES,
+  AGENT_TEMPLATE_LABEL,
+  agentTaskFromRow,
+  boardVideoMaterial,
+  buildAgentPrompt,
+  createAgentTask,
+  submitAgentTask,
+  validateAgentResult,
+  type AgentResult,
+  type AgentSelection,
+  type AgentTaskRow,
+  type AgentTemplate,
+  type CreateAgentTaskInput,
+} from './board/agent-tasks.ts';

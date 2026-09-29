@@ -47,7 +47,8 @@ import type {
 // v15 -> v16: thẻ lượt chạy + chống trùng + ngách/tuổi kênh (plan
 // spy-analyst-workflow §H bước 2–3). ALTER cột mới; keyword_run_items rebuild
 // vì CHECK status thêm 'skipped_dedup' — migrate15To16().
-export const SCHEMA_VERSION = 16;
+// v16 -> v17: sổ phiếu agent (agent_tasks) — bảng mới IF NOT EXISTS, không ALTER.
+export const SCHEMA_VERSION = 17;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -869,6 +870,28 @@ CREATE TABLE IF NOT EXISTS measured_channels (
 );
 CREATE INDEX IF NOT EXISTS idx_measured_channels_at
   ON measured_channels(topic_id, measured_at);
+
+-- v17: phiếu việc cho agent (plan spy-analyst-workflow §J). UI soạn prompt từ dữ
+-- liệu người chọn → người dán vào CLI → agent nộp kết quả qua MCP
+-- spy_board_submit. result_json chỉ được ghi SAU KHI qua kiểm tra khuôn + ID;
+-- mỗi phiếu nhận đúng một kết quả. Agent không đổi keyword/kênh — người áp
+-- dụng đề xuất trên UI.
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  prompt_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  template TEXT NOT NULL,
+  niche TEXT,
+  selection_json TEXT NOT NULL,
+  note TEXT,
+  prompt_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','submitted')),
+  created_at TEXT NOT NULL,
+  result_json TEXT,
+  submitted_by TEXT,
+  submitted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_topic
+  ON agent_tasks(topic_id, created_at DESC);
 
 -- §4 spy-dashboard-api: index đọc cho 16 endpoint /api/spy/dash/*.
 CREATE INDEX IF NOT EXISTS idx_video_daily_views_day
@@ -5135,6 +5158,50 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       for (const r of rows) out.add(String(r['video_id']));
     }
     return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // v17 — Phiếu việc agent (agent_tasks)
+  // ---------------------------------------------------------------------------
+
+  createAgentTask(task: {
+    promptId: string;
+    topicId: string;
+    template: string;
+    niche: string | null;
+    selectionJson: string;
+    note: string | null;
+    promptText: string;
+    createdAt: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO agent_tasks
+         (prompt_id, topic_id, template, niche, selection_json, note, prompt_text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(task.promptId, task.topicId, task.template, task.niche, task.selectionJson,
+      task.note, task.promptText, task.createdAt);
+  }
+
+  getAgentTask(promptId: string): Row | null {
+    return this.database.prepare('SELECT * FROM agent_tasks WHERE prompt_id=?').get(promptId) as Row | null;
+  }
+
+  listAgentTasks(topicId: string, limit = 50): Row[] {
+    return this.database.prepare(
+      'SELECT * FROM agent_tasks WHERE topic_id=? ORDER BY created_at DESC LIMIT ?',
+    ).all(topicId, limit) as Row[];
+  }
+
+  /**
+   * Ghi kết quả đã kiểm tra. Chỉ phiếu 'pending' nhận — trả false nếu phiếu đã
+   * có kết quả (điều kiện nằm trong UPDATE nên hai lần nộp song song không đè nhau).
+   */
+  submitAgentTask(promptId: string, resultJson: string, submittedBy: string, submittedAt: string): boolean {
+    const res = this.database.prepare(
+      `UPDATE agent_tasks SET status='submitted', result_json=?, submitted_by=?, submitted_at=?
+       WHERE prompt_id=? AND status='pending'`,
+    ).run(resultJson, submittedBy, submittedAt, promptId);
+    return Number(res.changes) === 1;
   }
 
   /** v15: kênh đã đo từ `sinceIso` trở đi — luật dedup "đo lại sau N ngày". */

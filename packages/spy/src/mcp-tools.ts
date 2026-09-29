@@ -10,6 +10,7 @@ import {
   boardScorecard,
   boardVideos,
 } from './board/queries.ts';
+import { boardVideoMaterial, submitAgentTask } from './board/agent-tasks.ts';
 
 /** Spy MCP tools. Disabled only when WRITER_ROOM_SPY_ENABLED=0. */
 export function isSpyEnabled(): boolean {
@@ -948,6 +949,30 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         type: oneOf(args['type'], ['track', 'discover', 'deepdive', 'weekly', 'setup'] as const, 'type'),
         limit: integer(args['limit'], 50, 1, 500),
       }),
+    }),
+    wrap({
+      name: 'spy_board_video_material',
+      description: 'Tư liệu đã lưu của 1..5 video: comment (nhiều like trước) + transcript ghép sẵn. Chỉ đọc DB, 0 quota. Video chưa có comment/transcript → cần Đào sâu trên UI trước.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => ({
+        data: boardVideoMaterial(spy.store, boardTopic(spy, args), stringList(args['video_ids'], 'video_ids'), {
+          commentsPerVideo: integer(args['comments_per_video'], 60, 1, 200),
+          transcriptChars: integer(args['transcript_chars'], 6000, 500, 20_000),
+        }),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_submit',
+      description: 'Nộp kết quả phân tích cho một phiếu việc (prompt_id có trong prompt người dùng dán). Server kiểm tra khuôn JSON của mẫu và mọi ID/trích dẫn; sai thì trả lỗi kèm đường dẫn trường và KHÔNG ghi gì — sửa rồi gọi lại. Mỗi phiếu nhận một lần. Chỉ ghi vào sổ phân tích, không đổi keyword/kênh.',
+      requiredScopes: ['spy.board.submit'],
+      outputLimitBytes: 8_000,
+      handler: (args, context) => submitAgentTask(
+        spy.store,
+        text(args['prompt_id'], 'prompt_id'),
+        args['result'],
+        context.subject,
+      ),
     }),
     wrap({
       name: 'spy_board_run_detail',

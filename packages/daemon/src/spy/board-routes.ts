@@ -8,6 +8,10 @@
 // Tham số `niche`: bỏ trống = mọi ngách; `niche=_none` = "chưa gán" (NULL).
 
 import {
+  AGENT_TEMPLATES,
+  agentTaskFromRow,
+  createAgentTask,
+  type AgentTemplate,
   DEEPDIVE_MAX_VIDEOS,
   hasComments,
   hasTranscript,
@@ -129,7 +133,46 @@ export async function handleSpyBoard(url: URL, req: Request, spy: SpyService): P
       return json({ runId, plan, toWork });
     }
 
+    // POST /tasks {topicId, template, niche?, selection:{niches?,videoIds?,termKeys?}, note?}
+    // — phiếu việc cho agent (plan §J): server soạn prompt, UI chỉ hiện + Copy.
+    if (method === 'POST' && path === 'tasks') {
+      let body: Record<string, unknown> = {};
+      try { body = await req.json() as Record<string, unknown>; } catch { /* body rỗng */ }
+      const template = String(body['template'] ?? '');
+      if (!(AGENT_TEMPLATES as readonly string[]).includes(template)) {
+        return err(`template phải là ${AGENT_TEMPLATES.join('|')}`);
+      }
+      const sel = (body['selection'] ?? {}) as Record<string, unknown>;
+      const strs = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean) : undefined);
+      const nicheRaw = body['niche'];
+      try {
+        const created = createAgentTask(spy.store, {
+          topicId: String(body['topicId'] ?? ''),
+          template: template as AgentTemplate,
+          niche: nicheRaw === undefined ? undefined : nicheRaw === null || nicheRaw === NICHE_NONE ? null : String(nicheRaw),
+          selection: {
+            niches: Array.isArray(sel['niches'])
+              ? (sel['niches'] as unknown[]).map((n) => (n === null || n === NICHE_NONE ? null : String(n)))
+              : undefined,
+            videoIds: strs(sel['videoIds']),
+            termKeys: strs(sel['termKeys']),
+          },
+          note: typeof body['note'] === 'string' ? body['note'] : null,
+        });
+        return json(created);
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        return err(e instanceof Error ? e.message : String(e), code === 'not_found' ? 404 : 400);
+      }
+    }
+
     if (method !== 'GET') return err('Method không hỗ trợ', 405);
+
+    const taskDetail = path.match(/^tasks\/([^/]+)$/);
+    if (taskDetail) {
+      const row = spy.store.getAgentTask(decodeURIComponent(taskDetail[1]!));
+      return row ? json({ data: agentTaskFromRow(row) }) : err('Không có phiếu này', 404);
+    }
 
     const runDetail = path.match(/^runs\/([^/]+)$/);
     if (runDetail) {
@@ -163,6 +206,8 @@ export async function handleSpyBoard(url: URL, req: Request, spy: SpyService): P
         }));
       case 'keywords':
         return json(boardKeywords(db, topicId, { niche: parseNiche(q('niche')) }));
+      case 'tasks':
+        return json({ data: spy.store.listAgentTasks(topicId, parseInt0(q('limit'), 'limit', 1, 200) ?? 50).map(agentTaskFromRow) });
       case 'runs':
         return json(boardRuns(db, topicId, {
           niche: parseNiche(q('niche')),

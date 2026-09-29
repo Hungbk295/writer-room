@@ -1879,6 +1879,58 @@ export interface BoardDeepDiveResponse {
 
 export type BoardRunType = 'track' | 'discover' | 'deepdive' | 'weekly' | 'setup';
 
+// ── Phiếu việc agent (plan spy-analyst-workflow §J) ─────────────────────────
+export type AgentTemplate = 'compare_niches' | 'outlier_patterns' | 'audience_pains' | 'keyword_ideas' | 'next_steps';
+
+export interface AgentSelection {
+  niches?: Array<string | null>;
+  videoIds?: string[];
+  termKeys?: string[];
+}
+
+/** Khuôn kết quả đã được server kiểm tra (khuôn + ID + trích dẫn). */
+export interface AgentResultMap {
+  compare_niches: {
+    ranking: Array<{ niche: string; verdict: 'choose' | 'maybe' | 'drop'; reason: string }>;
+    pick: string | null;
+    missingEvidence: string[];
+  };
+  outlier_patterns: {
+    patterns: Array<{ name: string; description: string; videoIds: string[] }>;
+    titleTemplates: string[];
+  };
+  audience_pains: {
+    pains: Array<{ pain: string; frequency: 'high' | 'medium' | 'low'; quotes: Array<{ videoId: string; text: string }> }>;
+    questions: string[];
+  };
+  keyword_ideas: {
+    stop: Array<{ termKey: string; reason: string }>;
+    try: Array<{ term: string; reason: string; evidenceVideoIds: string[] }>;
+  };
+  next_steps: {
+    discover: Array<{ termKey: string; reason: string; priority: number }>;
+    deepdive: Array<{ videoId: string; reason: string; priority: number }>;
+    follow: Array<{ channelId: string; reason: string }>;
+  };
+}
+
+export interface BoardAgentTask {
+  promptId: string;
+  topicId: string;
+  template: AgentTemplate;
+  label: string;
+  niche: string | null;
+  selection: AgentSelection;
+  note: string | null;
+  promptText: string;
+  status: 'pending' | 'submitted';
+  createdAt: string;
+  /** Có khi status='submitted'; hình dạng theo AgentResultMap[template]. */
+  result: AgentResultMap[AgentTemplate] | null;
+  submittedBy: string | null;
+  submittedAt: string | null;
+}
+
 export interface BoardRunCard {
   runId: string;
   source: 'keyword_run' | 'loop_tick';
@@ -2730,6 +2782,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  /** Tạo phiếu việc agent — server soạn prompt (có prompt_id + khuôn nộp). niche null = chưa gán. */
+  boardCreateTask: (body: {
+    topicId: string; template: AgentTemplate; niche?: string | null; selection: AgentSelection; note?: string;
+  }) =>
+    request<{ promptId: string; promptText: string }>('/api/spy/board/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ ...body, niche: body.niche === null ? BOARD_NICHE_NONE : body.niche }),
+    }),
+  boardTasks: (topicId: string, limit = 50) =>
+    request<{ data: BoardAgentTask[] }>(`/api/spy/board/tasks${dashQuery({ topic_id: topicId, limit })}`),
+  boardTask: (promptId: string) =>
+    request<{ data: BoardAgentTask }>(`/api/spy/board/tasks/${encodeURIComponent(promptId)}`),
   /** Gán ngách tay; niche=null gỡ ngách. */
   boardAssignNiche: (topicId: string, channelIds: string[], niche: string | null) =>
     request<{ changed: number }>('/api/spy/board/channels/niche', {

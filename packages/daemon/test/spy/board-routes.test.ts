@@ -130,3 +130,29 @@ describe('POST /api/spy/board/deepdive', () => {
     expect((await post(handler, 'deepdive', { topicId: 'nope', videoIds: ['A0'] })).status).toBe(404);
   });
 });
+
+describe('/api/spy/board/tasks + MCP spy_board_submit', () => {
+  test('UI tạo phiếu → agent nộp qua MCP (cần scope spy.board.submit) → UI đọc kết quả', async () => {
+    const { service, handler } = await boot();
+    const res = await post(handler, 'tasks', {
+      topicId: T, template: 'next_steps', niche: 'vay', selection: {}, note: 'ưu tiên kênh nhỏ',
+    });
+    expect(res.status).toBe(200);
+    const { promptId, promptText } = await res.json() as { promptId: string; promptText: string };
+    expect(promptText).toContain(promptId);
+
+    const submit = spyTools(service).find((t) => t.name === 'spy_board_submit')!;
+    const result = { discover: [{ termKey: 'vay', reason: 'còn mới', priority: 1 }], deepdive: [], follow: [] };
+    await expect(Promise.resolve().then(() => submit.handler({ prompt_id: promptId, result }, { subject: 't', scopes: new Set(['spy.read']) })))
+      .rejects.toThrow('spy.board.submit');
+    await submit.handler({ prompt_id: promptId, result }, { subject: 'claude-cli', scopes: new Set(['spy.board.submit']) });
+
+    const list = await (await get(handler, `tasks?topic_id=${T}`)).json() as { data: Array<Record<string, unknown>> };
+    expect(list.data.map((t) => [t['promptId'], t['status'], t['submittedBy']])).toEqual([[promptId, 'submitted', 'claude-cli']]);
+    const one = await (await get(handler, `tasks/${promptId}`)).json() as { data: Record<string, unknown> };
+    expect(one.data['result']).toEqual(result);
+    expect((await get(handler, 'tasks/p_nope')).status).toBe(404);
+    expect((await post(handler, 'tasks', { topicId: T, template: 'weird', selection: {} })).status).toBe(400);
+    expect((await post(handler, 'tasks', { topicId: T, template: 'outlier_patterns', selection: { videoIds: ['A0'] } })).status).toBe(400);
+  });
+});

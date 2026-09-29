@@ -10,7 +10,9 @@ import type { McpServerInfo } from '@writer-room/shared';
 
 const PROTOCOL_VERSION = '2025-03-26';
 const SUBJECT = 'writer-room-spy-mcp';
-const SCOPES = new Set(['spy.start', 'spy.read']);
+// spy.board.submit: đường ghi DUY NHẤT của agent vào Board — nộp kết quả phiếu
+// việc (sổ agent_tasks, đã kiểm tra khuôn + ID). Không đổi keyword/kênh.
+const SCOPES = new Set(['spy.start', 'spy.read', 'spy.board.submit']);
 
 const EXPOSED_TOOL_NAMES = new Set([
   'spy_channel_start',
@@ -61,6 +63,8 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_board_keywords',
   'spy_board_runs',
   'spy_board_run_detail',
+  'spy_board_video_material',
+  'spy_board_submit',
 ]);
 
 interface JsonRpcRequest {
@@ -123,6 +127,24 @@ const inputSchemas: Record<string, Record<string, unknown>> = {
       limit: { type: 'integer', minimum: 1, maximum: 500 },
     },
     required: ['topic_id'],
+  },
+  spy_board_video_material: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      video_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, maxItems: 5 },
+      comments_per_video: { type: 'integer', minimum: 1, maximum: 200 },
+      transcript_chars: { type: 'integer', minimum: 500, maximum: 20000 },
+    },
+    required: ['topic_id', 'video_ids'],
+  },
+  spy_board_submit: {
+    type: 'object',
+    properties: {
+      prompt_id: { type: 'string', minLength: 1, description: 'prompt_id in trong prompt (dạng p_xxxxxxxxxxxx)' },
+      result: { type: 'object', description: 'Kết quả đúng khuôn JSON ghi trong prompt — không thêm trường' },
+    },
+    required: ['prompt_id', 'result'],
   },
   spy_board_run_detail: {
     type: 'object',
