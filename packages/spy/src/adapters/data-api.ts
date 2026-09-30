@@ -1,5 +1,6 @@
 import { AppError } from '../errors.ts';
 import { keyId } from '../quota.ts';
+import { fetchViaProxy, proxyYT } from './proxy.ts';
 
 /**
  * Google trả 403 cho NHIỀU lý do khác nhau, phân biệt bằng `error.errors[0].reason`
@@ -298,10 +299,17 @@ function asStringId(id: ApiItem['id']): string | null {
 export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
   private apiKey?: string;
   private apiKeys: string[] = [];
+  private proxy: string | null = null;
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, proxy?: string | null) {
     this.apiKey = apiKey;
     if (apiKey?.trim()) this.apiKeys = [apiKey.trim()];
+    this.setProxy(proxy);
+  }
+
+  /** `raw` là format người dùng nhập (host:port:user:pass) hoặc URL/null. */
+  setProxy(raw?: string | null): void {
+    this.proxy = proxyYT(raw);
   }
 
   /** Backward compat — set single key. */
@@ -333,7 +341,7 @@ export class YouTubeDataApiAdapter implements YouTubeDataApiPort {
     const url = new URL(`https://www.googleapis.com/youtube/v3/${path}`);
     url.searchParams.set('key', this.apiKey!);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    const response = await fetch(url, { signal });
+    const response = await fetchViaProxy(url, { signal }, this.proxy);
     if (!response.ok) {
       throw await classifyGoogleApiError(response, this.apiKey!);
     }
