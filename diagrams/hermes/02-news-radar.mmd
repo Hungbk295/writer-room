@@ -1,0 +1,15 @@
+graph TD
+ A["P0: cron 07:00 hoặc /news-radar"] --> B["spy_news_pull: 5 video/kênh, 36h, 240s"]
+ B --> C["Chuẩn hóa URL; yt-dlp lấy danh sách; bỏ video đã ack"]
+ C --> D["Metadata + transcript VI; lưu JSON đầy đủ; trả tối đa 12k ký tự"]
+ D --> E{"Kết quả pull?"}
+ E -->|"Tool lỗi"| F["Báo lỗi rồi dừng; không ack"]
+ E -->|"Không có item"| G["Báo không có video mới + skipped; không ack"]
+ E -->|"Có item"| H["Tóm tắt từ transcript + Toàn cảnh; dưới 3500 ký tự"]
+ H --> I{"Thiếu transcript và tuổi dưới 12h?"}
+ I -->|"Có"| J["Chỉ nêu tiêu đề; không ack item này"]
+ I -->|"Không"| K["spy_news_ack: summary + deliveredAt"]
+ J --> L["Trả lời cuối; gateway gửi Telegram"]
+ K --> L
+ K -.-> M["RỦI RO: ack trước gửi; gửi lỗi có thể mất tin"]
+ D -.-> N["Lỗi từng video/kênh vào skipped; không hỏng toàn lượt"]

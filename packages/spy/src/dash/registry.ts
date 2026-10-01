@@ -23,7 +23,13 @@ import type {
   DashDecisionSummary,
   DashDecisionsParams,
   DashInbox,
+  DashKeywordCheckRow,
+  DashKeywordDetail,
   DashKeywordRow,
+  DashKeywordRunDetail,
+  DashKeywordRunItemRow,
+  DashKeywordRunRow,
+  DashKeywordRunStatus,
   DashKeywordsParams,
   DashMetaData,
   DashQuotaParams,
@@ -166,8 +172,12 @@ export function dashMeta(_db: Database): DashMetaData {
       discovered_via: ['seed', 'keyword_search', 'weekly_outlier', 'user'],
       tick_mode: ['setup', 'daily', 'weekly'],
       decision_actor: ['human', 'loop'],
-      video_source: ['setup', 'daily_scan', 'weekly_search'],
+      // v14: video do keyword run tìm ra mang source 'keyword_run'.
+      video_source: ['setup', 'daily_scan', 'weekly_search', 'keyword_run', 'outside_scan'],
       tick_status: ['running', 'done', 'failed', 'skipped_quota'],
+      // v14: keyword run là việc theo yêu cầu, không phải LoopMode — tick_mode
+      // giữ nguyên 3 nhịp; lịch sử run nằm ở /keyword-runs.
+      keyword_run_status: ['running', 'done', 'failed', 'skipped_quota', 'cancelled'],
     },
   };
 }
@@ -503,6 +513,11 @@ export function dashKeywords(
     where.push('origin = ?');
     args.push(params.origin);
   }
+  if (params.group !== undefined) {
+    // group_key là cột người đặt — lọc chính xác, kể cả '' (chưa gán).
+    where.push('group_key = ?');
+    args.push(params.group);
+  }
   if (params.q) {
     where.push('(display_term LIKE ? OR term_key LIKE ?)');
     const like = `%${params.q}%`;
@@ -521,10 +536,48 @@ GROUP BY discovered_from
   `).all(topicId) as Row[];
   const discoveredMap = new Map(discovered.map((r) => [String(r['discovered_from']), Number(r['n'])]));
 
+  // v14: số video mỗi keyword tìm ra (found_by_keyword = term_key).
+  const videosFound = db.prepare(`
+SELECT found_by_keyword AS k, COUNT(*) AS n
+FROM topic_videos
+WHERE topic_id = ? AND found_by_keyword IS NOT NULL
+GROUP BY found_by_keyword
+  `).all(topicId) as Row[];
+  const videosFoundMap = new Map(videosFound.map((r) => [String(r['k']), Number(r['n'])]));
+
+  // v14: video của keyword vượt ngưỡng outlier trong 7/28 ngày gần nhất —
+  // cùng cửa sổ với endpoint /outliers (published_at thật, cận trên hôm nay UTC).
+  const settings = dashTopicSettings(db, topicId);
+  const to = new Date().toISOString().slice(0, 10);
+  const d7 = shiftQuotaDay(to, -6);
+  const d28 = shiftQuotaDay(to, -27);
+  const outliers = db.prepare(`
+SELECT found_by_keyword AS k,
+  SUM(CASE WHEN substr(published_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) AS n7,
+  SUM(CASE WHEN substr(published_at,1,10) BETWEEN ? AND ? THEN 1 ELSE 0 END) AS n28
+FROM topic_videos
+WHERE topic_id = ? AND found_by_keyword IS NOT NULL AND outlier_score >= ?
+GROUP BY found_by_keyword
+  `).all(d7, to, d28, to, topicId, settings.outlierMultiple) as Row[];
+  const outliersMap = new Map(
+    outliers.map((r) => [String(r['k']), { n7: Number(r['n7']), n28: Number(r['n28']) }]),
+  );
+
+  // v14: median_views của lần check GẦN NHÌ — rn=2 (rn=1 là lần mới nhất).
+  const prevChecks = db.prepare(`
+SELECT term_key, median_views FROM (
+  SELECT term_key, median_views,
+    ROW_NUMBER() OVER (PARTITION BY term_key ORDER BY checked_at DESC) AS rn
+  FROM keyword_checks WHERE topic_id = ?
+) WHERE rn = 2
+  `).all(topicId) as Row[];
+  const prevMedianMap = new Map(prevChecks.map((r) => [String(r['term_key']), numOrNull(r['median_views'])]));
+
   let mapped: DashKeywordRow[] = rows.map((r) => {
     const termKey = String(r['term_key']);
     const nResults = intOrNull(r['last_n_results']);
     const nFollowed = intOrNull(r['last_n_followed']);
+    const oStats = outliersMap.get(termKey);
     let evidence: DashKeywordRow['evidence'] = { n_channels: null, sample_video_ids: [] };
     const rawEv = r['evidence_json'];
     if (typeof rawEv === 'string' && rawEv !== '') {
@@ -545,6 +598,7 @@ GROUP BY discovered_from
       display_term: String(r['display_term']),
       status: String(r['status']) as TopicKeywordStatusV3,
       origin: (strOrNull(r['origin']) ?? null) as KeywordOrigin | null,
+      group_key: strOrNull(r['group_key']),
       added_by: String(r['added_by']) as DashKeywordRow['added_by'],
       added_at: String(r['added_at']),
       decided_at: strOrNull(r['decided_at']),
@@ -556,6 +610,10 @@ GROUP BY discovered_from
         ? nFollowed / nResults
         : null,
       last_median_views: numOrNull(r['last_median_views']),
+      prev_median_views: prevMedianMap.get(termKey) ?? null,
+      videos_found: videosFoundMap.get(termKey) ?? 0,
+      outliers_7d: oStats?.n7 ?? 0,
+      outliers_28d: oStats?.n28 ?? 0,
       channels_discovered: discoveredMap.get(termKey) ?? 0,
       evidence,
     };
@@ -573,6 +631,144 @@ GROUP BY discovered_from
   });
   const total = mapped.length;
   return { rows: mapped.slice(params.offset, params.offset + params.limit), total };
+}
+
+// ---------------------------------------------------------------------------
+// #17 GET /dash/keywords/:term_key (v14) — chi tiết + checks + top video
+// ---------------------------------------------------------------------------
+
+export function dashKeywordDetail(
+  db: Database,
+  topicId: string,
+  termKey: string,
+): DashKeywordDetail | null {
+  const exact = db.prepare(
+    'SELECT term_key FROM topic_keywords WHERE topic_id=? AND term_key=?',
+  ).get(topicId, termKey) as Row | undefined;
+  if (!exact) return null;
+  const row = dashKeywords(db, topicId, {
+    sort: 'added_at', order: 'desc', limit: 500, offset: 0,
+  }).rows.find((k) => k.term_key === termKey);
+  if (!row) return null;
+
+  const checks = db.prepare(`
+SELECT checked_at, n_results, n_followed, median_views, run_id
+FROM keyword_checks
+WHERE topic_id = ? AND term_key = ?
+ORDER BY checked_at DESC
+LIMIT 100
+  `).all(topicId, termKey) as Row[];
+
+  const videos = db.prepare(`
+SELECT tv.*, tc.title AS channel_title, tc.status AS channel_status,
+  (SELECT COUNT(*) FROM video_daily_views dv
+    WHERE dv.topic_id = tv.topic_id AND dv.video_id = tv.video_id) AS snapshots
+FROM topic_videos tv
+LEFT JOIN topic_channels tc
+  ON tc.topic_id = tv.topic_id AND tc.channel_id = tv.channel_id
+WHERE tv.topic_id = ? AND tv.found_by_keyword = ?
+ORDER BY tv.outlier_score DESC NULLS LAST, tv.latest_views DESC
+LIMIT 20
+  `).all(topicId, termKey) as Row[];
+
+  return {
+    ...row,
+    checks: checks.map((c) => ({
+      checked_at: String(c['checked_at']),
+      n_results: intOrNull(c['n_results']),
+      n_followed: intOrNull(c['n_followed']),
+      median_views: numOrNull(c['median_views']),
+      run_id: strOrNull(c['run_id']),
+    })),
+    top_videos: videos.map((v) => ({
+      video_id: String(v['video_id']),
+      url: `https://www.youtube.com/watch?v=${String(v['video_id'])}`,
+      title: String(v['title']),
+      thumbnail_url: strOrNull(v['thumbnail_url']),
+      channel_id: String(v['channel_id']),
+      channel_title: strOrNull(v['channel_title']),
+      channel_status: strOrNull(v['channel_status']) as DashKeywordDetail['top_videos'][number]['channel_status'],
+      published_at: strOrNull(v['published_at']),
+      age_days: dayDiff(strOrNull(v['published_at']), `${new Date().toISOString().slice(0, 10)}T23:59:59.999Z`),
+      duration_sec: numOrNull(v['duration_sec']),
+      is_short: null,
+      latest_views: intOrNull(v['latest_views']),
+      latest_likes: intOrNull(v['latest_likes']),
+      latest_comments: intOrNull(v['latest_comments']),
+      latest_at: strOrNull(v['latest_at']),
+      views_gained_24h: intOrNull(v['views_gained_24h']),
+      outlier_score: numOrNull(v['outlier_score']),
+      is_outlier: numOrNull(v['outlier_score']) === null
+        ? null
+        : Number(v['outlier_score']) >= dashTopicSettings(db, topicId).outlierMultiple,
+      launch_spike: null,
+      source: String(v['source']),
+      found_by_keyword: strOrNull(v['found_by_keyword']),
+      first_seen_at: String(v['first_seen_at']),
+      snapshots: Number(v['snapshots']),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// #18 GET /dash/keyword-runs (v14) — lịch sử run cho board
+// ---------------------------------------------------------------------------
+
+function keywordRunRowFromRow(r: Row): DashKeywordRunRow {
+  let params: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(String(r['params_json'])) as unknown;
+    if (parsed && typeof parsed === 'object') params = parsed as Record<string, unknown>;
+  } catch { /* params_json hỏng → params rỗng */ }
+  return {
+    run_id: String(r['run_id']),
+    topic_id: String(r['topic_id']),
+    status: String(r['status']) as DashKeywordRunStatus,
+    n_keywords: Number(r['n_keywords']),
+    keywords_done: Number(r['keywords_done']),
+    search_calls_used: Number(r['search_calls_used']),
+    general_units_used: Number(r['general_units_used']),
+    new_candidates: Number(r['new_candidates']),
+    started_at: String(r['started_at']),
+    finished_at: strOrNull(r['finished_at']),
+    error: strOrNull(r['error']),
+    params,
+  };
+}
+
+function keywordRunItemFromRow(r: Row): DashKeywordRunItemRow {
+  return {
+    term_key: String(r['term_key']),
+    status: String(r['status']) as DashKeywordRunItemRow['status'],
+    n_results: intOrNull(r['n_results']),
+    n_followed: intOrNull(r['n_followed']),
+    median_views: numOrNull(r['median_views']),
+    outliers_found: intOrNull(r['outliers_found']),
+    error: strOrNull(r['error']),
+  };
+}
+
+export function dashKeywordRuns(
+  db: Database,
+  topicId: string,
+  params: { limit: number },
+): DashKeywordRunRow[] {
+  const rows = db.prepare(
+    'SELECT * FROM keyword_runs WHERE topic_id=? ORDER BY started_at DESC LIMIT ?',
+  ).all(topicId, params.limit) as Row[];
+  return rows.map(keywordRunRowFromRow);
+}
+
+export function dashKeywordRunDetail(
+  db: Database,
+  runId: string,
+): DashKeywordRunDetail | null {
+  const run = db.prepare('SELECT * FROM keyword_runs WHERE run_id=?').get(runId) as Row | undefined;
+  if (!run) return null;
+  const items = db.prepare(
+    'SELECT * FROM keyword_run_items WHERE run_id=? ORDER BY rowid ASC',
+  ).all(runId) as Row[];
+  return { ...keywordRunRowFromRow(run), items: items.map(keywordRunItemFromRow) };
 }
 
 // ---------------------------------------------------------------------------

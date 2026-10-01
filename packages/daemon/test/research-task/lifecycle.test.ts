@@ -1,0 +1,744 @@
+import { test, expect } from 'bun:test';
+import { existsSync, realpathSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ResearchTaskStore } from '../../src/research-task/store.ts';
+import { ResearchTokenRegistry } from '../../src/research-task/tokens.ts';
+import { McpResearchServer } from '../../src/research-task/mcp.ts';
+
+const setup = () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-lifecycle-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'));
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  const worker2 = { role: 'worker' as const, subject: 'w-2', profile: 'research' };
+  const future = () => new Date(Date.now() + 3_600_000).toISOString();
+  const task = store.create(owner, { commandId: 'create', taskId: 't1', mode: 'keyword', input: { q: 'x' } });
+  return { root, store, owner, worker, worker2, future, task };
+};
+
+test('queue claim by profile without workerSubject; worker isolation', () => {
+  const { store, owner, worker, worker2, future, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    // A different worker subject on the same profile wins an open queue slot.
+    const claimed = store.claim(worker2, { commandId: 'c', profile: 'research', sessionRef: 's2', leaseUntil: future() })!;
+    expect(claimed.worker_subject).toBe('w-2');
+    expect(claimed.phase).toBe('running');
+    // The losing worker cannot mutate the task.
+    expect(() => store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 })).toThrow();
+    // Second claim on an empty queue returns null, not an error.
+    expect(store.claim(worker, { commandId: 'c2', profile: 'research', sessionRef: 's', leaseUntil: future() })).toBeNull();
+  } finally { store.close(); }
+});
+
+test('expired lease locks out worker; operator mark_unknown then rebind to a new worker', () => {
+  const { store, owner, worker, worker2, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, workerSubject: 'w-1', profile: 'research' });
+    store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's1', leaseUntil: new Date(Date.now() + 60_000).toISOString() });
+    // Expire the lease manually.
+    store.db.query("UPDATE research_tasks SET lease_until=? WHERE id='t1'").run(new Date(Date.now() - 1000).toISOString());
+    const stale = store.get(owner, 't1');
+    expect(stale.leaseExpired).toBe(true);
+    expect(() => store.heartbeat(worker, 't1', { commandId: 'hb', expectedVersion: stale.version, leaseUntil: new Date(Date.now() + 60_000).toISOString() })).toThrow();
+    const unknown = store.transition(owner, 't1', { commandId: 'mu', expectedVersion: stale.version, action: 'mark_unknown' });
+    expect(unknown.phase).toBe('unknown');
+    const rebound = store.bind(owner, 't1', { commandId: 'rebind', expectedVersion: unknown.version, profile: 'research' });
+    const reclaimed = store.claim(worker2, { commandId: 'c3', profile: 'research', sessionRef: 's3', leaseUntil: new Date(Date.now() + 60_000).toISOString() })!;
+    expect(reclaimed.worker_subject).toBe('w-2');
+    expect(rebound.phase).toBe('ready');
+  } finally { store.close(); }
+});
+
+test('cancel ack releases outstanding reservation; budget not double-counted on duplicate command', () => {
+  const { root, store, owner, worker, future, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    const reserved = store.reserve(worker, 't1', { commandId: 'r1', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 5 });
+    expect(reserved.budget.reservedSearch).toBe(5);
+    // Duplicate command replays the stored receipt — no second reservation, no version bump.
+    const replay = store.reserve(worker, 't1', { commandId: 'r1', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 5 });
+    expect(replay.version).toBe(reserved.version);
+    expect(store.list(owner)[0].budget.reservedSearch).toBe(5);
+    const cancelReq = store.transition(owner, 't1', { commandId: 'cx', expectedVersion: replay.version, action: 'cancel' });
+    const cancelled = store.transition(worker, 't1', { commandId: 'cxa', expectedVersion: cancelReq.version, action: 'cancel_ack' });
+    expect(cancelled.phase).toBe('cancelled');
+    expect(cancelled.budget.reservedSearch).toBe(0);
+    writeFileSync(join(root, 'artifacts', 't1', 'late.txt'), 'x');
+  } finally { store.close(); }
+});
+
+test('instruct is durable and applies at the next reserve boundary', () => {
+  const { store, owner, worker, future, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    store.instruct(owner, 't1', { commandId: 'i1', expectedVersion: claimed.version, instruction: 'đổi sang chủ đề B' });
+    const reserved = store.reserve(worker, 't1', { commandId: 'r1', expectedVersion: claimed.version + 1, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    expect(reserved.pending_command).toBeNull();
+    const types = store.events(owner, 't1').map((e: any) => e.type);
+    expect(types).toContain('instruction_queued');
+    expect(types).toContain('instruction_applied');
+  } finally { store.close(); }
+});
+
+test('crash/restart: reopening the same db preserves state and the event cursor continues', () => {
+  const { root, store, owner, worker, future, task } = setup();
+  const dbPath = join(root, 'task.sqlite');
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() });
+    const cursorBefore = (store.events(owner, 't1').at(-1) as any).cursor as number;
+    store.close();
+    const reopened = new ResearchTaskStore(dbPath, join(root, 'artifacts'));
+    const after = reopened.get(owner, 't1');
+    expect(after.phase).toBe('running');
+    expect(after.worker_subject).toBe('w-1');
+    reopened.reserve(worker, 't1', { commandId: 'r1', expectedVersion: after.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const events = reopened.events(owner, 't1', cursorBefore);
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((e: any) => e.cursor > cursorBefore)).toBe(true);
+    reopened.close();
+  } catch (e) { try { store.close(); } catch {} throw e; }
+});
+
+test('hard gate: spyRunIds verified against source-of-truth; artifact drift blocks completion', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-gate-'));
+  const runs: Record<string, { status: string; videoIds: string[] }> = {
+    'spy-real': { status: 'completed', videoIds: ['v1'] },
+    'spy-running': { status: 'running', videoIds: [] },
+  };
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => runs[id] ?? null });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const future = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, budget: { maxRounds: 2, maxUniqueVideos: 5, maxSearchCost: 5 } });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    // Fabricated Spy run ref is rejected at settle time.
+    expect(() => store.completeRound(worker, 't1', { commandId: 'bad', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-fake'], videos: [] })).toThrow(/spy-fake/);
+    // A run that exists but is not completed is also rejected.
+    expect(() => store.completeRound(worker, 't1', { commandId: 'bad2', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-running'], videos: [] })).toThrow(/not completed/);
+    // A video not present in the run's manifest is rejected.
+    expect(() => store.completeRound(worker, 't1', { commandId: 'bad3', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-real'], videos: [{ videoId: 'v-ghost', spyRunId: 'spy-real' }] })).toThrow(/v-ghost/);
+    const done = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-real'], videos: [{ videoId: 'v1', spyRunId: 'spy-real' }] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-real'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: done.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
+    // Tamper the report after registration → completion must fail.
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'tampered');
+    expect(() => store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version })).toThrow(/drifted/);
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    expect(store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version }).phase).toBe('completed');
+  } finally { store.close(); }
+});
+
+test('token registry: legacy real-dir fixture heals profile/role drift, keeps issued tokens', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-tokens-'));
+  // Mirrors the actual writer-room-data/config/hermes-actors.json dev-1 provisioned.
+  writeFileSync(join(root, 'actors.json'), JSON.stringify({ actors: [
+    { role: 'operator', subject: 'hermes:wr-operator', token: 'op-token-aaaaaaaaaaaaaaaa' },
+    { role: 'worker', subject: 'hermes:wr-researcher', profile: 'wr-researcher', token: 'wk-token-bbbbbbbbbbbbbbbb' },
+    { role: 'worker', subject: 'hermes:wr-writer', profile: 'writer', token: 'ww-token-cccccccccccccccc' },
+  ] }));
+  const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  const op = registry.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
+  expect(op.token).toBe('op-token-aaaaaaaaaaaaaaaa');
+  const healed = registry.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect((healed as { profile?: string }).profile).toBe('research');
+  expect(healed.token).toBe('wk-token-bbbbbbbbbbbbbbbb');
+  // wr-writer was provisioned as a worker — the Research surface revokes the
+  // grant entirely (leader decision: no Research access for the writer
+  // identity in P1/W1); its token stops resolving.
+  expect(registry.revokeSubject('hermes:wr-writer')).toBe(true);
+  expect(registry.revokeSubject('hermes:wr-writer')).toBe(false); // idempotent
+  const reopened = new ResearchTokenRegistry(join(root, 'actors.json'));
+  expect(reopened.resolve('wk-token-bbbbbbbbbbbbbbbb')).toEqual({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  expect(reopened.resolve('ww-token-cccccccccccccccc')).toBeNull();
+  expect(reopened.resolve('nope')).toBeNull();
+});
+
+test('revoked wr-writer token is 401 on the Research MCP surface', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-mcp-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'));
+  const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  // Simulate a legacy worker grant, then boot-time revocation.
+  registry.ensure({ role: 'worker', subject: 'hermes:wr-writer', profile: 'writer' });
+  const grant = registry.tokenFor('worker', 'hermes:wr-writer')!;
+  registry.revokeSubject('hermes:wr-writer');
+  const server = new McpResearchServer(store, registry);
+  try {
+    const res = await server.handleFetch(new Request('http://x/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${grant}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    }));
+    expect(res.status).toBe(401);
+  } finally { store.close(); }
+});
+
+test('cross-repo: daemon seed queue === Hermes RESEARCH_QUEUE', () => {
+  // The queue string is a two-repo contract: daemon seed (http.ts) must equal
+  // wr-runtime.py RESEARCH_QUEUE. Fails loud if either side drifts.
+  const daemonSrc = readFileSync(join(import.meta.dir, '../../src/http.ts'), 'utf8');
+  const seed = daemonSrc.match(/subject:\s*'hermes:wr-researcher',\s*profile:\s*'([^']+)'/)?.[1];
+  expect(seed).toBe('research');
+  const hermesPy = join(import.meta.dir, '../../../../../hermes/scripts/wr-runtime.py');
+  if (existsSync(hermesPy)) {
+    const q = readFileSync(hermesPy, 'utf8').match(/RESEARCH_QUEUE\s*=\s*'([^']+)'/)?.[1];
+    expect(q).toBe(seed);
+  }
+});
+
+const rpc = async (server: McpResearchServer, token: string, method: string, params: unknown = {}) => {
+  const res = await server.handleFetch(new Request('http://x/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  }));
+  return res.json() as any;
+};
+
+test('MCP: token scopes the actor; tools/list and tools/call are both filtered', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-mcp-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'));
+  const registry = new ResearchTokenRegistry(join(root, 'actors.json'));
+  const op = registry.ensure({ role: 'operator', subject: 'owner-1' });
+  const wk = registry.ensure({ role: 'worker', subject: 'w-1', profile: 'research' });
+  const vw = registry.ensure({ role: 'viewer', subject: 'hermes:wr-writer' });
+  const server = new McpResearchServer(store, registry);
+  try {
+    const unauth = await server.handleFetch(new Request('http://x/mcp', { method: 'POST', headers: { authorization: 'Bearer nope' }, body: '{}' }));
+    expect(unauth.status).toBe(401);
+    const opTools = (await rpc(server, op.token, 'tools/list')).result.tools.map((t: any) => t.name);
+    const wkTools = (await rpc(server, wk.token, 'tools/list')).result.tools.map((t: any) => t.name);
+    expect(opTools).toContain('research_task_create');
+    expect(opTools).not.toContain('research_task_claim');
+    expect(wkTools).toContain('research_task_claim');
+    expect(wkTools).not.toContain('research_task_create');
+    // Viewer (writer identity) resolves but sees ZERO tools — no data access.
+    const vwTools = (await rpc(server, vw.token, 'tools/list')).result.tools.map((t: any) => t.name);
+    expect(vwTools).toEqual([]);
+    for (const name of ['research_task_claim', 'research_task_list', 'research_task_get', 'research_task_events']) {
+      const denied = await rpc(server, vw.token, 'tools/call', { name, arguments: { commandId: 'x', taskId: 't1', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 60_000).toISOString() } });
+      expect(denied.error.code).toBe(-32602);
+    }
+    // A worker token calling an operator tool by name is rejected like an unknown tool.
+    const denied = await rpc(server, wk.token, 'tools/call', { name: 'research_task_create', arguments: { commandId: 'x', mode: 'k', input: {} } });
+    expect(denied.error.code).toBe(-32602);
+    // Full lifecycle through the MCP surface.
+    const created = JSON.parse((await rpc(server, op.token, 'tools/call', { name: 'research_task_create', arguments: { commandId: 'c1', taskId: 't1', mode: 'keyword', input: { q: 'x' }, budget: { maxRounds: 1, maxUniqueVideos: 2, maxSearchCost: 2 } } })).result.content[0].text);
+    await rpc(server, op.token, 'tools/call', { name: 'research_task_bind', arguments: { commandId: 'b1', taskId: 't1', expectedVersion: created.task.version, profile: 'research' } });
+    const claimed = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_task_claim', arguments: { commandId: 'cl1', profile: 'research', sessionRef: 's1', leaseUntil: new Date(Date.now() + 60_000).toISOString() } })).result.content[0].text);
+    expect(claimed.task.phase).toBe('running');
+    const reserved = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_round_reserve', arguments: { commandId: 'r1', taskId: 't1', expectedVersion: claimed.task.version, roundIndex: 1, planHash: 'h', searchCost: 1 } })).result.content[0].text);
+    const roundDone = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_round_complete', arguments: { commandId: 'rc1', taskId: 't1', expectedVersion: reserved.task.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [{ videoId: 'v1', spyRunId: 'spy-1' }] } })).result.content[0].text);
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a1', taskId: 't1', expectedVersion: roundDone.task.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') } })).result.content[0].text);
+    const a2 = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_artifact_register', arguments: { commandId: 'a2', taskId: 't1', expectedVersion: a1.artifact.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') } })).result.content[0].text);
+    const done = JSON.parse((await rpc(server, wk.token, 'tools/call', { name: 'research_task_complete', arguments: { commandId: 'done', taskId: 't1', expectedVersion: a2.artifact.version } })).result.content[0].text);
+    expect(done.task.phase).toBe('completed');
+  } finally { store.close(); }
+});
+
+// ── P2: durable outbox (worker wake + operator/Telegram feed) ────────────────
+
+test('outbox: bind wakes worker queue; ack with receipt dedupes; survives reopen', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-outbox-'));
+  const dbPath = join(root, 'task.sqlite');
+  const artRoot = join(root, 'artifacts');
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  try {
+    const task = store.create(owner, { commandId: 'create', taskId: 't1', mode: 'keyword', input: {} });
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    // Worker queue sees the wake row for its profile.
+    const wake = store.outboxPoll(worker, { audience: 'worker' });
+    expect(wake.length).toBe(1);
+    expect(wake[0]!.kind).toBe('worker_bound');
+    expect(wake[0]!.taskId).toBe('t1');
+    // Operator feed sees the same bind event on its own audience cursor.
+    const feed = store.outboxPoll(owner, { audience: 'operator' });
+    expect(feed.some((r) => r.kind === 'worker_bound')).toBe(true);
+    // Cross-audience scoping: a worker cannot poll the operator feed.
+    expect(() => store.outboxPoll(worker, { audience: 'operator' })).toThrow();
+    expect(() => store.outboxPoll(owner, { audience: 'worker' })).toThrow();
+    // Ack with receipt → undelivered set drains; replaying the ack is a no-op.
+    const ack1 = store.outboxAck(worker, { audience: 'worker', throughCursor: wake[0]!.cursor, receipt: 'hermes-wake-1' });
+    expect(ack1.delivered).toBe(1);
+    expect(store.outboxPoll(worker, { audience: 'worker' })).toEqual([]);
+    const ack2 = store.outboxAck(worker, { audience: 'worker', throughCursor: wake[0]!.cursor, receipt: 'hermes-wake-1' });
+    expect(ack2.delivered).toBe(0);
+  } finally { store.close(); }
+  // Crash/restart: undelivered operator rows persist across reopen.
+  const reopened = new ResearchTaskStore(dbPath, artRoot);
+  try {
+    const feed = reopened.outboxPoll(owner, { audience: 'operator' });
+    expect(feed.length).toBeGreaterThan(0);
+    expect(feed[0]!.cursor).toBeGreaterThan(0);
+  } finally { reopened.close(); }
+});
+
+test('outbox: instruct/resume enqueue worker wake rows', () => {
+  const { store, owner, worker, future, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, workerSubject: 'w-1', profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    store.outboxAck(worker, { audience: 'worker', throughCursor: 999_999 }); // drain
+    store.instruct(owner, 't1', { commandId: 'i1', expectedVersion: claimed.version, instruction: 'focus keyword A' });
+    const wake = store.outboxPoll(worker, { audience: 'worker' });
+    expect(wake.map((r) => r.kind)).toEqual(['instruction_queued']);
+  } finally { store.close(); }
+});
+
+// ── P2: real Spy quota binding (fail closed / partial-report path) ───────────
+
+const setupQuota = (quota: { searchRemaining: number } | null) => {
+  const root = mkdtempSync(join(tmpdir(), 'research-quota-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyQuota: () => quota });
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  const task = store.create(owner, { commandId: 'create', taskId: 't1', mode: 'keyword', input: {} });
+  store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+  const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: new Date(Date.now() + 3_600_000).toISOString() })!;
+  return { store, owner, worker, claimed };
+};
+
+test('quota: reserve fails closed when Spy quota probe unavailable', () => {
+  const { store, worker, claimed } = setupQuota(null);
+  try {
+    expect(() => store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 }))
+      .toThrow(/fail closed/i);
+  } finally { store.close(); }
+});
+
+test('quota: reserve rejects a round exceeding real Spy quota; smaller round still fits', () => {
+  const { store, worker, claimed } = setupQuota({ searchRemaining: 3 });
+  try {
+    expect(() => store.reserve(worker, 't1', { commandId: 'r-big', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 4 }))
+      .toThrow(/quota depleted/i);
+    const ok = store.reserve(worker, 't1', { commandId: 'r-ok', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 3 });
+    expect(ok.budget.reservedSearch).toBe(3);
+  } finally { store.close(); }
+});
+
+test('quota: outstanding reservations across OTHER tasks count against real Spy remaining', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-quota-agg-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyQuota: () => ({ searchRemaining: 5 }) });
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  const future = () => new Date(Date.now() + 3_600_000).toISOString();
+  try {
+    // Task A reserves 3 of the 5 real units.
+    const a = store.create(owner, { commandId: 'ca', taskId: 'ta', mode: 'keyword', input: {} });
+    store.bind(owner, 'ta', { commandId: 'ba', expectedVersion: a.version, profile: 'research' });
+    const claimA = store.claim(worker, { commandId: 'cla', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    store.reserve(worker, 'ta', { commandId: 'ra', expectedVersion: claimA.version, roundIndex: 1, planHash: 'h', searchCost: 3 });
+    // Task B: 2 free units remain — a 3-call round must be rejected even though
+    // the raw ledger still shows 5.
+    const b = store.create(owner, { commandId: 'cb', taskId: 'tb', mode: 'keyword', input: {} });
+    store.bind(owner, 'tb', { commandId: 'bb', expectedVersion: b.version, profile: 'research' });
+    const claimB = store.claim(worker, { commandId: 'clb', profile: 'research', sessionRef: 's2', leaseUntil: future() })!;
+    expect(claimB.id).toBe('tb');
+    expect(() => store.reserve(worker, 'tb', { commandId: 'rb', expectedVersion: claimB.version, roundIndex: 1, planHash: 'h', searchCost: 3 }))
+      .toThrow(/quota depleted/i);
+    const ok = store.reserve(worker, 'tb', { commandId: 'rb2', expectedVersion: claimB.version, roundIndex: 1, planHash: 'h', searchCost: 2 });
+    expect(ok.budget.reservedSearch).toBe(2);
+  } finally { store.close(); }
+});
+
+test('daemon projects artifactDir on get/claim; registerArtifact enforces the per-task dir', () => {
+  const { root, store, owner, worker, future, task } = setup();
+  try {
+    // The projection is the daemon-issued canonical path — a worker never
+    // guesses WRITER_ROOM_DATA_DIR or its own cwd.
+    expect(task.artifactDir).toBe(realpathSync(join(root, 'artifacts', 't1')));
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    expect(claimed.artifactDir).toBe(task.artifactDir);
+    const reserved = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    // A file inside the projected dir registers fine.
+    writeFileSync(join(task.artifactDir, 'note.md'), 'ok');
+    const reg = store.registerArtifact(worker, 't1', { commandId: 'a', expectedVersion: reserved.version, roundIndex: 1, type: 'other', path: join(task.artifactDir, 'note.md') });
+    expect(reg.sha256).toHaveLength(64);
+    // Root-level artifact dir (sibling of the task dir) is now out of scope.
+    writeFileSync(join(root, 'artifacts', 'loose.md'), 'x');
+    expect(() => store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: reg.version, roundIndex: 1, type: 'other', path: join(root, 'artifacts', 'loose.md') })).toThrow(/outside task dir/);
+    // Another task's dir is out of scope too.
+    const other = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {} });
+    writeFileSync(join(other.artifactDir, 'their.md'), 'x');
+    expect(() => store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: reg.version, roundIndex: 1, type: 'other', path: join(other.artifactDir, 'their.md') })).toThrow(/outside task dir/);
+  } finally { store.close(); }
+});
+
+test('artifact supersede: re-register same path heals a drifted/stale row with audit', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-supersede-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => ({ status: 'completed', videoIds: [] }) });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const future = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, budget: { maxRounds: 1, maxUniqueVideos: 5, maxSearchCost: 5 } });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: future() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const done = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    const dir = t.artifactDir;
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(dir, 'report.md'), 'report v1');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: done.version, roundIndex: 1, type: 'manifest', path: join(dir, 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(dir, 'report.md') });
+    // Agent rewrites the report → drift → completion blocked.
+    writeFileSync(join(dir, 'report.md'), 'report v2 (regenerated)');
+    expect(() => store.completeTask(worker, 't1', { commandId: 'f', expectedVersion: a2.version })).toThrow(/drifted/);
+    // Supersede: same path re-registers, heals the stale row, audited.
+    const a3 = store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: a2.version, roundIndex: 1, type: 'report', path: join(dir, 'report.md') });
+    expect(a3.artifactId).toBe(a2.artifactId); // same row, new hash
+    const ev = store.events(owner, 't1').map((e: any) => e.type);
+    expect(ev).toContain('artifact_superseded');
+    expect(store.completeTask(worker, 't1', { commandId: 'f2', expectedVersion: a3.version }).phase).toBe('completed');
+  } finally { store.close(); }
+});
+
+test('rebind of a cancel_requested orphan preserves the cancel intent', () => {
+  const { store, owner, worker, worker2, task } = setup();
+  try {
+    store.bind(owner, 't1', { commandId: 'bind', expectedVersion: task.version, workerSubject: 'w-1', profile: 'research' });
+    store.claim(worker, { commandId: 'c', profile: 'research', sessionRef: 's1', leaseUntil: new Date(Date.now() + 60_000).toISOString() });
+    const running = store.get(owner, 't1');
+    const cancelReq = store.transition(owner, 't1', { commandId: 'cx', expectedVersion: running.version, action: 'cancel' });
+    expect(cancelReq.phase).toBe('cancel_requested');
+    // Worker dies; lease expires; operator rebinds the orphan.
+    store.db.query("UPDATE research_tasks SET lease_until=? WHERE id='t1'").run(new Date(Date.now() - 1000).toISOString());
+    const rebound = store.bind(owner, 't1', { commandId: 'rebind', expectedVersion: cancelReq.version, profile: 'research' });
+    expect(rebound.phase).toBe('cancel_requested'); // NOT reset to ready
+    // The next worker claims it — phase stays cancel_requested until ack.
+    const reclaimed = store.claim(worker2, { commandId: 'c2', profile: 'research', sessionRef: 's2', leaseUntil: new Date(Date.now() + 60_000).toISOString() })!;
+    expect(reclaimed.phase).toBe('cancel_requested');
+    expect(reclaimed.worker_subject).toBe('w-2');
+    const cancelled = store.transition(worker2, 't1', { commandId: 'ack', expectedVersion: reclaimed.version, action: 'cancel_ack' });
+    expect(cancelled.phase).toBe('cancelled');
+  } finally { store.close(); }
+});
+
+test('outbox ack_one: exact-row ack leaves an earlier HOLD row undelivered, survives reopen', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-ack1-'));
+  const dbPath = join(root, 'task.sqlite');
+  const artRoot = join(root, 'artifacts');
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  const owner = { role: 'operator' as const, subject: 'owner-1' };
+  const worker = { role: 'worker' as const, subject: 'w-1', profile: 'research' };
+  try {
+    // Two tasks → two operator-feed rows (row1 = the "held" one, row2 = sent).
+    const t1 = store.create(owner, { commandId: 'c1', taskId: 't1', mode: 'k', input: {} });
+    const t2 = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {} });
+    store.bind(owner, 't1', { commandId: 'b1', expectedVersion: t1.version, profile: 'research' });
+    store.bind(owner, 't2', { commandId: 'b2', expectedVersion: t2.version, profile: 'research' });
+    const rows = store.outboxPoll(owner, { audience: 'operator' });
+    expect(rows.length).toBe(2);
+    const [row1, row2] = rows;
+    // Ack only row2 — row1 must stay undelivered.
+    const ack = store.outboxAckOne(owner, { audience: 'operator', cursor: row2!.cursor, receipt: 'tg-msg-2' });
+    expect(ack.delivered).toBe(1);
+    const rest = store.outboxPoll(owner, { audience: 'operator' });
+    expect(rest.map((r) => r.cursor)).toEqual([row1!.cursor]);
+    // Replay is idempotent; a worker still cannot ack the operator feed.
+    expect(store.outboxAckOne(owner, { audience: 'operator', cursor: row2!.cursor }).delivered).toBe(0);
+    expect(() => store.outboxAckOne(worker, { audience: 'operator', cursor: row1!.cursor })).toThrow();
+  } finally { store.close(); }
+  const reopened = new ResearchTaskStore(dbPath, artRoot);
+  try {
+    const rest = reopened.outboxPoll(owner, { audience: 'operator' });
+    expect(rest.length).toBe(1); // row1 survived restart, still undelivered
+  } finally { reopened.close(); }
+});
+
+test('outbox epoch: stable across restart, different on fresh DB, scoped + in poll rows', () => {
+  const mk = () => {
+    const root = mkdtempSync(join(tmpdir(), 'research-epoch-'));
+    return { root, store: new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts')) };
+  };
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const a = mk();
+  let e1 = '';
+  try {
+    e1 = a.store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    expect(e1).toMatch(/^[0-9a-f-]{36}$/);
+    // Poll rows carry the epoch so the relay can key epoch+audience+cursor.
+    const t = a.store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {} });
+    a.store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const feed = a.store.outboxPoll(owner, { audience: 'operator' });
+    expect(feed[0]!.epoch).toBe(e1);
+    // Cross-audience scope still enforced.
+    expect(() => a.store.outboxIdentity(worker, { audience: 'operator' })).toThrow();
+    a.store.close();
+    // Reopen same DB → same epoch (stable across process restart).
+    const reopened = new ResearchTaskStore(join(a.root, 'task.sqlite'), join(a.root, 'artifacts'));
+    try { expect(reopened.outboxIdentity(owner, { audience: 'operator' }).epoch).toBe(e1); }
+    finally { reopened.close(); }
+  } catch (e) { try { a.store.close(); } catch {} throw e; }
+  // Fresh DB (new data dir at the "same URL") → different epoch: old receipts
+  // keyed by epoch+cursor cannot ack rows of the new DB.
+  const b = mk();
+  let e2 = '';
+  try { e2 = b.store.outboxIdentity(owner, { audience: 'operator' }).epoch; }
+  finally { b.store.close(); }
+  const c = mk();
+  try {
+    const e3 = c.store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    expect(e2).not.toBe(e1 ?? '');
+    expect(e3).not.toBe(e2);
+    expect(e3).not.toBe(e1);
+  } finally { c.store.close(); }
+});
+
+test('expectedEpoch TOCTOU guard: stale-epoch ack rejected, row stays undelivered', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-epoch-ack-'));
+  const dbPath = join(root, 'task.sqlite'); const artRoot = join(root, 'artifacts');
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const store = new ResearchTaskStore(dbPath, artRoot);
+  let cursor = 0; let epoch = '';
+  try {
+    epoch = store.outboxIdentity(owner, { audience: 'operator' }).epoch;
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {} });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    cursor = store.outboxPoll(owner, { audience: 'operator' })[0]!.cursor;
+    store.close();
+    // Simulate a fresh DB at the same URL — cursor ids are reused but epoch differs.
+    const fresh = new ResearchTaskStore(join(mkdtempSync(join(tmpdir(), 'research-epoch-ack2-')), 'task.sqlite'), join(mkdtempSync(join(tmpdir(), 'research-epoch-ack3-')), 'artifacts'));
+    let freshEpoch = '';
+    try {
+      freshEpoch = fresh.outboxIdentity(owner, { audience: 'operator' }).epoch;
+      expect(freshEpoch).not.toBe(epoch);
+      // A relay acking with a STALE epoch is rejected atomically — no row marked.
+      const reopened = new ResearchTaskStore(dbPath, artRoot);
+      try {
+        expect(() => reopened.outboxAckOne(owner, { audience: 'operator', cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+        expect(reopened.outboxPoll(owner, { audience: 'operator' }).length).toBe(1); // still undelivered
+        expect(() => reopened.outboxAck(owner, { audience: 'operator', throughCursor: cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+        expect(reopened.outboxPoll(owner, { audience: 'operator' }).length).toBe(1);
+        // Matching epoch passes on both APIs.
+        expect(reopened.outboxAckOne(owner, { audience: 'operator', cursor, expectedEpoch: epoch }).delivered).toBe(1);
+        // Worker audience same protection.
+        expect(() => reopened.outboxAck(worker, { audience: 'worker', throughCursor: cursor, expectedEpoch: freshEpoch })).toThrow(/epoch/i);
+      } finally { reopened.close(); }
+    } finally { fresh.close(); }
+  } catch (e) { try { store.close(); } catch {} throw e; }
+});
+
+// ── P3: factGateVersion=2 — deterministic claim validation vs Spy snapshot ──
+
+const SPY_RUN = {
+  status: 'completed', videoIds: ['v1', 'v2'],
+  run: { videoCount: 2, kind: 'channel', createdAt: '2025-01-01T00:00:00Z', completedAt: '2025-01-02T00:00:00Z' },
+  videos: [
+    { youtubeVideoId: 'v1', viewCount: 1000, durationSec: 600, publishedAt: '2024-06-01T00:00:00Z', title: 'Alpha Title', channelTitle: 'Chan', rank: 1, transcriptStatus: 'ok', transcriptSegments: 12 },
+    { youtubeVideoId: 'v2', viewCount: null, durationSec: 300, publishedAt: '2024-07-01T00:00:00Z', title: 'Beta', channelTitle: 'Chan', rank: 2, transcriptStatus: 'missing', transcriptSegments: 0 },
+  ],
+};
+/** Runs a v2 task to the completeTask boundary; returns the thrown error or the completed task + emitted summary event. */
+const v2Flow = (manifest: Record<string, unknown>, gateVersion: 1 | 2 = 2, spyInfo: any = SPY_RUN, report?: unknown) => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: (id) => id === 'spy-1' ? spyInfo : null });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  const done = { task: null as any, event: null as any, error: null as Error | null, store, owner, worker, root };
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, factGateVersion: gateVersion });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [{ videoId: 'v1', spyRunId: 'spy-1' }, { videoId: 'v2', spyRunId: 'spy-1' }] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'], ...manifest }));
+    // v2 report defaults to conclusions covering every fact claim exactly once.
+    const factIds = (Array.isArray(manifest.claims) ? manifest.claims : []).filter((c: any) => c?.kind === 'fact').map((c: any) => c.id);
+    const rep = report ?? { formatVersion: 1, conclusions: [{ id: 'k1', claimIds: factIds }] };
+    writeFileSync(join(root, 'artifacts', 't1', 'report.json'), typeof rep === 'string' ? rep : JSON.stringify(rep));
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.json') });
+    try {
+      done.task = store.completeTask(worker, 't1', { commandId: 'done', expectedVersion: a2.version });
+      done.event = store.events(owner, 't1').find((e: any) => e.type === 'completed');
+    } catch (e) { done.error = e as Error; }
+    return done;
+  } catch (e) { store.close(); throw e; }
+};
+
+test('P3 happy path: fact claims verified against Spy snapshot; daemon computes summary', () => {
+  const f = v2Flow({ claimsVersion: 2, factVerified: 999, claims: [
+    { id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 },
+    { id: 'c2', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'viewCount', op: 'gte', value: 500 },
+    { id: 'c3', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'publishedAt', op: 'lte', value: '2024-12-31T00:00:00Z' },
+    { id: 'c4', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'title', op: 'eq', value: 'alpha  title' },
+    { id: 'c5', kind: 'inference', subject: { spyRunId: 'spy-1' }, metric: 'viewCount', note: 'views likely bot-inflated' },
+    { id: 'c6', kind: 'unverifiable', subject: { spyRunId: 'spy-1' }, note: 'channel authority' },
+  ] }, 2, SPY_RUN, { formatVersion: 1, conclusions: [
+    { id: 'k1', claimIds: ['c1', 'c2'] }, { id: 'k2', claimIds: ['c3', 'c4'] },
+  ], unverifiedAnalysis: 'channel authority is my opinion — not verified' });
+  try {
+    expect(f.error).toBeNull();
+    expect(f.task.phase).toBe('completed');
+    // Daemon-computed summary — the manifest's bogus factVerified:999 is ignored.
+    const payload = JSON.parse(f.event.payload_json);
+    expect(payload.claims).toEqual({ factVerified: 4, factFailed: 0, inference: 1, unverifiable: 1 });
+    expect(typeof payload.rendered.sha256).toBe('string');
+    // Operator reads the pinned rendered report.
+    const rep = f.store.reportGet(f.owner, 't1') as any;
+    expect(rep.claims.factVerified).toBe(4);
+    expect(rep.renderedMarkdown).toContain('videoCount = 2');
+    expect(rep.renderedMarkdown).toContain('viewCount ≥ 500');
+    expect(rep.renderedMarkdown).toContain('snapshot: 1000'); // value from Spy snapshot, not worker
+    // Analysis requires EXPLICIT opt-in — absent by default, never in the
+    // completed event, never in verified markdown.
+    expect('unverifiedAnalysis' in rep).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain('channel authority is my opinion');
+    expect(rep.renderedMarkdown).not.toContain('not verified');
+    expect(f.store.reportGet(f.owner, 't1', { includeUnverified: true }).unverifiedAnalysis).toContain('not verified');
+    // Worker and cross-owner reads denied.
+    expect(() => f.store.reportGet(f.worker, 't1')).toThrow();
+    expect(() => f.store.reportGet({ role: 'operator', subject: 'other-owner' }, 't1')).toThrow();
+    expect(() => f.store.reportGet({ role: 'operator', subject: 'other-owner' }, 't1', { includeUnverified: true })).toThrow();
+    // Reopen serves identical pinned bytes.
+    const reopened = new ResearchTaskStore(join(f.root, 'task.sqlite'), join(f.root, 'artifacts'), { spyRunInfo: () => ({ ...SPY_RUN, run: { ...SPY_RUN.run, videoCount: 99 } }) });
+    try {
+      const rep2 = reopened.reportGet(f.owner, 't1');
+      expect(rep2.sha256).toBe(rep.sha256);
+      expect(rep2.renderedMarkdown).toBe(rep.renderedMarkdown); // Spy drift after completion cannot alter pinned output
+    } finally { reopened.close(); }
+  } finally { f.store.close(); }
+});
+
+test('P3 report gate: conclusion-v1 schema — no worker text, claim refs exactly-once', () => {
+  const goodClaims = [
+    { id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 },
+    { id: 'c5', kind: 'inference', subject: { spyRunId: 'spy-1' } },
+  ];
+  const cases: [unknown, RegExp][] = [
+    // worker-supplied template/text on a conclusion — the old hole
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'], text: 'doubled overnight' }] }, /not allowed/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'], template: '{c1} grew 300%' }] }, /not allowed/],
+    [{ formatVersion: 1, conclusions: [], extra: 'x' }, /not allowed/],
+    [{ formatVersion: 2, conclusions: [{ id: 'k1', claimIds: ['c1'] }] }, /formatVersion must be 1/],
+    [{ formatVersion: 1, conclusions: [] }, /non-empty/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c5'] }, { id: 'k2', claimIds: ['c1'] }] }, /not a passed fact/], // inference ref
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['ghost'] }, { id: 'k2', claimIds: ['c1'] }] }, /not a passed fact/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1', 'c1'] }] }, /more than once/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [] }, { id: 'k2', claimIds: ['c1'] }] }, /non-empty/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }, { id: 'k1', claimIds: ['c1'] }] }, /duplicate conclusion id/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [] }] }, /non-empty|not referenced/], // c1 omitted entirely
+    ['not json', /valid JSON/], // invalid JSON report
+    // Bounds: analysis 100KB, conclusion id 256 chars, claimIds ≤500, ids must be strings
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }], unverifiedAnalysis: 'x'.repeat(100_001) }, /exceeds 100000/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k'.repeat(257), claimIds: ['c1'] }] }, /exceeds 256/],
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: Array(501).fill('c1') }] }, /exceed 500|more than once/],
+    [{ formatVersion: 1, conclusions: [{ id: 7, claimIds: ['c1'] }] }, /required/], // non-string id
+    [{ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: [7] }] }, /required|not a passed fact/], // non-string claimId
+  ];
+  for (const [rep, re] of cases) {
+    const f = v2Flow({ claimsVersion: 2, claims: goodClaims }, 2, SPY_RUN, rep);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
+    finally { f.store.close(); }
+  }
+});
+
+test('P3 gate rejects: downgrade attempt, no facts, dup ids, wrong metric/op/value, missing snapshot', () => {
+  const cases: [Record<string, unknown>, RegExp][] = [
+    [{}, /claimsVersion=2/],                                             // worker omits claimsVersion → cannot downgrade
+    [{ claimsVersion: 1 }, /claimsVersion=2/],
+    [{ claimsVersion: 3, claims: [{}] }, /claimsVersion=2/],
+    [{ claimsVersion: 2, claims: [] }, /non-empty/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'inference', subject: { spyRunId: 'spy-1' } }] }, /at least one fact/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 }, { id: 'x', kind: 'inference', subject: { spyRunId: 'spy-1' } }] }, /duplicate claim id/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'subscribers', op: 'eq', value: 1 }] }, /not a whitelisted/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'status', op: 'gte', value: 'completed' }] }, /categorical.*eq/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 3 }] }, /fact claims failed/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v2' }, metric: 'viewCount', op: 'gte', value: 1 }] }, /no value/], // null snapshot ≠ 0
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v-ghost' }, metric: 'viewCount', op: 'eq', value: 1 }] }, /not in Spy run/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-other' }, metric: 'videoCount', op: 'eq', value: 2 }] }, /not a recorded task ref/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: 'not-a-date' }] }, /strict ISO-UTC/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2020' }] }, /strict ISO-UTC/], // Date.parse accepts bare years — we don't
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '01/02/2025' }] }, /strict ISO-UTC/], // locale date
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2025-01-01T00:00:00+07:00' }] }, /strict ISO-UTC/], // offset ≠ UTC
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'createdAt', op: 'eq', value: '2025-02-30T00:00:00Z' }] }, /strict ISO-UTC/], // impossible calendar date
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.NaN }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 1.5 }] }, /nonnegative safe integer/], // count metrics are ints
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: Number.MAX_SAFE_INTEGER + 1 }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: -1 }] }, /nonnegative safe integer/],
+    [{ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric: 'durationSec', op: 'eq', value: -5 }] }, /finite nonnegative/],
+  ];
+  for (const [manifest, re] of cases) {
+    const f = v2Flow(manifest);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(re); }
+    finally { f.store.close(); }
+  }
+});
+
+test('P3 v2: exactly one report artifact required — a second report path fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => SPY_RUN });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    const t = store.create(owner, { commandId: 'c', taskId: 't1', mode: 'k', input: {}, factGateVersion: 2 });
+    store.bind(owner, 't1', { commandId: 'b', expectedVersion: t.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'], claimsVersion: 2, claims: [{ id: 'c1', kind: 'fact', subject: { spyRunId: 'spy-1' }, metric: 'videoCount', op: 'eq', value: 2 }] }));
+    const rep = JSON.stringify({ formatVersion: 1, conclusions: [{ id: 'k1', claimIds: ['c1'] }] });
+    writeFileSync(join(root, 'artifacts', 't1', 'report.json'), rep);
+    writeFileSync(join(root, 'artifacts', 't1', 'report2.json'), rep);
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.json') });
+    const a3 = store.registerArtifact(worker, 't1', { commandId: 'a3', expectedVersion: a2.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report2.json') });
+    expect(() => store.completeTask(worker, 't1', { commandId: 'done', expectedVersion: a3.version })).toThrow(/exactly one report/);
+  } finally { store.close(); }
+});
+
+test('P3: negative/non-integer Spy snapshot values are EVIDENCE, not silently verified', () => {
+  // viewCount=-5 would satisfy 'lte 999' — the snapshot sanity guard must fire first.
+  const neg = { ...SPY_RUN, videos: [{ youtubeVideoId: 'v1', viewCount: -5, durationSec: -1, publishedAt: '2024-06-01T00:00:00Z', title: 'A', channelTitle: 'C', rank: 1, transcriptStatus: 'ok', transcriptSegments: 1 }] };
+  for (const [metric, value] of [['viewCount', 999], ['durationSec', 999]] as const) {
+    const f = v2Flow({ claimsVersion: 2, claims: [{ id: 'x', kind: 'fact', subject: { spyRunId: 'spy-1', videoId: 'v1' }, metric, op: 'lte', value }] }, 2, neg);
+    try { expect(f.error).not.toBeNull(); expect(f.error!.message).toMatch(/snapshot.*not/); }
+    finally { f.store.close(); }
+  }
+});
+
+test('P3 policy: factGateVersion fixed at create; v1 task ignores claimsVersion (legacy compat)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'research-v2-'));
+  const store = new ResearchTaskStore(join(root, 'task.sqlite'), join(root, 'artifacts'), { spyRunInfo: () => SPY_RUN });
+  const owner = { role: 'operator' as const, subject: 'o' };
+  const worker = { role: 'worker' as const, subject: 'w', profile: 'research' };
+  const lease = () => new Date(Date.now() + 60_000).toISOString();
+  try {
+    expect(() => store.create(owner, { commandId: 'bad', taskId: 'tx', mode: 'k', input: {}, factGateVersion: 3 })).toThrow(/factGateVersion/);
+    const t2 = store.create(owner, { commandId: 'c2', taskId: 't2', mode: 'k', input: {}, factGateVersion: 2 });
+    expect(t2.factGateVersion).toBe(2);
+    expect(store.get(owner, 't2').factGateVersion).toBe(2); // persisted, projected
+    // Legacy v1 task: manifest may carry claimsVersion but the v1 gate is
+    // structural only — completion succeeds without claims[].
+    const t1 = store.create(owner, { commandId: 'c1', taskId: 't1', mode: 'k', input: {} });
+    expect(t1.factGateVersion).toBe(1);
+    store.bind(owner, 't1', { commandId: 'b1', expectedVersion: t1.version, profile: 'research' });
+    const claimed = store.claim(worker, { commandId: 'cl', profile: 'research', sessionRef: 's', leaseUntil: lease() })!;
+    const r = store.reserve(worker, 't1', { commandId: 'r1', expectedVersion: claimed.version, roundIndex: 1, planHash: 'h', searchCost: 1 });
+    const rc = store.completeRound(worker, 't1', { commandId: 'rc1', expectedVersion: r.version, roundIndex: 1, actualSearch: 1, spyRunIds: ['spy-1'], videos: [] });
+    writeFileSync(join(root, 'artifacts', 't1', 'manifest.json'), JSON.stringify({ spyRunIds: ['spy-1'] }));
+    writeFileSync(join(root, 'artifacts', 't1', 'report.md'), 'report');
+    const a1 = store.registerArtifact(worker, 't1', { commandId: 'a1', expectedVersion: rc.version, roundIndex: 1, type: 'manifest', path: join(root, 'artifacts', 't1', 'manifest.json') });
+    const a2 = store.registerArtifact(worker, 't1', { commandId: 'a2', expectedVersion: a1.version, roundIndex: 1, type: 'report', path: join(root, 'artifacts', 't1', 'report.md') });
+    expect(store.completeTask(worker, 't1', { commandId: 'd1', expectedVersion: a2.version }).phase).toBe('completed');
+  } finally { store.close(); }
+});

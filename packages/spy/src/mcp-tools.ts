@@ -1,6 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from './errors.ts';
 import type { SpyService } from './index.ts';
+import {
+  boardChannels,
+  boardKeywords,
+  boardMetrics,
+  boardRunDetail,
+  boardRuns,
+  boardScorecard,
+  boardVideos,
+} from './board/queries.ts';
+import { boardVideoMaterial, submitAgentTask } from './board/agent-tasks.ts';
 
 /** Spy MCP tools. Disabled only when WRITER_ROOM_SPY_ENABLED=0. */
 export function isSpyEnabled(): boolean {
@@ -95,6 +105,29 @@ function readTranscriptBatch(spy: SpyService, args: Record<string, unknown>) {
     };
   });
   return { videos, deferredVideoSnapshotIds };
+}
+
+/** Board: topic_id bắt buộc và phải tồn tại. */
+function boardTopic(spy: SpyService, args: Record<string, unknown>): string {
+  const topicId = text(args['topic_id'], 'topic_id');
+  if (!spy.store.getTopic(topicId)) throw new AppError('not_found', `Topic '${topicId}' không tồn tại`);
+  return topicId;
+}
+
+/** Board: bỏ trống = mọi ngách (undefined); '_none' = chưa gán (null). */
+function boardNiche(args: Record<string, unknown>): string | null | undefined {
+  const raw = args['niche'];
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw !== 'string') throw new AppError('invalid_input', 'niche phải là string');
+  return raw === '_none' ? null : raw;
+}
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], name: string): T | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) {
+    throw new AppError('invalid_input', `${name} phải là ${allowed.join('|')}`);
+  }
+  return value as T;
 }
 
 /**
@@ -854,6 +887,105 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         const limit = typeof args['limit'] === 'number' ? Math.min(Math.max(args['limit'], 1), 100) : 50;
         const cursor = typeof args['cursor'] === 'number' ? args['cursor'] : 0;
         return loop.inbox({ topicId, status, limit, cursor });
+      },
+    }),
+
+    // ── Board (plan spy-analyst-workflow §F1) — cùng hàm với HTTP /api/spy/board/*.
+    // Chỉ đọc, 0 quota. niche: bỏ trống = mọi ngách, '_none' = chưa gán.
+    wrap({
+      name: 'spy_board_metrics',
+      description: 'Định nghĩa chỉ số của Spy Board (mức thường ✅/⚠️/🆕, outlier, đang lên, sàn view kênh nhỏ, độ lặp, luật dừng) với ngưỡng hiện tại của topic. Gọi trước khi diễn giải số. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 16_000,
+      handler: (args) => ({ data: boardMetrics(spy.store.rawDb, boardTopic(spy, args)) }),
+    }),
+    wrap({
+      name: 'spy_board_scorecard',
+      description: 'Bảng điểm tệp: mỗi ngách một dòng — sàn view kênh nhỏ (tiêu chí chọn tệp) + 7 ngày trước + chuỗi theo ngày, cỡ mẫu, độ lặp tách tier, outlier 28 ngày, trạng thái luật dừng. Kèm dataAsOf/runIds/freshness. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => boardScorecard(spy.store.rawDb, boardTopic(spy, args), {
+        historyDays: integer(args['history_days'], 28, 7, 90),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_videos',
+      description: 'Video của một ngách: view=outliers (≥3x, ≥7 ngày, kênh không chết) | rising (<7 ngày, theo views 24h) | all. Mỗi dòng có outlier_x + tier ✅ reliable / ⚠️ thin / 🆕 niche + mức thường đã dùng. Lọc small_only, channel_age_max_days. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => boardVideos(spy.store.rawDb, boardTopic(spy, args), {
+        niche: boardNiche(args),
+        view: oneOf(args['view'], ['outliers', 'rising', 'all'] as const, 'view'),
+        smallOnly: args['small_only'] === true,
+        channelAgeMaxDays: args['channel_age_max_days'] === undefined ? undefined : integer(args['channel_age_max_days'], 180, 1, 36_500),
+        sort: oneOf(args['sort'], ['outlier_x', 'velocity_24h', 'views', 'published_at'] as const, 'sort'),
+        limit: integer(args['limit'], 50, 1, 500),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_channels',
+      description: 'Kênh của một ngách: subs, tuổi kênh, trạng thái (following/pending/paused/measured), mức thường + tier, kênh chết, số outlier 28 ngày. Lọc small_only, has_outlier. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => boardChannels(spy.store.rawDb, boardTopic(spy, args), {
+        niche: boardNiche(args),
+        smallOnly: args['small_only'] === true,
+        hasOutlier: args['has_outlier'] === true,
+        sort: oneOf(args['sort'], ['outliers_28d', 'subs', 'baseline', 'channel_age'] as const, 'sort'),
+        limit: integer(args['limit'], 50, 1, 500),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_keywords',
+      description: 'Keyword của một ngách: lần search cuối, còn khoá 3 ngày không (lockedUntil), số kết quả, tỉ lệ mới, số outlier đã tìm ra. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => boardKeywords(spy.store.rawDb, boardTopic(spy, args), { niche: boardNiche(args) }),
+    }),
+    wrap({
+      name: 'spy_board_runs',
+      description: 'Sổ lượt chạy (Theo dõi/Tìm mới/Đào sâu + weekly/setup): loại, ngách, ghi chú, ai bấm, trạng thái, quota tốn, số mới, số bỏ qua. Mới nhất trước. 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => boardRuns(spy.store.rawDb, boardTopic(spy, args), {
+        niche: boardNiche(args),
+        type: oneOf(args['type'], ['track', 'discover', 'deepdive', 'weekly', 'setup'] as const, 'type'),
+        limit: integer(args['limit'], 50, 1, 500),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_video_material',
+      description: 'Tư liệu đã lưu của 1..5 video: comment (nhiều like trước) + transcript ghép sẵn. Chỉ đọc DB, 0 quota. Video chưa có comment/transcript → cần Đào sâu trên UI trước.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => ({
+        data: boardVideoMaterial(spy.store, boardTopic(spy, args), stringList(args['video_ids'], 'video_ids'), {
+          commentsPerVideo: integer(args['comments_per_video'], 60, 1, 200),
+          transcriptChars: integer(args['transcript_chars'], 6000, 500, 20_000),
+        }),
+      }),
+    }),
+    wrap({
+      name: 'spy_board_submit',
+      description: 'Nộp kết quả phân tích cho một phiếu việc (prompt_id có trong prompt người dùng dán). Server kiểm tra khuôn JSON của mẫu và mọi ID/trích dẫn; sai thì trả lỗi kèm đường dẫn trường và KHÔNG ghi gì — sửa rồi gọi lại. Mỗi phiếu nhận một lần. Chỉ ghi vào sổ phân tích, không đổi keyword/kênh.',
+      requiredScopes: ['spy.board.submit'],
+      outputLimitBytes: 8_000,
+      handler: (args, context) => submitAgentTask(
+        spy.store,
+        text(args['prompt_id'], 'prompt_id'),
+        args['result'],
+        context.subject,
+      ),
+    }),
+    wrap({
+      name: 'spy_board_run_detail',
+      description: 'Chi tiết một lượt chạy: thẻ + từng keyword/video, kể cả mục bị bỏ qua và lý do (skip_reason). 0 quota.',
+      requiredScopes: ['spy.read'],
+      outputLimitBytes: 64_000,
+      handler: (args) => {
+        const detail = boardRunDetail(spy.store.rawDb, text(args['run_id'], 'run_id'));
+        if (!detail) throw new AppError('not_found', 'Không có lượt chạy này');
+        return detail;
       },
     }),
 

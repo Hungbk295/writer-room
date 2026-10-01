@@ -82,6 +82,8 @@ describe('Spy MCP server', () => {
     const payload = await callMcp(info, 2, 'tools/list');
     const tools = payload.result.tools!;
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      'spy_board_channels', 'spy_board_keywords', 'spy_board_metrics', 'spy_board_run_detail',
+      'spy_board_runs', 'spy_board_scorecard', 'spy_board_submit', 'spy_board_video_material', 'spy_board_videos',
       'spy_candidates_list',
       'spy_channel_momentum', 'spy_channel_outliers', 'spy_channel_profile', 'spy_channel_start',
       'spy_channel_videos', 'spy_competitors_list', 'spy_corpus_channels', 'spy_corpus_videos',

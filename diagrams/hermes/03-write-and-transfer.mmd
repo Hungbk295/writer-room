@@ -1,0 +1,16 @@
+graph TD
+ A["P1: /viet title"] --> B["writer_post_create: substrate terminal"]
+ B --> C["writer_hook_clarify; Telegram hỏi người dùng"]
+ C --> D["Người dùng trả lời; writer_hook_answer"]
+ D --> E["Telegram hiển thị hook; người dùng chọn"]
+ E --> F["writer_hook_select; writer_run_start"]
+ F --> G["Daemon chạy stages + gates; Claude Code theo stage"]
+ G --> H["writer_wait until terminal; đọc trạng thái từ app"]
+ H --> I{"Run DONE và có script?"}
+ I -->|"Không"| X["Báo trạng thái / lỗi; không chuyển tự động"]
+ I -->|"Có"| J["writer_get_script; gửi kết quả để người dùng xem"]
+ J -->|"Người dùng /chuyen job"| K{"DNA Spy đang mở; bridge hợp lệ?"}
+ K -->|"Không"| Y["Báo lỗi; không ghi DB"]
+ K -->|"Có"| L["cook_create_from_script: title, script, DNA/channel, lens"]
+ L --> M["Tách câu; ttsText = text; cook.create + cook.saveScript"]
+ M --> N["Lưu projectId vào jobs.json; project ở board; P1 cook thủ công"]

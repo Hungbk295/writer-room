@@ -181,6 +181,23 @@ describe('DAILY mode — D1–D5 (§6.3: 0 search call)', () => {
     store.close();
   });
 
+  test('daily ghi tên + subs + ngày tạo kênh vào sổ theo dõi (kênh seed chưa có) để board xếp được kênh nhỏ', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCseed', status: 'active' });
+    dataApi.videosByChannel.set('UCseed', makeVideos('seed', 'UCseed', 5, 2_000));
+    dataApi.channelsMeta.set('UCseed', { title: 'Kênh Seed', subscriberCount: 4_321, publishedAt: '2025-11-02T00:00:00.000Z' });
+    expect(store.listTopicChannelsByStatus('fin', ['active'])[0]!.subscriberCount).toBeNull();
+
+    await loop.runTick('fin', { mode: 'daily' });
+
+    const ch = store.listTopicChannelsByStatus('fin', ['active'])[0]!;
+    expect(ch.title).toBe('Kênh Seed');
+    expect(ch.subscriberCount).toBe(4_321);
+    expect(ch.channelPublishedAt).toBe('2025-11-02T00:00:00.000Z');
+    store.close();
+  });
+
   test('baseline daily chỉ tính video uploads của kênh — video tìm qua search không đẩy baseline lên', async () => {
     const { store, dataApi, loop } = await setup();
     seedTopic(store);
@@ -472,6 +489,122 @@ describe('Luật bất biến HITL — loop KHÔNG BAO GIỜ ghi active/paused (
     for (const [, status] of statuses) {
       expect(status).not.toBe('paused');
     }
+    store.close();
+  });
+});
+
+describe('Lấy mẫu kênh ngoài follow — measured_channels (plan spy-analyst-workflow §5 E1–E3)', () => {
+  function hit(videoId: string, channelId: string) {
+    return {
+      kind: 'video' as const, videoId, channelId, title: videoId, description: null,
+      channelTitle: channelId, publishedAt: null, thumbnailUrl: null,
+    };
+  }
+
+  test('E1/E2: kênh không outlier vẫn được ghi là mẫu đo + uploads tính baseline, KHÔNG vào Inbox', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw', displayTerm: 'kw', relation: 'seed', status: 'active' });
+    // Kênh thắng: hit 10x baseline. Kênh thường: hit 1.2x baseline.
+    dataApi.videosByChannel.set('UCwin', [
+      ...makeVideos('win', 'UCwin', 12, 1_000),
+      { videoId: 'hit-win', title: 'win', views: 10_000, durationSec: 600, defaultAudioLanguage: 'vi' },
+    ]);
+    dataApi.videosByChannel.set('UCplain', [
+      ...makeVideos('plain', 'UCplain', 12, 1_000),
+      { videoId: 'hit-plain', title: 'plain', views: 1_200, durationSec: 600, defaultAudioLanguage: 'vi' },
+    ]);
+    dataApi.channelsMeta.set('UCplain', { subscriberCount: 3_200 });
+    dataApi.hitsForAll = [hit('hit-win', 'UCwin'), hit('hit-plain', 'UCplain')];
+
+    await loop.runTick('fin', { mode: 'weekly' });
+
+    const statuses = channelStatuses(store, 'fin');
+    expect(statuses.get('UCwin')).toBe('new');
+    expect(statuses.has('UCplain')).toBe(false);
+
+    const measured = new Map(store.listMeasuredChannels('fin').map((m) => [m.channelId, m]));
+    expect(measured.get('UCwin')!.verdict).toBe('proposed');
+    const plain = measured.get('UCplain')!;
+    expect(plain.verdict).toBe('no_outlier');
+    expect(plain.subscriberCount).toBe(3_200);
+    expect(plain.baselineMedianViews).toBe(1_000);
+    expect(plain.baselineN).toBe(13);
+    expect(plain.discoveredFrom).toBe('kw');
+
+    const plainVideos = store.listTopicVideos('fin', { channelId: 'UCplain' });
+    expect(plainVideos.length).toBe(13);
+    const upload = plainVideos.find((v) => v.videoId === 'UCplainv0')!;
+    expect(upload.source).toBe('outside_scan');
+    expect(upload.baselineEligible).toBe(true);
+    expect(upload.outlierScore).toBe(1);
+    store.close();
+  });
+
+  test('E1: kênh dead/lottery không đề xuất nhưng vẫn là mẫu đo; video kênh dead không có outlier_score', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw', displayTerm: 'kw', relation: 'seed', status: 'active' });
+    dataApi.videosByChannel.set('UCdead', [
+      ...makeVideos('dead', 'UCdead', 12, 100),
+      { videoId: 'hit-dead', title: 'dead hit', views: 5_000, durationSec: 600, defaultAudioLanguage: 'vi' },
+    ]);
+    dataApi.videosByChannel.set('UClottery', [
+      ...makeVideos('lot', 'UClottery', 11, 1_000),
+      { videoId: 'hit-lot', title: 'lot hit', views: 200_000, durationSec: 600, defaultAudioLanguage: 'vi' },
+      { videoId: 'lot-viral', title: 'viral', views: 200_000, durationSec: 600, defaultAudioLanguage: 'vi' },
+    ]);
+    dataApi.hitsForAll = [hit('hit-dead', 'UCdead'), hit('hit-lot', 'UClottery')];
+
+    await loop.runTick('fin', { mode: 'weekly' });
+
+    const measured = new Map(store.listMeasuredChannels('fin').map((m) => [m.channelId, m]));
+    expect(measured.get('UCdead')!.verdict).toBe('dead');
+    expect(measured.get('UCdead')!.hitOutlierScore).toBeNull();
+    expect(measured.get('UClottery')!.verdict).toBe('lottery');
+    const deadHit = store.listTopicVideos('fin', { channelId: 'UCdead' }).find((v) => v.videoId === 'hit-dead')!;
+    expect(deadHit.outlierScore).toBeNull();
+    store.close();
+  });
+
+  test('dedup: kênh đã đo trong 14 ngày không bị quét lại; đo quá 14 ngày thì quét lại', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicKeyword({ topicId: 'fin', termKey: 'kw', displayTerm: 'kw', relation: 'seed', status: 'active' });
+    dataApi.videosByChannel.set('UCfresh', makeVideos('fresh', 'UCfresh', 12, 1_000));
+    dataApi.videosByChannel.set('UCstale', makeVideos('stale', 'UCstale', 12, 1_000));
+    dataApi.hitsForAll = [hit('UCfreshv0', 'UCfresh'), hit('UCstalev0', 'UCstale')];
+    const base = {
+      topicId: 'fin', title: null, subscriberCount: 5_000, baselineMedianViews: 1_000, baselineN: 12,
+      maxViews: 1_000, verdict: 'no_outlier' as const, hitOutlierScore: 1, discoveredVia: 'weekly_search',
+      discoveredFrom: 'kw',
+    };
+    store.upsertMeasuredChannel({ ...base, channelId: 'UCfresh', measuredAt: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+    store.upsertMeasuredChannel({ ...base, channelId: 'UCstale', measuredAt: new Date(Date.now() - 20 * 86_400_000).toISOString() });
+
+    await loop.runTick('fin', { mode: 'weekly' });
+
+    expect(dataApi.playlistCalls).not.toContain('UUfresh');
+    expect(dataApi.playlistCalls).toContain('UUstale');
+    store.close();
+  });
+
+  test('E3: daily không gắn outlier cho video của kênh active đã dead (median < dead_median)', async () => {
+    const { store, dataApi, loop } = await setup();
+    seedTopic(store);
+    store.upsertTopicChannel({ topicId: 'fin', channelId: 'UCtiny', status: 'active', title: 'Kênh tí hon' });
+    dataApi.videosByChannel.set('UCtiny', [
+      { videoId: 'tiny-hit', title: 'hit', views: 600, durationSec: 600, defaultAudioLanguage: 'vi', publishedAt: '2026-08-21T00:00:00.000Z' },
+      ...makeVideos('tiny', 'UCtiny', 12, 200),
+    ]);
+
+    await loop.runTick('fin', { mode: 'daily' });
+
+    const tinyHit = store.listTopicVideos('fin', { channelId: 'UCtiny' }).find((v) => v.videoId === 'tiny-hit')!;
+    expect(tinyHit.outlierScore).toBeNull();
+    const report = store.getDailyReportByDate('fin', quotaDay(), 'daily');
+    const summary = JSON.parse(String(report!['summary_json']));
+    expect(summary.daily.topOutliers).toEqual([]);
     store.close();
   });
 });

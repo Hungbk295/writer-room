@@ -1,5 +1,10 @@
 # Hermes × Writer Room: radar tin tức lên Telegram
 
+Tích hợp điều phối mới theo flow Telegram → Hermes (GPT Codex / ChatGPT OAuth)
+→ MCP trực tiếp của Writer Room và DNA Spy nằm ở
+[`makemoney/hermes/`](../../../hermes/README.md), dùng profile `content-production`.
+Luồng mới không sử dụng `hermes-workspace`.
+
 Mỗi sáng Hermes gọi Writer Room Spy MCP để lấy video mới của các kênh tin tức, tóm tắt từ transcript, rồi gửi một bản tin lên Telegram.
 
 Kế hoạch tổng thể (kiến trúc, các phase tiếp theo): [`docs/plans/hermes-orchestrator-plan.md`](../../docs/plans/hermes-orchestrator-plan.md).
@@ -98,6 +103,54 @@ hermes cron list
 ```
 
 Nên pin một model đủ mạnh cho job này, vì chất lượng tóm tắt phụ thuộc model: `hermes cron edit "News radar" --provider <provider> --model <model>`.
+
+## 3. DNA Spy — cook qua control bridge (v0)
+
+DNA Spy sidecar (trong app desktop) mở HTTP loopback khi app chạy: MCP
+JSON-RPC `POST /mcp`, token bearer bền. Skill: [`skills/dna-cook`](skills/dna-cook/SKILL.md).
+
+1. Mở app DNA Spy (bridge tự lên). Lấy url+token từ discovery file
+   `_control.json` trong thư mục dữ liệu app:
+   - macOS: `~/Library/Application Support/com.dacthao.dnaspy/_control.json`
+   - Linux: `~/.local/share/com.dacthao.dnaspy/_control.json`
+   - Windows: `%APPDATA%/com.dacthao.dnaspy/_control.json`
+   - dev (`bun sidecar/src/main.ts --data-dir .devdata`): `.devdata/_control.json`
+2. `~/.hermes/.env`: `DNASPY_CONTROL_TOKEN=<token trong _control.json>`.
+3. `~/.hermes/config.yaml` thêm server:
+
+```yaml
+mcp_servers:
+  writer_room:
+    url: "http://127.0.0.1:4187/api/spy/mcp"
+    headers:
+      Authorization: "Bearer ${WRITER_ROOM_MCP_TOKEN}"
+    skip_preflight: true
+    timeout: 600
+    tools:
+      include: [spy_news_pull, spy_news_ack]
+  dnaspy:
+    url: "http://127.0.0.1:4199/mcp"   # đọc từ _control.json — port có thể khác nếu 4199 bận
+    headers:
+      Authorization: "Bearer ${DNASPY_CONTROL_TOKEN}"
+    skip_preflight: true
+    timeout: 300
+    tools:
+      include: [ping, dna_options, cook_projects, cook_project, cook_create,
+                cook_save_script, cook_prepare, cook_import_stage, cook_lint,
+                cook_makeup, cook_clean_tts, cook_run, cook_cancel,
+                cook_board_frame, cook_image_one, cook_tts_one]
+```
+
+Tools thấy trong Hermes: `mcp_dnaspy_cook_run`, `mcp_dnaspy_cook_prepare`, …
+
+Ghi chú:
+
+- Tuỳ chọn, một MCP stdio read-only (`bun hermes/server.ts --data-dir <dir>`)
+  vẫn còn để query channels/videos/DNA — nhưng mọi mutation phải qua bridge.
+- `DNASPY_CONTROL=off` trước khi mở app/sidecar sẽ tắt bridge;
+  `DNASPY_CONTROL_PORT=<port>` đổi cổng mặc định.
+- App tắt → `_control.json` mất + cổng đóng → Hermes biết ngay app không
+  sẵn sàng thay vì gọi vào process zombie.
 
 ## Thêm kênh
 

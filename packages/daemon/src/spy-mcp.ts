@@ -10,7 +10,9 @@ import type { McpServerInfo } from '@writer-room/shared';
 
 const PROTOCOL_VERSION = '2025-03-26';
 const SUBJECT = 'writer-room-spy-mcp';
-const SCOPES = new Set(['spy.start', 'spy.read']);
+// spy.board.submit: đường ghi DUY NHẤT của agent vào Board — nộp kết quả phiếu
+// việc (sổ agent_tasks, đã kiểm tra khuôn + ID). Không đổi keyword/kênh.
+const SCOPES = new Set(['spy.start', 'spy.read', 'spy.board.submit']);
 
 const EXPOSED_TOOL_NAMES = new Set([
   'spy_channel_start',
@@ -52,6 +54,17 @@ const EXPOSED_TOOL_NAMES = new Set([
   'spy_loop_status',
   'spy_loop_inbox',
   'spy_loop_report',
+  // Spy Board read tools (plan spy-analyst-workflow §F1) — cùng hàm với HTTP
+  // /api/spy/board/*. Chỉ đọc; Tìm mới/Đào sâu là việc của người (I-3).
+  'spy_board_metrics',
+  'spy_board_scorecard',
+  'spy_board_videos',
+  'spy_board_channels',
+  'spy_board_keywords',
+  'spy_board_runs',
+  'spy_board_run_detail',
+  'spy_board_video_material',
+  'spy_board_submit',
 ]);
 
 interface JsonRpcRequest {
@@ -62,6 +75,82 @@ interface JsonRpcRequest {
 }
 
 const inputSchemas: Record<string, Record<string, unknown>> = {
+  spy_board_metrics: {
+    type: 'object',
+    properties: { topic_id: { type: 'string', minLength: 1 } },
+    required: ['topic_id'],
+  },
+  spy_board_scorecard: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      history_days: { type: 'integer', minimum: 7, maximum: 90, description: 'Độ dài chuỗi sàn view theo ngày (mặc định 28)' },
+    },
+    required: ['topic_id'],
+  },
+  spy_board_videos: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      niche: { type: 'string', description: "Ngách (group_key). Bỏ trống = mọi ngách; '_none' = chưa gán" },
+      view: { type: 'string', enum: ['outliers', 'rising', 'all'] },
+      small_only: { type: 'boolean' },
+      channel_age_max_days: { type: 'integer', minimum: 1 },
+      sort: { type: 'string', enum: ['outlier_x', 'velocity_24h', 'views', 'published_at'] },
+      limit: { type: 'integer', minimum: 1, maximum: 500 },
+    },
+    required: ['topic_id'],
+  },
+  spy_board_channels: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      niche: { type: 'string', description: "Ngách (group_key). Bỏ trống = mọi ngách; '_none' = chưa gán" },
+      small_only: { type: 'boolean' },
+      has_outlier: { type: 'boolean' },
+      sort: { type: 'string', enum: ['outliers_28d', 'subs', 'baseline', 'channel_age'] },
+      limit: { type: 'integer', minimum: 1, maximum: 500 },
+    },
+    required: ['topic_id'],
+  },
+  spy_board_keywords: {
+    type: 'object',
+    properties: { topic_id: { type: 'string', minLength: 1 }, niche: { type: 'string', description: "Ngách (group_key). Bỏ trống = mọi ngách; '_none' = chưa gán" } },
+    required: ['topic_id'],
+  },
+  spy_board_runs: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      niche: { type: 'string', description: "Ngách (group_key). Bỏ trống = mọi ngách; '_none' = chưa gán" },
+      type: { type: 'string', enum: ['track', 'discover', 'deepdive', 'weekly', 'setup'] },
+      limit: { type: 'integer', minimum: 1, maximum: 500 },
+    },
+    required: ['topic_id'],
+  },
+  spy_board_video_material: {
+    type: 'object',
+    properties: {
+      topic_id: { type: 'string', minLength: 1 },
+      video_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, maxItems: 5 },
+      comments_per_video: { type: 'integer', minimum: 1, maximum: 200 },
+      transcript_chars: { type: 'integer', minimum: 500, maximum: 20000 },
+    },
+    required: ['topic_id', 'video_ids'],
+  },
+  spy_board_submit: {
+    type: 'object',
+    properties: {
+      prompt_id: { type: 'string', minLength: 1, description: 'prompt_id in trong prompt (dạng p_xxxxxxxxxxxx)' },
+      result: { type: 'object', description: 'Kết quả đúng khuôn JSON ghi trong prompt — không thêm trường' },
+    },
+    required: ['prompt_id', 'result'],
+  },
+  spy_board_run_detail: {
+    type: 'object',
+    properties: { run_id: { type: 'string', minLength: 1 } },
+    required: ['run_id'],
+  },
   spy_channel_start: {
     type: 'object',
     properties: {

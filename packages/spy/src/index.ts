@@ -32,6 +32,8 @@ import {
 import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
+import { KeywordRunService } from './loop/keyword-run.ts';
+import { DeepDiveService } from './loop/deepdive.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
 import { PublicObservationService } from './channel-intelligence/observations.ts';
@@ -83,6 +85,24 @@ export * from './loop/types.ts';
 export * from './loop/planner.ts';
 export * from './loop/report.ts';
 export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
+export {
+  acquireChargeableWork,
+  releaseChargeableWork,
+} from './loop/runner.ts';
+export { KeywordRunService, type KeywordRunParams, type KeywordRunServiceOptions } from './loop/keyword-run.ts';
+export {
+  KEYWORD_RESEARCH_DAYS,
+  OUTSIDE_REMEASURE_DAYS,
+  runKeywordSearches,
+  scanOutsideChannels,
+  type ModeContext,
+  type KeywordSearchItem,
+  type KeywordSearchesOptions,
+  type KeywordSearchesResult,
+  type OutsideHit,
+  type ProposedChannel,
+  type ScanOutsideChannelsResult,
+} from './loop/modes.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
 export * from './dash/types.ts';
 export * from './dash/registry.ts';
@@ -332,6 +352,10 @@ export class SpyService {
   readonly discovery: DiscoveryService;
   /** Loop runner — expose spy.loop.runTick, .status, .inbox, .decide, .listTopics, .report */
   readonly loop: LoopRunner;
+  /** v14: keyword run theo yêu cầu — spy.keywordRuns.resolveKeywords/startRun. */
+  readonly keywordRuns: KeywordRunService;
+  /** v16: lượt Đào sâu (comment + transcript) — spy.deepDives.startRun. */
+  readonly deepDives: DeepDiveService;
   /** P0 evidence/review plane; does not reuse legacy Auto-Loop candidate state. */
   readonly corpus: CorpusIntelligenceService;
   /** C1 local bookmark/follow role boundary; storage-only by construction. */
@@ -444,6 +468,19 @@ export class SpyService {
       discovery: this.discovery,
       dataApi: countingApi,
       dataRoot: this.dataRoot,
+    });
+    // v14: keyword run — như loop, MỌI call Data API đi qua countingApi.
+    this.keywordRuns = new KeywordRunService({
+      store: this.store,
+      quota: this.quota,
+      dataApi: countingApi,
+    });
+    this.deepDives = new DeepDiveService({
+      store: this.store,
+      quota: this.quota,
+      videoSpy: (input) => this.videoSpy(input),
+      wait: (opId, timeoutMs) => this.wait(opId, timeoutMs),
+      videoComments: (input) => this.videoComments(input),
     });
   }
 
@@ -1997,3 +2034,76 @@ export class SpyService {
     return null;
   }
 }
+export {
+  DEFAULT_BOARD_SETTINGS,
+  ageDays,
+  channelBaselineFor,
+  isLongVideo,
+  isSmallChannel,
+  metricDefinitions,
+  nicheFloor,
+  repeatSmall,
+  scoreVideo,
+  type BaselineTier,
+  type BoardSettings,
+  type BoardVideoInput,
+  type ChannelBaseline,
+  type NicheFloor,
+  type RepeatCount,
+  type VideoScore,
+} from './board/metrics.ts';
+export {
+  BOARD_DEFAULT_LIMIT,
+  BOARD_MAX_LIMIT,
+  boardChannels,
+  boardKeywords,
+  boardLabels,
+  boardMetrics,
+  boardRunDetail,
+  boardRuns,
+  boardScorecard,
+  boardSettingsFor,
+  boardVideos,
+  clampLimit,
+  type BoardChannelRow,
+  type BoardChannelSort,
+  type BoardChannelState,
+  type BoardChannelsParams,
+  type BoardEnvelope,
+  type BoardFreshness,
+  type BoardKeywordRow,
+  type BoardLabels,
+  type BoardVideoLabel,
+  type BoardRunCard,
+  type BoardRunDetail,
+  type BoardRunType,
+  type BoardVideoRow,
+  type BoardVideoSort,
+  type BoardVideoView,
+  type BoardVideosParams,
+  type ScorecardRow,
+} from './board/queries.ts';
+export {
+  DEEPDIVE_COMMENTS_PER_VIDEO,
+  DEEPDIVE_MAX_VIDEOS,
+  DeepDiveService,
+  hasComments,
+  hasTranscript,
+  type DeepDiveItemResult,
+  type DeepDivePorts,
+} from './loop/deepdive.ts';
+export {
+  AGENT_TEMPLATES,
+  AGENT_TEMPLATE_LABEL,
+  agentTaskFromRow,
+  boardVideoMaterial,
+  buildAgentPrompt,
+  createAgentTask,
+  submitAgentTask,
+  validateAgentResult,
+  type AgentResult,
+  type AgentSelection,
+  type AgentTaskRow,
+  type AgentTemplate,
+  type CreateAgentTaskInput,
+} from './board/agent-tasks.ts';

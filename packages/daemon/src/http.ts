@@ -1,7 +1,7 @@
 /** Spy daemon — local HTTP API + static UI for Tauri webview. */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AgentDefinition, TeamGuardConfig } from '@writer-room/shared';
 import {
@@ -51,6 +51,9 @@ import { createAgentHarness, type AgentHarness } from './harness.ts';
 import { McpSpyServer } from './spy-mcp.ts';
 import { McpGeneralPackServer } from './general-pack-mcp.ts';
 import { McpWriterServer, writeOrchestratorMcpConfig } from './writer-mcp.ts';
+import { ResearchTaskStore } from './research-task/store.ts';
+import { ResearchTokenRegistry } from './research-task/tokens.ts';
+import { McpResearchServer } from './research-task/mcp.ts';
 import { TEAM_CHANNEL } from './agents/index.ts';
 import { createJobDoneNotification, listJobNotifications, markJobNotificationRead } from './notifications.ts';
 import { handleGetSpyLoopConfig, handlePutSpyLoopConfig, loadSpyLoopConfig } from './spy/loop-config.ts';
@@ -61,6 +64,8 @@ import { sendTelegramReport } from './spy/report-telegram.ts';
 import { createSpyLoopAdapter, type SpyLoopAdapter, type LoopMode, type SetupStep } from './spy/loop-contract.ts';
 import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
 import { handleSpyDash } from './spy/dash-routes.ts';
+import { handleSpyKeywords } from './spy/keyword-routes.ts';
+import { handleSpyBoard } from './spy/board-routes.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -533,6 +538,8 @@ export interface HttpApp {
   generalPackMcp: McpGeneralPackServer | null;
   /** Writer MCP for the external orchestrator (plan writer-external-orchestrator §3); optional for isolated route tests. */
   writerMcp?: McpWriterServer | null;
+  /** ResearchTask MCP (plan hermes-writer-room-runtime-redesign §4); per-actor tokens, not the shared MCP token. */
+  researchMcp?: McpResearchServer | null;
   harness: AgentHarness;
   startedAt: number;
   webRoot: string;
@@ -591,6 +598,61 @@ export async function createHttpApp(): Promise<HttpApp> {
     ...(spyMcp ? { writer_room: { url: `http://127.0.0.1:${daemonPort}/api/spy/mcp`, token: mcpToken } } : {}),
     ...(generalPackMcp ? { general_pack: { url: `http://127.0.0.1:${daemonPort}/api/general-pack/mcp`, token: mcpToken } } : {}),
   });
+
+  // ResearchTask MCP (hermes-writer-room-runtime-redesign §4, P1): durable
+  // store + per-actor scoped tokens. Each actor's token resolves server-side
+  // through ResearchTokenRegistry — the shared mcpToken is NOT accepted here.
+  // Bootstrap grants live in <dataDir>/config/hermes-actors.json (0600),
+  // schema {actors:[...]} shared with Hermes P0 provisioning;
+  // the mountable client config is written to config/hermes-mcp.json.
+  const researchRoot = join(root, 'research');
+  const researchStore = new ResearchTaskStore(join(researchRoot, 'research.sqlite'), join(researchRoot, 'artifacts'), {
+    // Hard gate (plan §4): a Spy run ref counts as evidence only when the run
+    // exists in the Spy source-of-truth AND reached status 'completed' —
+    // a queued/running/failed run cannot back a "verified" report. The store
+    // also cross-checks every reported videoId against the run manifest.
+    spyRunInfo: (spyRunId) => {
+      try {
+        const m = spy.getRunManifest(spyRunId);
+        return {
+          status: m.status, videoIds: m.videos.map((v) => v.youtubeVideoId),
+          run: { videoCount: m.videoCount, kind: m.kind, createdAt: m.createdAt, completedAt: m.completedAt },
+          videos: m.videos.map((v) => ({ youtubeVideoId: v.youtubeVideoId, viewCount: v.viewCount, durationSec: v.durationSec, publishedAt: v.publishedAt, title: v.title, channelTitle: v.channelTitle, rank: v.rank, transcriptStatus: v.transcriptStatus, transcriptSegments: v.transcriptSegments })),
+        };
+      } catch { return null; }
+    },
+    // Quota binding (P2): task searchCost units are search.list calls; the
+    // reserve path fails closed when this probe cannot read the real ledger.
+    spyQuota: () => {
+      try { return { searchRemaining: spy.quota.remaining('search') }; }
+      catch { return null; }
+    },
+  });
+  // Sole writer of config/hermes-actors.json — Hermes P0 provisioning reads the
+  // daemon-issued tokens; it must not mint its own credential file.
+  const researchTokens = new ResearchTokenRegistry(join(root, 'config', 'hermes-actors.json'));
+  const researchOperator = researchTokens.ensure({ role: 'operator', subject: 'hermes:wr-operator' });
+  // Profile = the queue string Hermes uses (dev-1 RESEARCH_QUEUE, canonical
+  // 'research'). bind/claim must use the same string. A legacy registry row
+  // with a different profile is healed in place (token kept, audit-logged).
+  const researchWorker = researchTokens.ensure({ role: 'worker', subject: 'hermes:wr-researcher', profile: 'research' });
+  // The writer identity has NO Research grant in P1/W1 — Writer work uses the
+  // shared Writer MCP token, not this surface. Any legacy wr-writer grant
+  // (worker or viewer) is revoked on boot, with audit, so its token 401s here.
+  researchTokens.revokeSubject('hermes:wr-writer');
+  const researchMcp = new McpResearchServer(researchStore, researchTokens);
+  await researchMcp.start();
+  writeFileSync(
+    join(root, 'config', 'hermes-mcp.json'),
+    JSON.stringify({
+      url: `http://127.0.0.1:${daemonPort}/api/research/mcp`,
+      actors: [
+        { role: 'operator', subject: researchOperator.subject, token: researchOperator.token },
+        { role: 'worker', subject: researchWorker.subject, profile: 'research', token: researchWorker.token },
+      ],
+    }, null, 2),
+    { encoding: 'utf8', mode: 0o600 },
+  );
 
   // Training (M1): register the ANALYZE-settle -> Formula-aggregation listener
   // exactly once per daemon process here, where `harness` and `spy` are already in
@@ -683,12 +745,13 @@ export async function createHttpApp(): Promise<HttpApp> {
   // keeps the existing workspace location.  Never place mutable user data here:
   // application resources are read-only on macOS and often protected on Windows.
   const webRoot = resolve(process.env.WRITER_ROOM_WEB_ROOT || join(APP_ROOT, 'packages/web/dist'));
-  return { spy, spyMcp, generalPackMcp, writerMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, channelWatchScheduler, p0RetentionTimer };
+  return { spy, spyMcp, generalPackMcp, writerMcp, researchMcp, harness, startedAt: Date.now(), webRoot, loopScheduler, loop, channelWatchScheduler, p0RetentionTimer };
 }
 
 export function createHandler(app: HttpApp): (req: Request) => Promise<Response> {
   const { spy, spyMcp, generalPackMcp, harness, startedAt, webRoot, loop, loopScheduler } = app;
   const writerMcp = app.writerMcp ?? null;
+  const researchMcp = app.researchMcp ?? null;
   const externalTurnDeps = () => ({
     scheduler: harness.pipeline.scheduler, workflow: harness.workflow, dataDir: dataRoot(),
   });
@@ -746,11 +809,47 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         }
       }
 
+      if (pathname === '/api/research/mcp' || pathname === '/api/research/mcp/') {
+        if (method === 'OPTIONS') {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            },
+          });
+        }
+        if (method === 'POST') {
+          if (!researchMcp) return error('Research MCP đang tắt', 404);
+          return researchMcp.handleFetch(req);
+        }
+        if (method === 'GET') {
+          const info = researchMcp?.info();
+          if (!info) return error('Research MCP đang tắt', 404);
+          // Per-actor tokens are not handed out here — they live in
+          // config/hermes-mcp.json (0600) and config/hermes-actors.json.
+          return json({ url: `${url.origin}/api/research/mcp`, ephemeralUrl: info.url });
+        }
+      }
+
       // ── Spy Dashboard API — 16 endpoint GET read-only (plan spy-dashboard-api)
       if (pathname.startsWith('/api/spy/dash')) {
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (method !== 'GET') return error('Spy Dashboard chỉ nhận GET', 405);
         return handleSpyDash(url, spy);
+      }
+
+      // ── Spy Board API — 6 truy vấn đọc + gán ngách (plan spy-analyst-workflow §F)
+      if (pathname.startsWith('/api/spy/board')) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        return handleSpyBoard(url, req, spy);
+      }
+
+      // ── Spy Keyword Run API — bulk/decide/run/runs (plan spy-keyword-run-board §2)
+      if (pathname.startsWith('/api/spy/keywords')) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        return handleSpyKeywords(url, req, spy);
       }
 
       if (pathname === '/api/writer/mcp' || pathname === '/api/writer/mcp/') {
@@ -3128,6 +3227,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
   console.log(`spy-mcp: http://127.0.0.1:${server.port}/api/spy/mcp`);
   console.log(`writer-mcp: http://127.0.0.1:${server.port}/api/writer/mcp`);
   console.log(`general-pack-mcp: http://127.0.0.1:${server.port}/api/general-pack/mcp`);
+  console.log(`research-mcp: http://127.0.0.1:${server.port}/api/research/mcp`);
   console.log(`ui: ${existsSync(app.webRoot) ? app.webRoot : '(run bun run ui:build)'}`);
 
   const shutdown = async () => {
@@ -3137,6 +3237,7 @@ export async function startHttpServer(port = Number(process.env.WRITER_ROOM_PORT
     app.spyMcp?.stop();
     app.generalPackMcp?.stop();
     app.writerMcp?.stop();
+    app.researchMcp?.stop();
     app.harness.dispose();
     await releaseLock();
     process.exit(0);

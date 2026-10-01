@@ -445,3 +445,275 @@ thức **0 quota, 0 độ trễ** mà không API nào bán được.
 2. Ước lượng **không bao giờ** chạm `video_observations`.
 3. Giữ 2% holdout, nếu không thì không ai biết luật bỏ rơi đang mất gì.
 4. `CAST(... AS SIGNED)` ở mọi phép trừ view — tràn số không dấu là im lặng.
+
+---
+
+# PHẦN II — Kết hợp dữ liệu Extension × Spy local run
+
+Chốt ngày 2026-09-28 sau trao đổi với JC. Bốn quyết định nền:
+**(1)** 1 ăng-ten = 1 topic · **(2)** nâng cấp theo dõi = kênh active **hoặc**
+video ≥2 ăng-ten/48h · **(3)** bộ lọc bóng đá/MV/ca nhạc là **filter key toàn
+cục vĩnh viễn** cho mọi profile · **(4)** ăng-ten chính là tài khoản JC dùng
+tay: cron chạy xong để live ~30 phút cho JC tự lướt.
+
+---
+
+## 11. Xương sống định danh — luật một khoá
+
+### 11.1 Vết nứt đã có sẵn
+
+`store.ts:2495` cho thấy `channels.channel_id` **không đảm bảo là UC id** — nó
+có thể là định danh legacy kiểu `youtube:channel:/@name`, và `youtube_uc_id`
+thì nullable. Đã phải viết logic hoà giải để một kênh không đẻ ra hai dòng.
+
+Extension sẽ kích hoạt lỗi này hàng loạt vì card trên feed rất thường chỉ hiện
+`@handle`. Hiện repo có **6 biểu diễn "một kênh"** (3 tên cột khác nhau) và
+**5 biểu diễn "một video"** (`video_id` vs `source_video_id`).
+
+### 11.2 Luật
+
+> **UC id `CHAR(24) ascii_bin` là khoá kênh duy nhất vào spine. Video id
+> `CHAR(11) ascii_bin`. Không có khoá thì không vào bảng chính.**
+
+```sql
+CREATE TABLE ext_identity_quarantine (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  observed_at  DATETIME(3) NOT NULL,
+  antenna_id   VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  handle       VARCHAR(64) CHARACTER SET utf8mb4 NULL,   -- '@name'
+  video_id     CHAR(11) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  raw_hint     JSON NULL,
+  resolved_uc  CHAR(24) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  resolve_state ENUM('pending','resolved','unresolvable') NOT NULL DEFAULT 'pending',
+  expires_at   DATETIME(3) NOT NULL,                      -- TTL 7 ngày
+  PRIMARY KEY (id),
+  KEY ix_q_pending (resolve_state, expires_at),
+  UNIQUE KEY uq_q_handle (handle, antenna_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+Phân giải theo lô: một `video_id` bất kỳ của kênh đó → `videos.list` trả
+`snippet.channelId` (UC) trong **cùng lời gọi đã tốn**, 0 unit thêm. Quá TTL
+mà chưa phân giải được → `unresolvable`, xoá. Không bao giờ ghi handle vào
+`topic_channels`.
+
+*(Mẫu này không mới: `p0_corpus_memberships.identity_status
+IN ('verified','needs_identity')` đã làm đúng vậy.)*
+
+---
+
+## 12. Mô hình ăng-ten
+
+```sql
+CREATE TABLE antennas (
+  antenna_id     VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  topic_id       VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  label          VARCHAR(64) CHARACTER SET utf8mb4 NOT NULL,
+  branch         VARCHAR(64) CHARACTER SET utf8mb4 NULL,  -- nhánh ngách đang nuôi
+  status         ENUM('active','resting','retired') NOT NULL DEFAULT 'active',
+  profile_note   TEXT NULL,                                -- watch-profile khai báo
+  created_at     DATETIME(3) NOT NULL,
+  PRIMARY KEY (antenna_id),
+  KEY ix_antenna_topic (topic_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+**Luật ingest:** client gửi `antenna_id`, **không bao giờ gửi `topic_id`**.
+BFF tự suy topic từ `antennas`. Khớp ADR-M1 (không tin định danh do client
+gửi) và loại bỏ luôn khả năng extension ghi nhầm ngách.
+
+`antenna_id` lưu trong `chrome.storage.local` của từng Chrome profile, đặt một
+lần lúc setup. Một Chrome profile ↔ một ăng-ten ↔ một topic.
+
+### 12.1 ⚠️ Hệ quả phải biết trước: mỗi topic cần **≥2 ăng-ten**
+
+Luật nâng cấp là *"video lạ được ≥2 ăng-ten độc lập thấy trong 48h"*. Nhưng
+ăng-ten giờ thuộc về đúng một topic → **"≥2 ăng-ten" nghĩa là ≥2 ăng-ten của
+cùng topic đó**. Topic chỉ có 1 ăng-ten thì luật này **không bao giờ kích hoạt**,
+và topic đó mất hoàn toàn năng lực phát hiện outlier sớm — đúng thứ làm
+extension khác vidIQ.
+
+**Tối thiểu 2 ăng-ten/topic, khuyến nghị 3.** Đây là chi phí trực tiếp của
+quyết định "1 ăng-ten = 1 topic": 3 ngách × 3 ăng-ten = 9 tài khoản.
+
+### 12.2 Phiên — tách lướt máy khỏi lướt người
+
+Vì JC dùng chính các tài khoản này để lướt tay sau khi cron xong:
+
+```sql
+CREATE TABLE antenna_sessions (
+  session_id   CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  antenna_id   VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  kind         ENUM('cron','manual') NOT NULL,
+  started_at   DATETIME(3) NOT NULL,
+  ended_at     DATETIME(3) NULL,
+  PRIMARY KEY (session_id),
+  KEY ix_sess_antenna (antenna_id, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+Thêm `session_id CHAR(36)` vào `suggestion_impressions`.
+
+**Vì sao bắt buộc tách:** phiên `cron` chạy theo watch-profile khai báo → là
+quan sát **có kiểm soát**, dùng được để xác minh thuật toán (N3). Phiên
+`manual` do JC click → feed bị chính JC lái → **không** dùng cho N3, nhưng
+**rất tốt** cho discovery (N1) vì người lướt tự nhiên hơn script nhiều.
+
+| Dùng cho | Nguồn phiên |
+|---|---|
+| Xác minh thuật toán đẩy (N3) | **chỉ `cron`** |
+| Discovery kênh/keyword (N1) | `cron` + `manual` |
+| Outlier sớm (N2) | `cron` + `manual` |
+| Điểm VPH `ext_watch` | `cron` + `manual` |
+
+### 12.3 Đính chính: tương tác **tay** không bị cấm
+
+Bản trước tôi viết "ăng-ten cấm like/comment". **Sai phạm vi.** Cái vi phạm
+điều khoản YouTube là **tự động hoá** like/comment, không phải việc JC tự tay
+bấm. JC tự xem, tự like, tự subscribe trên tài khoản của mình là dùng YouTube
+bình thường — và còn **làm persona tự nhiên hơn** script.
+
+Luật đúng:
+- **Cấm:** runner phát action ghi tự động. Chặn ở tầng runner, có test.
+- **Cho phép, khuyến khích ghi log:** JC tương tác tay trong cửa sổ `manual`.
+
+Ghi vào `persona_actions(antenna_id, session_id, kind, video_id, watch_sec, at)`
+với `kind ENUM('watch','like','subscribe','comment','skip')`. Không phải để
+kiểm soát JC — để khi feed trôi còn giải thích được **vì sao** nó trôi.
+
+### 12.4 Kỷ luật vận hành — ràng buộc duy nhất không code được
+
+> **Không lướt ngoài ngách trên tài khoản ăng-ten.** Muốn xem bóng đá giải trí
+> thì dùng Chrome profile khác.
+
+Một buổi tối xem bóng đá trên ăng-ten tài chính sẽ kéo feed lệch nhiều tuần, và
+dữ liệu discovery của ăng-ten đó **hỏng mà không có cờ báo nào**. Không có
+cách kỹ thuật nào chặn; chỉ có kỷ luật, và báo cáo drift hằng tuần (§12.5) để
+phát hiện sau khi lỡ.
+
+### 12.5 Drift — profile khai báo vs hành vi thật
+
+Tuần một lần: đối chiếu `persona_actions` thật với `antennas.profile_note`.
+Cảnh báo khi >30% thời lượng xem rơi ngoài ngách. Xử lý: cho ăng-ten
+`resting` vài tuần, hoặc `retired` và nuôi cái mới.
+
+---
+
+## 13. Bộ lọc — hai tầng, hai vòng đời khác nhau
+
+Theo chốt của JC: bộ lọc bóng đá / MV / ca nhạc là **filter key toàn cục, vĩnh
+viễn, áp cho mọi profile** — không phải cấu hình theo từng topic.
+
+```sql
+CREATE TABLE global_exclusions (
+  id         SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  kind       ENUM('category','term') NOT NULL,
+  value      VARCHAR(128) CHARACTER SET utf8mb4 NOT NULL,
+  note       VARCHAR(128) CHARACTER SET utf8mb4 NULL,
+  active     TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_excl (kind, value)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- category: '10' Music, '17' Sports, '20' Gaming  (snippet.categoryId)
+-- term:     'official music video', 'highlights', 'full match', 'MV', ...
+```
+
+| Tầng | Phạm vi | Vòng đời | Áp ở đâu |
+|---|---|---|---|
+| **Toàn cục** (`global_exclusions`) | mọi topic, mọi ăng-ten | **vĩnh viễn** | client (giảm tải) → BFF (quyết định) → enrich (categoryId) |
+| **Theo topic** (`anchorTerms` / `negativeKeywords` — đã có) | một topic | **hay chỉnh** | BFF |
+
+### 13.1 Lưu trữ dòng bị lọc — suy luận từ chốt của JC
+
+Vì bộ lọc toàn cục là **vĩnh viễn**, nó sẽ không cần chỉnh rồi chạy lại trên
+dữ liệu cũ. Nên:
+
+- Dính `global_exclusions` → **chỉ đếm, không lưu dòng**:
+  `exclusion_daily(day, antenna_id, surface, reason, cnt)` — ~100 dòng/ngày
+  thay vì ~50.000. Vẫn trả lời được *"YouTube đẩy bao nhiêu % rác vào feed
+  ngách của tôi"* (một phát hiện N3 thật), mà không phình.
+- Chỉ trượt **anchor theo topic** (không dính lọc toàn cục) → **giữ 30 ngày**
+  trong partition riêng rồi `DROP PARTITION`. Vì anchor theo topic *có* được
+  chỉnh, nên cần dữ liệu cũ để chạy lại.
+
+> Đây là suy luận từ chữ "vĩnh viễn" của JC, không phải JC nói thẳng. Nếu JC
+> muốn giữ cả dòng bị lọc toàn cục để sau còn truy vết, nói một tiếng — chỉ là
+> đổi chính sách partition, không đổi schema.
+
+---
+
+## 14. Luật nâng cấp — Thấy → Theo dõi → Follow
+
+| Tầng | Bảng | Tốn gì | Điều kiện vào |
+|---|---|---|---|
+| **Thấy** | `suggestion_impressions` | đĩa | qua lọc toàn cục; có `video_id` |
+| **Theo dõi** | `video_capture_state` | **quota** | kênh `active` trong topic **HOẶC** ≥2 ăng-ten cùng topic thấy trong 48h |
+| **Follow** | `topic_channels.status='active'` | **JC duyệt** | qua inbox HITL sẵn có |
+
+```sql
+-- Job hằng giờ: nâng "Thấy" → "Theo dõi"
+INSERT INTO video_capture_state (video_id, state, next_capture_at, policy_version)
+SELECT i.video_id, 'hot', UTC_TIMESTAMP(3), :pv
+FROM suggestion_impressions i
+JOIN antennas a       ON a.antenna_id = i.antenna_id
+JOIN antenna_sessions s ON s.session_id = i.session_id
+WHERE i.observed_at >= UTC_TIMESTAMP(3) - INTERVAL 48 HOUR
+  AND i.off_niche = 0
+GROUP BY i.video_id, a.topic_id
+HAVING COUNT(DISTINCT i.antenna_id) >= 2
+ON DUPLICATE KEY UPDATE video_id = video_capture_state.video_id;  -- no-op nếu đã có
+```
+
+**Luật cứng: một impression KHÔNG tự tạo `video_capture_state`.** Đây là cổng
+duy nhất chặn quota. Bỏ nó là mở đường cho hàng chục nghìn video rác vào vòng
+đo VPH.
+
+Hạn mức an toàn: nâng tối đa **N video/topic/ngày** (đề xuất 50). Chạm trần →
+xếp theo số ăng-ten rồi tới vị trí trung bình, phần dư để sang hôm sau. Không
+có trần thì một ngày YouTube đổi thuật toán là quota bay sạch.
+
+---
+
+## 15. Phân vai sở hữu sự thật
+
+| Sự thật | Chủ | Vì sao |
+|---|---|---|
+| Danh sách uploads của kênh | **Spy local run** | API liệt kê rẻ, đủ, ổn định |
+| `published_at` chính xác tới giây | **Spy local run** | chỉ API có |
+| Baseline / outlier / subscriber | **Spy local run** | cần toàn bộ lịch sử kênh |
+| Transcript, comment | **Spy local run** | đắt, chỉ cho tier `core` |
+| **YouTube hiển thị gì, ở đâu, cho ai** | **Extension** | không nguồn nào khác có |
+| View chính xác giữa hai lần scan | **Extension** (`ext_watch`) | miễn phí, ăn theo hành vi xem |
+| Kênh/keyword chưa ai biết | **Extension** | gợi ý vượt trí tưởng tượng keyword |
+
+### 15.1 Ranh giới đóng cứng: **extension không bao giờ liệt kê**
+
+Không quét trang `/videos` của kênh, không phân trang search để gom hết.
+Extension **chỉ ghi lại thứ YouTube tự nguyện đưa ra**.
+
+Lý do là kỹ thuật, không phải đạo đức: liệt kê bằng DOM là bản sao chậm, giòn,
+tốn thời gian của thứ `daily_scan` làm tốt hơn với 1 unit cho 50 video. Cho
+extension liệt kê là mở đúng cánh cửa "tràn lan" mà JC muốn đóng.
+
+---
+
+## 16. Bảng đối chiếu: mỗi luồng nối vào đâu
+
+| Extension đẻ ra | Nối vào | Khoá | Cổng chặn |
+|---|---|---|---|
+| impression | `suggestion_impressions` | `(video_id, antenna_id, observed_at, surface)` | lọc toàn cục §13 |
+| ứng viên kênh | `topic_channels` | `(topic_id, channel_id)` | **phải có UC** §11 + topic suy từ ăng-ten §12 |
+| keyword mới | `topic_keywords` | `(topic_id, term_key)` | topic suy từ ăng-ten; `relation='yt_suggest'` |
+| view chính xác | `video_observations` | `(video_id, observed_at, source)` | `precision_='exact'` |
+| view làm tròn | `video_observations` | như trên | `precision_='rounded'`, cấm vào VPH |
+| tương tác tay của JC | `persona_actions` | `(antenna_id, session_id, at)` | chỉ phiên `manual` |
+
+---
+
+## 17. Còn mở
+
+- **Q4 — Trần nâng cấp/ngày/topic.** Đề xuất 50. Chốt sau khi có số thật từ M0.
+- **Q5 — Giữ hay bỏ dòng dính lọc toàn cục.** §13.1 đang chọn *chỉ đếm*, suy từ
+  chữ "vĩnh viễn". JC xác nhận hoặc đổi.
+- **Q6 — Số ăng-ten/topic.** Tối thiểu 2 (nếu không thì mất N2 hoàn toàn),
+  khuyến nghị 3. JC chốt trước khi lập tài khoản.
