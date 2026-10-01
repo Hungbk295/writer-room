@@ -5,6 +5,7 @@ import { AppError } from '../errors.ts';
 import { isJson3, parseJson3 } from '../evidence/json3.ts';
 import { parseVtt, type ParsedVttSegment } from '../evidence/vtt.ts';
 import { requireSuccessfulProcess } from './process.ts';
+import { fetchViaProxy, proxyArgs, proxyYT } from './proxy.ts';
 
 export interface YoutubeVideoInfo {
   sourceVideoId: string;
@@ -238,7 +239,21 @@ export class YtDlpAdapter implements YoutubePort {
      * hardcode, mặc định này tồn tại để giữ nguyên hành vi topic `vi`).
      */
     private readonly subtitleLanguages: readonly string[] = DEFAULT_SUBTITLE_LANGUAGE_PREFERENCE,
-  ) {}
+    /**
+     * Proxy cho MỌI request yt-dlp + thumbnail. Chấp nhận format
+     * `host:port:user:pass` (proxyYT tự normalize) hoặc URL đầy đủ.
+     */
+    proxy?: string | null,
+  ) {
+    this.setProxy(proxy);
+  }
+
+  private proxy: string | null = null;
+
+  /** `raw` là format người dùng nhập (host:port:user:pass) hoặc URL/null. */
+  setProxy(raw?: string | null): void {
+    this.proxy = proxyYT(raw);
+  }
 
   private resolveSubtitleLanguages(options?: { languages?: readonly string[] }): readonly string[] {
     return options?.languages?.length ? options.languages : this.subtitleLanguages;
@@ -250,6 +265,7 @@ export class YtDlpAdapter implements YoutubePort {
       '--no-progress',
       '--no-update',
       ...(this.cookieFile ? ['--cookies', this.cookieFile] : []),
+      ...proxyArgs(this.proxy),
     ];
   }
 
@@ -545,7 +561,7 @@ export class YtDlpAdapter implements YoutubePort {
   }
 
   async thumbnail(url: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }> {
-    const response = await fetch(url, { signal: signal ?? null });
+    const response = await fetchViaProxy(url, { signal: signal ?? null }, this.proxy);
     if (!response.ok) {
       throw new AppError('provider_error', `Không tải được thumbnail (${response.status})`, {
         retryable: response.status >= 500 || response.status === 429,

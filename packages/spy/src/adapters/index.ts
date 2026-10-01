@@ -1,4 +1,5 @@
 export * from './process.ts';
+export * from './proxy.ts';
 export * from './ytdlp.ts';
 export * from './ffmpeg.ts';
 export * from './data-api.ts';

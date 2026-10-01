@@ -538,14 +538,14 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
     // ---------------------------------------------------------------------
     wrap({
       name: 'spy_config_get',
-      description: 'Xem config hiện tại (API key masked, số key trong pool, concurrency, sampling). 0 chi phí.',
+      description: 'Xem config hiện tại (API key masked, proxy masked, số key trong pool, concurrency, sampling). 0 chi phí.',
       requiredScopes: ['spy.read'],
       outputLimitBytes: 16_384,
       handler: () => spy.getPublicConfig(),
     }),
     wrap({
       name: 'spy_config_set',
-      description: 'Cập nhật config: thêm/đổi API key, thêm nhiều key cho rotation (youtubeDataApiKeys: string[]), concurrency, sampling. Key được lưu vào config/spy.json.',
+      description: 'Cập nhật config: thêm/đổi API key, thêm nhiều key cho rotation (youtubeDataApiKeys: string[]), youtube_proxy (host:port:user:pass — mọi request YouTube sẽ đi qua proxy này), concurrency, sampling. Key được lưu vào config/spy.json.',
       requiredScopes: ['spy.start'],
       outputLimitBytes: 16_384,
       handler: async (args) => {
@@ -561,6 +561,9 @@ export function spyTools(spy: SpyService): SpyToolDef[] {
         }
         if (args['sampling'] !== undefined) {
           patch.sampling = args['sampling'] as Record<string, unknown>;
+        }
+        if (args['youtube_proxy'] !== undefined) {
+          patch.youtubeProxy = args['youtube_proxy'] as string | null;
         }
         await spy.updateConfig(patch as Parameters<typeof spy.updateConfig>[0]);
         return spy.getPublicConfig();

@@ -1616,6 +1616,7 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         const body = await readBody(req);
         const patch: {
           youtubeDataApiKey?: string | null;
+          youtubeProxy?: string | null;
           concurrency?: number;
           sampling?: {
             mode?: 'sequential' | 'scene' | 'spread' | 'random';
@@ -1631,6 +1632,11 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         }
         if (typeof body['concurrency'] === 'number') {
           patch.concurrency = body['concurrency'];
+        }
+        if ('youtubeProxy' in body) {
+          patch.youtubeProxy = body['youtubeProxy'] == null
+            ? null
+            : String(body['youtubeProxy']);
         }
         if (body['sampling'] && typeof body['sampling'] === 'object') {
           const raw = body['sampling'] as Record<string, unknown>;

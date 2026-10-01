@@ -26,6 +26,8 @@ import {
   type LlmPort,
   type GeminiFlashAnalysisPort,
   type RecommendationCapturePort,
+  maskProxy,
+  resolveYouTubeProxy,
 } from './adapters/index.ts';
 import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
@@ -351,6 +353,8 @@ export class SpyService {
    */
   private readonly countingApi: QuotaCountingDataApi;
   private readonly dataApiAdapter: YouTubeDataApiAdapter | null;
+  /** Adapter yt-dlp thật (null khi test inject YoutubePort) — giữ ref để setProxy. */
+  private readonly ytDlpAdapter: YtDlpAdapter | null;
   private readonly llm: LlmPort;
   private keyPool: KeyPool;
 
@@ -363,7 +367,11 @@ export class SpyService {
     this.roles = new SpyRoleService(this.store);
     // Desktop installers bundle yt-dlp next to the daemon.  Development keeps
     // resolving `yt-dlp` from PATH, so the CLI workflow is unchanged.
-    this.youtube = opts.youtube ?? new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp');
+    const youtubeProxy = resolveYouTubeProxy(this.config.youtubeProxy);
+    this.ytDlpAdapter = opts.youtube
+      ? null
+      : new YtDlpAdapter(process.env.WRITER_ROOM_YTDLP_BIN || 'yt-dlp', undefined, undefined, youtubeProxy);
+    this.youtube = opts.youtube ?? this.ytDlpAdapter!;
     this.publicObservations = new PublicObservationService(this.store, this.youtube);
     this.news = new NewsRadarService(join(this.dataRoot, 'news-radar'), this.youtube);
     this.media = opts.media ?? new FfmpegAdapter();
@@ -371,7 +379,7 @@ export class SpyService {
       this.dataApi = opts.dataApi;
       this.dataApiAdapter = null;
     } else {
-      this.dataApiAdapter = new YouTubeDataApiAdapter(this.config.youtubeDataApiKey);
+      this.dataApiAdapter = new YouTubeDataApiAdapter(this.config.youtubeDataApiKey, youtubeProxy);
       this.dataApi = this.dataApiAdapter;
     }
     this.llm = opts.llm ?? new DeterministicStubLlm();
@@ -444,6 +452,9 @@ export class SpyService {
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
     await this.artifacts.initialize();
     this.config = await loadConfig(this.dataRoot, this.config);
+    const initProxy = resolveYouTubeProxy(this.config.youtubeProxy);
+    this.ytDlpAdapter?.setProxy(initProxy);
+    this.dataApiAdapter?.setProxy(initProxy);
     // Refresh key pool from config
     this.keyPool = new KeyPool(resolveApiKeys(this.config));
     if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
@@ -761,12 +772,16 @@ export class SpyService {
       apiKeyIds: allKeys.map((k) => keyId(k)),
       concurrency: this.config.concurrency ?? 1,
       sampling: samplingPolicySchema.parse(this.config.sampling ?? {}),
+      hasYouTubeProxy: Boolean(resolveYouTubeProxy(this.config.youtubeProxy)),
+      /** Proxy đã mask password — chỉ để hiển thị, không dùng để call. */
+      youTubeProxy: maskProxy(resolveYouTubeProxy(this.config.youtubeProxy)),
     };
   }
 
   async updateConfig(patch: {
     youtubeDataApiKey?: string | null;
     youtubeDataApiKeys?: string[];
+    youtubeProxy?: string | null;
     concurrency?: number;
     sampling?: Partial<SamplingPolicy>;
   }): Promise<SpyConfig> {
@@ -785,7 +800,14 @@ export class SpyService {
     if (patch.youtubeDataApiKeys !== undefined) {
       next.youtubeDataApiKeys = patch.youtubeDataApiKeys.filter((k) => k.trim().length > 0);
     }
+    if (patch.youtubeProxy !== undefined) {
+      const value = patch.youtubeProxy?.trim() || '';
+      next.youtubeProxy = value || undefined;
+    }
     this.config = spyConfigSchema.parse(next);
+    const nextProxy = resolveYouTubeProxy(this.config.youtubeProxy);
+    this.ytDlpAdapter?.setProxy(nextProxy);
+    this.dataApiAdapter?.setProxy(nextProxy);
     // Rebuild key pool
     this.keyPool = new KeyPool(resolveApiKeys(this.config));
     if (!this.keyPool.isEmpty) this.quota.setKeyPool(this.keyPool);
@@ -804,6 +826,7 @@ export class SpyService {
     await mkdir(join(resolve(this.dataRoot, '..'), 'config'), { recursive: true });
     const toWrite: Record<string, unknown> = {
       youtubeDataApiKey: this.config.youtubeDataApiKey ?? '',
+      youtubeProxy: this.config.youtubeProxy ?? '',
       concurrency: this.config.concurrency ?? 1,
       sampling: this.config.sampling ?? {},
     };
