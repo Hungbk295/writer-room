@@ -78,6 +78,8 @@ export interface DashMetaData {
     decision_actor: ('human' | 'loop')[];
     video_source: string[];
     tick_status: string[];
+    /** v14: trạng thái của một keyword run (xem /dash/keyword-runs). */
+    keyword_run_status: DashKeywordRunStatus[];
   };
 }
 
@@ -241,11 +243,14 @@ export type DashKeywordSort =
   | 'last_median_views'
   | 'last_n_followed'
   | 'last_checked_at'
-  | 'added_at';
+  | 'added_at'
+  | 'outliers_28d';
 
 export interface DashKeywordsParams extends DashPage, DashSort<DashKeywordSort> {
   status?: TopicKeywordStatusV3;
   origin?: KeywordOrigin;
+  /** v14: lọc theo nhóm ngách do người đặt (topic_keywords.group_key). */
+  group?: string;
   q?: string;
 }
 
@@ -259,6 +264,8 @@ export interface DashKeywordRow {
   display_term: string;
   status: TopicKeywordStatusV3;
   origin: KeywordOrigin | null;
+  /** v14: nhóm ngách do người đặt; null khi chưa gán. */
+  group_key: string | null;
   added_by: 'user' | 'loop' | 'agent';
   added_at: string;
   decided_at: string | null;
@@ -269,9 +276,70 @@ export interface DashKeywordRow {
   /** last_n_followed / last_n_results; null khi chưa quét. */
   pct_followed: number | null;
   last_median_views: number | null;
+  /** median_views của lần check GẦN NHÌ trong keyword_checks; null khi <2 lần. */
+  prev_median_views: number | null;
+  /** COUNT(topic_videos WHERE found_by_keyword=term_key). */
+  videos_found: number;
+  /** COUNT video của keyword có outlier_score >= ngưỡng topic trong 7/28 ngày. */
+  outliers_7d: number;
+  outliers_28d: number;
   /** số kênh có discovered_from = term_key. */
   channels_discovered: number;
   evidence: DashKeywordEvidence;
+}
+
+// ---------------------------------------------------------------------------
+// #17 GET /dash/keywords/:term_key (v14) — chi tiết + lịch sử keyword_checks
+// ---------------------------------------------------------------------------
+
+export interface DashKeywordCheckRow {
+  checked_at: string;
+  n_results: number | null;
+  n_followed: number | null;
+  median_views: number | null;
+  /** NULL = check của weekly W1; khác null = check của run. */
+  run_id: string | null;
+}
+
+export interface DashKeywordDetail extends DashKeywordRow {
+  checks: DashKeywordCheckRow[];
+  /** Top 20 topic_videos của keyword theo outlier_score DESC. */
+  top_videos: DashVideoRow[];
+}
+
+// ---------------------------------------------------------------------------
+// #18 GET /dash/keyword-runs (v14) — lịch sử run cho board
+// ---------------------------------------------------------------------------
+
+export type DashKeywordRunStatus = 'running' | 'done' | 'failed' | 'skipped_quota' | 'cancelled';
+
+export interface DashKeywordRunRow {
+  run_id: string;
+  topic_id: string;
+  status: DashKeywordRunStatus;
+  n_keywords: number;
+  keywords_done: number;
+  search_calls_used: number;
+  general_units_used: number;
+  new_candidates: number;
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+  params: Record<string, unknown>;
+}
+
+export interface DashKeywordRunItemRow {
+  term_key: string;
+  status: 'done' | 'failed' | 'skipped_quota';
+  n_results: number | null;
+  n_followed: number | null;
+  median_views: number | null;
+  outliers_found: number | null;
+  error: string | null;
+}
+
+export interface DashKeywordRunDetail extends DashKeywordRunRow {
+  items: DashKeywordRunItemRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +448,8 @@ export interface DashOutliersParams extends DashPage {
   scope: DashOutlierScope;
   /** mặc định = settings.outlierMultiple của topic. */
   minMultiple: number;
+  /** v14: chỉ giữ outlier của một keyword (topic_videos.found_by_keyword). */
+  keyword?: string;
 }
 
 export interface DashOutlierRow {

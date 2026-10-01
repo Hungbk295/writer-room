@@ -39,7 +39,10 @@ import type {
 // Đổi CHECK status của topic_keywords/topic_channels + UNIQUE của loop_ticks/
 // daily_reports ⇒ rebuild bảng trong migrate12To13() (transaction). 3 bảng mới
 // topic_videos, video_daily_views, decisions đã có IF NOT EXISTS ở dưới.
-export const SCHEMA_VERSION = 13;
+// v13 -> v14: Spy Keyword Run (docs/plans/spy-keyword-run-board.html §3).
+// 3 bảng mới keyword_runs/keyword_run_items/keyword_checks + index mới có
+// IF NOT EXISTS ở dưới; migrate13To14() chỉ ALTER topic_keywords.group_key.
+export const SCHEMA_VERSION = 14;
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -360,6 +363,8 @@ CREATE TABLE IF NOT EXISTS topic_keywords (
   last_median_views REAL,
   decided_at TEXT,
   decided_reason TEXT,
+  -- v14: nhóm ngách do người đặt (NULL = chưa gán) — keyword run/board group theo nó.
+  group_key TEXT,
   added_at TEXT NOT NULL,
   added_by TEXT NOT NULL DEFAULT 'user' CHECK(added_by IN ('user','loop','agent')),
   PRIMARY KEY (topic_id, term_key)
@@ -736,6 +741,56 @@ CREATE INDEX IF NOT EXISTS idx_topic_videos_channel
   ON topic_videos(topic_id, channel_id, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_topic_videos_outlier
   ON topic_videos(topic_id, outlier_score DESC);
+-- v14: board đọc "video do keyword X tìm ra" (found_by_keyword=term_key).
+CREATE INDEX IF NOT EXISTS idx_topic_videos_keyword
+  ON topic_videos(topic_id, found_by_keyword);
+
+-- v14: Spy Keyword Run (plan spy-keyword-run-board §3). Run theo yêu cầu của
+-- người — KHÔNG phải nhịp loop, nên bảng riêng (loop_ticks có UNIQUE
+-- (topic_id,quota_day,mode) + CHECK(mode) chặn một run/keyword/ngày).
+CREATE TABLE IF NOT EXISTS keyword_runs (
+  run_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  params_json TEXT NOT NULL,           -- termKeys/group/filters đã resolve
+  status TEXT NOT NULL DEFAULT 'running'
+    CHECK(status IN ('running','done','failed','skipped_quota','cancelled')),
+  n_keywords INTEGER NOT NULL,
+  keywords_done INTEGER NOT NULL DEFAULT 0,
+  search_calls_used INTEGER NOT NULL DEFAULT 0,
+  general_units_used INTEGER NOT NULL DEFAULT 0,
+  new_candidates INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_keyword_runs_topic
+  ON keyword_runs(topic_id, started_at DESC);
+
+-- Tiến độ/kết quả từng keyword trong một run — board poll bảng này.
+CREATE TABLE IF NOT EXISTS keyword_run_items (
+  run_id TEXT NOT NULL REFERENCES keyword_runs(run_id),
+  term_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('done','failed','skipped_quota')),
+  n_results INTEGER,
+  n_followed INTEGER,
+  median_views REAL,
+  outliers_found INTEGER,              -- số video ≥ outlierMultiple sau khi quét baseline
+  error TEXT,
+  PRIMARY KEY (run_id, term_key)
+);
+
+-- Lịch sử sức khoẻ keyword, append-only: MỖI lần keyword được search (weekly
+-- W1 lẫn keyword_run) ghi 1 dòng — board đọc trend median_views từ đây.
+CREATE TABLE IF NOT EXISTS keyword_checks (
+  topic_id TEXT NOT NULL,
+  term_key TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  n_results INTEGER,
+  n_followed INTEGER,
+  median_views REAL,
+  run_id TEXT,                         -- NULL = check từ weekly W1
+  PRIMARY KEY (topic_id, term_key, checked_at)
+);
 
 -- Snapshot view, append-only, tối đa 1 dòng / video / ngày (INSERT OR IGNORE —
 -- quét lại trong ngày không tạo thêm dòng).
@@ -1306,6 +1361,8 @@ export interface TopicKeywordRow {
   lastMedianViews: number | null;
   decidedAt: string | null;
   decidedReason: string | null;
+  /** v14: nhóm ngách do người đặt (NULL = chưa gán). */
+  groupKey: string | null;
   addedAt: string;
   addedBy: 'user' | 'loop' | 'agent';
 }
@@ -1802,6 +1859,7 @@ function topicKeywordRowFromRow(row: Row): TopicKeywordRow {
     lastMedianViews: nullableNumber(row['last_median_views']),
     decidedAt: nullableString(row['decided_at']),
     decidedReason: nullableString(row['decided_reason']),
+    groupKey: nullableString(row['group_key']),
     addedAt: String(row['added_at']),
     addedBy: String(row['added_by']) as TopicKeywordRow['addedBy'],
   };
@@ -1897,10 +1955,18 @@ export class SpyStore {
       if (version < 13) {
         this.migrate12To13();
       }
+      if (version < 14) {
+        this.migrate13To14();
+      }
       if (version < SCHEMA_VERSION) {
         this.database.prepare('UPDATE schema_version SET version=?').run(SCHEMA_VERSION);
       }
     }
+    // v14: index trên cột MỚI phải đợi cột tồn tại — DB mới có group_key qua
+    // SCHEMA_SQL, DB cũ qua migrate13To14 (ALTER). Đặt sau cả hai đường.
+    this.database.exec(
+      'CREATE INDEX IF NOT EXISTS idx_topic_keywords_group ON topic_keywords(topic_id, group_key)',
+    );
     // Nhãn 'manual' cũ không truy nguyên được: không có cách nào CHỨNG MINH một
     // hàng cũ đến từ corpus import hay từ ô dán tay. Đưa hết về 'manual_user' —
     // nhãn "cần soi" — thay vì đoán tốt cho dữ liệu cũ. Đoán 'corpus_import' sẽ
@@ -2299,6 +2365,27 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
     }
   }
 
+  /**
+   * v13 → v14 (plan spy-keyword-run-board §3): cột group_key trên topic_keywords.
+   * 3 bảng run/check + index found_by_keyword đã được SCHEMA_SQL tạo bằng
+   * IF NOT EXISTS cho cả DB mới lẫn DB cũ — migration chỉ lo ALTER này.
+   */
+  private migrate13To14(): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      try {
+        this.database.exec('ALTER TABLE topic_keywords ADD COLUMN group_key TEXT');
+      } catch (error) {
+        if (!/duplicate column name|already exists/i.test(String(error))) throw error;
+      }
+      this.database.prepare('UPDATE schema_version SET version=?').run(14);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch { /* preserve original error */ }
+      throw error;
+    }
+  }
+
   close(): void {
     this.database.close();
   }
@@ -2332,6 +2419,12 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
          WHERE status IN ('queued', 'running')`,
       ).run(now);
     }
+    // v14: run chết dở sau restart phải thoát 'running' — nếu không route run
+    // sẽ 409 mãi (getRunningKeywordRun chỉ nhìn status='running').
+    this.database.prepare(
+      `UPDATE keyword_runs SET status='cancelled', finished_at=?, error='daemon restarted'
+       WHERE status='running'`,
+    ).run(nowIso());
     return rows.length;
   }
 
@@ -3878,14 +3971,20 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
     evidenceJson?: string;
     status?: string;
     addedBy?: 'user' | 'loop' | 'agent';
+    /** v14: nguồn keyword (bulk add truyền 'user'; NULL = chưa chứng minh nguồn). */
+    origin?: KeywordOrigin | null;
+    /** v14: nhóm ngách do người đặt — chỉ đè khi caller truyền (không null). */
+    groupKey?: string | null;
   }): void {
     const now = nowIso();
     this.database.prepare(
-      `INSERT INTO topic_keywords (topic_id, term_key, display_term, relation, evidence_json, status, added_at, added_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO topic_keywords (topic_id, term_key, display_term, relation, evidence_json, status, origin, group_key, added_at, added_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(topic_id, term_key) DO UPDATE SET
          display_term=excluded.display_term, relation=excluded.relation,
-         evidence_json=excluded.evidence_json`,
+         evidence_json=excluded.evidence_json,
+         origin=COALESCE(excluded.origin, topic_keywords.origin),
+         group_key=COALESCE(excluded.group_key, topic_keywords.group_key)`,
     ).run(
       input.topicId,
       input.termKey,
@@ -3893,6 +3992,8 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       input.relation,
       input.evidenceJson ?? '{}',
       input.status ?? 'pending',
+      input.origin ?? null,
+      input.groupKey ?? null,
       now,
       input.addedBy ?? 'user',
     );
@@ -3921,6 +4022,141 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
   setKeywordStatus(topicId: string, termKey: string, status: string): void {
     this.database.prepare('UPDATE topic_keywords SET status=? WHERE topic_id=? AND term_key=?')
       .run(status, topicId, termKey);
+  }
+
+  /** v14: gán nhóm ngách cho keyword (null = gỡ khỏi nhóm). */
+  setKeywordGroup(topicId: string, termKey: string, groupKey: string | null): void {
+    this.database.prepare('UPDATE topic_keywords SET group_key=? WHERE topic_id=? AND term_key=?')
+      .run(groupKey, topicId, termKey);
+  }
+
+  /** Lọc keyword theo group_key (NULL → keyword chưa gán nhóm). */
+  listTopicKeywordsByGroup(topicId: string, groupKey: string): TopicKeywordRow[] {
+    return this.database.prepare(
+      'SELECT * FROM topic_keywords WHERE topic_id=? AND group_key=? ORDER BY added_at ASC',
+    ).all(topicId, groupKey).map((row) => topicKeywordRowFromRow(row as Row));
+  }
+
+  // ---------------------------------------------------------------------------
+  // v14 — Keyword runs (plan spy-keyword-run-board §3)
+  // ---------------------------------------------------------------------------
+
+  createKeywordRun(run: {
+    runId: string;
+    topicId: string;
+    paramsJson: string;
+    nKeywords: number;
+    startedAt: string;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO keyword_runs (run_id, topic_id, params_json, status, n_keywords, started_at)
+       VALUES (?, ?, ?, 'running', ?, ?)`,
+    ).run(run.runId, run.topicId, run.paramsJson, run.nKeywords, run.startedAt);
+  }
+
+  updateKeywordRun(runId: string, patch: {
+    status?: 'running' | 'done' | 'failed' | 'skipped_quota' | 'cancelled';
+    keywordsDone?: number;
+    searchCallsUsed?: number;
+    generalUnitsUsed?: number;
+    newCandidates?: number;
+    finishedAt?: string | null;
+    error?: string | null;
+  }): void {
+    const sets: string[] = [];
+    const params: Array<string | number | null> = [];
+    if (patch.status !== undefined) { sets.push('status=?'); params.push(patch.status); }
+    if (patch.keywordsDone !== undefined) { sets.push('keywords_done=?'); params.push(patch.keywordsDone); }
+    if (patch.searchCallsUsed !== undefined) { sets.push('search_calls_used=?'); params.push(patch.searchCallsUsed); }
+    if (patch.generalUnitsUsed !== undefined) { sets.push('general_units_used=?'); params.push(patch.generalUnitsUsed); }
+    if (patch.newCandidates !== undefined) { sets.push('new_candidates=?'); params.push(patch.newCandidates); }
+    if (patch.finishedAt !== undefined) { sets.push('finished_at=?'); params.push(patch.finishedAt); }
+    if (patch.error !== undefined) { sets.push('error=?'); params.push(patch.error); }
+    if (sets.length === 0) return;
+    params.push(runId);
+    this.database.prepare(`UPDATE keyword_runs SET ${sets.join(', ')} WHERE run_id=?`).run(...params);
+  }
+
+  insertKeywordRunItem(item: {
+    runId: string;
+    termKey: string;
+    status: 'done' | 'failed' | 'skipped_quota';
+    nResults?: number | null;
+    nFollowed?: number | null;
+    medianViews?: number | null;
+    outliersFound?: number | null;
+    error?: string | null;
+  }): void {
+    this.database.prepare(
+      `INSERT INTO keyword_run_items
+         (run_id, term_key, status, n_results, n_followed, median_views, outliers_found, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(run_id, term_key) DO UPDATE SET
+         status=excluded.status, n_results=excluded.n_results,
+         n_followed=excluded.n_followed, median_views=excluded.median_views,
+         outliers_found=excluded.outliers_found, error=excluded.error`,
+    ).run(
+      item.runId, item.termKey, item.status,
+      item.nResults ?? null, item.nFollowed ?? null, item.medianViews ?? null,
+      item.outliersFound ?? null, item.error ?? null,
+    );
+  }
+
+  /** run đang 'running' của topic (chặn run song song — route run 409). */
+  getRunningKeywordRun(topicId: string): Row | null {
+    return this.database.prepare(
+      "SELECT * FROM keyword_runs WHERE topic_id=? AND status='running' ORDER BY started_at DESC LIMIT 1",
+    ).get(topicId) as Row | null;
+  }
+
+  getKeywordRun(runId: string): { run: Row; items: Row[] } | null {
+    const run = this.database.prepare('SELECT * FROM keyword_runs WHERE run_id=?').get(runId) as Row | null;
+    if (!run) return null;
+    const items = this.database.prepare(
+      'SELECT * FROM keyword_run_items WHERE run_id=? ORDER BY rowid ASC',
+    ).all(runId) as Row[];
+    return { run, items };
+  }
+
+  listKeywordRuns(topicId: string, limit = 20): Row[] {
+    return this.database.prepare(
+      'SELECT * FROM keyword_runs WHERE topic_id=? ORDER BY started_at DESC LIMIT ?',
+    ).all(topicId, limit) as Row[];
+  }
+
+  /**
+   * Append-only: mỗi lần keyword được search (W1 weekly lẫn keyword_run) ghi 1
+   * dòng — board đọc trend sức khoẻ từ đây. INSERT OR REPLACE vì PK chứa
+   * checked_at: chạy lại cùng mili-giây thì đè thay vì lỗi.
+   */
+  insertKeywordCheck(check: {
+    topicId: string;
+    termKey: string;
+    checkedAt: string;
+    nResults: number | null;
+    nFollowed: number | null;
+    medianViews: number | null;
+    runId?: string | null;
+  }): void {
+    this.database.prepare(
+      `INSERT OR REPLACE INTO keyword_checks
+         (topic_id, term_key, checked_at, n_results, n_followed, median_views, run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      check.topicId, check.termKey, check.checkedAt,
+      check.nResults, check.nFollowed, check.medianViews, check.runId ?? null,
+    );
+  }
+
+  listKeywordChecks(topicId: string, termKey?: string): Row[] {
+    if (termKey !== undefined) {
+      return this.database.prepare(
+        'SELECT * FROM keyword_checks WHERE topic_id=? AND term_key=? ORDER BY checked_at DESC',
+      ).all(topicId, termKey) as Row[];
+    }
+    return this.database.prepare(
+      'SELECT * FROM keyword_checks WHERE topic_id=? ORDER BY checked_at DESC',
+    ).all(topicId) as Row[];
   }
 
   // ---------------------------------------------------------------------------
@@ -4726,6 +4962,8 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       lastNResults: number | null;
       lastNFollowed: number | null;
       lastMedianViews: number | null;
+      /** v14: ghi luôn keyword_checks append-only (null = check của weekly). */
+      runId?: string | null;
     },
   ): void {
     this.database.prepare(
@@ -4736,6 +4974,14 @@ ALTER TABLE loop_ticks_v13 RENAME TO loop_ticks;
       check.lastCheckedAt, check.lastNResults, check.lastNFollowed,
       check.lastMedianViews, check.lastCheckedAt, topicId, termKey,
     );
+    this.insertKeywordCheck({
+      topicId, termKey,
+      checkedAt: check.lastCheckedAt,
+      nResults: check.lastNResults,
+      nFollowed: check.lastNFollowed,
+      medianViews: check.lastMedianViews,
+      runId: check.runId ?? null,
+    });
   }
 
   /**

@@ -32,6 +32,7 @@ import {
 import { QuotaCountingDataApi } from './adapters/quota-counting-data-api.ts';
 import { importTopicFiles } from './topic.ts';
 import { LoopRunner } from './loop/runner.ts';
+import { KeywordRunService } from './loop/keyword-run.ts';
 import { CorpusIntelligenceService } from './corpus-intelligence.ts';
 import { SpyRoleService } from './channel-intelligence/roles.ts';
 import { PublicObservationService } from './channel-intelligence/observations.ts';
@@ -83,6 +84,22 @@ export * from './loop/types.ts';
 export * from './loop/planner.ts';
 export * from './loop/report.ts';
 export { LoopRunner, type LoopRunnerOptions } from './loop/runner.ts';
+export {
+  acquireChargeableWork,
+  releaseChargeableWork,
+} from './loop/runner.ts';
+export { KeywordRunService, type KeywordRunParams, type KeywordRunServiceOptions } from './loop/keyword-run.ts';
+export {
+  runKeywordSearches,
+  scanOutsideChannels,
+  type ModeContext,
+  type KeywordSearchItem,
+  type KeywordSearchesOptions,
+  type KeywordSearchesResult,
+  type OutsideHit,
+  type ProposedChannel,
+  type ScanOutsideChannelsResult,
+} from './loop/modes.ts';
 export { spyTools, type SpyToolContext, type SpyToolDef } from './mcp-tools.ts';
 export * from './dash/types.ts';
 export * from './dash/registry.ts';
@@ -332,6 +349,8 @@ export class SpyService {
   readonly discovery: DiscoveryService;
   /** Loop runner — expose spy.loop.runTick, .status, .inbox, .decide, .listTopics, .report */
   readonly loop: LoopRunner;
+  /** v14: keyword run theo yêu cầu — spy.keywordRuns.resolveKeywords/startRun. */
+  readonly keywordRuns: KeywordRunService;
   /** P0 evidence/review plane; does not reuse legacy Auto-Loop candidate state. */
   readonly corpus: CorpusIntelligenceService;
   /** C1 local bookmark/follow role boundary; storage-only by construction. */
@@ -444,6 +463,12 @@ export class SpyService {
       discovery: this.discovery,
       dataApi: countingApi,
       dataRoot: this.dataRoot,
+    });
+    // v14: keyword run — như loop, MỌI call Data API đi qua countingApi.
+    this.keywordRuns = new KeywordRunService({
+      store: this.store,
+      quota: this.quota,
+      dataApi: countingApi,
     });
   }
 

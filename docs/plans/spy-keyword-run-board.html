@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spy Keyword Run API + Board</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2dfd8;--code:#f1eee8;--acc:#1f5f8b;--stop:#b4471f;--new:#2c6749}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--fg:#ebe9e4;--mut:#9a978f;--line:#34322e;--code:#23221f;--acc:#7ab3dc;--stop:#e8875f;--new:#86c9a4}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:980px;margin:auto}h1{font-size:26px;margin:0 0 4px}h2{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:4px}h3{margin-top:22px}
+.mut{color:var(--mut)}code,pre{background:var(--code);font:13px ui-monospace,Menlo,monospace}code{padding:1px 4px;border-radius:3px}
+pre{padding:12px;overflow-x:auto;border-radius:6px}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{background:var(--code)}
+.stop{color:var(--stop);font-weight:700}
+.tag{font-size:11px;padding:1px 6px;border-radius:3px;border:1px solid var(--line);white-space:nowrap}
+.tag.new{color:var(--new);border-color:var(--new)}.tag.mod{color:var(--acc);border-color:var(--acc)}.tag.has{color:var(--mut)}
+</style>
+</head>
+<body><main>
+<h1>Spy Keyword Run API + Board</h1>
+<p class="mut">2026-09-27 · DRAFT · Đứng trên v3-lean đã triển khai + 16 endpoint <code>/api/spy/dash/*</code> đã có (spy-dashboard-api.html)</p>
+
+<h2>0 · Kết luận</h2>
+<p>Nhu cầu: <b>chạy nhiều keyword trong ngách theo yêu cầu</b>, rồi <b>xem kết quả trên board</b> để rút ra key còn khoẻ và video outlier. Hiện trạng: phần <b>đọc đã có gần đủ</b> (16 endpoint dash), phần <b>ghi/chạy theo lô thì chưa có</b> — weekly chỉ search ≤ <code>weekly_keyword_budget</code> (12) keyword active xoay theo <code>last_checked_at</code>, không có cách bảo "chạy ngay 40 keyword này". Web chưa có màn nào đọc <code>/api/spy/dash</code>.</p>
+<p><b>Quyết định đề xuất:</b></p>
+<ul>
+<li>Thêm <b>3 endpoint write</b>: bulk-add keyword, bulk-decide, và <code>POST /api/spy/keywords/run</code> — chạy một tập keyword ngay, nền, ghi vào bảng run riêng (<code>keyword_runs</code>), <b>tái dùng nguyên khối W1+W3</b> của weekly.</li>
+<li><b>Không đụng <code>loop_ticks</code></b>: nó có <code>UNIQUE(topic_id, quota_day, mode)</code> + <code>CHECK(mode IN setup|daily|weekly)</code> — một run/keyword/ngày là không đủ, phải bảng riêng.</li>
+<li>Mở rộng <code>/dash/keywords</code> với <b>outliers_7d/28d + videos_found + group_key</b> — đây chính là cột "key nào sinh outlier".</li>
+<li>Board UI: 1 tab mới trong trang Spy Loop hiện có (<code>SpyLoop.tsx</code>), 3 panel: <b>Keyword health</b> (group theo ngách, bulk action), <b>Run launcher</b> (estimate quota → chạy → progress), <b>Outlier board</b> (group theo keyword tìm ra nó).</li>
+<li>"Ngách" ở phase này = <code>group_key</code> nhẹ trên <code>topic_keywords</code> (do người đặt). Bảng <code>niches</code> đầy đủ của v3.1 (audience/situation/problem/painpoints) là phạm vi riêng, spec vẫn DRAFT — <b>không gộp vào đây</b> (xem §6 quyết định mở).</li>
+</ul>
+<p><b>Luật bất biến giữ nguyên (tôn chỉ 1):</b> máy/run chỉ ghi <code>topic_videos</code>, <code>video_daily_views</code>, sức khoẻ keyword, và kênh candidate <code>status='new'</code>. Kênh/keyword <code>active|paused</code> vẫn chỉ qua <code>decide</code> với <code>actor='human'</code>. Bulk-add do người bấm nên được ghi <code>decisions actor=human</code>, không vi phạm.</p>
+
+<h2>1 · Gap so với hiện trạng</h2>
+<table>
+<tr><th>Nhu cầu</th><th>Hiện có</th><th>Thiếu</th></tr>
+<tr><td>Chạy nhiều keyword theo ý chọn</td><td>Weekly W1: ≤12 keyword active, xoay <code>last_checked_at</code>, 1 lần/tuần (<code>modes.ts</code>)</td><td>Endpoint run theo danh sách/group, chạy nền, theo dõi tiến độ từng keyword</td></tr>
+<tr><td>Nạp nhanh list keyword ngách</td><td><code>POST /loop/keywords</code> từng term một; <code>/loop/decide</code> đã nhận entity keyword</td><td>Bulk add + bulk activate (1 click cho cả list)</td></tr>
+<tr><td>Gom keyword theo ngách</td><td>Không — v13 keyword phẳng; <code>niches</code> chỉ ở v3.1 DRAFT</td><td><code>group_key</code> nhẹ trên <code>topic_keywords</code> (quyết định mở §6)</td></tr>
+<tr><td>Board key + outlier</td><td>Dash đọc đủ: <code>/keywords /videos /outliers /hot /timeseries</code>; UI <code>SpyLoop.tsx</code> chỉ dùng API loop cũ (status board, không chỉ số)</td><td>UI đọc dash API; <code>/dash/keywords</code> thiếu outliers_*/videos_found per keyword</td></tr>
+<tr><td>Outlier NGOÀI follow</td><td><code>outlier_score</code> chỉ có khi kênh đã có baseline (đã qua quét). W3 quét ≤ <code>weekly_new_channel_scan</code> kênh/weekly</td><td>Batch run cần tham số quét baseline kênh lạ (<code>scanChannelsCap</code>), nếu không scope=external mỏng</td></tr>
+<tr><td>Key còn khoẻ hay cạn</td><td><code>topic_keywords.last_*</code> chỉ giữ lần cuối — không thấy trend</td><td>Bảng <code>keyword_checks</code> append-only (mỗi lần run 1 dòng) → trend median_views</td></tr>
+</table>
+
+<h2>2 · API write mới</h2>
+<table>
+<tr><th>Endpoint</th><th>Body</th><th>Trả về / Việc</th></tr>
+<tr><td><code>POST /api/spy/keywords/bulk</code></td><td><code>{topicId, terms[], group?, activate?}</code></td><td>Upsert <code>topic_keywords</code> pending, origin=<code>user</code>, added_by=<code>user</code>. <code>activate:true</code> → ghi <code>decisions actor=human to_status=active</code> cho từng term (người bấm = quyết định người). Idempotent theo <code>term_key</code> (đã có → chỉ cập nhật group/status nếu được bảo).</td></tr>
+<tr><td><code>POST /api/spy/keywords/decide</code></td><td><code>{topic_id, term_keys[], to_status, reason?}</code></td><td>Bulk <code>decideKeyword</code> qua đường HITL có sẵn (mở rộng <code>/loop/decide</code> nhận mảng, hoặc route riêng gọi <code>store.decideKeyword</code> từng term + 1 dòng decisions/term).</td></tr>
+<tr><td><code>POST /api/spy/keywords/run</code></td><td><code>{topicId, termKeys?[] | group? | status:'active', publishedAfterDays=28, maxResults=50, scanChannelsCap=10, dryRun?}</code></td><td>Tạo <code>keyword_runs</code> row → chạy nền (như <code>runTick</code>). Trả <code>{runId, keywords[], estimatedSearchCalls, quotaRemaining}</code>. dryRun chỉ trả plan + quota. <b>409</b> khi topic paused/run đang chạy; <b>429</b> khi quota search &lt; số keyword.</td></tr>
+<tr><td><code>GET /api/spy/keywords/runs?topic_id</code> · <code>GET /api/spy/keywords/runs/:id</code></td><td>—</td><td>Danh sách run + tiến độ từng keyword (đọc <code>keyword_runs</code> + <code>keyword_run_items</code>). Board poll endpoint này.</td></tr>
+</table>
+
+<h3>2.1 · Bên trong một run — tái dùng W1/W3, không viết lại</h3>
+<pre>
+for kw in keywords:
+  if quota.remaining('search') &lt;= 0: dừng, đánh dấu phần còn lại skipped_quota
+  search.list(q=term, type=video, order=viewCount, maxResults, regionCode, relevanceLanguage, publishedAfter)
+  videos.list(stats) cho toàn bộ hit
+  → upsertTopicVideo(source='keyword_run', foundByKeyword=termKey) + recordVideoDailyView
+  → updateKeywordCheck + INSERT keyword_checks (lịch sử)
+  → outside hits → best-per-channel map (giống W1)
+sau vòng keyword:
+  nếu scanChannelsCap &gt; 0: quét ≤cap kênh ngoài follow (playlistItems+videos.list ~2–3 unit/kênh)
+    → baseline → outlier_score cho hit → upsertTopicChannelCandidate(status='new', discoveredVia='keyword_run', discoveredFrom=termKey)
+    → video kênh đó → upsertTopicVideo + outlier_score
+</pre>
+<p class="mut">Cần tách block W1 (modes.ts:335–457) và W3-scan (modes.ts:459–570) thành hàm chia sẻ <code>runKeywordSearches(ctx, keywords, opts)</code> / <code>scanOutsideChannels(ctx, hits, cap)</code> — weekly gọi lại đúng hàm này, tránh hai bản code trôi nhau.</p>
+<p class="mut">Chi phí: 1 keyword ≈ 1 search call + 1 videos.list unit; 40 keyword ≈ 40/100 search call ngày + ~40 unit. Multi-key rotation (<code>youtubeDataApiKeys</code>) đã có sẵn.</p>
+
+<h2>3 · Schema v14</h2>
+<pre>
+CREATE TABLE keyword_runs (
+  run_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL REFERENCES topics(topic_id),
+  params_json TEXT NOT NULL,           -- termKeys/group/filters đã resolve
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','failed','skipped_quota','cancelled')),
+  n_keywords INTEGER NOT NULL,
+  keywords_done INTEGER NOT NULL DEFAULT 0,
+  search_calls_used INTEGER NOT NULL DEFAULT 0,
+  general_units_used INTEGER NOT NULL DEFAULT 0,
+  new_candidates INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL, finished_at TEXT, error TEXT
+);
+CREATE TABLE keyword_run_items (
+  run_id TEXT NOT NULL REFERENCES keyword_runs(run_id),
+  term_key TEXT NOT NULL,
+  status TEXT NOT NULL,                -- done|failed|skipped_quota
+  n_results INTEGER, n_followed INTEGER, median_views REAL,
+  outliers_found INTEGER,              -- số video ≥ outlierMultiple sau khi quét baseline
+  error TEXT,
+  PRIMARY KEY (run_id, term_key)
+);
+CREATE TABLE keyword_checks (          -- trend "key còn khoẻ/cạn"
+  topic_id TEXT NOT NULL, term_key TEXT NOT NULL, checked_at TEXT NOT NULL,
+  n_results INTEGER, n_followed INTEGER, median_views REAL, run_id TEXT,
+  PRIMARY KEY (topic_id, term_key, checked_at)
+);
+ALTER TABLE topic_keywords ADD group_key TEXT;      -- ngách nhẹ, do người đặt
+CREATE INDEX idx_topic_videos_keyword ON topic_videos(topic_id, found_by_keyword);
+</pre>
+<p class="mut"><code>loop_ticks</code> không đụng vào (UNIQUE+CHECK). <code>topic_videos.source</code> thêm giá trị <code>keyword_run</code> — cột TEXT không CHECK nên chỉ là convention, ghi vào <code>/dash/meta</code> enums.</p>
+
+<h2>4 · Dash mở rộng (đọc)</h2>
+<table>
+<tr><th>Endpoint</th><th>Thay đổi</th></tr>
+<tr><td><code>GET /dash/keywords</code></td><td>+ <code>outliers_7d</code>, <code>outliers_28d</code>, <code>videos_found</code> (COUNT topic_videos theo found_by_keyword), <code>group_key</code>, <code>prev_median_views</code> (từ keyword_checks — trend); sort thêm <code>outliers_28d</code>; filter <code>group=</code></td></tr>
+<tr><td><code>GET /dash/outliers</code></td><td>+ param <code>keyword=</code> (đã có sẵn cột found_by_keyword — thêm WHERE)</td></tr>
+<tr><td><code>GET /dash/keywords/:term_key</code></td><td><span class="tag new">mới</span> detail: history keyword_checks + top videos keyword sinh ra (reuse videosList filter)</td></tr>
+<tr><td><code>GET /dash/keyword-runs</code></td><td><span class="tag new">mới</span> đọc keyword_runs + items cho board "lịch sử chạy" (không reuse /ticks vì bảng khác)</td></tr>
+<tr><td><code>/dash/videos?keyword=</code></td><td>đã có — board dùng luôn</td></tr>
+</table>
+
+<h2>5 · Board UI (packages/web)</h2>
+<p>Tab mới <b>"Board"</b> trong <code>/spy/loop</code> (cùng TopicSwitcher). 3 panel:</p>
+<table>
+<tr><th>Panel</th><th>Nguồn</th><th>Hành động</th></tr>
+<tr><td><b>Keyword health</b> — nhóm theo group_key: term, lần chạy cuối, n_results, median_views + trend ↑↓, n_followed, outliers_28d, channels_discovered</td><td><code>/dash/keywords</code> mở rộng</td><td>Checkbox nhiều dòng → Run now / Activate / Pause (bulk). Sort theo outliers_28d để "tìm ra key"</td></tr>
+<tr><td><b>Run launcher</b> — chọn group hoặc checkbox keyword → estimate (n keyword × 1 search call) hiện quota còn lại → POST run → progress theo keyword</td><td><code>POST /keywords/run</code> + <code>GET /keywords/runs/:id</code> poll</td><td>—</td></tr>
+<tr><td><b>Outlier board</b> — card video: thumbnail, outlier_score, scope, kênh, <b>found_by_keyword</b>; group theo keyword hoặc theo kênh; click → <code>/dash/videos/:id/timeseries</code></td><td><code>/dash/outliers</code> + <code>/dash/hot</code></td><td>Lọc scope followed|external, min_multiple, keyword</td></tr>
+</table>
+<p class="mut">api.ts thêm ~8 hàm dash client; không cần materialize/cache — mọi chỉ số tính khi đọc như hiện tại.</p>
+
+<h2>6 · Quyết định mở cần JC chốt</h2>
+<ol>
+<li><b>Ngách nhẹ hay nặng:</b> <code>group_key</code> text trên keyword (đề xuất — đủ cho "chạy nhiều keyword trong ngách" + group trên board) <i>vs</i> bảng <code>niches</code> đầy đủ của v3.1 (audience/situation/problem/title_pattern + gán video). v3.1 còn DRAFT → làm sau.</li>
+<li><b>Outlier ngoài follow:</b> run có tự quét baseline kênh lạ (scanChannelsCap mặc định 10, ~2–3 unit/kênh) hay chỉ xếp view thô? Đề xuất: có, vì không quét thì scope=external của /dash/outliers gần như rỗng.</li>
+<li><b>Board ở đâu:</b> tab trong SpyLoop (đề xuất, tái dùng TopicSwitcher/Inbox) hay route riêng <code>/spy/board</code>.</li>
+</ol>
+
+<h2>7 · Thứ tự triển khai</h2>
+<table>
+<tr><th>#</th><th>Việc</th><th>Ghi chú</th></tr>
+<tr><td>1</td><td>Migration v14: keyword_runs, keyword_run_items, keyword_checks, group_key, index found_by_keyword</td><td>store.ts + test migrate từ DB v13 thật</td></tr>
+<tr><td>2</td><td>Tách W1/W3 → <code>runKeywordSearches</code>/<code>scanOutsideChannels</code>; weekly gọi lại (no-op diff)</td><td>Refactor thuần — test weekly cũ vẫn xanh</td></tr>
+<tr><td>3</td><td>POST bulk + decide + run + runs/:id; quota preflight; ghi decisions actor=human</td><td>http.ts mount file route riêng, giữ http.ts không phình</td></tr>
+<tr><td>4</td><td>/dash/keywords mở rộng + /dash/outliers?keyword + /dash/keywords/:term + /dash/keyword-runs</td><td>dash/registry.ts + activity.ts; test route thật</td></tr>
+<tr><td>5</td><td>Board UI: 3 panel + api.ts dash client</td><td>SpyLoop.tsx tab mới</td></tr>
+</table>
+
+<h2>8 · Tiêu chí chấp nhận</h2>
+<ol>
+<li>Bulk add 50 term → 50 dòng pending (origin=user, group đúng); 1 lần activate → 50 active + 50 dòng decisions actor=human.</li>
+<li>Run 20 keyword: mọi item có dòng keyword_run_items (n_results/median_views), search_calls_used ≤ số keyword, quota hết giữa chừng → phần còn lại skipped_quota, run vẫn done.</li>
+<li>Chạy lại cùng keyword ngày hôm sau → keyword_checks có 2 dòng → board hiển thị trend median_views.</li>
+<li>/dash/keywords trả outliers_28d khớp <code>SELECT COUNT(*) FROM topic_videos WHERE found_by_keyword=? AND outlier_score≥threshold</code>.</li>
+<li>hitl_violations = 0; không endpoint write nào dưới /dash.</li>
+<li>Weekly/daily/setup không đổi hành vi (test cũ xanh, keyword source mới không rơi vào baseline_eligible).</li>
+</ol>
+</main></body></html>

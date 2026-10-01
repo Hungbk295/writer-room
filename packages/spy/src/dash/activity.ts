@@ -491,6 +491,11 @@ export function outliers(
     : params.scope === 'external'
       ? `AND (tc.status IS NULL OR tc.status NOT IN ${FOLLOWED})`
       : '';
+  // v14: lọc theo keyword tìm ra video — board đọc outlier của một keyword.
+  const keywordCond = params.keyword ? 'AND tv.found_by_keyword = ?' : '';
+  const args: unknown[] = [topicId, params.minMultiple, params.range.from, params.range.to];
+  if (params.keyword) args.push(params.keyword);
+  args.push(params.limit, params.offset);
   const rows = db.prepare(`
 SELECT tv.video_id, tv.title, tv.channel_id, tv.published_at, tv.latest_views,
   tv.outlier_score, tv.found_by_keyword,
@@ -502,12 +507,10 @@ WHERE tv.topic_id = ?
   AND tv.outlier_score IS NOT NULL AND tv.outlier_score >= ?
   AND substr(tv.published_at, 1, 10) BETWEEN ? AND ?
   ${scopeCond}
+  ${keywordCond}
 ORDER BY tv.outlier_score DESC
 LIMIT ? OFFSET ?
-  `).all(
-    topicId, params.minMultiple, params.range.from, params.range.to,
-    params.limit, params.offset,
-  ) as Row[];
+  `).all(...(args as never[])) as Row[];
 
   return rows.map((r) => {
     const status = strOrNull(r['channel_status']) as TopicChannelStatusV3 | null;

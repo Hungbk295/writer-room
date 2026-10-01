@@ -61,6 +61,7 @@ import { sendTelegramReport } from './spy/report-telegram.ts';
 import { createSpyLoopAdapter, type SpyLoopAdapter, type LoopMode, type SetupStep } from './spy/loop-contract.ts';
 import { describeLoopCapabilities } from './spy/loop-capabilities.ts';
 import { handleSpyDash } from './spy/dash-routes.ts';
+import { handleSpyKeywords } from './spy/keyword-routes.ts';
 import { ANALYZE_STAGE, registerTrainingSettleListener } from './training/aggregator.ts';
 import { preflightVideo } from './training/preflight.ts';
 import { importFormulaDiscoveryResult, runFormulaDiscovery, startInteractiveFormulaDiscovery } from './training/orchestrator.ts';
@@ -751,6 +752,12 @@ export function createHandler(app: HttpApp): (req: Request) => Promise<Response>
         if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
         if (method !== 'GET') return error('Spy Dashboard chỉ nhận GET', 405);
         return handleSpyDash(url, spy);
+      }
+
+      // ── Spy Keyword Run API — bulk/decide/run/runs (plan spy-keyword-run-board §2)
+      if (pathname.startsWith('/api/spy/keywords')) {
+        if (!SPY_FEATURE.enabled) return error('Spy đang tắt', 403);
+        return handleSpyKeywords(url, req, spy);
       }
 
       if (pathname === '/api/writer/mcp' || pathname === '/api/writer/mcp/') {
