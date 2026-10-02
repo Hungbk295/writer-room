@@ -87,6 +87,15 @@ export async function loadRunDetail(runId: string): Promise<BoardRunDetail> {
   return (await api.boardRunDetail(runId)).data;
 }
 
+/** Báo cáo verify công thức (schema v1) — /api/spy/board/formulas. */
+export async function loadFormulas(topicId: string): Promise<{ data: import('../../api.ts').BoardFormulasReport | null; file: string | null }> {
+  if (IS_MOCK) {
+    const m = await mock();
+    return { data: m.MOCK_FORMULAS, file: '2026-10-01-formula-verify.json' };
+  }
+  return api.boardFormulas(topicId);
+}
+
 export async function loadTasks(topicId: string): Promise<BoardAgentTask[]> {
   if (IS_MOCK) return [...(await mock()).MOCK_TASKS];
   return (await api.boardTasks(topicId)).data;

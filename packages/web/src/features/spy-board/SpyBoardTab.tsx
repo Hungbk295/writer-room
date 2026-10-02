@@ -1,6 +1,6 @@
 /**
- * Tab "Board" của 1 topic spy — 5 màn, mỗi màn một quyết định (plan
- * spy-analyst-workflow §G): Chọn tệp → Ngách → Keyword → Lượt chạy → Agent.
+ * Tab "Board" của 1 topic spy — 6 màn, mỗi màn một quyết định (plan
+ * spy-analyst-workflow §G): Chọn tệp → Ngách → Keyword → Công thức → Lượt chạy → Agent.
  * Thanh trên: độ tươi dữ liệu (lượt Theo dõi / Tìm mới gần nhất). Bảng điểm tải
  * một lần ở đây, dùng cho Màn 1, hàng số của Màn 2 và danh sách ngách.
  * Giao diện theo phong cách TailPanel, CSS scope dưới `.spy-board` (board.css).
@@ -9,6 +9,7 @@ import { useState } from 'preact/hooks';
 import type { BoardScorecardRow } from '../../api.ts';
 import { loadScorecard } from './data.ts';
 import { AgentScreen } from './AgentScreen.tsx';
+import { FormulasScreen } from './FormulasScreen.tsx';
 import { KeywordsScreen } from './KeywordsScreen.tsx';
 import { NicheScreen } from './NicheScreen.tsx';
 import { RunsScreen } from './RunsScreen.tsx';
@@ -16,14 +17,15 @@ import { ScorecardScreen } from './ScorecardScreen.tsx';
 import { Badge, Icon, IS_MOCK, LoadState, nicheLabel, relDate, useLoad } from './lib.tsx';
 import './board.css';
 
-type Screen = 'scorecard' | 'niche' | 'keywords' | 'runs' | 'agent';
+type Screen = 'scorecard' | 'niche' | 'keywords' | 'formulas' | 'runs' | 'agent';
 
 const SCREENS: Array<{ key: Screen; label: string; question: string }> = [
   { key: 'scorecard', label: '1 · Chọn tệp', question: 'Tệp nào cho kênh nhỏ sàn view cao nhất?' },
   { key: 'niche', label: '2 · Ngách', question: 'Học video/kênh nào, đào sâu gì?' },
   { key: 'keywords', label: '3 · Keyword', question: 'Keyword nào chạy tiếp?' },
-  { key: 'runs', label: '4 · Lượt chạy', question: 'Có đang tốn quota vô ích không?' },
-  { key: 'agent', label: '5 · Agent', question: 'Agent đã phân tích gì, áp dụng gì?' },
+  { key: 'formulas', label: '4 · Công thức', question: 'Công thức nào đang sống, slot nào cần điền trigger?' },
+  { key: 'runs', label: '5 · Lượt chạy', question: 'Có đang tốn quota vô ích không?' },
+  { key: 'agent', label: '6 · Agent', question: 'Agent đã phân tích gì, áp dụng gì?' },
 ];
 
 export function SpyBoardTab({ topicId }: { topicId: string }) {
@@ -97,6 +99,7 @@ export function SpyBoardTab({ topicId }: { topicId: string }) {
       {screen === 'keywords' && (
         <KeywordsScreen topicId={topicId} niche={niche} niches={niches} refreshKey={refreshKey} onRunFinished={refresh} />
       )}
+      {screen === 'formulas' && <FormulasScreen topicId={topicId} />}
       {screen === 'runs' && <RunsScreen topicId={topicId} refreshKey={refreshKey} />}
       {screen === 'agent' && <AgentScreen topicId={topicId} refreshKey={refreshKey} />}
     </div>

@@ -21,6 +21,11 @@ export function spyDbPath(root = dataRoot()): string {
   return join(spyRoot(root), 'spy.sqlite');
 }
 
+/** Báo cáo run dạng file (verify công thức, ...) theo topic — spy-runs/<topic>/*.json. */
+export function spyRunsRoot(topicId: string, root = dataRoot()): string {
+  return join(root, 'spy-runs', topicId);
+}
+
 export function spyConfigPath(root = dataRoot()): string {
   return join(configDir(root), 'spy.json');
 }

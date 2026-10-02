@@ -238,3 +238,62 @@ export function mockCreateTask(template: AgentTemplate, niche: string | null | u
   MOCK_TASKS.unshift(t);
   return { promptId, promptText: t.promptText };
 }
+
+// ── Mock báo cáo verify công thức (schema v1) — màn Công thức ───────────
+import type { BoardFormulasReport } from '../../api.ts';
+
+export const MOCK_FORMULAS: BoardFormulasReport = {
+  reportType: 'formula_verify',
+  schemaVersion: 1,
+  meta: {
+    topicId: 'finance-us',
+    runId: '4146d0ae-ca2a-4a8d-9ff0-a58bb96cd976',
+    date: '2026-10-01',
+    verifyRule: "sống = ≥3 kênh độc lập lặp skeleton, ≥1 kênh <10K subs",
+    cost: { searches: 22, channelUnits: 123 },
+    yield: { videos: 2056, channelsProposed: 13, channelsRejected: 4 },
+  },
+  formulas: [
+    {
+      id: 'F-A',
+      skeleton: 'How Are [GROUP] Affording [$ASSET] on [$INCOME]?',
+      verdict: 'live',
+      repeatability: { channels_lt10k: 2, channels_10_50k: 1, channels_gt50k: 1, proof: 'Nate 5.8K chạy 12 video/tháng cùng skeleton' },
+      packaging: ['How Are Americans Affording $600K Homes on Average Salaries?'],
+      slots: {
+        trigger: { rotating: true, desc: 'Kỷ lục giá/sốc giá vừa xảy ra', examples: ['giá nhà $600K', 'daycare $2,000/tháng'] },
+        visible_behavior: { rotating: true, desc: 'Nhóm người người xem thấy ngoài đời', examples: ['Americans', 'Uber Drivers', 'Gen Z', 'Retirees'] },
+        contradiction: { rotating: false, desc: 'Giá tài sản >> thu nhập trung bình' },
+        mechanism: { rotating: false, desc: '84–96 tháng nợ, hai thu nhập, tiền gia đình — LÕI bền' },
+        title_render: 'Biến nghịch lý "giá cao mà vẫn mua được" thành câu hỏi How',
+      },
+      evidence: [
+        { channel: 'American Finance With Nate', subs: 5800, videos: 12, topViews: 325_000, note: 'series slot-filling', lastSeen: '2026-09-30' },
+        { channel: 'Wealth Logic', subs: 94_600, videos: 1, topViews: 1_100_000, note: 'kênh gốc công thức' },
+      ],
+    },
+    {
+      id: 'F-E',
+      skeleton: 'Why [X] Became So Expensive',
+      verdict: 'rejected',
+      reject_reason: 'Chỉ kênh >140K subs ăn — tệp kênh lớn, kênh nhỏ khớp pattern là clip/meme.',
+      slots: {
+        trigger: { rotating: true, desc: 'Tin giá tăng' },
+        contradiction: { rotating: false, desc: 'Thứ quen thuộc thành xa xỉ' },
+      },
+      evidence: [{ channel: 'Front Page', subs: 142_000, topViews: 335_000 }],
+    },
+  ],
+  keywordHealth: [
+    { term: 'how are americans affording', medianViews: 55_000, outliers: 4, note: 'sống' },
+    { term: 'secretly living paycheck', medianViews: 173, note: 'n-gram bị giải trí chiếm' },
+  ],
+  modelChannels: [
+    { channel: 'American Finance With Nate', subs: 5_800, why: 'F-A series ở <10K' },
+    { channel: 'Cartor Raay', subs: 7_200, why: 'F-B + F-D' },
+  ],
+  nextActions: [
+    { type: 'title_draft', from: 'F-A', title: 'How Are Americans Affording $2,000 Daycare on Average Salaries?' },
+    { type: 'follow_channel', item: 'Too Late Now (18K) — cloner hệ thống F-B/C' },
+  ],
+};

@@ -7,6 +7,9 @@
 //
 // Tham số `niche`: bỏ trống = mọi ngách; `niche=_none` = "chưa gán" (NULL).
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { spyRunsRoot } from '../paths.ts';
 import {
   AGENT_TEMPLATES,
   agentTaskFromRow,
@@ -219,6 +222,23 @@ export async function handleSpyBoard(url: URL, req: Request, spy: SpyService): P
           type: parseEnum(q('type'), 'type', RUN_TYPES),
           limit: parseInt0(q('limit'), 'limit', 1, 500),
         }));
+      // Báo cáo verify công thức (schema v1) — file mới nhất trong
+      // spy-runs/<topic>/*-formula-verify.json do run ghi ra.
+      case 'formulas': {
+        const dir = spyRunsRoot(topicId);
+        if (!existsSync(dir)) return json({ data: null, file: null });
+        const files = readdirSync(dir)
+          .filter((f) => f.endsWith('-formula-verify.json') || f.endsWith('.json'))
+          .sort()
+          .reverse();
+        const file = files.find((f) => f.endsWith('-formula-verify.json')) ?? files[0];
+        if (!file) return json({ data: null, file: null });
+        try {
+          return json({ data: JSON.parse(readFileSync(join(dir, file), 'utf8')), file });
+        } catch {
+          return err(`File báo cáo '${file}' không phải JSON hợp lệ`, 500);
+        }
+      }
       default:
         return err(`Không có endpoint /api/spy/board/${path}`, 404);
     }

@@ -34,8 +34,42 @@ Người chọn keyword/ngách trên board → bấm run. Một lần đào sâu
 ## 2. Format lưu
 
 - **DB = registry + dedup** (`topic_videos`, `video_daily_views`, `keyword_checks`, `topic_channels` — schema v14 đủ, không cần bảng mới cho bản này).
-- **Export = file `.md` mỗi run/deep-dive**, đủ raw rows để đọc/slice ngoài (không excel).
-- Board web đọc trực tiếp DB qua `/api/spy/dash/*` (đã có).
+- **Export = file theo run**, lưu `writer-room-data/spy-runs/<topic>/<date>-<kind>.{json,md}`:
+  - `.json` là **output chuẩn** (§2a) — UI đọc trực tiếp;
+  - `.md` là bản đọc-người cùng nội dung (không excel).
+- Board web đọc DB qua `/api/spy/dash/*` + đọc file báo cáo qua `/api/spy/board/formulas` (file mới nhất của topic).
+
+## 2a. Định dạng output chuẩn — `reportType: "formula_verify"`, schema v1
+
+Mọi output của một quá trình pipeline ghi **1 file JSON** vào `spy-runs/<topic>/` theo dạng:
+
+```
+{ reportType, schemaVersion: 1,
+  meta: { topicId, runId, date, params, cost, yield, verifyRule },
+  formulas: [...], keywordHealth: [...], modelChannels: [...], nextActions: [...] }
+```
+
+`formulas[]` — mỗi công thức title phân rã theo khung 5 slot **TRIGGER → VISIBLE BEHAVIOR → ECONOMIC CONTRADICTION → MONEY MECHANISM → TITLE**:
+
+```
+{ id: "F-A", skeleton: "How Are [GROUP] Affording [$ASSET] on [$INCOME]?",
+  verdict: "live | weak | rejected",          // luật verify: ≥3 kênh độc lập, ≥1 kênh <10K subs
+  repeatability: { channels_lt10k, channels_10_50k, channels_gt50k, proof },
+  packaging: [ "các dạng title quan sát được" ],
+  slots: {
+    trigger:          { rotating: true,  desc, examples },   // điền từ trigger pool
+    visible_behavior: { rotating, desc, examples },
+    contradiction:    { rotating, desc, examples },
+    mechanism:        { rotating: false, desc, examples },   // LÕI bền
+    title_render:     "chuỗi render" | { desc, ... }
+  },
+  reject_reason: "vì sao loại (khi rejected)",
+  evidence: [ { channel, subs, videos, topViews, note, lastSeen } ] }
+```
+
+Kèm: `keywordHealth[]` {term, medianViews, note} · `modelChannels[]` {channel, subs, why} · `nextActions[]` {type, from?, title?|item?}.
+
+Các `reportType` khác (niche_verify, wave, ...) theo sau cũng dùng vỏ `{reportType, schemaVersion, meta}` chung này — phần thân thay theo loại. Board màn "4 · Công thức" render `formulas[]` trực tiếp từ JSON (slot xoay tô màu = chờ điền trigger).
 
 ## 3. Các cắt data bắt buộc (trong export & báo cáo)
 

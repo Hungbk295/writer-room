@@ -1914,6 +1914,70 @@ export interface AgentResultMap {
   };
 }
 
+// ── Báo cáo verify công thức (schema v1, writer-room-data/spy-runs/<topic>/*-formula-verify.json) ──
+// Output chuẩn của verify-run: formulas[] theo khung 5 slot
+// TRIGGER → VISIBLE BEHAVIOR → CONTRADICTION → MECHANISM → TITLE.
+// `rotating` đánh dấu slot thay theo thời sự (điền từ trigger pool)
+// vs slot bền — lõi của công thức.
+
+export interface FormulaSlot {
+  rotating?: boolean;
+  desc: string;
+  examples?: string[];
+}
+
+/** Bằng chứng kênh trong báo cáo verify (đổi tên khỏi FormulaEvidence của Writer). */
+export interface SpyFormulaEvidence {
+  channel: string;
+  subs: number | null;
+  videos?: number;
+  topViews?: number;
+  note?: string;
+  lastSeen?: string;
+}
+
+export type FormulaVerdict = 'live' | 'weak' | 'rejected';
+
+export interface BoardFormula {
+  id: string;
+  skeleton: string;
+  verdict: FormulaVerdict | string;
+  repeatability?: {
+    channels_lt10k?: number;
+    channels_10_50k?: number;
+    channels_gt50k?: number;
+    proof?: string;
+  };
+  packaging?: string[];
+  slots?: {
+    trigger?: FormulaSlot;
+    visible_behavior?: FormulaSlot;
+    contradiction?: FormulaSlot;
+    mechanism?: FormulaSlot;
+    title_render?: string | FormulaSlot;
+  };
+  reject_reason?: string;
+  evidence?: SpyFormulaEvidence[];
+}
+
+export interface BoardFormulasReport {
+  reportType: string;
+  schemaVersion: number;
+  meta: Record<string, unknown> & {
+    topicId?: string;
+    runId?: string;
+    date?: string;
+    verifyRule?: string;
+    params?: Record<string, unknown>;
+    cost?: Record<string, number>;
+    yield?: Record<string, number>;
+  };
+  formulas: BoardFormula[];
+  keywordHealth?: Array<{ term: string; medianViews?: number; outliers?: number; note?: string }>;
+  modelChannels?: Array<{ channel: string; subs?: number; why?: string }>;
+  nextActions?: Array<{ type?: string; from?: string; title?: string; item?: string }>;
+}
+
 /** Nhãn hiển thị cho ID (tên, thumbnail, kênh) — /api/spy/board/labels. */
 export interface BoardVideoLabel {
   title: string;
@@ -2812,6 +2876,11 @@ export const api = {
     request<{ data: BoardAgentTask[] }>(`/api/spy/board/tasks${dashQuery({ topic_id: topicId, limit })}`),
   boardTask: (promptId: string) =>
     request<{ data: BoardAgentTask }>(`/api/spy/board/tasks/${encodeURIComponent(promptId)}`),
+  /** Báo cáo verify công thức mới nhất của topic (null nếu chưa có file). */
+  boardFormulas: (topicId: string) =>
+    request<{ data: BoardFormulasReport | null; file: string | null }>(
+      `/api/spy/board/formulas${dashQuery({ topic_id: topicId })}`,
+    ),
   /** Gán ngách tay; niche=null gỡ ngách. */
   boardAssignNiche: (topicId: string, channelIds: string[], niche: string | null) =>
     request<{ changed: number }>('/api/spy/board/channels/niche', {
